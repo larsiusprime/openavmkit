@@ -62,10 +62,13 @@ class PredictionResults:
 		self.ratio_study = RatioStudy(y_pred, y)
 
 class DataSplit:
-	X: pd.DataFrame
-	y: pd.Series
+	df_sales: pd.DataFrame
+	df_universe: pd.DataFrame
 	df_train: pd.DataFrame
 	df_test: pd.DataFrame
+	X_univ: pd.DataFrame
+	X_sales: pd.DataFrame
+	y_sales: pd.Series
 	X_train: pd.DataFrame
 	y_train: pd.Series
 	X_test: pd.DataFrame
@@ -78,23 +81,27 @@ class DataSplit:
 			test_train_frac: float = 0.8,
 			random_seed: int = 1337
 	):
+		self.df_universe = df
+		self.df_sales = df[df["valid_sale"].eq(1)].reset_index(drop=True)
+
 		# separate df in train & test:
 		np.random.seed(random_seed)
+		self.df_train = self.df_sales.sample(frac=test_train_frac)
+		self.df_test = self.df_sales.drop(self.df_train.index)
 
-		df_train = df.sample(frac=test_train_frac).reset_index(drop=True)
-		df_test = df.drop(df_train.index).reset_index(drop=True)
+		self.df_train = self.df_train.reset_index(drop=True)
+		self.df_test = self.df_test.reset_index(drop=True)
 
-		self.df_train = df_train
-		self.df_test = df_test
+		self.X_univ = self.df_universe[dep_vars]
 
-		self.X = df[dep_vars]
-		self.y = df[ind_var]
+		self.X_sales = self.df_sales[dep_vars]
+		self.y_sales = self.df_sales[ind_var]
 
-		self.X_train = df_train[dep_vars]
-		self.y_train = df_train[ind_var]
+		self.X_train = self.df_train[dep_vars]
+		self.y_train = self.df_train[ind_var]
 
-		self.X_test = df_test[dep_vars]
-		self.y_test = df_test[ind_var]
+		self.X_test = self.df_test[dep_vars]
+		self.y_test = self.df_test[ind_var]
 
 class ModelResults:
 	type: str
@@ -102,7 +109,8 @@ class ModelResults:
 	dep_vars: list[str]
 	model: PredictionModel
 	pred_test: PredictionResults
-	pred_full: PredictionResults
+	pred_sales: PredictionResults
+	pred_univ: PredictionResults
 
 	def __init__(self,
 			type: str,
@@ -111,15 +119,16 @@ class ModelResults:
 			model: PredictionModel,
 			y_test: pd.Series,
 			y_pred_test: np.ndarray,
-			y_full: pd.Series,
-			y_pred_full: np.ndarray
+			y_sales: pd.Series,
+			y_pred_sales: np.ndarray,
+			y_pred_univ: np.ndarray
 	):
 		self.type = type
 		self.ind_var = ind_var
 		self.dep_vars = dep_vars
 		self.model = model
 		self.pred_test = PredictionResults(ind_var, dep_vars, y_test, y_pred_test)
-		self.pred_full = PredictionResults(ind_var, dep_vars, y_full, y_pred_full)
+		self.pred_sales = PredictionResults(ind_var, dep_vars, y_sales, y_pred_sales)
 
 	def summary(self):
 		str = ""
@@ -136,14 +145,14 @@ class ModelResults:
 		str += (f"---->PRD    : {self.pred_test.ratio_study.prd:8.4f}\n")
 		str += (f"---->PRB    : {self.pred_test.ratio_study.prb:8.4f}\n")
 		str += (f"\n")
-		str += (f"-->Full set, rows: {len(self.pred_full.y)}\n")
-		str += (f"---->RMSE   : {self.pred_full.rmse:8.0f}\n")
-		str += (f"---->R2     : {self.pred_full.r2:8.4f}\n")
-		str += (f"---->Adj R2 : {self.pred_full.adj_r2:8.4f}\n")
-		str += (f"---->M.Ratio: {self.pred_full.ratio_study.median_ratio:8.4f}\n")
-		str += (f"---->COD    : {self.pred_full.ratio_study.cod:8.4f}\n")
-		str += (f"---->PRD    : {self.pred_full.ratio_study.prd:8.4f}\n")
-		str += (f"---->PRB    : {self.pred_full.ratio_study.prb:8.4f}\n")
+		str += (f"-->Full set, rows: {len(self.pred_sales.y)}\n")
+		str += (f"---->RMSE   : {self.pred_sales.rmse:8.0f}\n")
+		str += (f"---->R2     : {self.pred_sales.r2:8.4f}\n")
+		str += (f"---->Adj R2 : {self.pred_sales.adj_r2:8.4f}\n")
+		str += (f"---->M.Ratio: {self.pred_sales.ratio_study.median_ratio:8.4f}\n")
+		str += (f"---->COD    : {self.pred_sales.ratio_study.cod:8.4f}\n")
+		str += (f"---->PRD    : {self.pred_sales.ratio_study.prd:8.4f}\n")
+		str += (f"---->PRB    : {self.pred_sales.ratio_study.prb:8.4f}\n")
 		str += (f"\n")
 		if self.type == "mra":
 			# print the coefficients?
@@ -170,7 +179,8 @@ def run_mra(
 		if intercept:
 			ds.X_train = sm.add_constant(ds.X_train)
 			ds.X_test = sm.add_constant(ds.X_test)
-			ds.X = sm.add_constant(ds.X)
+			ds.X_sales = sm.add_constant(ds.X_sales)
+			ds.X_univ = sm.add_constant(ds.X_univ)
 
 		linear_model = sm.OLS(ds.y_train, ds.X_train)
 		fitted_model = linear_model.fit()
@@ -178,11 +188,14 @@ def run_mra(
 		# predict on test set:
 		y_pred_test = fitted_model.predict(ds.X_test)
 
+		# predict on the sales set:
+		y_pred_sales = fitted_model.predict(ds.X_sales)
+
 		# predict on the full set:
-		y_pred_full = fitted_model.predict(ds.X)
+		y_pred_univ = fitted_model.predict(ds.X_univ)
 
 		# gather the predictions
-		results = ModelResults("mra", ind_var, dep_vars, fitted_model, ds.y_test, y_pred_test, ds.y, y_pred_full)
+		results = ModelResults("mra", ind_var, dep_vars, fitted_model, ds.y_test, y_pred_test, ds.y_sales, y_pred_sales, y_pred_univ)
 		return results
 
 
@@ -270,9 +283,10 @@ def run_xgboost(
 	xgboost_model.fit(ds.X_train, ds.y_train)
 
 	y_pred_test = xgboost_model.predict(ds.X_test)
-	y_pred_full = xgboost_model.predict(ds.X)
+	y_pred_sales = xgboost_model.predict(ds.X_sales)
+	y_pred_univ = xgboost_model.predict(ds.X_univ)
 
-	results = ModelResults("xgboost", ind_var, dep_vars, xgboost_model, ds.y_test, y_pred_test, ds.y, y_pred_full)
+	results = ModelResults("xgboost", ind_var, dep_vars, xgboost_model, ds.y_test, y_pred_test, ds.y_sales, y_pred_sales, y_pred_univ)
 	return results
 
 
@@ -307,9 +321,10 @@ def run_lightgbm(
 	)
 
 	y_pred_test = gbm.predict(ds.X_test, num_iteration=gbm.best_iteration)
-	y_pred_full = gbm.predict(ds.X, num_iteration=gbm.best_iteration)
+	y_pred_sales = gbm.predict(ds.X_sales, num_iteration=gbm.best_iteration)
+	y_pred_univ = gbm.predict(ds.X_univ, num_iterations=gbm.best_iteration)
 
-	results = ModelResults("lightgbm", ind_var, dep_vars, gbm, ds.y_test, y_pred_test, ds.y, y_pred_full)
+	results = ModelResults("lightgbm", ind_var, dep_vars, gbm, ds.y_test, y_pred_test, ds.y_sales, y_pred_sales, y_pred_univ)
 	return results
 
 
@@ -329,7 +344,19 @@ def run_catboost(
 	catboost_model.fit(ds.X_train, ds.y_train)
 
 	y_pred_test = catboost_model.predict(ds.X_test)
-	y_pred_full = catboost_model.predict(ds.X)
+	y_pred_sales = catboost_model.predict(ds.X_sales)
+	y_pred_univ = catboost_model.predict(ds.X_univ)
 
-	results = ModelResults("catboost", ind_var, dep_vars, catboost_model, ds.y_test, y_pred_test, ds.y, y_pred_full)
+	results = ModelResults(
+		"catboost",
+		ind_var,
+		dep_vars,
+		catboost_model,
+		ds.y_test,
+		y_pred_test,
+		ds.y_sales,
+		y_pred_sales,
+		y_pred_univ
+	)
+	
 	return results
