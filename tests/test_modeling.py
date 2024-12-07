@@ -1,4 +1,6 @@
 from IPython.core.display_functions import display
+
+from openavmkit.horizontal_equity_study import cluster_by_location_and_big_five
 from openavmkit.modeling import run_mra, run_xgboost, run_lightgbm, run_catboost, run_gwr
 from openavmkit.synthetic_data import generate_basic
 
@@ -20,6 +22,9 @@ def test_models():
 		"bldg_age_years",
 		"distance_from_cbd"
 	]
+
+	# Assign equity cluster ID's
+	df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [])
 
 	models = ["mra", "gwr", "xgboost", "lightgbm", "catboost"]
 

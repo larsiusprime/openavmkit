@@ -17,6 +17,7 @@ from statsmodels.regression.linear_model import RegressionResults
 from xgboost import XGBRegressor
 
 from openavmkit.ratio_study import RatioStudy
+from openavmkit.stats import quick_median_chd
 
 PredictionModel = Union[RegressionResults, XGBRegressor, Booster, CatBoostRegressor, GWR, MGWR]
 
@@ -109,9 +110,13 @@ class ModelResults:
 	model: PredictionModel
 	pred_test: PredictionResults
 	pred_sales: PredictionResults
-	pred_univ: PredictionResults
+	pred_univ: np.ndarray
+	chd: float
 
 	def __init__(self,
+			df: pd.DataFrame,
+			field_prediction: str,
+			field_horizontal_equity_id: str,
 			type: str,
 			ind_var: str,
 			dep_vars: list[str],
@@ -128,6 +133,8 @@ class ModelResults:
 		self.model = model
 		self.pred_test = PredictionResults(ind_var, dep_vars, y_test, y_pred_test)
 		self.pred_sales = PredictionResults(ind_var, dep_vars, y_sales, y_pred_sales)
+		self.pred_univ = y_pred_univ
+		self.chd = quick_median_chd(df, field_prediction, field_horizontal_equity_id)
 
 	def summary(self):
 		str = ""
@@ -152,6 +159,8 @@ class ModelResults:
 		str += (f"---->COD    : {self.pred_sales.ratio_study.cod:8.4f}\n")
 		str += (f"---->PRD    : {self.pred_sales.ratio_study.prd:8.4f}\n")
 		str += (f"---->PRB    : {self.pred_sales.ratio_study.prb:8.4f}\n")
+		str += (f"---->CHD    : {self.chd:8.4f}\n")
+
 		str += (f"\n")
 		if self.type == "mra":
 			# print the coefficients?
@@ -194,7 +203,21 @@ def run_mra(
 		y_pred_univ = fitted_model.predict(ds.X_univ)
 
 		# gather the predictions
-		results = ModelResults("mra", ind_var, dep_vars, fitted_model, ds.y_test, y_pred_test, ds.y_sales, y_pred_sales, y_pred_univ)
+		df["prediction"] = y_pred_univ
+		results = ModelResults(
+			df,
+			"prediction",
+			"he_id",
+			"mra",
+			ind_var,
+			dep_vars,
+			fitted_model,
+			ds.y_test,
+			y_pred_test,
+			ds.y_sales,
+			y_pred_sales,
+			y_pred_univ
+		)
 		return results
 
 
@@ -263,7 +286,21 @@ def run_gwr(
 	y_pred_sales = y_pred_sales.flatten()
 	y_pred_univ = y_pred_univ.flatten()
 
-	results = ModelResults("gwr", ind_var, dep_vars, gwr, ds.y_test, y_pred_test, ds.y_sales, y_pred_sales, y_pred_univ)
+	df["prediction"] = y_pred_univ
+	results = ModelResults(
+		df,
+		"prediction",
+		"he_id",
+		"gwr",
+		ind_var,
+		dep_vars,
+		gwr,
+		ds.y_test,
+		y_pred_test,
+		ds.y_sales,
+		y_pred_sales,
+		y_pred_univ
+	)
 	return results
 
 
@@ -286,7 +323,21 @@ def run_xgboost(
 	y_pred_sales = xgboost_model.predict(ds.X_sales)
 	y_pred_univ = xgboost_model.predict(ds.X_univ)
 
-	results = ModelResults("xgboost", ind_var, dep_vars, xgboost_model, ds.y_test, y_pred_test, ds.y_sales, y_pred_sales, y_pred_univ)
+	df["prediction"] = y_pred_univ
+	results = ModelResults(
+		df,
+		"prediction",
+		"he_id",
+		"xgboost",
+		ind_var,
+		dep_vars,
+		xgboost_model,
+		ds.y_test,
+		y_pred_test,
+		ds.y_sales,
+		y_pred_sales,
+		y_pred_univ
+	)
 	return results
 
 
@@ -324,15 +375,30 @@ def run_lightgbm(
 	y_pred_sales = gbm.predict(ds.X_sales, num_iteration=gbm.best_iteration)
 	y_pred_univ = gbm.predict(ds.X_univ, num_iterations=gbm.best_iteration)
 
-	results = ModelResults("lightgbm", ind_var, dep_vars, gbm, ds.y_test, y_pred_test, ds.y_sales, y_pred_sales, y_pred_univ)
+	df["prediction"] = y_pred_univ
+	results = ModelResults(
+		df,
+		"prediction",
+		"he_id",
+		"lightgbm",
+		ind_var,
+		dep_vars,
+		gbm,
+		ds.y_test,
+		y_pred_test,
+		ds.y_sales,
+		y_pred_sales,
+		y_pred_univ
+	)
 	return results
 
 
 def run_catboost(
-		df: pd.DataFrame,
+		df_in: pd.DataFrame,
 		ind_var: str,
 		dep_vars: list[str]
 ):
+	df = df_in.copy()
 	ds = DataSplit(df, ind_var, dep_vars)
 
 	catboost_model = catboost.CatBoostRegressor(
@@ -347,7 +413,11 @@ def run_catboost(
 	y_pred_sales = catboost_model.predict(ds.X_sales)
 	y_pred_univ = catboost_model.predict(ds.X_univ)
 
+	df["prediction"] = y_pred_univ
 	results = ModelResults(
+		df,
+		"prediction",
+		"he_id",
 		"catboost",
 		ind_var,
 		dep_vars,

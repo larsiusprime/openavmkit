@@ -1,8 +1,89 @@
+import numpy as np
 import pandas as pd
-from IPython.core.display_functions import display
+import openavmkit.stats as stats
+
+class HorizontalEquitySummary:
+	rows: int
+	clusters: int
+	min_chd: float
+	max_chd: float
+	median_chd: float
+
+	def __init__(
+			self,
+			rows: int,
+			clusters: int,
+			min_chd: float,
+			max_chd: float,
+			median_chd: float
+	):
+		self.rows = rows
+		self.clusters = clusters
+		self.min_chd = min_chd
+		self.max_chd = max_chd
+		self.median_chd = median_chd
 
 
-def cluster_by_characteristics(
+class HorizontalEquityClusterSummary:
+	id: str
+	count: int
+	chd: float
+	min: float
+	max: float
+	median: float
+
+	def __init__(
+			self,
+			id: str,
+			count: int,
+			chd: float,
+			min: float,
+			max: float,
+			median: float
+	):
+		self.id = id
+		self.count = count
+		self.chd = chd
+		self.min = min
+		self.max = max
+		self.median = median
+
+
+class HorizontalEquityStudy:
+	summary: HorizontalEquitySummary
+	cluster_summaries: dict[str, HorizontalEquityClusterSummary]
+
+	def __init__(
+			self,
+			df: pd.DataFrame,
+			field_cluster: str,
+			field_value: str
+	):
+		clusters = df[field_cluster].unique()
+		self.cluster_summaries = {}
+
+		chds = np.array([])
+		for cluster in clusters:
+			df_cluster = df[df[field_cluster].eq(cluster)]
+			count = len(df_cluster)
+			chd = stats.calc_cod(df_cluster[field_value].values)
+			min_value = df_cluster[field_value].min()
+			max_value = df_cluster[field_value].max()
+			median_value = df_cluster[field_value].median()
+			summary = HorizontalEquityClusterSummary(cluster, count, chd, min_value, max_value, median_value)
+			self.cluster_summaries[cluster] = summary
+			np.append(chds, chd)
+
+		self.summary = HorizontalEquitySummary(
+			len(df),
+			len(clusters),
+			np.min(chds),
+			np.max(chds),
+			np.median(chds)
+		)
+
+
+def cluster_by_location_and_big_five(
 		df_in: pd.DataFrame,
 		field_location: str,
 		fields_categorical: list[str]
@@ -73,6 +154,7 @@ def cluster_by_characteristics(
 
 	# return the new cluster ID's
 	return df["cluster_id"]
+
 
 ###### PRIVATE:
 
