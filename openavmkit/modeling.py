@@ -10,7 +10,6 @@ import catboost
 from IPython.core.display_functions import display
 from catboost import CatBoostRegressor
 from lightgbm import Booster
-from mgwr import gwr
 from mgwr.gwr import MGWR, GWR
 from mgwr.sel_bw import Sel_BW
 from sklearn.metrics import mean_squared_error
@@ -214,15 +213,20 @@ def run_gwr(
 	v_test = ds.df_test['latitude']
 	coords_test = list(zip(u_test, v_test))
 
-	u = df['longitude']
-	v = df['latitude']
-	coords_full = list(zip(u,v))
+	u_sales = ds.df_sales['longitude']
+	v_sales = ds.df_sales['latitude']
+	coords_sales = list(zip(u_sales, v_sales))
+
+	u = ds.df_universe['longitude']
+	v = ds.df_universe['latitude']
+	coords_univ = list(zip(u,v))
 
 	y_train = ds.y_train.values.reshape((-1, 1))
-	X_train = ds.X_train.values
 
+	X_train = ds.X_train.values
 	X_test = ds.X_test.values
-	X_full = ds.X.values
+	X_sales = ds.X_sales.values
+	X_univ = ds.X_univ.values
 
 	gwr_selector = Sel_BW(coords_train, y_train, X_train)
 	gwr_bw = gwr_selector.search()
@@ -237,33 +241,29 @@ def run_gwr(
 	)
 	y_pred_test = gwr_result_test.predictions
 
-	# empty np array
-	y_pred_full = np.array([])
+	y_pred_sales = _run_gwr_prediction_iterations(
+		coords_sales,
+		coords_train,
+		X_sales,
+		X_train,
+		gwr_bw,
+		y_train
+	)
 
-	iterations = int(math.ceil(len(coords_full) / len(coords_train)))
-	segment_size = len(coords_train)
-	for i in range(0, iterations):
-		coords_segment = coords_full[i*segment_size: (i+1)*segment_size]
-		X_segment = X_full[i*segment_size: (i+1)*segment_size]
-
-		np_coords_segment = np.array(coords_segment)
-
-		gwr = GWR(coords_train, y_train, X_train, gwr_bw)
-		gwr_fit = gwr.fit()
-		gwr = gwr_fit.model
-		gwr_result_segment = gwr.predict(
-			np_coords_segment,
-			X_segment
-		)
-		if i == 0:
-			y_pred_full = gwr_result_segment.predictions
-		else:
-			y_pred_full = np.concatenate((y_pred_full, gwr_result_segment.predictions))
+	y_pred_univ = _run_gwr_prediction_iterations(
+		coords_univ,
+		coords_train,
+		X_univ,
+		X_train,
+		gwr_bw,
+		y_train
+	)
 
 	y_pred_test = y_pred_test.flatten()
-	y_pred_full = y_pred_full.flatten()
+	y_pred_sales = y_pred_sales.flatten()
+	y_pred_univ = y_pred_univ.flatten()
 
-	results = ModelResults("gwr", ind_var, dep_vars, gwr, ds.y_test, y_pred_test, ds.y, y_pred_full)
+	results = ModelResults("gwr", ind_var, dep_vars, gwr, ds.y_test, y_pred_test, ds.y_sales, y_pred_sales, y_pred_univ)
 	return results
 
 
@@ -358,5 +358,39 @@ def run_catboost(
 		y_pred_sales,
 		y_pred_univ
 	)
-	
+
 	return results
+
+
+##### PRIVATE:
+
+
+def _run_gwr_prediction_iterations(
+		coords,
+		coords_train,
+		X,
+		X_train,
+		gwr_bw,
+		y_train
+):
+	y_pred = np.array([])
+	iterations = int(math.ceil(len(coords) / len(coords_train)))
+	segment_size = len(coords_train)
+	for i in range(0, iterations):
+		coords_segment = coords[i*segment_size: (i+1)*segment_size]
+		X_segment = X[i*segment_size: (i+1)*segment_size]
+
+		np_coords_segment = np.array(coords_segment)
+
+		gwr = GWR(coords_train, y_train, X_train, gwr_bw)
+		gwr_fit = gwr.fit()
+		gwr = gwr_fit.model
+		gwr_result_segment = gwr.predict(
+			np_coords_segment,
+			X_segment
+		)
+		if i == 0:
+			y_pred = gwr_result_segment.predictions
+		else:
+			y_pred = np.concatenate((y_pred, gwr_result_segment.predictions))
+	return y_pred
