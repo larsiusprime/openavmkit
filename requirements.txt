@@ -1,1 +1,8 @@
 # requests==2.25.1
+ipython~=8.29.0
+setuptools~=75.2.0
+numpy~=1.26.4
+statsmodels~=0.14.4
+pandas~=2.2.3
+xgboost~=2.1.2
+scikit-learn~=1.5.2

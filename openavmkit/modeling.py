@@ -8,6 +8,8 @@ from sklearn.metrics import mean_squared_error
 from statsmodels.regression.linear_model import RegressionResults
 from xgboost import XGBRegressor
 
+from openavmkit.ratio_study import RatioStudy
+
 PredictionModel = Union[RegressionResults, XGBRegressor]
 
 class PredictionResults:
@@ -19,6 +21,7 @@ class PredictionResults:
 	rmse: float
 	r2: float
 	adj_r2: float
+	ratio_study: RatioStudy
 
 	def __init__(self,
 			ind_var: str,
@@ -47,7 +50,7 @@ class PredictionResults:
 		k = len(dep_vars)
 
 		self.adj_r2 = 1 - ((1 - self.r2)*(n-1)/(n-k-1))
-
+		self.ratio_study = RatioStudy(y_pred, y)
 
 class DataSplit:
 	X: pd.DataFrame
@@ -106,28 +109,36 @@ class ModelResults:
 		self.pred_full = PredictionResults(ind_var, dep_vars, y_full, y_pred_full)
 
 	def summary(self):
-		print(f"Model type: {self.type}")
+		str = ""
+
+		str += (f"Model type: {self.type}\n")
 		# Print the # of rows in test & full set
 		# Print the MSE, RMSE, R2, and Adj R2 for test & full set
-		print(f"-->Test set, rows: {len(self.pred_test.y)}")
-		print(f"---->MSE    : {self.pred_test.mse}")
-		print(f"---->RMSE   : {self.pred_test.rmse}")
-		print(f"---->R2     : {self.pred_test.r2}")
-		print(f"---->Adj R2 : {self.pred_test.adj_r2}")
-		print(f"")
-		print(f"-->Full set, rows: {len(self.pred_full.y)}")
-		print(f"---->MSE    : {self.pred_full.mse}")
-		print(f"---->RMSE   : {self.pred_full.rmse}")
-		print(f"---->R2     : {self.pred_full.r2}")
-		print(f"---->Adj R2 : {self.pred_full.adj_r2}")
-		print(f"")
-
-	def __str__(self):
+		str += (f"-->Test set, rows: {len(self.pred_test.y)}\n")
+		str += (f"---->RMSE   : {self.pred_test.rmse:8.0f}\n")
+		str += (f"---->R2     : {self.pred_test.r2:8.4f}\n")
+		str += (f"---->Adj R2 : {self.pred_test.adj_r2:8.4f}\n")
+		str += (f"---->M.Ratio: {self.pred_test.ratio_study.median_ratio:8.4f}\n")
+		str += (f"---->COD    : {self.pred_test.ratio_study.cod:8.4f}\n")
+		str += (f"---->PRD    : {self.pred_test.ratio_study.prd:8.4f}\n")
+		str += (f"---->PRB    : {self.pred_test.ratio_study.prb:8.4f}\n")
+		str += (f"\n")
+		str += (f"-->Full set, rows: {len(self.pred_full.y)}\n")
+		str += (f"---->RMSE   : {self.pred_full.rmse:8.0f}\n")
+		str += (f"---->R2     : {self.pred_full.r2:8.4f}\n")
+		str += (f"---->Adj R2 : {self.pred_full.adj_r2:8.4f}\n")
+		str += (f"---->M.Ratio: {self.pred_full.ratio_study.median_ratio:8.4f}\n")
+		str += (f"---->COD    : {self.pred_full.ratio_study.cod:8.4f}\n")
+		str += (f"---->PRD    : {self.pred_full.ratio_study.prd:8.4f}\n")
+		str += (f"---->PRB    : {self.pred_full.ratio_study.prb:8.4f}\n")
+		str += (f"\n")
 		if self.type == "mra":
-			return str(self.model.summary())
+			# print the coefficients?
+			pass
 		elif self.type == "xgboost":
-			return "XGBoost ModelResults"
-
+			# print the feature importance?
+			pass
+		return str
 
 def run_mra(
 		df: pd.DataFrame,
@@ -153,7 +164,6 @@ def run_mra(
 
 		# gather the predictions
 		results = ModelResults("mra", ind_var, dep_vars, fitted_model, ds.y_test, y_pred_test, ds.y, y_pred_full)
-
 		return results
 
 
@@ -176,5 +186,4 @@ def run_xgboost(
 	y_pred_full = xgboost_model.predict(ds.X)
 
 	results = ModelResults("xgboost", ind_var, dep_vars, xgboost_model, ds.y_test, y_pred_test, ds.y, y_pred_full)
-
 	return results

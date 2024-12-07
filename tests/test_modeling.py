@@ -26,3 +26,5 @@ def test_models():
 			results = run_xgboost(df, ind_var, dep_vars)
 		if results is not None:
 			display(results.summary())
+
+	return True
