@@ -10,6 +10,7 @@ def generate_basic(
 ):
 	data = {
 		"key": [],
+		"neighborhood": [],
 		"bldg_area_finished_sqft": [],
 		"land_area_sqft": [],
 		"bldg_quality_num": [],
@@ -87,6 +88,7 @@ def generate_basic(
 				sale_price = total_value * (1 + np.random.uniform(-noise_sales, noise_sales))
 
 			data["key"].append(str(key))
+			data["neighborhood"].append("")
 			data["bldg_area_finished_sqft"].append(bldg_area_finished_sqft)
 			data["land_area_sqft"].append(land_area_sqft)
 			data["bldg_quality_num"].append(bldg_quality_num)
@@ -102,4 +104,25 @@ def generate_basic(
 			data["sale_price"].append(sale_price)
 
 	df = pd.DataFrame(data)
+
+	# Derive neighborhood:
+	distance_quantiles = [0.0, 0.25, 0.75, 1.0]
+	distance_bins = [np.quantile(df["distance_from_cbd"], q) for q in distance_quantiles]
+	distance_labels = ["urban", "suburban", "rural"]
+	df["neighborhood"] = pd.cut(
+		df["distance_from_cbd"],
+		bins=distance_bins,
+		labels=distance_labels,
+		include_lowest=True
+	)
+
+	# Derive based on longitude/latitude what (nw,ne,sw,se) quadrant a parcel is in:
+	df["quadrant"] = ""
+	df.loc[df["latitude"].ge(latitude_center), "quadrant"] += "s"
+	df.loc[df["latitude"].lt(latitude_center), "quadrant"] += "n"
+	df.loc[df["longitude"].ge(longitude_center), "quadrant"] += "e"
+	df.loc[df["longitude"].lt(longitude_center), "quadrant"] += "w"
+
+	df["neighborhood"] = df["neighborhood"].astype(str) + "_" + df["quadrant"].astype(str)
+
 	return df

@@ -2,6 +2,12 @@ from IPython.core.display_functions import display
 from openavmkit.modeling import run_mra, run_xgboost, run_lightgbm, run_catboost, run_gwr
 from openavmkit.synthetic_data import generate_basic
 
+
+def test_data():
+	print("")
+	df = generate_basic(100)
+
+
 def test_models():
 	print("")
 	df = generate_basic(100)
