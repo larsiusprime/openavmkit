@@ -1,6 +1,6 @@
 from IPython.core.display_functions import display
 
-from openavmkit.modeling import run_mra, run_xgboost
+from openavmkit.modeling import run_mra, run_xgboost, run_lightgbm
 from openavmkit.synthetic_data import generate_basic
 
 def test_models():
@@ -16,7 +16,7 @@ def test_models():
 		"distance_from_cbd"
 	]
 
-	models = ["mra", "xgboost"]
+	models = ["mra", "xgboost", "lightgbm"]
 
 	results = None
 	for model in models:
@@ -24,6 +24,8 @@ def test_models():
 			results = run_mra(df, ind_var, dep_vars)
 		elif model == "xgboost":
 			results = run_xgboost(df, ind_var, dep_vars)
+		elif model == "lightgbm":
+			results = run_lightgbm(df, ind_var, dep_vars)
 		if results is not None:
 			display(results.summary())
 

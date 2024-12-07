@@ -4,6 +4,7 @@ import numpy as np
 import statsmodels.api as sm
 import pandas as pd
 import xgboost
+import lightgbm as lgb
 from sklearn.metrics import mean_squared_error
 from statsmodels.regression.linear_model import RegressionResults
 from xgboost import XGBRegressor
@@ -138,6 +139,9 @@ class ModelResults:
 		elif self.type == "xgboost":
 			# print the feature importance?
 			pass
+		elif self.type == "lightgbm":
+			# print the feature importance?
+			pass
 		return str
 
 def run_mra(
@@ -186,4 +190,41 @@ def run_xgboost(
 	y_pred_full = xgboost_model.predict(ds.X)
 
 	results = ModelResults("xgboost", ind_var, dep_vars, xgboost_model, ds.y_test, y_pred_test, ds.y, y_pred_full)
+	return results
+
+
+def run_lightgbm(
+		df: pd.DataFrame,
+		ind_var: str,
+		dep_vars: list[str]
+):
+	ds = DataSplit(df, ind_var, dep_vars)
+
+	params = {
+		"boosting_type": "gbdt",
+		"objective": "regression",
+		"metric": {"l2", "l1"},
+		"num_leaves": 31,
+		"learning_rate": 0.05,
+		"feature_fraction": 0.9,
+		"bagging_fraction": 0.8,
+		"bagging_freq": 5,
+		"verbose": 0,
+	}
+
+	lgb_train = lgb.Dataset(ds.X_train, ds.y_train)
+	lgb_test = lgb.Dataset(ds.X_test, ds.y_test, reference=lgb_train)
+
+	gbm = lgb.train(
+		params,
+		lgb_train,
+		num_boost_round=20,
+		valid_sets=lgb_test,
+		callbacks=[lgb.early_stopping(stopping_rounds=5)]
+	)
+
+	y_pred_test = gbm.predict(ds.X_test, num_iteration=gbm.best_iteration)
+	y_pred_full = gbm.predict(ds.X, num_iteration=gbm.best_iteration)
+
+	results = ModelResults("lightgbm", ind_var, dep_vars, gbm, ds.y_test, y_pred_test, ds.y, y_pred_full)
 	return results
