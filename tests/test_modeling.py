@@ -15,7 +15,7 @@ def test_models():
 		"distance_from_cbd"
 	]
 
-	models = ["mra", "xgboost", "lightgbm", "catboost"]#, "gwr"]#, "xgboost", "lightgbm", "catboost"]
+	models = ["mra", "gwr", "xgboost", "lightgbm", "catboost"]
 
 	results = None
 	for model in models:
