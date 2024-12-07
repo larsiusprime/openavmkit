@@ -5,13 +5,16 @@ import statsmodels.api as sm
 import pandas as pd
 import xgboost
 import lightgbm as lgb
+import catboost
+from catboost import CatBoostRegressor
+from lightgbm import Booster
 from sklearn.metrics import mean_squared_error
 from statsmodels.regression.linear_model import RegressionResults
 from xgboost import XGBRegressor
 
 from openavmkit.ratio_study import RatioStudy
 
-PredictionModel = Union[RegressionResults, XGBRegressor]
+PredictionModel = Union[RegressionResults, XGBRegressor, Booster, CatBoostRegressor]
 
 class PredictionResults:
 	ind_var: str
@@ -82,7 +85,6 @@ class DataSplit:
 
 		self.X_test = df_test[dep_vars]
 		self.y_test = df_test[ind_var]
-
 
 class ModelResults:
 	type: str
@@ -227,4 +229,26 @@ def run_lightgbm(
 	y_pred_full = gbm.predict(ds.X, num_iteration=gbm.best_iteration)
 
 	results = ModelResults("lightgbm", ind_var, dep_vars, gbm, ds.y_test, y_pred_test, ds.y, y_pred_full)
+	return results
+
+
+def run_catboost(
+		df: pd.DataFrame,
+		ind_var: str,
+		dep_vars: list[str]
+):
+	ds = DataSplit(df, ind_var, dep_vars)
+
+	catboost_model = catboost.CatBoostRegressor(
+		iterations=100,
+		depth=4,
+		learning_rate=0.1,
+		loss_function="RMSE"
+	)
+	catboost_model.fit(ds.X_train, ds.y_train)
+
+	y_pred_test = catboost_model.predict(ds.X_test)
+	y_pred_full = catboost_model.predict(ds.X)
+
+	results = ModelResults("catboost", ind_var, dep_vars, catboost_model, ds.y_test, y_pred_test, ds.y, y_pred_full)
 	return results
