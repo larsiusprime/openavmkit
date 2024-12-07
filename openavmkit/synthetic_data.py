@@ -2,7 +2,9 @@ import numpy as np
 import pandas as pd
 
 
-def generate_basic():
+def generate_basic(
+		size: int
+):
 	data = {
 		"key": [],
 		"bldg_area_finished_sqft": [],
@@ -26,8 +28,6 @@ def generate_basic():
 
 	nw_lat = latitude_center - width/2
 	nw_lon = longitude_center - height/2
-
-	size = 100
 
 	base_land_value = 250
 	base_bldg_value = 25
