@@ -1,3 +1,4 @@
+import math
 from typing import Union
 
 import numpy as np
@@ -6,15 +7,19 @@ import pandas as pd
 import xgboost
 import lightgbm as lgb
 import catboost
+from IPython.core.display_functions import display
 from catboost import CatBoostRegressor
 from lightgbm import Booster
+from mgwr import gwr
+from mgwr.gwr import MGWR, GWR
+from mgwr.sel_bw import Sel_BW
 from sklearn.metrics import mean_squared_error
 from statsmodels.regression.linear_model import RegressionResults
 from xgboost import XGBRegressor
 
 from openavmkit.ratio_study import RatioStudy
 
-PredictionModel = Union[RegressionResults, XGBRegressor, Booster, CatBoostRegressor]
+PredictionModel = Union[RegressionResults, XGBRegressor, Booster, CatBoostRegressor, GWR, MGWR]
 
 class PredictionResults:
 	ind_var: str
@@ -59,6 +64,8 @@ class PredictionResults:
 class DataSplit:
 	X: pd.DataFrame
 	y: pd.Series
+	df_train: pd.DataFrame
+	df_test: pd.DataFrame
 	X_train: pd.DataFrame
 	y_train: pd.Series
 	X_test: pd.DataFrame
@@ -76,6 +83,9 @@ class DataSplit:
 
 		df_train = df.sample(frac=test_train_frac).reset_index(drop=True)
 		df_test = df.drop(df_train.index).reset_index(drop=True)
+
+		self.df_train = df_train
+		self.df_test = df_test
 
 		self.X = df[dep_vars]
 		self.y = df[ind_var]
@@ -138,6 +148,9 @@ class ModelResults:
 		if self.type == "mra":
 			# print the coefficients?
 			pass
+		elif self.type == "gwr":
+			# print the coefficients?
+			pass
 		elif self.type == "xgboost":
 			# print the feature importance?
 			pass
@@ -171,6 +184,74 @@ def run_mra(
 		# gather the predictions
 		results = ModelResults("mra", ind_var, dep_vars, fitted_model, ds.y_test, y_pred_test, ds.y, y_pred_full)
 		return results
+
+
+def run_gwr(
+		df: pd.DataFrame,
+		ind_var: str,
+		dep_vars: list[str]
+):
+	ds = DataSplit(df, ind_var, dep_vars)
+
+	u_train = ds.df_train['longitude']
+	v_train = ds.df_train['latitude']
+	coords_train = list(zip(u_train, v_train))
+
+	u_test = ds.df_test['longitude']
+	v_test = ds.df_test['latitude']
+	coords_test = list(zip(u_test, v_test))
+
+	u = df['longitude']
+	v = df['latitude']
+	coords_full = list(zip(u,v))
+
+	y_train = ds.y_train.values.reshape((-1, 1))
+	X_train = ds.X_train.values
+
+	X_test = ds.X_test.values
+	X_full = ds.X.values
+
+	gwr_selector = Sel_BW(coords_train, y_train, X_train)
+	gwr_bw = gwr_selector.search()
+	gwr = GWR(coords_train, y_train, X_train, gwr_bw)
+	gwr_fit = gwr.fit()
+	gwr = gwr_fit.model
+
+	np_coords_test = np.array(coords_test)
+	gwr_result_test = gwr.predict(
+		np_coords_test,
+		X_test
+	)
+	y_pred_test = gwr_result_test.predictions
+
+	# empty np array
+	y_pred_full = np.array([])
+
+	iterations = int(math.ceil(len(coords_full) / len(coords_train)))
+	segment_size = len(coords_train)
+	for i in range(0, iterations):
+		coords_segment = coords_full[i*segment_size: (i+1)*segment_size]
+		X_segment = X_full[i*segment_size: (i+1)*segment_size]
+
+		np_coords_segment = np.array(coords_segment)
+
+		gwr = GWR(coords_train, y_train, X_train, gwr_bw)
+		gwr_fit = gwr.fit()
+		gwr = gwr_fit.model
+		gwr_result_segment = gwr.predict(
+			np_coords_segment,
+			X_segment
+		)
+		if i == 0:
+			y_pred_full = gwr_result_segment.predictions
+		else:
+			y_pred_full = np.concatenate((y_pred_full, gwr_result_segment.predictions))
+
+	y_pred_test = y_pred_test.flatten()
+	y_pred_full = y_pred_full.flatten()
+
+	results = ModelResults("gwr", ind_var, dep_vars, gwr, ds.y_test, y_pred_test, ds.y, y_pred_full)
+	return results
 
 
 def run_xgboost(
