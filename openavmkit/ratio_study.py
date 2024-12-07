@@ -1,6 +1,5 @@
 import numpy as np
 import statsmodels.api as sm
-from IPython.core.display_functions import display
 
 
 def calculate_cod(ratios: np.ndarray) -> float:

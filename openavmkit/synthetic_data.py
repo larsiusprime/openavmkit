@@ -3,7 +3,10 @@ import pandas as pd
 
 
 def generate_basic(
-		size: int
+		size: int,
+		percent_sales: float = 0.1,
+		noise_sales: float = 0.05,
+		seed: int = 1337
 ):
 	data = {
 		"key": [],
@@ -16,6 +19,8 @@ def generate_basic(
 		"bldg_value": [],
 		"total_value": [],
 		"distance_from_cbd": [],
+		"valid_sale": [],
+		"sale_price": [],
 		"latitude": [],
 		"longitude": []
 	}
@@ -34,7 +39,7 @@ def generate_basic(
 	quality_value = 5
 
 	# set a random seed:
-	np.random.seed(1337)
+	np.random.seed(seed)
 
 	for y in range(0, size):
 		for x in range(0, size):
@@ -73,6 +78,14 @@ def generate_basic(
 
 			total_value = land_value + bldg_value
 
+			valid_sale = False
+			sale_price = 0
+
+			# roll for a sale:
+			if np.random.rand() < percent_sales:
+				valid_sale = True
+				sale_price = total_value * (1 + np.random.uniform(-noise_sales, noise_sales))
+
 			data["key"].append(str(key))
 			data["bldg_area_finished_sqft"].append(bldg_area_finished_sqft)
 			data["land_area_sqft"].append(land_area_sqft)
@@ -85,6 +98,8 @@ def generate_basic(
 			data["distance_from_cbd"].append(dist_center)
 			data["latitude"].append(latitude)
 			data["longitude"].append(longitude)
+			data["valid_sale"].append(valid_sale)
+			data["sale_price"].append(sale_price)
 
 	df = pd.DataFrame(data)
 	return df
