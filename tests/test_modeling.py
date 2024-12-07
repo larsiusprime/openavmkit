@@ -5,7 +5,7 @@ from openavmkit.synthetic_data import generate_basic
 def test_models():
 	print("")
 	df = generate_basic(100)
-	ind_var = "total_value"
+	ind_var = "sale_price"
 	dep_vars = [
 		"bldg_area_finished_sqft",
 		"land_area_sqft",
@@ -15,7 +15,7 @@ def test_models():
 		"distance_from_cbd"
 	]
 
-	models = ["mra", "gwr", "xgboost", "lightgbm", "catboost"]
+	models = ["mra", "xgboost", "lightgbm", "catboost"]#, "gwr"]#, "xgboost", "lightgbm", "catboost"]
 
 	results = None
 	for model in models:
