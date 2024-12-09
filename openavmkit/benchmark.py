@@ -1,7 +1,8 @@
 import pandas as pd
 from IPython.core.display_functions import display
 
-from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, ModelResults
+from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, ModelResults, run_garbage, \
+	run_average, run_naive_sqft
 
 
 def _calc_benchmark(model_results: dict[str, ModelResults]):
@@ -14,6 +15,7 @@ def _calc_benchmark(model_results: dict[str, ModelResults]):
 		"t_predict": [],
 		"t_test": [],
 		"t_full": [],
+		"utility": [],
 		"mse":[],
 		"rmse":[],
 		"r2":[],
@@ -36,6 +38,7 @@ def _calc_benchmark(model_results: dict[str, ModelResults]):
 				subset = "Full set"
 			data["model"].append(key)
 			data["subset"].append(subset)
+			data["utility"].append(results.utility)
 			data["mse"].append(pred_results.mse)
 			data["rmse"].append(pred_results.rmse)
 			data["r2"].append(pred_results.r2)
@@ -86,6 +89,7 @@ def format_benchmark_df(df: pd.DataFrame):
 		return '{}{}'.format('{:f}'.format(num).rstrip('0').rstrip('.'), ['', 'K', 'M', 'B', 'T'][magnitude])
 
 	formats = {
+		"utility": human_format,
 		"mse": human_format,
 		"rmse": human_format,
 		"r2": "{:.2f}",
@@ -119,6 +123,8 @@ def run_benchmark(
 		ind_var: str,
 		dep_vars: list[str],
 		models: list[str] | None,
+		save_params: bool = False,
+		use_saved_params: bool = False,
 		verbose: bool = False
 ):
 	if "he_id" not in df:
@@ -129,17 +135,30 @@ def run_benchmark(
 
 	results = None
 	model_results = {}
+
+	outpath = "out/benchmark"
+
 	for model in models:
-		if model == "mra":
+		if model == "garbage":
+			results = run_garbage(df, ind_var, dep_vars, normal=False, verbose=verbose)
+		elif model == "garbage_normal":
+			results = run_garbage(df, ind_var, dep_vars, normal=True, verbose=verbose)
+		elif model == "mean":
+			results = run_average(df, ind_var, dep_vars, type="mean", verbose=verbose)
+		elif model == "median":
+			results = run_average(df, ind_var, dep_vars, type="median", verbose=verbose)
+		elif model == "naive_sqft":
+			results = run_naive_sqft(df, ind_var, dep_vars, verbose)
+		elif model == "mra":
 			results = run_mra(df, ind_var, dep_vars, verbose)
 		elif model == "gwr":
-			results = run_gwr(df, ind_var, dep_vars, verbose)
+			results = run_gwr(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose)
 		elif model == "xgboost":
-			results = run_xgboost(df, ind_var, dep_vars, verbose)
+			results = run_xgboost(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose)
 		elif model == "lightgbm":
-			results = run_lightgbm(df, ind_var, dep_vars, verbose)
+			results = run_lightgbm(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose)
 		elif model == "catboost":
-			results = run_catboost(df, ind_var, dep_vars, verbose)
+			results = run_catboost(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose)
 		if results is not None:
 			model_results[model] = results
 
