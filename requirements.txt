@@ -6,3 +6,7 @@ statsmodels~=0.14.4
 pandas~=2.2.3
 xgboost~=2.1.2
 scikit-learn~=1.5.2
+lightgbm~=4.5.0
+catboost~=1.2.7
+mgwr~=2.2.1
+optuna~=4.1.0

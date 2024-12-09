@@ -1,4 +1,5 @@
 import math
+import warnings
 from typing import Union
 
 import numpy as np
@@ -18,6 +19,8 @@ from xgboost import XGBRegressor
 
 from openavmkit.ratio_study import RatioStudy
 from openavmkit.stats import quick_median_chd
+from openavmkit.utilities.lightgbm_helpers import tune_lightgbm
+from openavmkit.utilities.timing import TimingData
 
 PredictionModel = Union[RegressionResults, XGBRegressor, Booster, CatBoostRegressor, GWR, MGWR]
 
@@ -79,18 +82,35 @@ class DataSplit:
 			ind_var: str,
 			dep_vars: list[str],
 			test_train_frac: float = 0.8,
-			random_seed: int = 1337
+			random_seed: int = 1337,
+			days_field: str = "sale_age_days"
 	):
+
 		self.df_universe = df
 		self.df_sales = df[df["valid_sale"].eq(1)].reset_index(drop=True)
 
-		# separate df in train & test:
+		# Pre-sort dataframes so that rolling origin cross-validation can assume oldest observations first:
+		if days_field in self.df_universe:
+			self.df_universe.sort_values(by=days_field, ascending=False, inplace=True)
+		else:
+			raise ValueError(f"Field '{days_field}' not found in dataframe.")
+
+		if days_field in self.df_sales:
+			self.df_sales.sort_values(by=days_field, ascending=False, inplace=True)
+		else:
+			raise ValueError(f"Field '{days_field}' not found in dataframe.")
+
+		# separate df into train & test:
 		np.random.seed(random_seed)
 		self.df_train = self.df_sales.sample(frac=test_train_frac)
 		self.df_test = self.df_sales.drop(self.df_train.index)
 
 		self.df_train = self.df_train.reset_index(drop=True)
 		self.df_test = self.df_test.reset_index(drop=True)
+
+		# sort again because sampling shuffles order:
+		self.df_train.sort_values(by=days_field, ascending=False, inplace=True)
+		self.df_test.sort_values(by=days_field, ascending=False, inplace=True)
 
 		self.X_univ = self.df_universe[dep_vars]
 
@@ -112,6 +132,7 @@ class ModelResults:
 	pred_sales: PredictionResults
 	pred_univ: np.ndarray
 	chd: float
+	timing: TimingData
 
 	def __init__(self,
 			df: pd.DataFrame,
@@ -125,7 +146,8 @@ class ModelResults:
 			y_pred_test: np.ndarray,
 			y_sales: pd.Series,
 			y_pred_sales: np.ndarray,
-			y_pred_univ: np.ndarray
+			y_pred_univ: np.ndarray,
+			timing: TimingData
 	):
 		self.type = type
 		self.ind_var = ind_var
@@ -135,6 +157,8 @@ class ModelResults:
 		self.pred_sales = PredictionResults(ind_var, dep_vars, y_sales, y_pred_sales)
 		self.pred_univ = y_pred_univ
 		self.chd = quick_median_chd(df, field_prediction, field_horizontal_equity_id)
+		self.timing = timing
+
 
 	def summary(self):
 		str = ""
@@ -182,25 +206,43 @@ def run_mra(
 		dep_vars: list[str],
 		intercept: bool = True
 ):
+		timing = TimingData()
 		ds = DataSplit(df, ind_var, dep_vars)
 
+		timing.start("total")
+
+		timing.start("setup")
 		if intercept:
 			ds.X_train = sm.add_constant(ds.X_train)
 			ds.X_test = sm.add_constant(ds.X_test)
 			ds.X_sales = sm.add_constant(ds.X_sales)
 			ds.X_univ = sm.add_constant(ds.X_univ)
+		timing.stop("setup")
 
+		timing.start("parameter_search")
+		timing.stop("parameter_search")
+
+		timing.start("train")
 		linear_model = sm.OLS(ds.y_train, ds.X_train)
 		fitted_model = linear_model.fit()
+		timing.stop("train")
 
 		# predict on test set:
+		timing.start("predict_test")
 		y_pred_test = fitted_model.predict(ds.X_test)
+		timing.stop("predict_test")
 
 		# predict on the sales set:
+		timing.start("predict_sales")
 		y_pred_sales = fitted_model.predict(ds.X_sales)
+		timing.stop("predict_sales")
 
 		# predict on the full set:
+		timing.start("predict_full")
 		y_pred_univ = fitted_model.predict(ds.X_univ)
+		timing.stop("predict_full")
+
+		timing.stop("total")
 
 		# gather the predictions
 		df["prediction"] = y_pred_univ
@@ -216,7 +258,8 @@ def run_mra(
 			y_pred_test,
 			ds.y_sales,
 			y_pred_sales,
-			y_pred_univ
+			y_pred_univ,
+			timing
 		)
 		return results
 
@@ -226,8 +269,12 @@ def run_gwr(
 		ind_var: str,
 		dep_vars: list[str]
 ):
+	timing = TimingData()
 	ds = DataSplit(df, ind_var, dep_vars)
 
+	timing.start("total")
+
+	timing.start("setup")
 	u_train = ds.df_train['longitude']
 	v_train = ds.df_train['latitude']
 	coords_train = list(zip(u_train, v_train))
@@ -250,20 +297,29 @@ def run_gwr(
 	X_test = ds.X_test.values
 	X_sales = ds.X_sales.values
 	X_univ = ds.X_univ.values
+	timing.stop("setup")
 
+	timing.start("parameter_search")
 	gwr_selector = Sel_BW(coords_train, y_train, X_train)
 	gwr_bw = gwr_selector.search()
+	timing.stop("parameter_search")
+
+	timing.start("train")
 	gwr = GWR(coords_train, y_train, X_train, gwr_bw)
 	gwr_fit = gwr.fit()
 	gwr = gwr_fit.model
+	timing.stop("train")
 
 	np_coords_test = np.array(coords_test)
+	timing.start("predict_test")
 	gwr_result_test = gwr.predict(
 		np_coords_test,
 		X_test
 	)
-	y_pred_test = gwr_result_test.predictions
+	y_pred_test = gwr_result_test.predictions.flatten()
+	timing.stop("predict_test")
 
+	timing.start("predict_sales")
 	y_pred_sales = _run_gwr_prediction_iterations(
 		coords_sales,
 		coords_train,
@@ -271,8 +327,10 @@ def run_gwr(
 		X_train,
 		gwr_bw,
 		y_train
-	)
+	).flatten()
+	timing.stop("predict_sales")
 
+	timing.start("predict_full")
 	y_pred_univ = _run_gwr_prediction_iterations(
 		coords_univ,
 		coords_train,
@@ -280,11 +338,10 @@ def run_gwr(
 		X_train,
 		gwr_bw,
 		y_train
-	)
+	).flatten()
+	timing.stop("predict_full")
 
-	y_pred_test = y_pred_test.flatten()
-	y_pred_sales = y_pred_sales.flatten()
-	y_pred_univ = y_pred_univ.flatten()
+	timing.stop("total")
 
 	df["prediction"] = y_pred_univ
 	results = ModelResults(
@@ -299,7 +356,8 @@ def run_gwr(
 		y_pred_test,
 		ds.y_sales,
 		y_pred_sales,
-		y_pred_univ
+		y_pred_univ,
+		timing
 	)
 	return results
 
@@ -309,19 +367,40 @@ def run_xgboost(
 		ind_var: str,
 		dep_vars: list[str]
 ):
+	timing = TimingData()
 	ds = DataSplit(df, ind_var, dep_vars)
 
+	timing.start("total")
+
+	timing.start("setup")
+	timing.stop("setup")
+
+	timing.start("parameter_search")
 	xgboost_model = xgboost.XGBRegressor(
 		n_estimators=100,
 		max_depth=4,
 		learning_rate=0.1,
 		random_state=42
 	)
-	xgboost_model.fit(ds.X_train, ds.y_train)
+	timing.stop("parameter_search")
 
+	timing.start("train")
+	xgboost_model.fit(ds.X_train, ds.y_train)
+	timing.stop("train")
+
+	timing.start("predict_test")
 	y_pred_test = xgboost_model.predict(ds.X_test)
+	timing.stop("predict_test")
+
+	timing.start("predict_sales")
 	y_pred_sales = xgboost_model.predict(ds.X_sales)
+	timing.stop("predict_sales")
+
+	timing.start("predict_full")
 	y_pred_univ = xgboost_model.predict(ds.X_univ)
+	timing.stop("predict_full")
+
+	timing.stop("total")
 
 	df["prediction"] = y_pred_univ
 	results = ModelResults(
@@ -336,7 +415,8 @@ def run_xgboost(
 		y_pred_test,
 		ds.y_sales,
 		y_pred_sales,
-		y_pred_univ
+		y_pred_univ,
+		timing
 	)
 	return results
 
@@ -346,34 +426,49 @@ def run_lightgbm(
 		ind_var: str,
 		dep_vars: list[str]
 ):
+	timing = TimingData()
 	ds = DataSplit(df, ind_var, dep_vars)
 
-	params = {
-		"boosting_type": "gbdt",
-		"objective": "regression",
-		"metric": {"l2", "l1"},
-		"num_leaves": 31,
-		"learning_rate": 0.05,
-		"feature_fraction": 0.9,
-		"bagging_fraction": 0.8,
-		"bagging_freq": 5,
-		"verbose": 0,
-	}
+	timing.start("total")
 
+	timing.start("setup")
+	timing.stop("setup")
+
+	timing.start("parameter_search")
+	params, _ = tune_lightgbm(ds.X_train, ds.y_train)
+	timing.stop("parameter_search")
+
+	timing.start("train")
 	lgb_train = lgb.Dataset(ds.X_train, ds.y_train)
 	lgb_test = lgb.Dataset(ds.X_test, ds.y_test, reference=lgb_train)
 
+	warnings.filterwarnings("ignore", category=UserWarning)
+	params["verbosity"] = -1
 	gbm = lgb.train(
 		params,
 		lgb_train,
-		num_boost_round=20,
+		num_boost_round=1000,
 		valid_sets=lgb_test,
-		callbacks=[lgb.early_stopping(stopping_rounds=5)]
+		callbacks=[
+			lgb.early_stopping(stopping_rounds=5, verbose=False),
+			lgb.log_evaluation(period=0)
+		]
 	)
+	timing.stop("train")
 
+	timing.start("predict_test")
 	y_pred_test = gbm.predict(ds.X_test, num_iteration=gbm.best_iteration)
+	timing.stop("predict_test")
+
+	timing.start("predict_sales")
 	y_pred_sales = gbm.predict(ds.X_sales, num_iteration=gbm.best_iteration)
+	timing.stop("predict_sales")
+
+	timing.start("predict_full")
 	y_pred_univ = gbm.predict(ds.X_univ, num_iterations=gbm.best_iteration)
+	timing.stop("predict_full")
+
+	timing.stop("total")
 
 	df["prediction"] = y_pred_univ
 	results = ModelResults(
@@ -388,7 +483,8 @@ def run_lightgbm(
 		y_pred_test,
 		ds.y_sales,
 		y_pred_sales,
-		y_pred_univ
+		y_pred_univ,
+		timing
 	)
 	return results
 
@@ -398,20 +494,41 @@ def run_catboost(
 		ind_var: str,
 		dep_vars: list[str]
 ):
+	timing = TimingData()
 	df = df_in.copy()
 	ds = DataSplit(df, ind_var, dep_vars)
 
+	timing.start("total")
+
+	timing.start("setup")
+	timing.stop("setup")
+
+	timing.start("parameter_search")
 	catboost_model = catboost.CatBoostRegressor(
 		iterations=100,
 		depth=4,
 		learning_rate=0.1,
 		loss_function="RMSE"
 	)
-	catboost_model.fit(ds.X_train, ds.y_train)
+	timing.stop("parameter_search")
 
+	timing.start("train")
+	catboost_model.fit(ds.X_train, ds.y_train)
+	timing.stop("train")
+
+	timing.start("predict_test")
 	y_pred_test = catboost_model.predict(ds.X_test)
+	timing.stop("predict_test")
+
+	timing.start("predict_sales")
 	y_pred_sales = catboost_model.predict(ds.X_sales)
+	timing.stop("predict_sales")
+
+	timing.start("predict_full")
 	y_pred_univ = catboost_model.predict(ds.X_univ)
+	timing.stop("predict_full")
+
+	timing.stop("total")
 
 	df["prediction"] = y_pred_univ
 	results = ModelResults(
@@ -426,7 +543,8 @@ def run_catboost(
 		y_pred_test,
 		ds.y_sales,
 		y_pred_sales,
-		y_pred_univ
+		y_pred_univ,
+		timing
 	)
 
 	return results
