@@ -20,7 +20,7 @@ def test_models():
 
 	# Assign equity cluster ID's
 	df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [])
-	models = ["mra", "lightgbm", "gwr"]#, "xgboost"]#"mra", "gwr", "xgboost", "lightgbm", "catboost"]
+	models = ["mra", "gwr", "xgboost", "lightgbm", "catboost"]
 	df_test, df_full = run_benchmark(df, ind_var, dep_vars, models, verbose=True)
 
 	print("Test set:")
