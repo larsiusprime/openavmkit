@@ -1,5 +1,7 @@
+import json
 import logging
 import math
+import os
 import warnings
 from typing import Union
 
@@ -23,7 +25,7 @@ from openavmkit.stats import quick_median_chd
 from openavmkit.utilities.tuning import tune_lightgbm, tune_xgboost, tune_catboost
 from openavmkit.utilities.timing import TimingData
 
-PredictionModel = Union[RegressionResults, XGBRegressor, Booster, CatBoostRegressor, GWR, MGWR]
+PredictionModel = Union[RegressionResults, XGBRegressor, Booster, CatBoostRegressor, GWR, MGWR, None]
 
 class PredictionResults:
 	ind_var: str
@@ -63,7 +65,7 @@ class PredictionResults:
 		k = len(dep_vars)
 
 		self.adj_r2 = 1 - ((1 - self.r2)*(n-1)/(n-k-1))
-		self.ratio_study = RatioStudy(y_pred, y)
+		self.ratio_study = RatioStudy(y_pred, y.to_numpy())
 
 class DataSplit:
 	df_sales: pd.DataFrame
@@ -133,6 +135,7 @@ class ModelResults:
 	pred_sales: PredictionResults
 	pred_univ: np.ndarray
 	chd: float
+	utility: float
 	timing: TimingData
 
 	def __init__(self,
@@ -158,6 +161,7 @@ class ModelResults:
 		self.pred_sales = PredictionResults(ind_var, dep_vars, y_sales, y_pred_sales)
 		self.pred_univ = y_pred_univ
 		self.chd = quick_median_chd(df, field_prediction, field_horizontal_equity_id)
+		self.utility = model_utility_score(self)
 		self.timing = timing
 
 
@@ -200,6 +204,39 @@ class ModelResults:
 			# print the feature importance?
 			pass
 		return str
+
+
+def model_utility_score(
+		model_results: ModelResults
+):
+	# We want to minimize:
+	# 1. error
+	# 2. the difference between the median ratio and 1
+	# 3. the COD
+	# 4. the CHD
+
+	weight_dist_ratio = 1000.00
+	weight_cod = 1.00
+	weight_chd = 1.00
+	weight_sales_chase = 0.25
+
+	cod = model_results.pred_test.ratio_study.cod
+	chd = model_results.chd
+
+	# Is the median ratio over 1.05? Penalize over-estimates; err on the side of under-estimates
+	ratio_over_penalty = 2 if model_results.pred_test.ratio_study.median_ratio < 1.05 else 1
+
+	# calculate base score
+	dist_ratio_score = abs(1.0 - model_results.pred_test.ratio_study.median_ratio) * weight_dist_ratio * ratio_over_penalty
+	cod_score = cod * weight_cod
+	chd_score = chd * weight_chd
+
+	# penalize very low COD's with bad horizontal equity
+	sales_chase_score = ((1.0/cod) * chd) * weight_sales_chase
+
+	final_score = dist_ratio_score + cod_score + chd_score + sales_chase_score
+	return final_score
+
 
 def run_mra(
 		df: pd.DataFrame,
@@ -270,8 +307,22 @@ def run_gwr(
 		df: pd.DataFrame,
 		ind_var: str,
 		dep_vars: list[str],
+		outpath: str,
+		save_params: bool = False,
+		use_saved_params: bool = False,
 		verbose: bool = False
 ):
+	"""
+	Runs a GWR model
+	:param df_in: The input dataframe
+	:param ind_var: The independent variable
+	:param dep_vars: The dependent variables
+	:param outpath: The output path
+	:param save_params: Whether to save the parameters
+	:param use_saved_params: Whether to use saved parameters
+	:param verbose: Whether to print verbose output
+	:return: The model results
+	"""
 	timing = TimingData()
 	ds = DataSplit(df, ind_var, dep_vars)
 
@@ -303,12 +354,27 @@ def run_gwr(
 	timing.stop("setup")
 
 	timing.start("parameter_search")
+	gwr_bw = -1.0
+
 	if verbose:
 		print("Tuning GWR: searching for optimal bandwidth...")
-	gwr_selector = Sel_BW(coords_train, y_train, X_train)
-	gwr_bw = gwr_selector.search()
-	if verbose:
-		print(f"--> optimal bandwidth = {gwr_bw:0.2f}")
+
+	if use_saved_params:
+		if os.path.exists(f"{outpath}/gwr_bw.json"):
+			gwr_bw = json.load(open(f"{outpath}/gwr_bw.json", "r"))
+			if verbose:
+				print(f"--> using saved bandwidth: {gwr_bw:0.2f}")
+
+	if gwr_bw < 0:
+		gwr_selector = Sel_BW(coords_train, y_train, X_train)
+		gwr_bw = gwr_selector.search()
+
+		if save_params:
+			os.makedirs(outpath, exist_ok=True)
+			json.dump(gwr_bw, open(f"{outpath}/gwr_bw.json", "w"))
+		if verbose:
+			print(f"--> optimal bandwidth = {gwr_bw:0.2f}")
+
 	timing.stop("parameter_search")
 
 	timing.start("train")
@@ -379,8 +445,22 @@ def run_xgboost(
 		df: pd.DataFrame,
 		ind_var: str,
 		dep_vars: list[str],
+		outpath: str,
+		save_params: bool = False,
+		use_saved_params: bool = False,
 		verbose: bool = False
 ):
+	"""
+	Runs an XGBoost model
+	:param df_in: The input dataframe
+	:param ind_var: The independent variable
+	:param dep_vars: The dependent variables
+	:param outpath: The output path
+	:param save_params: Whether to save the parameters
+	:param use_saved_params: Whether to use saved parameters
+	:param verbose: Whether to print verbose output
+	:return: The model results
+	"""
 	timing = TimingData()
 	ds = DataSplit(df, ind_var, dep_vars)
 
@@ -390,7 +470,7 @@ def run_xgboost(
 	timing.stop("setup")
 
 	timing.start("parameter_search")
-	params = tune_xgboost(ds.X_train, ds.y_train, verbose=verbose)
+	params = _get_params("XGBoost", "xgboost", ds, tune_xgboost, outpath, save_params, use_saved_params, verbose)
 	timing.stop("parameter_search")
 
 	timing.start("train")
@@ -435,8 +515,22 @@ def run_lightgbm(
 		df: pd.DataFrame,
 		ind_var: str,
 		dep_vars: list[str],
+		outpath: str,
+		save_params: bool = False,
+		use_saved_params: bool = False,
 		verbose: bool = False
 ):
+	"""
+	Runs a LightGBM model
+	:param df_in: The input dataframe
+	:param ind_var: The independent variable
+	:param dep_vars: The dependent variables
+	:param outpath: The output path
+	:param save_params: Whether to save the parameters
+	:param use_saved_params: Whether to use saved parameters
+	:param verbose: Whether to print verbose output
+	:return: The model results
+	"""
 	timing = TimingData()
 	ds = DataSplit(df, ind_var, dep_vars)
 
@@ -446,7 +540,7 @@ def run_lightgbm(
 	timing.stop("setup")
 
 	timing.start("parameter_search")
-	params = tune_lightgbm(ds.X_train, ds.y_train, verbose=verbose)
+	params = _get_params("LightGBM", "lightgbm", ds, tune_lightgbm, outpath, save_params, use_saved_params, verbose)
 	timing.stop("parameter_search")
 
 	timing.start("train")
@@ -503,8 +597,22 @@ def run_catboost(
 		df_in: pd.DataFrame,
 		ind_var: str,
 		dep_vars: list[str],
+		outpath: str,
+		save_params: bool = False,
+		use_saved_params: bool = False,
 		verbose: bool = False
 ):
+	"""
+	Runs a CatBoost model
+	:param df_in: The input dataframe
+	:param ind_var: The independent variable
+	:param dep_vars: The dependent variables
+	:param outpath: The output path
+	:param save_params: Whether to save the parameters
+	:param use_saved_params: Whether to use saved parameters
+	:param verbose: Whether to print verbose output
+	:return: The model results
+	"""
 	timing = TimingData()
 	df = df_in.copy()
 	ds = DataSplit(df, ind_var, dep_vars)
@@ -512,13 +620,12 @@ def run_catboost(
 	timing.start("total")
 
 	timing.start("parameter_search")
-	params = tune_catboost(ds.X_train, ds.y_train, verbose=verbose)
+	params = _get_params("CatBoost", "catboost", ds, tune_catboost, outpath, save_params, use_saved_params, verbose)
 	timing.stop("parameter_search")
 
 	timing.start("setup")
 
-	print(params)
-
+	params["verbose"] = False
 	catboost_model = catboost.CatBoostRegressor(**params)
 	timing.stop("setup")
 
@@ -549,6 +656,272 @@ def run_catboost(
 		ind_var,
 		dep_vars,
 		catboost_model,
+		ds.y_test,
+		y_pred_test,
+		ds.y_sales,
+		y_pred_sales,
+		y_pred_univ,
+		timing
+	)
+
+	return results
+
+
+def run_garbage(
+		df_in: pd.DataFrame,
+		ind_var: str,
+		dep_vars: list[str],
+		normal: bool = False,
+		verbose: bool = False
+):
+	"""
+	Runs a garbage model that simply predicts random values between the min and max of the training set.
+	:param df_in: The input dataframe
+	:param ind_var: The independent variable
+	:param dep_vars: The dependent variables
+	:param normal: Whether to use a normal or uniform distribution when randomly picking
+	:param verbose: Whether to print verbose output
+	:return: The model results
+	"""
+	timing = TimingData()
+	df = df_in.copy()
+	ds = DataSplit(df, ind_var, dep_vars)
+
+	timing.start("total")
+
+	timing.start("parameter_search")
+	timing.stop("parameter_search")
+
+	timing.start("setup")
+	timing.stop("setup")
+
+	timing.start("train")
+	min_value = ds.y_train.min()
+	max_value = ds.y_train.max()
+	timing.stop("train")
+
+	timing.start("predict_test")
+	if normal:
+		y_pred_test = np.random.normal(loc=ds.y_train.mean(), scale=ds.y_train.std(), size=len(ds.X_test))
+	else:
+		y_pred_test = np.random.uniform(min_value, max_value, len(ds.X_test))
+	timing.stop("predict_test")
+
+	timing.start("predict_sales")
+	if normal:
+		y_pred_sales = np.random.normal(loc=ds.y_train.mean(), scale=ds.y_train.std(), size=len(ds.X_sales))
+	else:
+		y_pred_sales = np.random.uniform(min_value, max_value, len(ds.X_sales))
+	timing.stop("predict_sales")
+
+	timing.start("predict_full")
+	if normal:
+		y_pred_univ = np.random.normal(loc=ds.y_train.mean(), scale=ds.y_train.std(), size=len(ds.X_univ))
+	else:
+		y_pred_univ = np.random.uniform(min_value, max_value, len(ds.X_univ))
+	timing.stop("predict_full")
+
+	timing.stop("total")
+
+	name = "garbage"
+	if normal:
+		name = "garbage_normal"
+
+	df["prediction"] = y_pred_univ
+	results = ModelResults(
+		df,
+		"prediction",
+		"he_id",
+		name,
+		ind_var,
+		dep_vars,
+		None,
+		ds.y_test,
+		y_pred_test,
+		ds.y_sales,
+		y_pred_sales,
+		y_pred_univ,
+		timing
+	)
+
+	return results
+
+
+def run_average(
+		df_in: pd.DataFrame,
+		ind_var: str,
+		dep_vars: list[str],
+		type: str = "mean",
+		verbose: bool = False
+):
+	"""
+	Runs a garbage model that simply predicts the average of the training set for everything
+	:param df_in: The input dataframe
+	:param ind_var: The independent variable
+	:param dep_vars: The dependent variables
+	:param type: The type of average to use ("mean" or "median")
+	:param verbose: Whether to print verbose output
+	:return: The model results
+	"""
+	timing = TimingData()
+	df = df_in.copy()
+	ds = DataSplit(df, ind_var, dep_vars)
+
+	timing.start("total")
+
+	timing.start("parameter_search")
+	timing.stop("parameter_search")
+
+	timing.start("setup")
+	timing.stop("setup")
+
+	timing.start("train")
+	min_value = ds.y_train.min()
+	max_value = ds.y_train.max()
+	timing.stop("train")
+
+	timing.start("predict_test")
+	if type == "median":
+		# get a series of equal length to ds.X_test filled with the mean of the training set
+		y_pred_test = np.full(len(ds.X_test), ds.y_train.median())
+	else:
+		y_pred_test = np.full(len(ds.X_test), ds.y_train.mean())
+	timing.stop("predict_test")
+
+	timing.start("predict_sales")
+	if type == "median":
+		y_pred_sales = np.full(len(ds.X_sales), ds.y_train.median())
+	else:
+		y_pred_sales = np.full(len(ds.X_sales), ds.y_train.mean())
+	timing.stop("predict_sales")
+
+	timing.start("predict_full")
+	if type == "median":
+		y_pred_univ = np.full(len(ds.X_univ), ds.y_train.median())
+	else:
+		y_pred_univ = np.full(len(ds.X_univ), ds.y_train.mean())
+	timing.stop("predict_full")
+
+	timing.stop("total")
+
+	name = "mean"
+	if type == "median":
+		name = "median"
+
+	df["prediction"] = y_pred_univ
+	results = ModelResults(
+		df,
+		"prediction",
+		"he_id",
+		name,
+		ind_var,
+		dep_vars,
+		None,
+		ds.y_test,
+		y_pred_test,
+		ds.y_sales,
+		y_pred_sales,
+		y_pred_univ,
+		timing
+	)
+
+	return results
+
+
+def run_naive_sqft(
+		df_in: pd.DataFrame,
+		ind_var: str,
+		dep_vars: list[str],
+		verbose: bool = False
+):
+	"""
+	Runs a garbage model that simply predicts the median $/sqft of the training set for everything
+	:param df_in: The input dataframe
+	:param ind_var: The independent variable
+	:param dep_vars: The dependent variables
+	:param type: The type of average to use ("mean" or "median")
+	:param verbose: Whether to print verbose output
+	:return: The model results
+	"""
+	timing = TimingData()
+	df = df_in.copy()
+	ds = DataSplit(df, ind_var, dep_vars)
+
+	timing.start("total")
+
+	timing.start("parameter_search")
+	timing.stop("parameter_search")
+
+	timing.start("setup")
+	timing.stop("setup")
+
+	timing.start("train")
+
+	X_train = ds.X_train
+	# filter out vacant land where bldg_area_finished_sqft is zero:
+	X_train_improved = X_train[X_train["bldg_area_finished_sqft"].gt(0)]
+	X_train_vacant = X_train[X_train["bldg_area_finished_sqft"].eq(0)]
+
+	ind_per_built_sqft = (ds.y_train / X_train_improved["bldg_area_finished_sqft"]).median()
+	ind_per_land_sqft = (ds.y_train / X_train_vacant["land_area_sqft"]).median()
+	if pd.isna(ind_per_built_sqft):
+		ind_per_built_sqft = 0
+	if pd.isna(ind_per_land_sqft):
+		ind_per_land_sqft = 0
+
+	if verbose:
+		print("Tuning Naive Sqft: searching for optimal parameters...")
+		print(f"--> optimal improved $/finished sqft = {ind_per_built_sqft:0.2f}")
+		print(f"--> optimal vacant   $/land     sqft = {ind_per_land_sqft:0.2f}")
+
+	timing.stop("train")
+
+	timing.start("predict_test")
+	X_test = ds.X_test
+	X_test_improved = X_test[X_test["bldg_area_finished_sqft"].gt(0)]
+	X_test_vacant = X_test[X_test["bldg_area_finished_sqft"].eq(0)]
+	X_test["prediction_impr"] = X_test_improved["bldg_area_finished_sqft"] * ind_per_built_sqft
+	X_test["prediction_vacant"] = X_test_vacant["land_area_sqft"] * ind_per_land_sqft
+	X_test["prediction"] = np.where(X_test["bldg_area_finished_sqft"].gt(0), X_test["prediction_impr"], X_test["prediction_vacant"])
+	y_pred_test = X_test["prediction"].to_numpy()
+	X_test.drop(columns=["prediction_impr", "prediction_vacant", "prediction"], inplace=True)
+	timing.stop("predict_test")
+
+	timing.start("predict_sales")
+	X_sales = ds.X_sales
+	X_sales_improved = X_sales[X_sales["bldg_area_finished_sqft"].gt(0)]
+	X_sales_vacant = X_sales[X_sales["bldg_area_finished_sqft"].eq(0)]
+	X_sales["prediction_impr"] = X_sales_improved["bldg_area_finished_sqft"] * ind_per_built_sqft
+	X_sales["prediction_vacant"] = X_sales_vacant["land_area_sqft"] * ind_per_land_sqft
+	X_sales["prediction"] = np.where(X_sales["bldg_area_finished_sqft"].gt(0), X_sales["prediction_impr"], X_sales["prediction_vacant"])
+	y_pred_sales = X_sales["prediction"].to_numpy()
+	X_sales.drop(columns=["prediction_impr", "prediction_vacant", "prediction"], inplace=True)
+	timing.stop("predict_sales")
+
+	timing.start("predict_full")
+	X_univ = ds.X_univ
+	X_univ_improved = X_univ[X_univ["bldg_area_finished_sqft"].gt(0)]
+	X_univ_vacant = X_univ[X_univ["bldg_area_finished_sqft"].eq(0)]
+	X_univ["prediction_impr"] = X_univ_improved["bldg_area_finished_sqft"] * ind_per_built_sqft
+	X_univ["prediction_vacant"] = X_univ_vacant["land_area_sqft"] * ind_per_land_sqft
+	X_univ["prediction"] = np.where(X_univ["bldg_area_finished_sqft"].gt(0), X_univ["prediction_impr"], X_univ["prediction_vacant"])
+	y_pred_univ = X_univ["prediction"].to_numpy()
+	X_univ.drop(columns=["prediction_impr", "prediction_vacant", "prediction"], inplace=True)
+	timing.stop("predict_full")
+
+	timing.stop("total")
+
+	name = "naive_sqft"
+
+	df["prediction"] = y_pred_univ
+	results = ModelResults(
+		df,
+		"prediction",
+		"he_id",
+		name,
+		ind_var,
+		dep_vars,
+		None,
 		ds.y_test,
 		y_pred_test,
 		ds.y_sales,
@@ -603,3 +976,25 @@ def _run_gwr_prediction_iterations(
 		else:
 			y_pred = np.concatenate((y_pred, gwr_result_segment.predictions))
 	return y_pred
+
+
+
+
+def _get_params(name:str, slug:str, ds:DataSplit, tune_func, outpath:str, save_params:bool, use_saved_params:bool, verbose:bool):
+	if verbose:
+		print(f"Tuning {name}: searching for optimal parameters...")
+
+	params = None
+	if use_saved_params:
+		if os.path.exists(f"{outpath}/{slug}_params.json"):
+			params = json.load(open(f"{outpath}/{slug}_params.json", "r"))
+			if verbose:
+				print(f"--> using saved parameters: {params}")
+	if params is None:
+		params = tune_func(ds.X_train, ds.y_train, verbose=verbose)
+		if verbose:
+			print(f"--> optimal parameters = {params}")
+		if save_params:
+			os.makedirs(outpath, exist_ok=True)
+			json.dump(params, open(f"{outpath}/{slug}_params.json", "w"))
+	return params

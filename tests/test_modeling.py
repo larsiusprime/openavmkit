@@ -7,7 +7,7 @@ from openavmkit.synthetic_data import generate_basic
 
 def test_models():
 	print("")
-	df = generate_basic(50)
+	df = generate_basic(100)
 	ind_var = "sale_price"
 	dep_vars = [
 		"bldg_area_finished_sqft",
@@ -20,8 +20,8 @@ def test_models():
 
 	# Assign equity cluster ID's
 	df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [])
-	models = ["mra", "gwr", "xgboost", "lightgbm", "catboost"]
-	df_test, df_full = run_benchmark(df, ind_var, dep_vars, models, verbose=True)
+	models = ["garbage", "garbage_normal", "mean", "median", "naive_sqft", "mra", "gwr", "lightgbm", "catboost", "xgboost"]
+	df_test, df_full = run_benchmark(df, ind_var, dep_vars, models, verbose=True, save_params=True, use_saved_params=True)
 
 	print("Test set:")
 	print(format_benchmark_df(df_test))

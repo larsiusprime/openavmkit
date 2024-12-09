@@ -15,9 +15,6 @@ def tune_xgboost(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False)
     Uses the xgboost.train API for training. Includes logging for progress monitoring.
     """
 
-    if verbose:
-        print(f"Tuning XGboost for {n_trials} trials w/ {n_splits} splits")
-
     def objective(trial):
         """
         Objective function for Optuna to optimize XGBoost hyperparameters.
@@ -70,9 +67,6 @@ def tune_lightgbm(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False
     Returns:
         dict: Best hyperparameters found by Optuna.
     """
-
-    if verbose:
-        print(f"Tuning LightGBM for {n_trials} trials w/ {n_splits} splits")
 
     def objective(trial):
         """
@@ -128,9 +122,6 @@ def tune_catboost(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False
         dict: Best hyperparameters found by Optuna.
         float: Best MAE score achieved.
     """
-
-    if verbose:
-        print(f"Tuning LightGBM for {n_trials} trials w/ {n_splits} splits")
 
     def objective(trial):
         """

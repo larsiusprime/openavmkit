@@ -4,3 +4,4 @@ __pycache__/
 dist/
 build/
 tests/catboost_info/
+tests/out/
