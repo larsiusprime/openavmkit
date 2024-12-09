@@ -8,11 +8,11 @@ def _calc_benchmark(model_results: dict[str, ModelResults]):
 	data = {
 		"model":[],
 		"subset":[],
-		"t_tot": [],
+		"t_total": [],
 		"t_param": [],
 		"t_train": [],
+		"t_predict": [],
 		"t_test": [],
-		"t_sale": [],
 		"t_full": [],
 		"mse":[],
 		"rmse":[],
@@ -47,11 +47,11 @@ def _calc_benchmark(model_results: dict[str, ModelResults]):
 
 			tim = results.timing.results
 
-			data["t_tot"].append(tim["total"])
+			data["t_total"].append(tim["total"])
 			data["t_param"].append(tim["parameter_search"])
 			data["t_train"].append(tim["train"])
+			data["t_predict"].append(0)
 			data["t_test"].append(tim["predict_test"])
-			data["t_sale"].append(tim["predict_sales"])
 			data["t_full"].append(tim["predict_full"])
 
 			if kind == "full":
@@ -61,7 +61,12 @@ def _calc_benchmark(model_results: dict[str, ModelResults]):
 	df = pd.DataFrame(data)
 
 	df_test = df[df["subset"].eq("Test set")].drop(columns=["subset"])
+	df_test["t_predict"] = df["t_test"]
+	df_test = df_test.drop(columns=["t_test", "t_full"])
+
 	df_full = df[df["subset"].eq("Full set")].drop(columns=["subset"])
+	df_full["t_predict"] = df["t_full"]
+	df_full = df_full.drop(columns=["t_test", "t_full"])
 
 	# set index to the model column:
 	df_test.set_index("model", inplace=True)
@@ -90,12 +95,10 @@ def format_benchmark_df(df: pd.DataFrame):
 		"prd": "{:.2f}",
 		"prb": "{:.2f}",
 		"chd": "{:.2f}",
-		"t_tot": human_format,
+		"t_total": human_format,
 		"t_param": human_format,
 		"t_train": human_format,
-		"t_test": human_format,
-		"t_sale": human_format,
-		"t_full": human_format
+		"t_predict": human_format
 	}
 
 	for col in df.columns:
@@ -115,7 +118,8 @@ def run_benchmark(
 		df: pd.DataFrame,
 		ind_var: str,
 		dep_vars: list[str],
-		models: list[str] | None
+		models: list[str] | None,
+		verbose: bool = False
 ):
 	if "he_id" not in df:
 		raise ValueError("Could not find equity cluster ID's in the dataframe (he_id)")
@@ -127,15 +131,15 @@ def run_benchmark(
 	model_results = {}
 	for model in models:
 		if model == "mra":
-			results = run_mra(df, ind_var, dep_vars)
+			results = run_mra(df, ind_var, dep_vars, verbose)
 		elif model == "gwr":
-			results = run_gwr(df, ind_var, dep_vars)
+			results = run_gwr(df, ind_var, dep_vars, verbose)
 		elif model == "xgboost":
-			results = run_xgboost(df, ind_var, dep_vars)
+			results = run_xgboost(df, ind_var, dep_vars, verbose)
 		elif model == "lightgbm":
-			results = run_lightgbm(df, ind_var, dep_vars)
+			results = run_lightgbm(df, ind_var, dep_vars, verbose)
 		elif model == "catboost":
-			results = run_catboost(df, ind_var, dep_vars)
+			results = run_catboost(df, ind_var, dep_vars, verbose)
 		if results is not None:
 			model_results[model] = results
 
