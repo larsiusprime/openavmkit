@@ -23,7 +23,8 @@ def generate_basic(
 		"valid_sale": [],
 		"sale_price": [],
 		"latitude": [],
-		"longitude": []
+		"longitude": [],
+		"sale_age_days": []
 	}
 
 	latitude_center = 29.760762
@@ -81,11 +82,13 @@ def generate_basic(
 
 			valid_sale = False
 			sale_price = 0
+			sale_age_days = 0
 
 			# roll for a sale:
 			if np.random.rand() < percent_sales:
 				valid_sale = True
 				sale_price = total_value * (1 + np.random.uniform(-noise_sales, noise_sales))
+				sale_age_days = np.random.randint(0, 365)
 
 			data["key"].append(str(key))
 			data["neighborhood"].append("")
@@ -102,6 +105,7 @@ def generate_basic(
 			data["longitude"].append(longitude)
 			data["valid_sale"].append(valid_sale)
 			data["sale_price"].append(sale_price)
+			data["sale_age_days"].append(sale_age_days)
 
 	df = pd.DataFrame(data)
 
