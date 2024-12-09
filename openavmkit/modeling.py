@@ -1,3 +1,4 @@
+import logging
 import math
 import warnings
 from typing import Union
@@ -19,7 +20,7 @@ from xgboost import XGBRegressor
 
 from openavmkit.ratio_study import RatioStudy
 from openavmkit.stats import quick_median_chd
-from openavmkit.utilities.lightgbm_helpers import tune_lightgbm
+from openavmkit.utilities.tuning import tune_lightgbm, tune_xgboost
 from openavmkit.utilities.timing import TimingData
 
 PredictionModel = Union[RegressionResults, XGBRegressor, Booster, CatBoostRegressor, GWR, MGWR]
@@ -204,7 +205,8 @@ def run_mra(
 		df: pd.DataFrame,
 		ind_var: str,
 		dep_vars: list[str],
-		intercept: bool = True
+		intercept: bool = True,
+		verbose: bool = False
 ):
 		timing = TimingData()
 		ds = DataSplit(df, ind_var, dep_vars)
@@ -267,7 +269,8 @@ def run_mra(
 def run_gwr(
 		df: pd.DataFrame,
 		ind_var: str,
-		dep_vars: list[str]
+		dep_vars: list[str],
+		verbose: bool = False
 ):
 	timing = TimingData()
 	ds = DataSplit(df, ind_var, dep_vars)
@@ -300,8 +303,12 @@ def run_gwr(
 	timing.stop("setup")
 
 	timing.start("parameter_search")
+	if verbose:
+		print("Tuning GWR: searching for optimal bandwidth...")
 	gwr_selector = Sel_BW(coords_train, y_train, X_train)
 	gwr_bw = gwr_selector.search()
+	if verbose:
+		print(f"--> optimal bandwidth = {gwr_bw:0.2f}")
 	timing.stop("parameter_search")
 
 	timing.start("train")
@@ -320,24 +327,30 @@ def run_gwr(
 	timing.stop("predict_test")
 
 	timing.start("predict_sales")
+	if verbose:
+		print("GWR: predicting sales set...")
 	y_pred_sales = _run_gwr_prediction_iterations(
 		coords_sales,
 		coords_train,
 		X_sales,
 		X_train,
 		gwr_bw,
-		y_train
+		y_train,
+		verbose=verbose
 	).flatten()
 	timing.stop("predict_sales")
 
 	timing.start("predict_full")
+	if verbose:
+		print("GWR: predicting full set...")
 	y_pred_univ = _run_gwr_prediction_iterations(
 		coords_univ,
 		coords_train,
 		X_univ,
 		X_train,
 		gwr_bw,
-		y_train
+		y_train,
+		verbose=verbose
 	).flatten()
 	timing.stop("predict_full")
 
@@ -365,7 +378,8 @@ def run_gwr(
 def run_xgboost(
 		df: pd.DataFrame,
 		ind_var: str,
-		dep_vars: list[str]
+		dep_vars: list[str],
+		verbose: bool = False
 ):
 	timing = TimingData()
 	ds = DataSplit(df, ind_var, dep_vars)
@@ -376,15 +390,25 @@ def run_xgboost(
 	timing.stop("setup")
 
 	timing.start("parameter_search")
-	xgboost_model = xgboost.XGBRegressor(
-		n_estimators=100,
-		max_depth=4,
-		learning_rate=0.1,
-		random_state=42
-	)
+	params = tune_xgboost(ds.X_train, ds.y_train, verbose=verbose)
 	timing.stop("parameter_search")
 
 	timing.start("train")
+	xgboost_model = xgboost.XGBRegressor(
+		n_estimators = params["num_boost_round"],
+		learning_rate = params["learning_rate"],
+		max_depth = params["max_depth"],
+		min_child_weight = params["min_child_weight"],
+		subsample = params["subsample"],
+		colsample_bytree = params["colsample_bytree"],
+		colsample_bylevel = params["colsample_bylevel"],
+		colsample_bynode = params["colsample_bynode"],
+		gamma = params["gamma"],
+		reg_lambda = params["lambda"],
+		reg_alpha = params["alpha"],
+		max_bin = params["max_bin"],
+		grow_policy = params["grow_policy"]
+	)
 	xgboost_model.fit(ds.X_train, ds.y_train)
 	timing.stop("train")
 
@@ -424,7 +448,8 @@ def run_xgboost(
 def run_lightgbm(
 		df: pd.DataFrame,
 		ind_var: str,
-		dep_vars: list[str]
+		dep_vars: list[str],
+		verbose: bool = False
 ):
 	timing = TimingData()
 	ds = DataSplit(df, ind_var, dep_vars)
@@ -435,14 +460,13 @@ def run_lightgbm(
 	timing.stop("setup")
 
 	timing.start("parameter_search")
-	params, _ = tune_lightgbm(ds.X_train, ds.y_train)
+	params = tune_lightgbm(ds.X_train, ds.y_train, verbose=verbose)
 	timing.stop("parameter_search")
 
 	timing.start("train")
 	lgb_train = lgb.Dataset(ds.X_train, ds.y_train)
 	lgb_test = lgb.Dataset(ds.X_test, ds.y_test, reference=lgb_train)
 
-	warnings.filterwarnings("ignore", category=UserWarning)
 	params["verbosity"] = -1
 	gbm = lgb.train(
 		params,
@@ -492,7 +516,8 @@ def run_lightgbm(
 def run_catboost(
 		df_in: pd.DataFrame,
 		ind_var: str,
-		dep_vars: list[str]
+		dep_vars: list[str],
+		verbose: bool = False
 ):
 	timing = TimingData()
 	df = df_in.copy()
@@ -559,7 +584,8 @@ def _run_gwr_prediction_iterations(
 		X,
 		X_train,
 		gwr_bw,
-		y_train
+		y_train,
+		verbose:bool = False
 ):
 	y_pred = np.array([])
 	iterations = int(math.ceil(len(coords) / len(coords_train)))
@@ -571,6 +597,16 @@ def _run_gwr_prediction_iterations(
 		np_coords_segment = np.array(coords_segment)
 
 		gwr = GWR(coords_train, y_train, X_train, gwr_bw)
+
+		# TODO: you have to reconstruct the model each time you predict
+		# this is for two reasons:
+		# 1. the model can only predict a batch size as large as the training run
+		# 2. you can't call predict() more than once
+		# this works around those limitations for now, at the cost of inflated prediction time
+
+		if verbose:
+			print(f"--> GWR prediction iteration {i+1}/{iterations}")
+
 		gwr_fit = gwr.fit()
 		gwr = gwr_fit.model
 		gwr_result_segment = gwr.predict(

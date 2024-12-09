@@ -1,18 +1,13 @@
-from IPython.core.display_functions import display
+import logging
 
+from openavmkit.benchmark import run_benchmark, format_benchmark_df
 from openavmkit.horizontal_equity_study import cluster_by_location_and_big_five
-from openavmkit.modeling import run_mra, run_xgboost, run_lightgbm, run_catboost, run_gwr
 from openavmkit.synthetic_data import generate_basic
-
-
-def test_data():
-	print("")
-	df = generate_basic(100)
 
 
 def test_models():
 	print("")
-	df = generate_basic(100)
+	df = generate_basic(50)
 	ind_var = "sale_price"
 	dep_vars = [
 		"bldg_area_finished_sqft",
@@ -25,22 +20,11 @@ def test_models():
 
 	# Assign equity cluster ID's
 	df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [])
+	models = ["mra", "lightgbm", "gwr"]#, "xgboost"]#"mra", "gwr", "xgboost", "lightgbm", "catboost"]
+	df_test, df_full = run_benchmark(df, ind_var, dep_vars, models, verbose=True)
 
-	models = ["mra", "gwr", "xgboost", "lightgbm", "catboost"]
-
-	results = None
-	for model in models:
-		if model == "mra":
-			results = run_mra(df, ind_var, dep_vars)
-		elif model == "gwr":
-			results = run_gwr(df, ind_var, dep_vars)
-		elif model == "xgboost":
-			results = run_xgboost(df, ind_var, dep_vars)
-		elif model == "lightgbm":
-			results = run_lightgbm(df, ind_var, dep_vars)
-		elif model == "catboost":
-			results = run_catboost(df, ind_var, dep_vars)
-		if results is not None:
-			display(results.summary())
-
-	return True
+	print("Test set:")
+	print(format_benchmark_df(df_test))
+	print("")
+	print("Full set:")
+	print(format_benchmark_df(df_full))
