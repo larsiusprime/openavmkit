@@ -5,58 +5,9 @@ import lightgbm as lgb
 import numpy as np
 import optuna
 import pandas as pd
+from catboost import Pool, CatBoostRegressor
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_absolute_error
-
-def _xgb_rolling_origin_cv(X, y, params, num_boost_round, n_splits=5, random_state=42, verbose_eval=50):
-    """
-    Performs rolling-origin cross-validation for XGBoost model evaluation.
-
-    Args:
-        X (array-like): Feature matrix.
-        y (array-like): Target vector.
-        params (dict): XGBoost hyperparameters.
-        n_splits (int): Number of folds for cross-validation. Default is 5.
-        random_state (int): Random seed for reproducibility. Default is 42.
-        verbose_eval (int|bool): Logging interval for XGBoost. Default is 50.
-
-    Returns:
-        float: Mean MAE score across all folds.
-    """
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-    mae_scores = []
-
-    for train_idx, val_idx in kf.split(X):
-        if isinstance(X, pd.DataFrame):
-            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-            y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
-        else:
-            X_train, X_val = X[train_idx], X[val_idx]
-            y_train, y_val = y[train_idx], y[val_idx]
-
-        train_data = xgb.DMatrix(X_train, label=y_train)
-        val_data = xgb.DMatrix(X_val, label=y_val)
-
-        evals = [(val_data, "validation")]
-
-        # Train XGBoost
-        model = xgb.train(
-            params=params,
-            dtrain=train_data,
-            num_boost_round=num_boost_round,
-            evals=evals,
-            early_stopping_rounds=50,
-            verbose_eval=verbose_eval  # Ensure verbose_eval is enabled
-        )
-
-        # Predict and evaluate
-        y_pred = model.predict(val_data, iteration_range=(0, model.best_iteration))
-        mae = mean_absolute_error(y_val, y_pred)
-        mae_scores.append(mae)
-
-    mean_mae = np.mean(mae_scores)
-    return mean_mae
-
 
 def tune_xgboost(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False):
     """
@@ -105,56 +56,7 @@ def tune_xgboost(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False)
     return study.best_params
 
 
-def _lightgbm_rolling_origin_cv(X, y, params, n_splits=5, random_state=42):
-    """
-    Performs rolling-origin cross-validation for LightGBM model evaluation.
-
-    Args:
-        X (array-like): Feature matrix.
-        y (array-like): Target vector.
-        params (dict): LightGBM hyperparameters.
-        n_splits (int): Number of folds for cross-validation. Default is 5.
-        random_state (int): Random seed for reproducibility. Default is 42.
-
-    Returns:
-        float: Mean MAE score across all folds.
-    """
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-    mae_scores = []
-
-    for train_idx, val_idx in kf.split(X):
-        # Use .iloc for Pandas DataFrames
-        if isinstance(X, pd.DataFrame):
-            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-            y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
-        else:
-            X_train, X_val = X[train_idx], X[val_idx]
-            y_train, y_val = y[train_idx], y[val_idx]
-
-        train_data = lgb.Dataset(X_train, label=y_train)
-        val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
-
-        params["verbosity"] = -1
-
-        # Train LightGBM
-        model = lgb.train(
-            params,
-            train_data,
-            valid_sets=[val_data],
-            callbacks=[
-                lgb.early_stopping(stopping_rounds=5, verbose=False),  # Early stopping after 50 rounds
-                lgb.log_evaluation(period=0)  # Disable evaluation logs
-            ]
-        )
-
-        # Predict and evaluate
-        y_pred = model.predict(X_val, num_iteration=model.best_iteration)
-        mae_scores.append(mean_absolute_error(y_val, y_pred))
-
-    return np.mean(mae_scores)
-
-
-def tune_lightgbm(X, y, n_trials=100, n_splits=5, random_state=42, verbose:bool=False):
+def tune_lightgbm(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False):
     """
     Tunes LightGBM hyperparameters using Optuna and rolling-origin cross-validation.
 
@@ -209,3 +111,211 @@ def tune_lightgbm(X, y, n_trials=100, n_splits=5, random_state=42, verbose:bool=
     if verbose:
         print(f"Best trial: {study.best_trial.number} with MAE: {study.best_trial.value:10.0f} and params: {study.best_trial.params}")
     return study.best_params
+
+
+def tune_catboost(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False):
+    """
+    Tunes CatBoost hyperparameters using Optuna and rolling-origin cross-validation.
+
+    Args:
+        X (array-like): Feature matrix.
+        y (array-like): Target vector.
+        n_trials (int): Number of optimization trials for Optuna. Default is 100.
+        n_splits (int): Number of folds for cross-validation. Default is 5.
+        random_state (int): Random seed for reproducibility. Default is 42.
+
+    Returns:
+        dict: Best hyperparameters found by Optuna.
+        float: Best MAE score achieved.
+    """
+
+    if verbose:
+        print(f"Tuning LightGBM for {n_trials} trials w/ {n_splits} splits")
+
+    def objective(trial):
+        """
+        Objective function for Optuna to optimize CatBoost hyperparameters.
+        """
+        params = {
+            "loss_function": "MAE",  # Mean Absolute Error
+            "eval_metric": "MAE",
+            "iterations": trial.suggest_int("iterations", 500, 3000),
+            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.3),
+            "depth": trial.suggest_int("depth", 4, 10),
+            "random_strength": trial.suggest_uniform("random_strength", 0, 10),
+            "bagging_temperature": trial.suggest_uniform("bagging_temperature", 0, 1),
+            "border_count": trial.suggest_int("border_count", 32, 255),
+            "grow_policy": trial.suggest_categorical("grow_policy", ["SymmetricTree", "Depthwise", "Lossguide"]),
+            "subsample": trial.suggest_uniform("subsample", 0.5, 1.0),
+            "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 1, 50),
+            "reg_lambda": trial.suggest_loguniform("reg_lambda", 1e-4, 10),
+            "random_seed": random_state,
+            "verbose": 0  # Suppresses CatBoost output
+        }
+        if params["grow_policy"] == "Lossguide":
+            params["max_leaves"] = trial.suggest_int("max_leaves", 31, 128)
+
+        # Perform rolling-origin cross-validation
+        mae = _catboost_rolling_origin_cv(X, y, params, n_splits=n_splits, random_state=random_state)
+        if verbose:
+            print(f"-->trial # {trial.number}/{n_trials}, MAE: {mae:10.0f}, params: {params}")
+        return mae  # Optuna minimizes, so return the MAE directly
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    # Run Bayesian Optimization with Optuna
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=n_trials)
+
+    if verbose:
+        print(f"Best trial: {study.best_trial.number} with MAE: {study.best_trial.value:10.0f} and params: {study.best_trial.params}")
+    return study.best_params
+
+
+#### PRIVATE:
+
+
+def _xgb_rolling_origin_cv(X, y, params, num_boost_round, n_splits=5, random_state=42, verbose_eval=50):
+    """
+    Performs rolling-origin cross-validation for XGBoost model evaluation.
+
+    Args:
+        X (array-like): Feature matrix.
+        y (array-like): Target vector.
+        params (dict): XGBoost hyperparameters.
+        n_splits (int): Number of folds for cross-validation. Default is 5.
+        random_state (int): Random seed for reproducibility. Default is 42.
+        verbose_eval (int|bool): Logging interval for XGBoost. Default is 50.
+
+    Returns:
+        float: Mean MAE score across all folds.
+    """
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    mae_scores = []
+
+    for train_idx, val_idx in kf.split(X):
+        if isinstance(X, pd.DataFrame):
+            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+            y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+        else:
+            X_train, X_val = X[train_idx], X[val_idx]
+            y_train, y_val = y[train_idx], y[val_idx]
+
+        train_data = xgb.DMatrix(X_train, label=y_train)
+        val_data = xgb.DMatrix(X_val, label=y_val)
+
+        evals = [(val_data, "validation")]
+
+        # Train XGBoost
+        model = xgb.train(
+            params=params,
+            dtrain=train_data,
+            num_boost_round=num_boost_round,
+            evals=evals,
+            early_stopping_rounds=50,
+            verbose_eval=verbose_eval  # Ensure verbose_eval is enabled
+        )
+
+        # Predict and evaluate
+        y_pred = model.predict(val_data, iteration_range=(0, model.best_iteration))
+        mae = mean_absolute_error(y_val, y_pred)
+        mae_scores.append(mae)
+
+    mean_mae = np.mean(mae_scores)
+    return mean_mae
+
+
+def _catboost_rolling_origin_cv(X, y, params, n_splits=5, random_state=42, verbose=False):
+    """
+    Performs rolling-origin cross-validation for CatBoost model evaluation.
+
+    Args:
+        X (array-like): Feature matrix.
+        y (array-like): Target vector.
+        params (dict): CatBoost hyperparameters.
+        n_splits (int): Number of folds for cross-validation. Default is 5.
+        random_state (int): Random seed for reproducibility. Default is 42.
+        verbose (bool): Whether to print CatBoost training logs.
+
+    Returns:
+        float: Mean MAE score across all folds.
+    """
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    mae_scores = []
+
+    for train_idx, val_idx in kf.split(X):
+        # Use .iloc for Pandas DataFrames
+        if isinstance(X, pd.DataFrame):
+            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+            y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+        else:
+            X_train, X_val = X[train_idx], X[val_idx]
+            y_train, y_val = y[train_idx], y[val_idx]
+
+        train_pool = Pool(X_train, y_train)
+        val_pool = Pool(X_val, y_val)
+
+        # Train CatBoost
+        model = CatBoostRegressor(**params)
+        model.fit(
+            train_pool,
+            eval_set=val_pool,
+            verbose=verbose,
+            early_stopping_rounds=50
+        )
+
+        # Predict and evaluate
+        y_pred = model.predict(X_val)
+        mae_scores.append(mean_absolute_error(y_val, y_pred))
+
+    return np.mean(mae_scores)
+
+
+
+def _lightgbm_rolling_origin_cv(X, y, params, n_splits=5, random_state=42):
+    """
+    Performs rolling-origin cross-validation for LightGBM model evaluation.
+
+    Args:
+        X (array-like): Feature matrix.
+        y (array-like): Target vector.
+        params (dict): LightGBM hyperparameters.
+        n_splits (int): Number of folds for cross-validation. Default is 5.
+        random_state (int): Random seed for reproducibility. Default is 42.
+
+    Returns:
+        float: Mean MAE score across all folds.
+    """
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    mae_scores = []
+
+    for train_idx, val_idx in kf.split(X):
+        # Use .iloc for Pandas DataFrames
+        if isinstance(X, pd.DataFrame):
+            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+            y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+        else:
+            X_train, X_val = X[train_idx], X[val_idx]
+            y_train, y_val = y[train_idx], y[val_idx]
+
+        train_data = lgb.Dataset(X_train, label=y_train)
+        val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
+
+        params["verbosity"] = -1
+
+        # Train LightGBM
+        model = lgb.train(
+            params,
+            train_data,
+            valid_sets=[val_data],
+            callbacks=[
+                lgb.early_stopping(stopping_rounds=5, verbose=False),  # Early stopping after 50 rounds
+                lgb.log_evaluation(period=0)  # Disable evaluation logs
+            ]
+        )
+
+        # Predict and evaluate
+        y_pred = model.predict(X_val, num_iteration=model.best_iteration)
+        mae_scores.append(mean_absolute_error(y_val, y_pred))
+
+    return np.mean(mae_scores)

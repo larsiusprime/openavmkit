@@ -20,7 +20,7 @@ from xgboost import XGBRegressor
 
 from openavmkit.ratio_study import RatioStudy
 from openavmkit.stats import quick_median_chd
-from openavmkit.utilities.tuning import tune_lightgbm, tune_xgboost
+from openavmkit.utilities.tuning import tune_lightgbm, tune_xgboost, tune_catboost
 from openavmkit.utilities.timing import TimingData
 
 PredictionModel = Union[RegressionResults, XGBRegressor, Booster, CatBoostRegressor, GWR, MGWR]
@@ -394,21 +394,7 @@ def run_xgboost(
 	timing.stop("parameter_search")
 
 	timing.start("train")
-	xgboost_model = xgboost.XGBRegressor(
-		n_estimators = params["num_boost_round"],
-		learning_rate = params["learning_rate"],
-		max_depth = params["max_depth"],
-		min_child_weight = params["min_child_weight"],
-		subsample = params["subsample"],
-		colsample_bytree = params["colsample_bytree"],
-		colsample_bylevel = params["colsample_bylevel"],
-		colsample_bynode = params["colsample_bynode"],
-		gamma = params["gamma"],
-		reg_lambda = params["lambda"],
-		reg_alpha = params["alpha"],
-		max_bin = params["max_bin"],
-		grow_policy = params["grow_policy"]
-	)
+	xgboost_model = xgboost.XGBRegressor(**params)
 	xgboost_model.fit(ds.X_train, ds.y_train)
 	timing.stop("train")
 
@@ -525,17 +511,16 @@ def run_catboost(
 
 	timing.start("total")
 
-	timing.start("setup")
-	timing.stop("setup")
-
 	timing.start("parameter_search")
-	catboost_model = catboost.CatBoostRegressor(
-		iterations=100,
-		depth=4,
-		learning_rate=0.1,
-		loss_function="RMSE"
-	)
+	params = tune_catboost(ds.X_train, ds.y_train, verbose=verbose)
 	timing.stop("parameter_search")
+
+	timing.start("setup")
+
+	print(params)
+
+	catboost_model = catboost.CatBoostRegressor(**params)
+	timing.stop("setup")
 
 	timing.start("train")
 	catboost_model.fit(ds.X_train, ds.y_train)
