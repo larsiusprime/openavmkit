@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 from IPython.core.display_functions import display
 
@@ -78,36 +79,44 @@ def _calc_benchmark(model_results: dict[str, ModelResults]):
 
 def format_benchmark_df(df: pd.DataFrame):
 
-	def human_format(num):
+	def fancy_format(num):
+		if np.isinf(num):
+			if num > 0:
+				return " ∞"
+			else:
+				return "-∞"
+		if pd.isna(num):
+			return "N/A"
+		if num == 0:
+			return '0.00'
 		if num < 1:
 			return '{:.2f}'.format(num)
 		num = float('{:.3g}'.format(num))
 		magnitude = 0
-		while abs(num) >= 1000:
+		while abs(num) >= 1000 and abs(num) > 1e-6:
 			magnitude += 1
 			num /= 1000.0
 		return '{}{}'.format('{:f}'.format(num).rstrip('0').rstrip('.'), ['', 'K', 'M', 'B', 'T'][magnitude])
 
 	formats = {
-		"utility": human_format,
-		"mse": human_format,
-		"rmse": human_format,
+		"utility": fancy_format,
+		"mse": fancy_format,
+		"rmse": fancy_format,
 		"r2": "{:.2f}",
 		"adj_r2": "{:.2f}",
 		"median_ratio": "{:.2f}",
 		"cod": "{:.2f}",
 		"prd": "{:.2f}",
 		"prb": "{:.2f}",
-		"chd": "{:.2f}",
-		"t_total": human_format,
-		"t_param": human_format,
-		"t_train": human_format,
-		"t_predict": human_format
+		"chd": fancy_format,
+		"t_total": fancy_format,
+		"t_param": fancy_format,
+		"t_train": fancy_format,
+		"t_predict": fancy_format
 	}
 
 	for col in df.columns:
 		if col in formats:
-
 			# check if formats[col] is a function or a string
 			if callable(formats[col]):
 				df[col] = df[col].apply(formats[col])
@@ -115,7 +124,6 @@ def format_benchmark_df(df: pd.DataFrame):
 				df[col] = df[col].apply(lambda x: formats[col].format(x))
 
 	return df.transpose().to_markdown()
-
 
 
 def run_benchmark(
@@ -139,25 +147,31 @@ def run_benchmark(
 	outpath = "out/benchmark"
 
 	for model in models:
-		if model == "garbage":
-			results = run_garbage(df, ind_var, dep_vars, normal=False, verbose=verbose)
-		elif model == "garbage_normal":
-			results = run_garbage(df, ind_var, dep_vars, normal=True, verbose=verbose)
-		elif model == "mean":
-			results = run_average(df, ind_var, dep_vars, type="mean", verbose=verbose)
-		elif model == "median":
-			results = run_average(df, ind_var, dep_vars, type="median", verbose=verbose)
-		elif model == "naive_sqft":
-			results = run_naive_sqft(df, ind_var, dep_vars, verbose)
-		elif model == "mra":
+		model_name = model
+		if "*" in model:
+			sales_chase = 0.01
+			model_name = model.replace("*", "")
+		else:
+			sales_chase = False
+		if model_name == "garbage":
+			results = run_garbage(df, ind_var, dep_vars, normal=False, sales_chase=sales_chase, verbose=verbose)
+		elif model_name == "garbage_normal":
+			results = run_garbage(df, ind_var, dep_vars, normal=True, sales_chase=sales_chase, verbose=verbose)
+		elif model_name == "mean":
+			results = run_average(df, ind_var, dep_vars, type="mean", sales_chase=sales_chase, verbose=verbose)
+		elif model_name == "median":
+			results = run_average(df, ind_var, dep_vars, type="median", sales_chase=sales_chase, verbose=verbose)
+		elif model_name == "naive_sqft":
+			results = run_naive_sqft(df, ind_var, dep_vars, sales_chase=sales_chase, verbose=verbose)
+		elif model_name == "mra":
 			results = run_mra(df, ind_var, dep_vars, verbose)
-		elif model == "gwr":
+		elif model_name == "gwr":
 			results = run_gwr(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose)
-		elif model == "xgboost":
+		elif model_name == "xgboost":
 			results = run_xgboost(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose)
-		elif model == "lightgbm":
+		elif model_name == "lightgbm":
 			results = run_lightgbm(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose)
-		elif model == "catboost":
+		elif model_name == "catboost":
 			results = run_catboost(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose)
 		if results is not None:
 			model_results[model] = results

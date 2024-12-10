@@ -1,6 +1,6 @@
 import numpy as np
 
-import openavmkit.stats as stats
+import openavmkit.utilities.stats as stats
 
 
 class RatioStudy:
