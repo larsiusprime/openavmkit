@@ -1,8 +1,7 @@
 import json
-import logging
 import math
 import os
-import warnings
+import random
 from typing import Union
 
 import numpy as np
@@ -21,7 +20,7 @@ from statsmodels.regression.linear_model import RegressionResults
 from xgboost import XGBRegressor
 
 from openavmkit.ratio_study import RatioStudy
-from openavmkit.stats import quick_median_chd
+from openavmkit.utilities.stats import quick_median_chd
 from openavmkit.utilities.tuning import tune_lightgbm, tune_xgboost, tune_catboost
 from openavmkit.utilities.timing import TimingData
 
@@ -218,7 +217,7 @@ def model_utility_score(
 	weight_dist_ratio = 1000.00
 	weight_cod = 1.00
 	weight_chd = 1.00
-	weight_sales_chase = 0.25
+	weight_sales_chase = 7.5
 
 	cod = model_results.pred_test.ratio_study.cod
 	chd = model_results.chd
@@ -233,7 +232,6 @@ def model_utility_score(
 
 	# penalize very low COD's with bad horizontal equity
 	sales_chase_score = ((1.0/cod) * chd) * weight_sales_chase
-
 	final_score = dist_ratio_score + cod_score + chd_score + sales_chase_score
 	return final_score
 
@@ -672,6 +670,7 @@ def run_garbage(
 		ind_var: str,
 		dep_vars: list[str],
 		normal: bool = False,
+		sales_chase: float = 0.0,
 		verbose: bool = False
 ):
 	"""
@@ -680,6 +679,7 @@ def run_garbage(
 	:param ind_var: The independent variable
 	:param dep_vars: The dependent variables
 	:param normal: Whether to use a normal or uniform distribution when randomly picking
+	:param sales_chase: If not 0, simulate sales chasing by predicting the sales set as the test set, with this much noise
 	:param verbose: Whether to print verbose output
 	:return: The model results
 	"""
@@ -723,9 +723,16 @@ def run_garbage(
 
 	timing.stop("total")
 
+	if sales_chase:
+		y_pred_test = ds.y_test * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_test))
+		y_pred_sales = ds.y_sales * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_sales))
+		y_pred_univ = _sales_chase_univ(df_in, ind_var, y_pred_univ) * np.random.choice([1-sales_chase, 1+sales_chase], len(y_pred_univ))
+
 	name = "garbage"
 	if normal:
 		name = "garbage_normal"
+	if sales_chase:
+		name += "*"
 
 	df["prediction"] = y_pred_univ
 	results = ModelResults(
@@ -752,6 +759,7 @@ def run_average(
 		ind_var: str,
 		dep_vars: list[str],
 		type: str = "mean",
+		sales_chase: float = 0.0,
 		verbose: bool = False
 ):
 	"""
@@ -760,6 +768,7 @@ def run_average(
 	:param ind_var: The independent variable
 	:param dep_vars: The dependent variables
 	:param type: The type of average to use ("mean" or "median")
+	:param sales_chase: If not 0, simulate sales chasing by predicting the sales set as the test set, with this much noise
 	:param verbose: Whether to print verbose output
 	:return: The model results
 	"""
@@ -804,9 +813,16 @@ def run_average(
 
 	timing.stop("total")
 
+	if sales_chase:
+		y_pred_test = ds.y_test * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_test))
+		y_pred_sales = ds.y_sales * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_sales))
+		y_pred_univ = _sales_chase_univ(df_in, ind_var, y_pred_univ) * np.random.choice([1-sales_chase, 1+sales_chase], len(y_pred_univ))
+
 	name = "mean"
 	if type == "median":
 		name = "median"
+	if sales_chase:
+		name += "*"
 
 	df["prediction"] = y_pred_univ
 	results = ModelResults(
@@ -832,6 +848,7 @@ def run_naive_sqft(
 		df_in: pd.DataFrame,
 		ind_var: str,
 		dep_vars: list[str],
+		sales_chase: float = 0.0,
 		verbose: bool = False
 ):
 	"""
@@ -840,6 +857,7 @@ def run_naive_sqft(
 	:param ind_var: The independent variable
 	:param dep_vars: The dependent variables
 	:param type: The type of average to use ("mean" or "median")
+	:param sales_chase: If not 0, simulate sales chasing by predicting the sales set as the test set, with this much noise
 	:param verbose: Whether to print verbose output
 	:return: The model results
 	"""
@@ -911,7 +929,14 @@ def run_naive_sqft(
 
 	timing.stop("total")
 
+	if sales_chase:
+		y_pred_test = ds.y_test * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_test))
+		y_pred_sales = ds.y_sales * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_sales))
+		y_pred_univ = _sales_chase_univ(df_in, ind_var, y_pred_univ) * np.random.choice([1-sales_chase, 1+sales_chase], len(y_pred_univ))
+
 	name = "naive_sqft"
+	if sales_chase:
+		name += "*"
 
 	df["prediction"] = y_pred_univ
 	results = ModelResults(
@@ -934,6 +959,20 @@ def run_naive_sqft(
 
 
 ##### PRIVATE:
+
+
+
+def _sales_chase_univ(df_in, ind_var, y_pred_univ):
+	"""
+	Simulates sales chasing (obviously never use this in a real model, only intended for studying bad behavior)
+	:param df_in:
+	:param y_pred_univ:
+	:return:
+	"""
+	df_univ = df_in[[ind_var]].copy()
+	df_univ["prediction"] = y_pred_univ.copy()
+	df_univ.loc[df_univ[ind_var].gt(0), "prediction"] = df_univ[ind_var]
+	return df_univ["prediction"].to_numpy()
 
 
 def _run_gwr_prediction_iterations(

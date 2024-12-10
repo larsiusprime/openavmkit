@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-import openavmkit.stats as stats
+import openavmkit.utilities.stats as stats
 
 class HorizontalEquitySummary:
 	rows: int

@@ -4,7 +4,6 @@ from openavmkit.benchmark import run_benchmark, format_benchmark_df
 from openavmkit.horizontal_equity_study import cluster_by_location_and_big_five
 from openavmkit.synthetic_data import generate_basic
 
-
 def test_models():
 	print("")
 	df = generate_basic(100)
@@ -20,7 +19,23 @@ def test_models():
 
 	# Assign equity cluster ID's
 	df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [])
-	models = ["garbage", "garbage_normal", "mean", "median", "naive_sqft", "mra", "gwr", "lightgbm", "catboost", "xgboost"]
+	models = [
+		#"garbage",
+		"garbage*",
+		#"garbage_normal",
+		"garbage_normal*",
+		#"mean",
+		"mean*",
+		#"median",
+		"median*",
+		#"naive_sqft",
+		"naive_sqft*",
+		"mra",
+		"gwr",
+		"lightgbm",
+		"catboost",
+		"xgboost"
+	]
 	df_test, df_full = run_benchmark(df, ind_var, dep_vars, models, verbose=True, save_params=True, use_saved_params=True)
 
 	print("Test set:")
