@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import polars as pl
 import random
 from typing import Union
 
@@ -122,6 +123,10 @@ class DataSplit:
 		self.X_train = self.df_train[dep_vars]
 		self.y_train = self.df_train[ind_var]
 
+		# convert all Float64 to float64 in X_train:
+		for col in self.X_train.columns:
+			self.X_train[col] = self.X_train[col].astype("float64")
+
 		self.X_test = self.df_test[dep_vars]
 		self.y_test = self.df_test[ind_var]
 
@@ -150,19 +155,37 @@ class ModelResults:
 			y_sales: pd.Series,
 			y_pred_sales: np.ndarray,
 			y_pred_univ: np.ndarray,
-			timing: TimingData
+			timing: TimingData,
+			verbose: bool = False
 	):
 		self.type = type
 		self.ind_var = ind_var
 		self.dep_vars = dep_vars
 		self.model = model
-		self.pred_test = PredictionResults(ind_var, dep_vars, y_test, y_pred_test)
-		self.pred_sales = PredictionResults(ind_var, dep_vars, y_sales, y_pred_sales)
-		self.pred_univ = y_pred_univ
-		self.chd = quick_median_chd(df, field_prediction, field_horizontal_equity_id)
-		self.utility = model_utility_score(self)
-		self.timing = timing
 
+		timing.start("stats_test")
+		self.pred_test = PredictionResults(ind_var, dep_vars, y_test, y_pred_test)
+		timing.stop("stats_test")
+
+		timing.start("stats_sales")
+		self.pred_sales = PredictionResults(ind_var, dep_vars, y_sales, y_pred_sales)
+		timing.stop("stats_sales")
+
+		if verbose:
+			print("--> calculating CHD...")
+		self.pred_univ = y_pred_univ
+		timing.start("chd")
+		# TODO: finish converting other stuff to polars
+		pl_df = pl.DataFrame(df)
+		self.chd = quick_median_chd(pl_df, field_prediction, field_horizontal_equity_id)
+		timing.stop("chd")
+		if verbose:
+			print("----> done")
+
+		timing.start("utility")
+		self.utility = model_utility_score(self)
+		timing.stop("utility")
+		self.timing = timing
 
 	def summary(self):
 		str = ""
@@ -262,27 +285,27 @@ def run_mra(
 		timing.start("train")
 		linear_model = sm.OLS(ds.y_train, ds.X_train)
 		fitted_model = linear_model.fit()
+		# convert to Float64 dtype
 		timing.stop("train")
 
 		# predict on test set:
 		timing.start("predict_test")
-		y_pred_test = fitted_model.predict(ds.X_test)
+		y_pred_test = fitted_model.predict(ds.X_test).to_numpy()
 		timing.stop("predict_test")
 
 		# predict on the sales set:
 		timing.start("predict_sales")
-		y_pred_sales = fitted_model.predict(ds.X_sales)
+		y_pred_sales = fitted_model.predict(ds.X_sales).to_numpy()
 		timing.stop("predict_sales")
 
 		# predict on the full set:
 		timing.start("predict_full")
-		y_pred_univ = fitted_model.predict(ds.X_univ)
+		y_pred_univ = fitted_model.predict(ds.X_univ).to_numpy()
 		timing.stop("predict_full")
-
-		timing.stop("total")
 
 		# gather the predictions
 		df["prediction"] = y_pred_univ
+
 		results = ModelResults(
 			df,
 			"prediction",
@@ -296,8 +319,12 @@ def run_mra(
 			ds.y_sales,
 			y_pred_sales,
 			y_pred_univ,
-			timing
+			timing,
+			verbose=verbose
 		)
+
+		timing.stop("total")
+
 		return results
 
 

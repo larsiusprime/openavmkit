@@ -86,7 +86,8 @@ class HorizontalEquityStudy:
 def cluster_by_location_and_big_five(
 		df_in: pd.DataFrame,
 		field_location: str,
-		fields_categorical: list[str]
+		fields_categorical: list[str],
+		verbose: bool = False
 ):
 	df = df_in.copy()
 
@@ -111,14 +112,22 @@ def cluster_by_location_and_big_five(
 
 	min_cluster_size = 15
 
+	if verbose:
+		print(f"Clustering by location and big five:")
+
 	# iterate over numeric fields, trying to crunch down whenever possible:
 	for entry in fields_numeric:
+
 		# get all unique clusters
 		clusters = df["cluster"].unique()
 
 		# store the base for the next iteration as the current cluster
 		df["next_cluster"] = df["cluster"]
 
+		if verbose:
+			print(f"--> crunching on {entry}, {len(clusters)} clusters")
+
+		i = 0
 		# step through each unique cluster:
 		for cluster in clusters:
 
@@ -138,9 +147,14 @@ def cluster_by_location_and_big_five(
 			series = _crunch(df_sub, field, min_cluster_size)
 
 			if series is not None and len(series) > 0:
+				if verbose:
+					if i % 100 == 0:
+						print(f"----> {i}/{len(clusters)}, {i/len(clusters):0.0%} clustering on {cluster}, field = {field}, size = {len(series)}")
 				# if we succeeded, update the cluster names with the new breakdowns
 				df_sub["next_cluster"] = df_sub["next_cluster"] + "_" + series.astype(str)
 				df.loc[df["cluster"].eq(cluster), "next_cluster"] = df_sub["next_cluster"]
+
+			i += 1
 
 		# update the cluster column with the new cluster names, then iterate on those next
 		df["cluster"] = df["next_cluster"]
@@ -183,10 +197,15 @@ def _crunch(_df, field, min_count):
 		test_bins = []
 		for quantile in crunch_level:
 			bin = _df[field].quantile(quantile)
-			test_bins.append(bin)
+			if bin not in test_bins and pd.isna(bin) == False:
+				test_bins.append(bin)
 
-		labels = test_bins[1:]
-		series = pd.cut(_df[field], bins=test_bins, labels=labels, include_lowest=True)
+		if len(test_bins) > 1:
+			labels = test_bins[1:]
+			series = pd.cut(_df[field], bins=test_bins, labels=labels, include_lowest=True)
+		else:
+			too_small = True
+			break
 
 		if series.value_counts().min() < min_count:
 			too_small = True
