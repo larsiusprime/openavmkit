@@ -132,7 +132,7 @@ def format_benchmark_df(df: pd.DataFrame):
 def run_benchmark(
 		df: pd.DataFrame,
 		ind_var: str,
-		dep_vars: list[str],
+		dep_var_dict: dict[str | list[str]],
 		models: list[str] | None,
 		outdir: str = "default",
 		save_params: bool = False,
@@ -159,6 +159,11 @@ def run_benchmark(
 			sales_chase = False
 
 		print(f" running model {model}...")
+
+		if model_name in dep_var_dict:
+			dep_vars = dep_var_dict[model_name]
+		else:
+			dep_vars = dep_var_dict["default"]
 
 		if model_name == "garbage":
 			results = run_garbage(df, ind_var, dep_vars, normal=False, sales_chase=sales_chase, verbose=verbose)

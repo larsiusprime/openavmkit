@@ -19,18 +19,26 @@ def test_models_guilford():
 	df = df[df["model_group"].eq("residential_sf")].copy().reset_index(drop=True)
 
 	ind_var = "sale_price"
-	dep_vars = [
-		"bldg_area_finished_sqft",
-		"land_area_sqft",
-		"bldg_quality_num",
-		"bldg_condition_num",
-		"bldg_age_years",
-		"dist_to_cbd"
-	]
+	dep_vars = {
+		"default": [
+			"bldg_area_finished_sqft",
+			"land_area_sqft",
+			"bldg_quality_num",
+			"bldg_condition_num",
+			"bldg_age_years",
+			"dist_to_cbd"
+		],
+		"gwr": [
+			"bldg_area_finished_sqft",
+			"land_area_sqft",
+			"bldg_age_years",
+			"dist_to_cbd"
+		]
+	}
 
 	models = [
 		"mra",
-		#"gwr",
+		"gwr",
 		"lightgbm",
 		"catboost",
 		"xgboost",
@@ -62,14 +70,16 @@ def test_models_synthetic():
 	print("")
 	df = generate_basic(100)
 	ind_var = "sale_price"
-	dep_vars = [
-		"bldg_area_finished_sqft",
-		"land_area_sqft",
-		"bldg_quality_num",
-		"bldg_condition_num",
-		"bldg_age_years",
-		"distance_from_cbd"
-	]
+	dep_vars = {
+		"default":[
+			"bldg_area_finished_sqft",
+			"land_area_sqft",
+			"bldg_quality_num",
+			"bldg_condition_num",
+			"bldg_age_years",
+			"distance_from_cbd"
+		]
+	}
 
 	# Assign equity cluster ID's
 	df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [])
