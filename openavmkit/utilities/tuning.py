@@ -6,6 +6,7 @@ import numpy as np
 import optuna
 import pandas as pd
 from catboost import Pool, CatBoostRegressor
+from optuna import Trial
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_absolute_error
 
@@ -47,7 +48,7 @@ def tune_xgboost(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False)
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=n_trials)
+    study.optimize(objective, n_trials=n_trials, n_jobs=-1)
     if verbose:
         print(f"Best trial: {study.best_trial.number} with MAE: {study.best_trial.value:10.0f} and params: {study.best_trial.params}")
     return study.best_params
@@ -88,7 +89,8 @@ def tune_lightgbm(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False
             "lambda_l1": trial.suggest_loguniform("lambda_l1", 0.1, 10),
             "lambda_l2": trial.suggest_loguniform("lambda_l2", 0.1, 10),
             "cat_smooth": trial.suggest_int("cat_smooth", 5, 200),
-            "verbosity": -1
+            "verbosity": -1,
+            "early_stopping_round": 50
         }
 
         # Use rolling-origin cross-validation
@@ -99,8 +101,8 @@ def tune_lightgbm(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False
 
     # Run Bayesian Optimization with Optuna
     optuna.logging.set_verbosity(optuna.logging.WARNING)
-    study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=n_trials)
+    study = optuna.create_study(direction="minimize", pruner=optuna.pruners.MedianPruner())
+    study.optimize(objective, n_trials=n_trials, n_jobs=-1)  # Use parallelism if available
 
     if verbose:
         print(f"Best trial: {study.best_trial.number} with MAE: {study.best_trial.value:10.0f} and params: {study.best_trial.params}")
@@ -122,8 +124,7 @@ def tune_catboost(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False
         dict: Best hyperparameters found by Optuna.
         float: Best MAE score achieved.
     """
-
-    def objective(trial):
+    def objective(trial: Trial):
         """
         Objective function for Optuna to optimize CatBoost hyperparameters.
         """
@@ -155,8 +156,8 @@ def tune_catboost(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     # Run Bayesian Optimization with Optuna
-    study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=n_trials)
+    study = optuna.create_study(direction="minimize", pruner=optuna.pruners.MedianPruner())
+    study.optimize(objective, n_trials=n_trials, n_jobs=-1)  # Use parallelism if available
 
     if verbose:
         print(f"Best trial: {study.best_trial.number} with MAE: {study.best_trial.value:10.0f} and params: {study.best_trial.params}")
