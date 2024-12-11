@@ -16,6 +16,7 @@ def _calc_benchmark(model_results: dict[str, ModelResults]):
 		"t_predict": [],
 		"t_test": [],
 		"t_full": [],
+		"t_chd": [],
 		"utility": [],
 		"mse":[],
 		"rmse":[],
@@ -57,6 +58,7 @@ def _calc_benchmark(model_results: dict[str, ModelResults]):
 			data["t_predict"].append(0)
 			data["t_test"].append(tim["predict_test"])
 			data["t_full"].append(tim["predict_full"])
+			data["t_chd"].append(tim["chd"])
 
 			if kind == "full":
 				data["chd"].append(results.chd)
@@ -112,7 +114,8 @@ def format_benchmark_df(df: pd.DataFrame):
 		"t_total": fancy_format,
 		"t_param": fancy_format,
 		"t_train": fancy_format,
-		"t_predict": fancy_format
+		"t_predict": fancy_format,
+		"t_chd": fancy_format
 	}
 
 	for col in df.columns:
@@ -153,6 +156,9 @@ def run_benchmark(
 			model_name = model.replace("*", "")
 		else:
 			sales_chase = False
+
+		print(f" running model {model}...")
+
 		if model_name == "garbage":
 			results = run_garbage(df, ind_var, dep_vars, normal=False, sales_chase=sales_chase, verbose=verbose)
 		elif model_name == "garbage_normal":
@@ -164,15 +170,15 @@ def run_benchmark(
 		elif model_name == "naive_sqft":
 			results = run_naive_sqft(df, ind_var, dep_vars, sales_chase=sales_chase, verbose=verbose)
 		elif model_name == "mra":
-			results = run_mra(df, ind_var, dep_vars, verbose)
+			results = run_mra(df, ind_var, dep_vars, verbose=verbose)
 		elif model_name == "gwr":
-			results = run_gwr(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose)
+			results = run_gwr(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose=verbose)
 		elif model_name == "xgboost":
-			results = run_xgboost(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose)
+			results = run_xgboost(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose=verbose)
 		elif model_name == "lightgbm":
-			results = run_lightgbm(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose)
+			results = run_lightgbm(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose=verbose)
 		elif model_name == "catboost":
-			results = run_catboost(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose)
+			results = run_catboost(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose=verbose)
 		if results is not None:
 			model_results[model] = results
 

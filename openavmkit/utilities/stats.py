@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import polars as pl
 import statsmodels.api as sm
 
 
@@ -22,13 +23,16 @@ def calc_chds(
 	return df["chd"]
 
 
-def quick_median_chd(df: pd.DataFrame, field_value: str, field_cluster: str) -> float:
-	clusters = df[field_cluster].unique()
-	chds = np.array([])
-	for cluster in clusters:
-		df_cluster = df[df[field_cluster].eq(cluster)]
-		chd = calc_cod(df_cluster[field_value].values)
-		chds = np.append(chds, chd)
+def quick_median_chd(df: pl.DataFrame, field_value: str, field_cluster: str) -> float:
+	clusters = df.select(pl.col(field_cluster).unique()).to_numpy().flatten()
+	chds = np.zeros(len(clusters))
+
+	for i, cluster in enumerate(clusters):
+		df_cluster = df.filter(pl.col(field_cluster) == cluster)
+		chd = calc_cod(df_cluster[field_value].to_numpy())
+		chds[i] = chd
+		i += 1
+
 	median_chd = float(np.median(chds))
 	return median_chd
 
@@ -52,6 +56,17 @@ def calc_prd(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
 
 
 def calc_prb(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
+
+	# TODO: this block is necessary because predictions is not guaranteed to have non-zero values
+	predictions = predictions.copy()
+	ground_truth = ground_truth.copy()
+
+	zero_indices = np.where(predictions <= 0)
+	predictions = np.delete(predictions, zero_indices)
+	ground_truth = np.delete(ground_truth, zero_indices)
+
+	predictions = predictions.astype(np.float64)
+
 	ratios = predictions / ground_truth
 	median_ratio = np.median(ratios)
 
