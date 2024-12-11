@@ -134,6 +134,7 @@ def run_benchmark(
 		ind_var: str,
 		dep_vars: list[str],
 		models: list[str] | None,
+		outdir: str = "default",
 		save_params: bool = False,
 		use_saved_params: bool = False,
 		verbose: bool = False
@@ -147,7 +148,7 @@ def run_benchmark(
 	results = None
 	model_results = {}
 
-	outpath = "out/benchmark"
+	outpath = f"out/benchmark/{outdir}"
 
 	for model in models:
 		model_name = model

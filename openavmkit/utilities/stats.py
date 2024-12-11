@@ -24,16 +24,17 @@ def calc_chds(
 
 
 def quick_median_chd(df: pl.DataFrame, field_value: str, field_cluster: str) -> float:
-	clusters = df.select(pl.col(field_cluster).unique()).to_numpy().flatten()
-	chds = np.zeros(len(clusters))
+	chds = (
+		df
+		.group_by(field_cluster)
+		.agg(pl.col(field_value).alias("values"))
+	)
 
-	for i, cluster in enumerate(clusters):
-		df_cluster = df.filter(pl.col(field_cluster) == cluster)
-		chd = calc_cod(df_cluster[field_value].to_numpy())
-		chds[i] = chd
-		i += 1
+	# Apply the calc_cod function to each group (the list of values)
+	chd_values = np.array([calc_cod(group.to_numpy()) for group in chds["values"]])
 
-	median_chd = float(np.median(chds))
+	# Calculate the median of the CHD values
+	median_chd = float(np.median(chd_values))
 	return median_chd
 
 
