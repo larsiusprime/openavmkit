@@ -370,12 +370,18 @@ def run_gwr(
 	v = ds.df_universe['latitude']
 	coords_univ = list(zip(u,v))
 
-	y_train = ds.y_train.values.reshape((-1, 1))
+	y_train = ds.y_train.to_numpy().reshape((-1, 1))
 
 	X_train = ds.X_train.values
 	X_test = ds.X_test.values
 	X_sales = ds.X_sales.values
 	X_univ = ds.X_univ.values
+
+	# add a very small amount of random noise to every row in every column of X_train:
+	# this is to prevent singular matrix errors in the GWR
+	X_train += np.random.normal(0, 1e-6, X_train.shape)
+	X_test += np.random.normal(0, 1e-6, X_test.shape)
+
 	timing.stop("setup")
 
 	timing.start("parameter_search")

@@ -7,6 +7,7 @@ from openavmkit.benchmark import run_benchmark, format_benchmark_df
 from openavmkit.cleaning import fill_unknown_values_per_model_group
 from openavmkit.horizontal_equity_study import cluster_by_location_and_big_five
 from openavmkit.synthetic_data import generate_basic
+from openavmkit.utilities.settings import get_valuation_date
 
 
 def test_models_guilford():
@@ -28,18 +29,28 @@ def test_models_guilford():
 	]
 
 	models = [
+		"mra",
+		#"gwr",
+		"lightgbm",
+		"catboost",
+		"xgboost",
 		"garbage",
-		# "garbage_normal*",
-		# "mean*",
-		# "median*",
-		# "naive_sqft*",
-		"mra"
-		# "gwr",
-		# "lightgbm",
-		# "catboost",
-		# "xgboost"
+		"garbage_normal",
+		"mean",
+		"median",
+		"naive_sqft"
 	]
-	df_test, df_full = run_benchmark(df, ind_var, dep_vars, models, verbose=True, save_params=True, use_saved_params=True)
+
+	# select only recent sales
+	val_date = get_valuation_date({})
+	val_year = val_date.year
+	sales_back_to_year = val_year - 1
+
+	df.loc[df["sale_year"].lt(sales_back_to_year), "valid_sale"] = 0
+
+	print(f"Using {len(df[df['valid_sale'].eq(1)])} sales...")
+
+	df_test, df_full = run_benchmark(df, ind_var, dep_vars, models, outdir="nc-guilford", verbose=True, save_params=True, use_saved_params=True)
 
 	print("Test set:")
 	print(format_benchmark_df(df_test))
@@ -63,23 +74,23 @@ def test_models_synthetic():
 	# Assign equity cluster ID's
 	df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [])
 	models = [
-		# #"garbage",
-		# "garbage*",
-		# #"garbage_normal",
-		# "garbage_normal*",
-		# #"mean",
-		# "mean*",
-		# #"median",
-		# "median*",
-		# #"naive_sqft",
-		# "naive_sqft*",
+		#"garbage",
+		"garbage*",
+		#"garbage_normal",
+		"garbage_normal*",
+		#"mean",
+		"mean*",
+		#"median",
+		"median*",
+		#"naive_sqft",
+		"naive_sqft*",
 		"mra",
-		# "gwr",
-		# "lightgbm",
-		# "catboost",
-		# "xgboost"
+		"gwr",
+		"lightgbm",
+		"catboost",
+		"xgboost"
 	]
-	df_test, df_full = run_benchmark(df, ind_var, dep_vars, models, verbose=True, save_params=True, use_saved_params=True)
+	df_test, df_full = run_benchmark(df, ind_var, dep_vars, models, outdir="synthetic-basic", verbose=True, save_params=True, use_saved_params=True)
 
 	print("Test set:")
 	print(format_benchmark_df(df_test))
