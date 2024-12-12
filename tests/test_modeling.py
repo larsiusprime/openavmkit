@@ -26,16 +26,28 @@ def test_models_guilford():
 			"bldg_quality_num",
 			"bldg_condition_num",
 			"bldg_age_years",
-			"dist_to_cbd"
+			"dist_to_cbd",
+			"latitude",
+			"longitude",
+			"rectangularity_num",
+			"slope_mean",
+			"elevation_mean",
+			"dist_to_universities",
+			"dist_to_colleges",
+			"dist_to_greenspace",
+			"dist_to_airport"
 		],
 		"gwr": [
 			"bldg_area_finished_sqft",
-			"land_area_sqft",
 			"bldg_age_years",
-			"dist_to_cbd"
+			"land_area_sqft",
+			"rectangularity_num",
+			"dist_to_cbd",
+			"elevation_mean",
 		]
 	}
 
+	#df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [], verbose=True)
 	models = [
 		"mra",
 		"gwr",
@@ -82,7 +94,7 @@ def test_models_synthetic():
 	}
 
 	# Assign equity cluster ID's
-	df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [])
+	df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [], verbose=True)
 	models = [
 		#"garbage",
 		"garbage*",
