@@ -3,7 +3,7 @@ import pandas as pd
 from IPython.core.display_functions import display
 
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, ModelResults, run_garbage, \
-	run_average, run_naive_sqft
+	run_average, run_naive_sqft, DataSplit
 
 
 def _calc_benchmark(model_results: dict[str, ModelResults]):
@@ -165,26 +165,28 @@ def run_benchmark(
 		else:
 			dep_vars = dep_var_dict["default"]
 
+		ds = DataSplit(df, ind_var, dep_vars)
+
 		if model_name == "garbage":
-			results = run_garbage(df, ind_var, dep_vars, normal=False, sales_chase=sales_chase, verbose=verbose)
+			results = run_garbage(ds, normal=False, sales_chase=sales_chase, verbose=verbose)
 		elif model_name == "garbage_normal":
-			results = run_garbage(df, ind_var, dep_vars, normal=True, sales_chase=sales_chase, verbose=verbose)
+			results = run_garbage(ds, normal=True, sales_chase=sales_chase, verbose=verbose)
 		elif model_name == "mean":
-			results = run_average(df, ind_var, dep_vars, type="mean", sales_chase=sales_chase, verbose=verbose)
+			results = run_average(ds, type="mean", sales_chase=sales_chase, verbose=verbose)
 		elif model_name == "median":
-			results = run_average(df, ind_var, dep_vars, type="median", sales_chase=sales_chase, verbose=verbose)
+			results = run_average(ds, type="median", sales_chase=sales_chase, verbose=verbose)
 		elif model_name == "naive_sqft":
-			results = run_naive_sqft(df, ind_var, dep_vars, sales_chase=sales_chase, verbose=verbose)
+			results = run_naive_sqft(ds, sales_chase=sales_chase, verbose=verbose)
 		elif model_name == "mra":
-			results = run_mra(df, ind_var, dep_vars, verbose=verbose)
+			results = run_mra(ds, verbose=verbose)
 		elif model_name == "gwr":
-			results = run_gwr(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose=verbose)
+			results = run_gwr(ds, outpath, save_params, use_saved_params, verbose=verbose)
 		elif model_name == "xgboost":
-			results = run_xgboost(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose=verbose)
+			results = run_xgboost(ds, outpath, save_params, use_saved_params, verbose=verbose)
 		elif model_name == "lightgbm":
-			results = run_lightgbm(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose=verbose)
+			results = run_lightgbm(ds, outpath, save_params, use_saved_params, verbose=verbose)
 		elif model_name == "catboost":
-			results = run_catboost(df, ind_var, dep_vars, outpath, save_params, use_saved_params, verbose=verbose)
+			results = run_catboost(ds, outpath, save_params, use_saved_params, verbose=verbose)
 		if results is not None:
 			model_results[model] = results
 

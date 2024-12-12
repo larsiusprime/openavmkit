@@ -2,7 +2,6 @@ import json
 import math
 import os
 import polars as pl
-import random
 from typing import Union
 
 import numpy as np
@@ -11,7 +10,6 @@ import pandas as pd
 import xgboost
 import lightgbm as lgb
 import catboost
-from IPython.core.display_functions import display
 from catboost import CatBoostRegressor
 from lightgbm import Booster
 from mgwr.gwr import MGWR, GWR
@@ -79,6 +77,8 @@ class DataSplit:
 	y_train: pd.Series
 	X_test: pd.DataFrame
 	y_test: pd.Series
+	ind_var: str
+	dep_vars: list[str]
 
 	def __init__(self,
 			df: pd.DataFrame,
@@ -89,8 +89,8 @@ class DataSplit:
 			days_field: str = "sale_age_days"
 	):
 
-		self.df_universe = df
-		self.df_sales = df[df["valid_sale"].eq(1)].reset_index(drop=True)
+		self.df_universe = df.copy()
+		self.df_sales = df[df["valid_sale"].eq(1)].copy().reset_index(drop=True)
 
 		# Pre-sort dataframes so that rolling origin cross-validation can assume oldest observations first:
 		if days_field in self.df_universe:
@@ -129,6 +129,9 @@ class DataSplit:
 
 		self.X_test = self.df_test[dep_vars]
 		self.y_test = self.df_test[ind_var]
+
+		self.ind_var = ind_var
+		self.dep_vars = dep_vars
 
 class ModelResults:
 	type: str
@@ -260,14 +263,11 @@ def model_utility_score(
 
 
 def run_mra(
-		df: pd.DataFrame,
-		ind_var: str,
-		dep_vars: list[str],
+		ds: DataSplit,
 		intercept: bool = True,
 		verbose: bool = False
 ):
 		timing = TimingData()
-		ds = DataSplit(df, ind_var, dep_vars)
 
 		timing.start("total")
 
@@ -303,6 +303,12 @@ def run_mra(
 		y_pred_univ = fitted_model.predict(ds.X_univ).to_numpy()
 		timing.stop("predict_full")
 
+		timing.stop("total")
+
+		df = ds.df_universe
+		ind_var = ds.ind_var
+		dep_vars = ds.dep_vars
+
 		# gather the predictions
 		df["prediction"] = y_pred_univ
 
@@ -323,15 +329,11 @@ def run_mra(
 			verbose=verbose
 		)
 
-		timing.stop("total")
-
 		return results
 
 
 def run_gwr(
-		df: pd.DataFrame,
-		ind_var: str,
-		dep_vars: list[str],
+		ds: DataSplit,
 		outpath: str,
 		save_params: bool = False,
 		use_saved_params: bool = False,
@@ -339,9 +341,7 @@ def run_gwr(
 ):
 	"""
 	Runs a GWR model
-	:param df_in: The input dataframe
-	:param ind_var: The independent variable
-	:param dep_vars: The dependent variables
+	:param ds: The data split object containing processed input data
 	:param outpath: The output path
 	:param save_params: Whether to save the parameters
 	:param use_saved_params: Whether to use saved parameters
@@ -349,7 +349,6 @@ def run_gwr(
 	:return: The model results
 	"""
 	timing = TimingData()
-	ds = DataSplit(df, ind_var, dep_vars)
 
 	timing.start("total")
 
@@ -451,7 +450,9 @@ def run_gwr(
 	).flatten()
 	timing.stop("predict_full")
 
-	timing.stop("total")
+	df = ds.df_universe
+	ind_var = ds.ind_var
+	dep_vars = ds.dep_vars
 
 	df["prediction"] = y_pred_univ
 	results = ModelResults(
@@ -469,13 +470,13 @@ def run_gwr(
 		y_pred_univ,
 		timing
 	)
+	timing.stop("total")
+
 	return results
 
 
 def run_xgboost(
-		df: pd.DataFrame,
-		ind_var: str,
-		dep_vars: list[str],
+		ds: DataSplit,
 		outpath: str,
 		save_params: bool = False,
 		use_saved_params: bool = False,
@@ -483,9 +484,7 @@ def run_xgboost(
 ):
 	"""
 	Runs an XGBoost model
-	:param df_in: The input dataframe
-	:param ind_var: The independent variable
-	:param dep_vars: The dependent variables
+	:param ds: The data split object containing processed input data
 	:param outpath: The output path
 	:param save_params: Whether to save the parameters
 	:param use_saved_params: Whether to use saved parameters
@@ -493,7 +492,6 @@ def run_xgboost(
 	:return: The model results
 	"""
 	timing = TimingData()
-	ds = DataSplit(df, ind_var, dep_vars)
 
 	timing.start("total")
 
@@ -523,6 +521,10 @@ def run_xgboost(
 
 	timing.stop("total")
 
+	df = ds.df_universe
+	ind_var = ds.ind_var
+	dep_vars = ds.dep_vars
+
 	df["prediction"] = y_pred_univ
 	results = ModelResults(
 		df,
@@ -543,9 +545,7 @@ def run_xgboost(
 
 
 def run_lightgbm(
-		df: pd.DataFrame,
-		ind_var: str,
-		dep_vars: list[str],
+		ds: DataSplit,
 		outpath: str,
 		save_params: bool = False,
 		use_saved_params: bool = False,
@@ -553,9 +553,7 @@ def run_lightgbm(
 ):
 	"""
 	Runs a LightGBM model
-	:param df_in: The input dataframe
-	:param ind_var: The independent variable
-	:param dep_vars: The dependent variables
+	:param ds: The data split object containing processed input data
 	:param outpath: The output path
 	:param save_params: Whether to save the parameters
 	:param use_saved_params: Whether to use saved parameters
@@ -563,7 +561,6 @@ def run_lightgbm(
 	:return: The model results
 	"""
 	timing = TimingData()
-	ds = DataSplit(df, ind_var, dep_vars)
 
 	timing.start("total")
 
@@ -605,6 +602,10 @@ def run_lightgbm(
 
 	timing.stop("total")
 
+	ind_var = ds.ind_var
+	dep_vars = ds.dep_vars
+	df = ds.df_universe
+
 	df["prediction"] = y_pred_univ
 	results = ModelResults(
 		df,
@@ -625,9 +626,7 @@ def run_lightgbm(
 
 
 def run_catboost(
-		df_in: pd.DataFrame,
-		ind_var: str,
-		dep_vars: list[str],
+		ds: DataSplit,
 		outpath: str,
 		save_params: bool = False,
 		use_saved_params: bool = False,
@@ -635,9 +634,7 @@ def run_catboost(
 ):
 	"""
 	Runs a CatBoost model
-	:param df_in: The input dataframe
-	:param ind_var: The independent variable
-	:param dep_vars: The dependent variables
+	:param ds: The data split object containing processed input data
 	:param outpath: The output path
 	:param save_params: Whether to save the parameters
 	:param use_saved_params: Whether to use saved parameters
@@ -645,8 +642,6 @@ def run_catboost(
 	:return: The model results
 	"""
 	timing = TimingData()
-	df = df_in.copy()
-	ds = DataSplit(df, ind_var, dep_vars)
 
 	timing.start("total")
 
@@ -678,6 +673,10 @@ def run_catboost(
 
 	timing.stop("total")
 
+	df = ds.df_universe
+	ind_var = ds.ind_var
+	dep_vars = ds.dep_vars
+
 	df["prediction"] = y_pred_univ
 	results = ModelResults(
 		df,
@@ -699,26 +698,20 @@ def run_catboost(
 
 
 def run_garbage(
-		df_in: pd.DataFrame,
-		ind_var: str,
-		dep_vars: list[str],
+		ds: DataSplit,
 		normal: bool = False,
 		sales_chase: float = 0.0,
 		verbose: bool = False
 ):
 	"""
 	Runs a garbage model that simply predicts random values between the min and max of the training set.
-	:param df_in: The input dataframe
-	:param ind_var: The independent variable
-	:param dep_vars: The dependent variables
+	:param ds: The data split object containing processed input data
 	:param normal: Whether to use a normal or uniform distribution when randomly picking
 	:param sales_chase: If not 0, simulate sales chasing by predicting the sales set as the test set, with this much noise
 	:param verbose: Whether to print verbose output
 	:return: The model results
 	"""
 	timing = TimingData()
-	df = df_in.copy()
-	ds = DataSplit(df, ind_var, dep_vars)
 
 	timing.start("total")
 
@@ -756,10 +749,14 @@ def run_garbage(
 
 	timing.stop("total")
 
+	df = ds.df_universe
+	ind_var = ds.ind_var
+	dep_vars = ds.dep_vars
+
 	if sales_chase:
 		y_pred_test = ds.y_test * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_test))
 		y_pred_sales = ds.y_sales * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_sales))
-		y_pred_univ = _sales_chase_univ(df_in, ind_var, y_pred_univ) * np.random.choice([1-sales_chase, 1+sales_chase], len(y_pred_univ))
+		y_pred_univ = _sales_chase_univ(df, ind_var, y_pred_univ) * np.random.choice([1-sales_chase, 1+sales_chase], len(y_pred_univ))
 
 	name = "garbage"
 	if normal:
@@ -788,26 +785,20 @@ def run_garbage(
 
 
 def run_average(
-		df_in: pd.DataFrame,
-		ind_var: str,
-		dep_vars: list[str],
+		ds: DataSplit,
 		type: str = "mean",
 		sales_chase: float = 0.0,
 		verbose: bool = False
 ):
 	"""
 	Runs a garbage model that simply predicts the average of the training set for everything
-	:param df_in: The input dataframe
-	:param ind_var: The independent variable
-	:param dep_vars: The dependent variables
+	:param ds: The data split object containing processed input data
 	:param type: The type of average to use ("mean" or "median")
 	:param sales_chase: If not 0, simulate sales chasing by predicting the sales set as the test set, with this much noise
 	:param verbose: Whether to print verbose output
 	:return: The model results
 	"""
 	timing = TimingData()
-	df = df_in.copy()
-	ds = DataSplit(df, ind_var, dep_vars)
 
 	timing.start("total")
 
@@ -846,10 +837,14 @@ def run_average(
 
 	timing.stop("total")
 
+	df = ds.df_universe
+	ind_var = ds.ind_var
+	dep_vars = ds.dep_vars
+
 	if sales_chase:
 		y_pred_test = ds.y_test * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_test))
 		y_pred_sales = ds.y_sales * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_sales))
-		y_pred_univ = _sales_chase_univ(df_in, ind_var, y_pred_univ) * np.random.choice([1-sales_chase, 1+sales_chase], len(y_pred_univ))
+		y_pred_univ = _sales_chase_univ(df, ind_var, y_pred_univ) * np.random.choice([1-sales_chase, 1+sales_chase], len(y_pred_univ))
 
 	name = "mean"
 	if type == "median":
@@ -878,25 +873,19 @@ def run_average(
 
 
 def run_naive_sqft(
-		df_in: pd.DataFrame,
-		ind_var: str,
-		dep_vars: list[str],
+		ds: DataSplit,
 		sales_chase: float = 0.0,
 		verbose: bool = False
 ):
 	"""
 	Runs a garbage model that simply predicts the median $/sqft of the training set for everything
-	:param df_in: The input dataframe
-	:param ind_var: The independent variable
-	:param dep_vars: The dependent variables
+	:param ds: The data split object containing processed input data
 	:param type: The type of average to use ("mean" or "median")
 	:param sales_chase: If not 0, simulate sales chasing by predicting the sales set as the test set, with this much noise
 	:param verbose: Whether to print verbose output
 	:return: The model results
 	"""
 	timing = TimingData()
-	df = df_in.copy()
-	ds = DataSplit(df, ind_var, dep_vars)
 
 	timing.start("total")
 
@@ -962,10 +951,14 @@ def run_naive_sqft(
 
 	timing.stop("total")
 
+	df = ds.df_universe
+	ind_var = ds.ind_var
+	dep_vars = ds.dep_vars
+
 	if sales_chase:
 		y_pred_test = ds.y_test * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_test))
 		y_pred_sales = ds.y_sales * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_sales))
-		y_pred_univ = _sales_chase_univ(df_in, ind_var, y_pred_univ) * np.random.choice([1-sales_chase, 1+sales_chase], len(y_pred_univ))
+		y_pred_univ = _sales_chase_univ(df, ind_var, y_pred_univ) * np.random.choice([1-sales_chase, 1+sales_chase], len(y_pred_univ))
 
 	name = "naive_sqft"
 	if sales_chase:
