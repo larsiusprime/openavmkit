@@ -2,6 +2,7 @@ import json
 import math
 import os
 import polars as pl
+from joblib import Parallel, delayed
 from typing import Union
 
 import numpy as np
@@ -13,6 +14,8 @@ import catboost
 from catboost import CatBoostRegressor
 from lightgbm import Booster
 from mgwr.gwr import MGWR, GWR
+from mgwr.gwr import _compute_betas_gwr, Kernel
+from mgwr.kernels import local_cdist
 from mgwr.sel_bw import Sel_BW
 from sklearn.metrics import mean_squared_error
 from statsmodels.regression.linear_model import RegressionResults
@@ -425,7 +428,7 @@ def run_gwr(
 	timing.start("predict_sales")
 	if verbose:
 		print("GWR: predicting sales set...")
-	y_pred_sales = _run_gwr_prediction_iterations(
+	y_pred_sales = _run_gwr_prediction(
 		coords_sales,
 		coords_train,
 		X_sales,
@@ -439,7 +442,7 @@ def run_gwr(
 	timing.start("predict_full")
 	if verbose:
 		print("GWR: predicting full set...")
-	y_pred_univ = _run_gwr_prediction_iterations(
+	y_pred_univ = _run_gwr_prediction(
 		coords_univ,
 		coords_train,
 		X_univ,
@@ -1001,7 +1004,84 @@ def _sales_chase_univ(df_in, ind_var, y_pred_univ):
 	return df_univ["prediction"].to_numpy()
 
 
-def _run_gwr_prediction_iterations(
+def _gwr_predict(model, points, P, exog_scale=None, exog_resid=None, fit_params={}):
+	"""
+	Standalone function for GWR predictions for a larger set of samples in one go.
+
+	Parameters
+	----------
+	model        : GWR instance
+								 The trained GWR model.
+	points       : array-like
+								 n*2, collection of n sets of (x,y) coordinates for prediction.
+	P            : array-like
+								 n*k, independent variables for prediction.
+	exog_scale   : scalar, optional
+								 Estimated scale from the training set. If None, computed from the model.
+	exog_resid   : array-like, optional
+								 Residuals from the training set. If None, computed from the model.
+	fit_params   : dict, optional
+								 Parameters for fitting the model.
+
+	Returns
+	-------
+	results      : dict
+								 A dictionary with keys "params" and "predy" containing the predictions.
+	"""
+	# Use model's fit method to get training scale and residuals if not provided
+	if (exog_scale is None) and (exog_resid is None):
+		train_gwr = model.fit(**fit_params)
+		exog_scale = train_gwr.scale
+		exog_resid = train_gwr.resid_response
+	elif (exog_scale is not None) and (exog_resid is not None):
+		pass  # Use provided scale and residuals
+	else:
+		raise ValueError("exog_scale and exog_resid must both either be None or specified.")
+
+	# Add intercept column to P if the model includes a constant
+	if model.constant:
+		P = np.hstack([np.ones((len(P), 1)), P])
+
+	# Perform predictions for all points
+	results = Parallel(n_jobs=model.n_jobs)(
+		delayed(_local_gwr_predict_external)(
+			model, point, predictors
+		) for point, predictors in zip(points, P)
+	)
+
+	# Extract results
+	params = np.array([res[0] for res in results])
+	y_pred = np.array([res[1] for res in results])
+
+	return {"params": params, "y_pred": y_pred}
+
+
+def _local_gwr_predict_external(model, point, predictors):
+	# Ensure point and predictors are NumPy arrays
+	point = np.asarray(point).reshape(1, -1)  # shape: (1, 2)
+	predictors = np.asarray(predictors)
+
+	# Use Kernel with points, giving i=0
+	# This tells Kernel: "Compute distances from points[0] to model.coords"
+	weights = Kernel(
+		0,
+		model.coords,
+		model.bw,
+		fixed=model.fixed,
+		function=model.kernel,
+		spherical=model.spherical,
+		points=point  # Here we pass our prediction point
+	).kernel.reshape(-1, 1)
+
+	# Compute local regression betas
+	betas, _ = _compute_betas_gwr(model.y, model.X, weights)
+
+	# Predict response
+	y_pred = np.dot(predictors, betas)[0]
+	return betas.reshape(-1), y_pred
+
+
+def _run_gwr_prediction(
 		coords,
 		coords_train,
 		X,
@@ -1010,39 +1090,11 @@ def _run_gwr_prediction_iterations(
 		y_train,
 		verbose:bool = False
 ):
-	y_pred = np.array([])
-	iterations = int(math.ceil(len(coords) / len(coords_train)))
-	segment_size = len(coords_train)
-	for i in range(0, iterations):
-		coords_segment = coords[i*segment_size: (i+1)*segment_size]
-		X_segment = X[i*segment_size: (i+1)*segment_size]
+	gwr = GWR(coords_train, y_train, X_train, gwr_bw)
+	gwr_results = _gwr_predict(gwr, coords, X)
+	y_pred = gwr_results["y_pred"]
 
-		np_coords_segment = np.array(coords_segment)
-
-		gwr = GWR(coords_train, y_train, X_train, gwr_bw)
-
-		# TODO: you have to reconstruct the model each time you predict
-		# this is for two reasons:
-		# 1. the model can only predict a batch size as large as the training run
-		# 2. you can't call predict() more than once
-		# this works around those limitations for now, at the cost of inflated prediction time
-
-		if verbose:
-			print(f"--> GWR prediction iteration {i+1}/{iterations}")
-
-		gwr_fit = gwr.fit()
-		gwr = gwr_fit.model
-		gwr_result_segment = gwr.predict(
-			np_coords_segment,
-			X_segment
-		)
-		if i == 0:
-			y_pred = gwr_result_segment.predictions
-		else:
-			y_pred = np.concatenate((y_pred, gwr_result_segment.predictions))
 	return y_pred
-
-
 
 
 def _get_params(name:str, slug:str, ds:DataSplit, tune_func, outpath:str, save_params:bool, use_saved_params:bool, verbose:bool):
