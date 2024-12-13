@@ -2,6 +2,7 @@ import json
 import math
 import os
 import polars as pl
+from IPython.core.display_functions import display
 from joblib import Parallel, delayed
 from typing import Union
 
@@ -80,13 +81,18 @@ class DataSplit:
 	y_train: pd.Series
 	X_test: pd.DataFrame
 	y_test: pd.Series
+	test_train_frac: float
+	random_seed: int
 	ind_var: str
 	dep_vars: list[str]
+	categorical_vars: list[str]
+	days_field: str
 
 	def __init__(self,
 			df: pd.DataFrame,
 			ind_var: str,
 			dep_vars: list[str],
+			categorical_vars: list[str],
 			test_train_frac: float = 0.8,
 			random_seed: int = 1337,
 			days_field: str = "sale_age_days"
@@ -106,35 +112,105 @@ class DataSplit:
 		else:
 			raise ValueError(f"Field '{days_field}' not found in dataframe.")
 
+		self.ind_var = ind_var
+		self.dep_vars = dep_vars
+		self.categorical_vars = categorical_vars
+		self.random_seed = random_seed
+		self.days_field = days_field
+		self.test_train_frac = test_train_frac
+		self.split()
+
+
+	def copy(self):
+		# Return a deep copy
+		return DataSplit(
+			self.df_universe.copy(),
+			self.ind_var,
+			self.dep_vars,
+			self.categorical_vars,
+			self.test_train_frac,
+			self.random_seed,
+			self.days_field
+		)
+
+
+	def encode_categoricals(self):
+
+		if len(self.categorical_vars) == 0:
+			return self
+
+		ds = self.copy()
+
+		dep_vars = self.dep_vars
+
+		cat_vars = [col for col in dep_vars if col in self.categorical_vars]
+
+		old_cols = ds.df_universe.columns.values
+
+		# One-hot encode the categorical variables, perform this on ds rather than self, do it for everything:
+		ds.df_universe = pd.get_dummies(ds.df_universe, columns=[col for col in cat_vars if col in ds.df_universe], drop_first=True)
+		ds.df_sales = pd.get_dummies(ds.df_sales, columns=[col for col in cat_vars if col in ds.df_sales], drop_first=True)
+		ds.df_train = pd.get_dummies(ds.df_train, columns=[col for col in cat_vars if col in ds.df_train], drop_first=True)
+		ds.df_test = pd.get_dummies(ds.df_test, columns=[col for col in cat_vars if col in ds.df_test], drop_first=True)
+
+		# Remove the original categorical variables:
+		ds.df_universe = ds.df_universe.drop(columns=[col for col in cat_vars if col in ds.df_universe])
+		ds.df_sales = ds.df_sales.drop(columns=[col for col in cat_vars if col in ds.df_sales])
+		ds.df_train = ds.df_train.drop(columns=[col for col in cat_vars if col in ds.df_train])
+		ds.df_test = ds.df_test.drop(columns=[col for col in cat_vars if col in ds.df_test])
+
+		new_cols = [col for col in ds.df_train.columns.values if col not in old_cols]
+		dep_vars += new_cols
+		dep_vars = [col for col in dep_vars if col in ds.df_train.columns]
+		ds.dep_vars = dep_vars
+
+		# Ensure that only columns found in df_train are in the other dataframes:
+		ds.df_universe = ds.df_universe[ds.df_train.columns]
+		ds.df_sales = ds.df_sales[ds.df_train.columns]
+
+		test_cols = [col for col in ds.df_train.columns if col in ds.df_test.columns]
+		extra_cols = [col for col in ds.df_train.columns if col not in test_cols]
+
+		ds.df_test = ds.df_test[test_cols]
+		# add extra_cols, set them to zero:
+		for col in extra_cols:
+			ds.df_test[col] = 0.0
+
+		return ds
+
+
+	def split(self):
 		# separate df into train & test:
-		np.random.seed(random_seed)
-		self.df_train = self.df_sales.sample(frac=test_train_frac)
+		np.random.seed(self.random_seed)
+		self.df_train = self.df_sales.sample(frac=self.test_train_frac)
 		self.df_test = self.df_sales.drop(self.df_train.index)
 
 		self.df_train = self.df_train.reset_index(drop=True)
 		self.df_test = self.df_test.reset_index(drop=True)
 
 		# sort again because sampling shuffles order:
-		self.df_train.sort_values(by=days_field, ascending=False, inplace=True)
-		self.df_test.sort_values(by=days_field, ascending=False, inplace=True)
+		self.df_train.sort_values(by=self.days_field, ascending=False, inplace=True)
+		self.df_test.sort_values(by=self.days_field, ascending=False, inplace=True)
 
-		self.X_univ = self.df_universe[dep_vars]
+		self.X_univ = self.df_universe[self.dep_vars]
 
-		self.X_sales = self.df_sales[dep_vars]
-		self.y_sales = self.df_sales[ind_var]
+		self.X_sales = self.df_sales[self.dep_vars]
+		self.y_sales = self.df_sales[self.ind_var]
 
-		self.X_train = self.df_train[dep_vars]
-		self.y_train = self.df_train[ind_var]
+		self.X_train = self.df_train[self.dep_vars]
+		self.y_train = self.df_train[self.ind_var]
 
 		# convert all Float64 to float64 in X_train:
 		for col in self.X_train.columns:
-			self.X_train[col] = self.X_train[col].astype("float64")
+			# if it's a Float64 or a boolean, convert it to float64
+			if (self.X_train[col].dtype == "Float64" or
+					self.X_train[col].dtype == "boolean" or
+					self.X_train[col].dtype == "Int64"
+			):
+				self.X_train[col] = self.X_train[col].astype("float64")
 
-		self.X_test = self.df_test[dep_vars]
-		self.y_test = self.df_test[ind_var]
-
-		self.ind_var = ind_var
-		self.dep_vars = dep_vars
+		self.X_test = self.df_test[self.dep_vars]
+		self.y_test = self.df_test[self.ind_var]
 
 class ModelResults:
 	type: str
@@ -275,6 +351,8 @@ def run_mra(
 		timing.start("total")
 
 		timing.start("setup")
+		ds = ds.encode_categoricals()
+		ds.split()
 		if intercept:
 			ds.X_train = sm.add_constant(ds.X_train)
 			ds.X_test = sm.add_constant(ds.X_test)

@@ -134,6 +134,7 @@ def run_benchmark(
 		ind_var: str,
 		dep_var_dict: dict[str | list[str]],
 		models: list[str] | None,
+		categorical_fields: list[str],
 		outdir: str = "default",
 		save_params: bool = False,
 		use_saved_params: bool = False,
@@ -165,7 +166,7 @@ def run_benchmark(
 		else:
 			dep_vars = dep_var_dict["default"]
 
-		ds = DataSplit(df, ind_var, dep_vars)
+		ds = DataSplit(df, ind_var, dep_vars, categorical_fields)
 
 		if model_name == "garbage":
 			results = run_garbage(ds, normal=False, sales_chase=sales_chase, verbose=verbose)
