@@ -117,7 +117,7 @@ def test_models_guilford():
 	#df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [], verbose=True)
 	models = [
 		"mra",
-		#"gwr",
+		"gwr",
 		"lightgbm",
 		"catboost",
 		"xgboost",
