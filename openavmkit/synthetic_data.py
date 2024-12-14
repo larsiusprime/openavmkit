@@ -20,7 +20,7 @@ def generate_basic(
 		"land_value": [],
 		"bldg_value": [],
 		"total_value": [],
-		"distance_from_cbd": [],
+		"dist_to_cbd": [],
 		"valid_sale": [],
 		"sale_price": [],
 		"latitude": [],
@@ -112,7 +112,7 @@ def generate_basic(
 			data["land_value"].append(land_value)
 			data["bldg_value"].append(bldg_value)
 			data["total_value"].append(total_value)
-			data["distance_from_cbd"].append(dist_center)
+			data["dist_to_cbd"].append(dist_center)
 			data["latitude"].append(latitude)
 			data["longitude"].append(longitude)
 			data["valid_sale"].append(valid_sale)
@@ -123,10 +123,10 @@ def generate_basic(
 
 	# Derive neighborhood:
 	distance_quantiles = [0.0, 0.25, 0.75, 1.0]
-	distance_bins = [np.quantile(df["distance_from_cbd"], q) for q in distance_quantiles]
+	distance_bins = [np.quantile(df["dist_to_cbd"], q) for q in distance_quantiles]
 	distance_labels = ["urban", "suburban", "rural"]
 	df["neighborhood"] = pd.cut(
-		df["distance_from_cbd"],
+		df["dist_to_cbd"],
 		bins=distance_bins,
 		labels=distance_labels,
 		include_lowest=True

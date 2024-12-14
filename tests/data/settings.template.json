@@ -1,4 +1,29 @@
 {
+	"locality": {},
+	"data": {
+		"load": {},
+		"merge": {},
+		"clean": {}
+	},
+	"modeling": {
+		"metadata": {},
+		"default": {
+			"dep_vars": []
+		}
+	},
+	"analysis": {
+		"horizontal_equity": {
+			"location": "neighborhood",
+			"fields_categorical": [],
+			"fields_numeric": [
+				"land_area_sqft",
+				"bldg_area_finished_sqft",
+				"bldg_quality_num",
+				"bldg_condition_num",
+				"bldg_age_years"
+			]
+		}
+	},
 	"field_classification": {
 		"land": {
 			"numeric": [
@@ -29,9 +54,59 @@
 				"assr_land_value",
 				"assr_land_value_land_sqft",
 				"predicted_land_value",
-				"predicted_land_value_per_land_sqft"
+				"predicted_land_value_per_land_sqft",
+				"dist_to_cbd"
 			],
 			"categorical": [
+				"land_class",
+				"rectangularity_txt",
+				"neighborhood",
+				"census_tract",
+				"census_block_group",
+				"city",
+				"school_district",
+				"zoning",
+				"zoning_class",
+				"zoning_desc",
+				"zoning_class_desc",
+				"zoning_category",
+				"osm_street_name",
+				"osm_street_type",
+				"osm_corner_lot_type",
+				"osm_corner_lot_street",
+				"osm_waterfront_name",
+				"osm_golf_course_name",
+				"osm_park_name",
+				"osm_playground_name",
+				"osm_swimming_pool_name"
+			],
+			"boolean": [
+				"is_triangular",
+				"is_complex_geometry",
+				"is_elongated",
+				"is_irregular",
+				"osm_is_corner_lot",
+				"osm_is_cul_de_sac",
+				"osm_is_waterfront",
+				"osm_on_golf_course",
+				"osm_on_park",
+				"osm_on_playground",
+				"osm_on_swimming_pool"
+			]
+		},
+		"impr": {
+			"numeric": [
+				"bldg_count",
+				"bldg_area_finished_sqft",
+				"bldg_quality_num",
+				"bldg_condition_num",
+				"bldg_age_years",
+				"bldg_effective_age_years"
+			],
+			"categorical": [
+				"bldg_fixtures",
+				"bldg_plumbing",
+				"bldg_class",
 				"bldg_desc",
 				"bldg_type",
 				"bldg_style",
@@ -43,11 +118,26 @@
 				"bldg_condition_txt"
 			]
 		},
-		"impr": {
-
-		},
 		"other": {
-
+			"numeric": [
+				"sale_age_days"
+			],
+			"categorical": [
+				"he_id",
+				"model_group",
+				"warning_vacant_discrepancy",
+				"warning_vacant_positive_year_built",
+				"warning_vacant_positive_impr_numeric",
+				"warning_vacant_has_impr_categorical"
+			],
+			"boolean": [
+				"is_vacant",
+				"vacant_sale",
+				"valid_for_ratio_study",
+				"valid_for_land_ratio_study",
+				"valid_for_modeling",
+				"potential_vacant_sale"
+			]
 		}
 	}
 }

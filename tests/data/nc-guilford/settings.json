@@ -1,4 +1,72 @@
 {
+	"locality": {
+		"county": "Guilford",
+		"state": "NC",
+		"slug": "nc-guilford"
+	},
+	"data": {
+		"load": {
+			"all_data": {
+				"filename": "universe_clean.parquet",
+				"dtypes": {}
+			}
+		},
+		"merge": {
+			"all_entry": {"how": "left", "on": "key"}
+		},
+		"clean": {}
+	},
+	"modeling": {
+		"metadata": {
+			"valuation_date": "2025-01-01",
+			"use_sales_from": 2020,
+			"test_sales_from": 2024
+		},
+		"instructions": {
+			"run": [
+				"lightgbm",
+				"catboost",
+				"xgboost",
+				"mra",
+				"gwr"
+			],
+			"ensemble": [],
+			"allocation": []
+		},
+		"models": {
+			"default": {
+				"dep_vars": [
+					"bldg_area_finished_sqft",
+					"land_area_sqft",
+					"bldg_quality_num",
+					"bldg_condition_num",
+					"bldg_age_years",
+					"dist_to_cbd",
+					"latitude",
+					"longitude",
+					"rectangularity_num",
+					"slope_mean",
+					"elevation_mean",
+					"dist_to_universities",
+					"dist_to_colleges",
+					"dist_to_greenspace",
+					"dist_to_airport",
+					"sale_age_days",
+					"bldg_style"
+				]
+			},
+			"gwr": {
+				"dep_vars": [
+					"bldg_area_finished_sqft",
+					"bldg_age_years",
+					"land_area_sqft",
+					"rectangularity_num",
+					"dist_to_cbd",
+					"elevation_mean"
+				]
+			}
+		}
+	},
 	"field_classification": {
 		"land": {
 			"numeric": [

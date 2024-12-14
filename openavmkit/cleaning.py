@@ -1,6 +1,7 @@
 import pandas as pd
+from IPython.core.display_functions import display
 
-from openavmkit.utilities.settings import get_valuation_date
+from openavmkit.utilities.settings import get_valuation_date, get_fields_categorical
 
 
 def fill_median_impr_field(df, field):
@@ -25,14 +26,15 @@ def fill_median_impr_field(df, field):
 	return df
 
 
-def fill_unknown_values_per_model_group(df, settings: dict, categorical_fields: list[str]=None):
+def fill_unknown_values_per_model_group(df, settings: dict):
 	model_groups = df["model_group"].unique()
+	cat_fields = get_fields_categorical(settings, df)
 
 	df_return: pd.DataFrame | None = None
 
 	for model_group in model_groups:
 		df_group = df[df["model_group"].eq(model_group)]
-		df_group = fill_unknown_values(df_group, settings, categorical_fields)
+		df_group = fill_unknown_values(df_group, settings, cat_fields)
 
 		if df_return is None:
 			df_return = df_group
