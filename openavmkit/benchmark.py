@@ -4,6 +4,7 @@ from IPython.core.display_functions import display
 
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, ModelResults, run_garbage, \
 	run_average, run_naive_sqft, DataSplit
+from openavmkit.utilities.settings import get_fields_categorical, get_fields_numeric
 
 
 def _calc_benchmark(model_results: dict[str, ModelResults]):
@@ -131,28 +132,45 @@ def format_benchmark_df(df: pd.DataFrame):
 
 def run_benchmark(
 		df: pd.DataFrame,
-		ind_var: str,
-		dep_var_dict: dict[str | list[str]],
-		models: list[str] | None,
-		categorical_fields: list[str],
-		outdir: str = "default",
+		settings: dict,
 		save_params: bool = False,
 		use_saved_params: bool = False,
 		verbose: bool = False
 ):
+	s = settings
+	s_model = s.get("modeling", {})
+	ind_var = s_model.get("ind_var", "sale_price")
+
+	model_dict = s_model.get("models", None)
+	if model_dict is None:
+		raise ValueError("settings.modeling.models not found!")
+
+	fields_cat = get_fields_categorical(s, df)
+
+	s_inst = s_model.get("instructions", {})
+
+	models_to_run = s_inst.get("run", None)
+	model_entries = s_model.get("models", {})
+	if models_to_run is None:
+		models_to_run = list(model_entries.keys())
+
 	if "he_id" not in df:
 		raise ValueError("Could not find equity cluster ID's in the dataframe (he_id)")
-
-	if models is None:
-		models = ["mra", "gwr", "xgboost", "lightgbm", "catboost"]
 
 	results = None
 	model_results = {}
 
-	outpath = f"out/benchmark/{outdir}"
+	outpath = f"out"
 
-	for model in models:
+	for model in models_to_run:
 		model_name = model
+		entry = model_entries.get(model, None)
+		if entry is None:
+			entry = model_entries.get("default", None)
+			if entry is None:
+				raise ValueError(f"Model entry for {model} not found, and there is no default entry!")
+
+		# TODO: make this more elegant
 		if "*" in model:
 			sales_chase = 0.01
 			model_name = model.replace("*", "")
@@ -161,12 +179,11 @@ def run_benchmark(
 
 		print(f" running model {model}...")
 
-		if model_name in dep_var_dict:
-			dep_vars = dep_var_dict[model_name]
-		else:
-			dep_vars = dep_var_dict["default"]
+		dep_vars = entry.get("dep_vars", None)
+		if dep_vars is None:
+			raise ValueError(f"dep_vars not found for model {model}")
 
-		ds = DataSplit(df, ind_var, dep_vars, categorical_fields)
+		ds = DataSplit(df, ind_var, dep_vars, fields_cat)
 
 		if model_name == "garbage":
 			results = run_garbage(ds, normal=False, sales_chase=sales_chase, verbose=verbose)

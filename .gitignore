@@ -5,3 +5,4 @@ dist/
 build/
 tests/catboost_info/
 tests/out/
+tests/data/
