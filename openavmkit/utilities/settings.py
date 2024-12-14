@@ -11,3 +11,10 @@ def get_valuation_date(settings: dict):
 	# process the date from string to datetime using format YYYY-MM-DD:
 	val_date = datetime.strptime(val_date_str, "%Y-%m-%d")
 	return val_date
+
+def load_settings(settings_file: str = None):
+	if settings_file is None:
+		settings_file = "settings.json"
+	with open(settings_file, "r") as f:
+		settings = json.load(f)
+	return settings

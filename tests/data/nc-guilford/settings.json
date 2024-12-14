@@ -1,0 +1,47 @@
+{
+	"field_classification": {
+		"land": {
+			"numeric": [
+				"noise_max",
+				"noise_mean",
+				"distance_to_cbd",
+				"distance_to_airport",
+				"distance_to_colleges",
+				"distance_to_greenspace",
+				"distance_to_universities"
+			],
+			"categorical": [
+				"census_block_group",
+				"land_class",
+				"zoning_class",
+				"zoning_desc",
+				"zoning_class_desc",
+				"zoning_category"
+			]
+		},
+		"impr": {
+			"numeric": [
+				"building_fixtures",
+				"building_year_remodeled",
+				"area_footprint_sqft",
+				"total_replacement_value",
+				"total_depreciated_value",
+				"outbuilding_value",
+				"total_depreciation",
+				"percent_depreciation",
+				"building_additions"
+			],
+			"categorical": [
+				"building_class",
+				"building_plumbing",
+				"building_heating",
+				"building_desc"
+			]
+		},
+		"other": {
+			"categorical": [
+				"property_owner"
+			]
+		}
+	}
+}

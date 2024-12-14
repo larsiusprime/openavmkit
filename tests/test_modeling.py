@@ -15,9 +15,6 @@ def test_models_guilford():
 	pd.set_option('display.max_rows',None)
 	pd.set_option('display.max_rows',15)
 
-	df = fill_unknown_values_per_model_group(df, {})
-	df = df[df["model_group"].eq("residential_sf")].copy().reset_index(drop=True)
-
 	categorical_fields = [
 		"census_tract",
 		"census_block_group",
@@ -81,6 +78,9 @@ def test_models_guilford():
 		"he_id"
 	]
 
+	df = fill_unknown_values_per_model_group(df, settings={}, categorical_fields=categorical_fields)
+	df = df[df["model_group"].eq("residential_sf")].copy().reset_index(drop=True)
+
 	ind_var = "sale_price"
 	dep_vars = {
 		"default": [
@@ -117,15 +117,15 @@ def test_models_guilford():
 	#df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [], verbose=True)
 	models = [
 		"mra",
-		# "gwr",
-		# "lightgbm",
-		# "catboost",
-		# "xgboost",
-		# "garbage",
-		# "garbage_normal",
-		# "mean",
-		# "median",
-		# "naive_sqft"
+		#"gwr",
+		"lightgbm",
+		"catboost",
+		"xgboost",
+		"garbage",
+		"garbage_normal",
+		"mean",
+		"median",
+		"naive_sqft"
 	]
 
 	# select only recent sales
@@ -166,30 +166,30 @@ def test_models_synthetic():
 			"bldg_quality_num",
 			"bldg_condition_num",
 			"bldg_age_years",
+			"bldg_type",
 			"distance_from_cbd"
 		]
 	}
 
+	cat_vars = [
+		"bldg_type"
+	]
+
 	# Assign equity cluster ID's
 	df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [], verbose=True)
 	models = [
-		#"garbage",
-		"garbage*",
-		#"garbage_normal",
-		"garbage_normal*",
-		#"mean",
-		"mean*",
-		#"median",
-		"median*",
-		#"naive_sqft",
-		"naive_sqft*",
+		# "garbage*",
+		# "garbage_normal*",
+		# "mean*",
+		# "median*",
+		# "naive_sqft*",
 		"mra",
 		"gwr",
 		"lightgbm",
 		"catboost",
 		"xgboost"
 	]
-	df_test, df_full = run_benchmark(df, ind_var, dep_vars, models, outdir="synthetic-basic", verbose=True, save_params=True, use_saved_params=True)
+	df_test, df_full = run_benchmark(df, ind_var, dep_vars, models, cat_vars, outdir="synthetic-basic", verbose=True, save_params=True, use_saved_params=True)
 
 	print("Test set:")
 	print(format_benchmark_df(df_test))

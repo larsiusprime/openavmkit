@@ -25,17 +25,24 @@ def fill_median_impr_field(df, field):
 	return df
 
 
-def fill_unknown_values_per_model_group(df, settings: dict):
+def fill_unknown_values_per_model_group(df, settings: dict, categorical_fields: list[str]=None):
 	model_groups = df["model_group"].unique()
+
+	df_return: pd.DataFrame | None = None
+
 	for model_group in model_groups:
 		df_group = df[df["model_group"].eq(model_group)]
-		df_group = fill_unknown_values(df_group, settings)
-		# Update the original dataframe with the filled values:
-		df.update(df_group)
-	return df
+		df_group = fill_unknown_values(df_group, settings, categorical_fields)
+
+		if df_return is None:
+			df_return = df_group
+		else:
+			df_return = pd.concat([df_return, df_group], ignore_index=True)
+
+	return df_return
 
 
-def fill_unknown_values(df, settings: dict):
+def fill_unknown_values(df, settings: dict, categorical_fields: list[str]=None):
 	fills = [
 		"bldg_area_finished_sqft",
 		"bldg_quality_num",
@@ -61,5 +68,11 @@ def fill_unknown_values(df, settings: dict):
 
 	df["bldg_age_years"] = valuation_year - df["bldg_year_built"]
 	df["bldg_effective_age_years"] = valuation_year - df["bldg_effective_year_built"]
+
+	if categorical_fields is not None:
+		for field in categorical_fields:
+			df[field] = df[field].astype("str")
+			df[field] = df[field].fillna("UNKNOWN")
+
 	return df
 

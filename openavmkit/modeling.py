@@ -12,7 +12,7 @@ import pandas as pd
 import xgboost
 import lightgbm as lgb
 import catboost
-from catboost import CatBoostRegressor
+from catboost import CatBoostRegressor, Pool
 from lightgbm import Booster
 from mgwr.gwr import MGWR, GWR
 from mgwr.gwr import _compute_betas_gwr, Kernel
@@ -23,6 +23,7 @@ from statsmodels.regression.linear_model import RegressionResults
 from xgboost import XGBRegressor
 
 from openavmkit.ratio_study import RatioStudy
+from openavmkit.utilities.data import clean_column_names
 from openavmkit.utilities.stats import quick_median_chd
 from openavmkit.utilities.tuning import tune_lightgbm, tune_xgboost, tune_catboost
 from openavmkit.utilities.timing import TimingData
@@ -113,8 +114,8 @@ class DataSplit:
 			raise ValueError(f"Field '{days_field}' not found in dataframe.")
 
 		self.ind_var = ind_var
-		self.dep_vars = dep_vars
-		self.categorical_vars = categorical_vars
+		self.dep_vars = dep_vars.copy()
+		self.categorical_vars = categorical_vars.copy()
 		self.random_seed = random_seed
 		self.days_field = days_field
 		self.test_train_frac = test_train_frac
@@ -134,7 +135,22 @@ class DataSplit:
 		)
 
 
-	def encode_categoricals(self):
+	def encode_categoricals_as_categories(self):
+
+		if len(self.categorical_vars) == 0:
+			return self
+
+		ds = self.copy()
+
+		# Ensure all categorical variables are encoded with the "categorical" dtype:
+		for col in ds.categorical_vars:
+			ds.df_universe[col] = ds.df_universe[col].astype("category")
+			ds.df_sales[col] = ds.df_sales[col].astype("category")
+
+		return ds
+
+
+	def encode_categoricals_with_one_hot(self):
 
 		if len(self.categorical_vars) == 0:
 			return self
@@ -152,6 +168,11 @@ class DataSplit:
 		ds.df_sales = pd.get_dummies(ds.df_sales, columns=[col for col in cat_vars if col in ds.df_sales], drop_first=True)
 		ds.df_train = pd.get_dummies(ds.df_train, columns=[col for col in cat_vars if col in ds.df_train], drop_first=True)
 		ds.df_test = pd.get_dummies(ds.df_test, columns=[col for col in cat_vars if col in ds.df_test], drop_first=True)
+
+		ds.df_universe = clean_column_names(ds.df_universe)
+		ds.df_sales = clean_column_names(ds.df_sales)
+		ds.df_train = clean_column_names(ds.df_train)
+		ds.df_test = clean_column_names(ds.df_test)
 
 		# Remove the original categorical variables:
 		ds.df_universe = ds.df_universe.drop(columns=[col for col in cat_vars if col in ds.df_universe])
@@ -204,8 +225,9 @@ class DataSplit:
 		for col in self.X_train.columns:
 			# if it's a Float64 or a boolean, convert it to float64
 			if (self.X_train[col].dtype == "Float64" or
+					self.X_train[col].dtype == "Int64" or
 					self.X_train[col].dtype == "boolean" or
-					self.X_train[col].dtype == "Int64"
+					self.X_train[col].dtype == "bool"
 			):
 				self.X_train[col] = self.X_train[col].astype("float64")
 
@@ -351,7 +373,7 @@ def run_mra(
 		timing.start("total")
 
 		timing.start("setup")
-		ds = ds.encode_categoricals()
+		ds = ds.encode_categoricals_with_one_hot()
 		ds.split()
 		if intercept:
 			ds.X_train = sm.add_constant(ds.X_train)
@@ -434,6 +456,8 @@ def run_gwr(
 	timing.start("total")
 
 	timing.start("setup")
+	ds = ds.encode_categoricals_with_one_hot()
+	ds.split()
 	u_train = ds.df_train['longitude']
 	v_train = ds.df_train['latitude']
 	coords_train = list(zip(u_train, v_train))
@@ -577,6 +601,8 @@ def run_xgboost(
 	timing.start("total")
 
 	timing.start("setup")
+	ds = ds.encode_categoricals_with_one_hot()
+	ds.split()
 	timing.stop("setup")
 
 	timing.start("parameter_search")
@@ -584,6 +610,7 @@ def run_xgboost(
 	timing.stop("parameter_search")
 
 	timing.start("train")
+
 	xgboost_model = xgboost.XGBRegressor(**params)
 	xgboost_model.fit(ds.X_train, ds.y_train)
 	timing.stop("train")
@@ -646,6 +673,8 @@ def run_lightgbm(
 	timing.start("total")
 
 	timing.start("setup")
+	ds = ds.encode_categoricals_as_categories()
+	ds.split()
 	timing.stop("setup")
 
 	timing.start("parameter_search")
@@ -653,10 +682,12 @@ def run_lightgbm(
 	timing.stop("parameter_search")
 
 	timing.start("train")
-	lgb_train = lgb.Dataset(ds.X_train, ds.y_train)
-	lgb_test = lgb.Dataset(ds.X_test, ds.y_test, reference=lgb_train)
+	cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
+	lgb_train = lgb.Dataset(ds.X_train, ds.y_train, categorical_feature=cat_vars)
+	lgb_test  = lgb.Dataset(ds.X_test,  ds.y_test,  categorical_feature=cat_vars, reference=lgb_train)
 
 	params["verbosity"] = -1
+
 	gbm = lgb.train(
 		params,
 		lgb_train,
@@ -733,23 +764,29 @@ def run_catboost(
 	timing.start("setup")
 
 	params["verbose"] = False
+	cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
 	catboost_model = catboost.CatBoostRegressor(**params)
+	train_pool = Pool(data=ds.X_train, label=ds.y_train, cat_features=cat_vars)
+	test_pool = Pool(data=ds.X_test, label=ds.y_test, cat_features=cat_vars)
+	sales_pool = Pool(data=ds.X_sales, label=ds.y_sales, cat_features=cat_vars)
+	univ_pool = Pool(data=ds.X_univ, cat_features=cat_vars)
+
 	timing.stop("setup")
 
 	timing.start("train")
-	catboost_model.fit(ds.X_train, ds.y_train)
+	catboost_model.fit(train_pool)
 	timing.stop("train")
 
 	timing.start("predict_test")
-	y_pred_test = catboost_model.predict(ds.X_test)
+	y_pred_test = catboost_model.predict(test_pool)
 	timing.stop("predict_test")
 
 	timing.start("predict_sales")
-	y_pred_sales = catboost_model.predict(ds.X_sales)
+	y_pred_sales = catboost_model.predict(sales_pool)
 	timing.stop("predict_sales")
 
 	timing.start("predict_full")
-	y_pred_univ = catboost_model.predict(ds.X_univ)
+	y_pred_univ = catboost_model.predict(univ_pool)
 	timing.stop("predict_full")
 
 	timing.stop("total")
@@ -800,6 +837,8 @@ def run_garbage(
 	timing.stop("parameter_search")
 
 	timing.start("setup")
+	ds = ds.encode_categoricals_with_one_hot()
+	ds.split()
 	timing.stop("setup")
 
 	timing.start("train")
@@ -887,6 +926,8 @@ def run_average(
 	timing.stop("parameter_search")
 
 	timing.start("setup")
+	ds = ds.encode_categoricals_with_one_hot()
+	ds.split()
 	timing.stop("setup")
 
 	timing.start("train")
@@ -974,6 +1015,8 @@ def run_naive_sqft(
 	timing.stop("parameter_search")
 
 	timing.start("setup")
+	ds = ds.encode_categoricals_with_one_hot()
+	ds.split()
 	timing.stop("setup")
 
 	timing.start("train")
