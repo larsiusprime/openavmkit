@@ -13,6 +13,7 @@ def generate_basic(
 		"neighborhood": [],
 		"bldg_area_finished_sqft": [],
 		"land_area_sqft": [],
+		"bldg_type": [],
 		"bldg_quality_num": [],
 		"bldg_condition_num": [],
 		"bldg_age_years": [],
@@ -68,7 +69,17 @@ def generate_basic(
 			bldg_age_years = np.clip(np.random.normal(20, 10), 0, 100)
 			land_value = land_area_sqft * land_value_per_land_sqft
 
-			bldg_value_per_sqft = base_bldg_value + (quality_value * bldg_quality_num)
+			bldg_type = np.random.choice(["A", "B", "C"])
+
+			bldg_type_mult = 1.0
+			if bldg_type == "A":
+				bldg_type_mult = 0.5
+			elif bldg_type == "B":
+				bldg_type_mult = 1.0
+			elif bldg_type == "C":
+				bldg_type_mult = 2.0
+
+			bldg_value_per_sqft = (base_bldg_value + (quality_value * bldg_quality_num)) * bldg_type_mult
 
 			depreciation_from_age = min(0.0, 1 - (bldg_age_years / 100))
 			depreciation_from_condition = min(0.0, 1 - (bldg_condition_num / 6))
@@ -97,6 +108,7 @@ def generate_basic(
 			data["bldg_quality_num"].append(bldg_quality_num)
 			data["bldg_condition_num"].append(bldg_condition_num)
 			data["bldg_age_years"].append(bldg_age_years)
+			data["bldg_type"].append(bldg_type)
 			data["land_value"].append(land_value)
 			data["bldg_value"].append(bldg_value)
 			data["total_value"].append(total_value)

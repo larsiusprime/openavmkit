@@ -1,0 +1,53 @@
+{
+	"field_classification": {
+		"land": {
+			"numeric": [
+				"noise_mean",
+				"noise_max",
+				"elevation_mean",
+				"elevation_stdev",
+				"slope_mean",
+				"slope_stdev",
+				"longitude_norm",
+				"latitude_norm",
+				"longitude",
+				"latitude",
+				"land_area_sqft",
+				"land_area_sqft2",
+				"land_area_sqft3",
+				"land_area_sqft_unaltered",
+				"land_area_sqft_assessor",
+				"land_area_gis_sqft",
+				"delta_land_area_sqft",
+				"percent_delta_land_area_sqft",
+				"depth_ft",
+				"frontage_ft",
+				"median_income",
+				"rectangularity_num",
+				"osm_street_speed_limit",
+				"osm_street_lanes",
+				"assr_land_value",
+				"assr_land_value_land_sqft",
+				"predicted_land_value",
+				"predicted_land_value_per_land_sqft"
+			],
+			"categorical": [
+				"bldg_desc",
+				"bldg_type",
+				"bldg_style",
+				"bldg_exterior",
+				"bldg_heating",
+				"bldg_ac",
+				"bldg_foundation",
+				"bldg_quality_txt",
+				"bldg_condition_txt"
+			]
+		},
+		"impr": {
+
+		},
+		"other": {
+
+		}
+	}
+}
