@@ -67,33 +67,63 @@ def merge_settings(template: dict, local: dict, indent:str=""):
 	return merged
 
 
-def get_fields_categorical(s: dict, df: pd.DataFrame = None, include_boolean: bool = True):
-	land_cats = s.get("field_classification", {}).get("land", {}).get("categorical", [])
-	impr_cats = s.get("field_classification", {}).get("impr", {}).get("categorical", [])
-	other_cats = s.get("field_classification", {}).get("other", {}).get("categorical", [])
-	cats = land_cats + impr_cats + other_cats
+def get_fields_categorical(s: dict, df: pd.DataFrame = None, include_boolean: bool = True, types: list[str] = None):
+	if types is None:
+		types = ["land", "impr", "other"]
+	cats = []
+	if "land" in types:
+		cats += s.get("field_classification", {}).get("land", {}).get("categorical", [])
+	if "impr" in types:
+		cats += s.get("field_classification", {}).get("impr", {}).get("categorical", [])
+	if "other" in types:
+		cats += s.get("field_classification", {}).get("other", {}).get("categorical", [])
 	if include_boolean:
-		land_bools = s.get("field_classification", {}).get("land", {}).get("boolean", [])
-		impr_bools = s.get("field_classification", {}).get("impr", {}).get("boolean", [])
-		other_bools = s.get("field_classification", {}).get("other", {}).get("boolean", [])
-		bools = land_bools + impr_bools + other_bools
-		cats += bools
+		if "land" in types:
+			cats += s.get("field_classification", {}).get("land", {}).get("boolean", [])
+		if "impr" in types:
+			cats += s.get("field_classification", {}).get("impr", {}).get("boolean", [])
+		if "other" in types:
+			cats += s.get("field_classification", {}).get("other", {}).get("boolean", [])
 	if df is not None:
 		cats = [cat for cat in cats if cat in df]
 	return cats
 
 
-def get_fields_numeric(s: dict, df: pd.DataFrame = None, include_boolean: bool = False):
-	land_nums = s.get("field_classification", {}).get("land", {}).get("numeric", [])
-	impr_nums = s.get("field_classification", {}).get("impr", {}).get("numeric", [])
-	other_nums = s.get("field_classification", {}).get("other", {}).get("numeric", [])
-	nums = land_nums + impr_nums + other_nums
+def get_fields_numeric(s: dict, df: pd.DataFrame = None, include_boolean: bool = False, types: list[str] = None):
+	if types is None:
+		types = ["land", "impr", "other"]
+	cats = []
+	if "land" in types:
+		cats += s.get("field_classification", {}).get("land", {}).get("numeric", [])
+	if "impr" in types:
+		cats += s.get("field_classification", {}).get("impr", {}).get("numeric", [])
+	if "other" in types:
+		cats += s.get("field_classification", {}).get("other", {}).get("numeric", [])
 	if include_boolean:
-		land_bools = s.get("field_classification", {}).get("land", {}).get("boolean", [])
-		impr_bools = s.get("field_classification", {}).get("impr", {}).get("boolean", [])
-		other_bools = s.get("field_classification", {}).get("other", {}).get("boolean", [])
-		bools = land_bools + impr_bools + other_bools
-		nums += bools
+		if "land" in types:
+			cats += s.get("field_classification", {}).get("land", {}).get("boolean", [])
+		if "impr" in types:
+			cats += s.get("field_classification", {}).get("impr", {}).get("boolean", [])
+		if "other" in types:
+			cats += s.get("field_classification", {}).get("other", {}).get("boolean", [])
 	if df is not None:
-		nums = [num for num in nums if num in df]
-	return nums
+		cats = [cat for cat in cats if cat in df]
+	return cats
+
+
+def get_variable_interactions(entry: dict, settings: dict, df: pd.DataFrame = None):
+	interactions: dict | None = entry.get("interactions", None)
+	if interactions is None:
+		return {}
+	is_default = interactions.get("default", False)
+	if is_default:
+		result = {}
+		fields_land = get_fields_categorical(settings, df, types=["land"])
+		fields_impr = get_fields_categorical(settings, df, types=["impr"])
+		for field in fields_land:
+			result[field] = "land_area_sqft"
+		for field in fields_impr:
+			result[field] = "bldg_area_finished_sqft"
+		return result
+	else:
+		return interactions.get("fields", {})

@@ -7,8 +7,13 @@
 	},
 	"modeling": {
 		"metadata": {},
-		"default": {
-			"dep_vars": []
+		"models": {
+			"default": {
+				"dep_vars": [],
+				"interactions": {
+					"default": true
+				}
+			}
 		}
 	},
 	"analysis": {
