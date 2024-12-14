@@ -4,7 +4,7 @@ from IPython.core.display_functions import display
 
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, ModelResults, run_garbage, \
 	run_average, run_naive_sqft, DataSplit
-from openavmkit.utilities.settings import get_fields_categorical, get_fields_numeric
+from openavmkit.utilities.settings import get_fields_categorical, get_fields_numeric, get_variable_interactions
 
 
 def _calc_benchmark(model_results: dict[str, ModelResults]):
@@ -183,7 +183,9 @@ def run_benchmark(
 		if dep_vars is None:
 			raise ValueError(f"dep_vars not found for model {model}")
 
-		ds = DataSplit(df, ind_var, dep_vars, fields_cat)
+		interactions = get_variable_interactions(entry, settings, df)
+
+		ds = DataSplit(df, ind_var, dep_vars, fields_cat, interactions)
 
 		if model_name == "garbage":
 			results = run_garbage(ds, normal=False, sales_chase=sales_chase, verbose=verbose)

@@ -1,10 +1,5 @@
-import os
-
 import pandas as pd
 import geopandas as gpd
-from IPython.core.display_functions import display
-
-from openavmkit.utilities.settings import get_base_dir
 
 
 def load_data(settings: dict) -> pd.DataFrame:

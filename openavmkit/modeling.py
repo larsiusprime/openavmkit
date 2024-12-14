@@ -87,6 +87,8 @@ class DataSplit:
 	ind_var: str
 	dep_vars: list[str]
 	categorical_vars: list[str]
+	interactions: dict
+	one_hot_descendants: dict
 	days_field: str
 
 	def __init__(self,
@@ -94,6 +96,7 @@ class DataSplit:
 			ind_var: str,
 			dep_vars: list[str],
 			categorical_vars: list[str],
+			interactions: dict,
 			test_train_frac: float = 0.8,
 			random_seed: int = 1337,
 			days_field: str = "sale_age_days"
@@ -116,6 +119,8 @@ class DataSplit:
 		self.ind_var = ind_var
 		self.dep_vars = dep_vars.copy()
 		self.categorical_vars = categorical_vars.copy()
+		self.interactions = interactions.copy()
+		self.one_hot_descendants = {}
 		self.random_seed = random_seed
 		self.days_field = days_field
 		self.test_train_frac = test_train_frac
@@ -129,6 +134,7 @@ class DataSplit:
 			self.ind_var,
 			self.dep_vars,
 			self.categorical_vars,
+			self.interactions,
 			self.test_train_frac,
 			self.random_seed,
 			self.days_field
@@ -185,6 +191,22 @@ class DataSplit:
 		dep_vars = [col for col in dep_vars if col in ds.df_train.columns]
 		ds.dep_vars = dep_vars
 
+		# sort cat vars so the longest strings come first:
+		cat_vars = sorted(cat_vars, key=len, reverse=True)
+
+		ds.one_hot_descendants = {}
+		matched = []
+		for col in new_cols:
+			for orig_col in cat_vars:
+				if col in matched:
+					continue
+				if orig_col in col:
+					if orig_col not in ds.one_hot_descendants:
+						ds.one_hot_descendants[orig_col] = []
+					ds.one_hot_descendants[orig_col].append(col)
+					matched.append(col)
+
+
 		# Ensure that only columns found in df_train are in the other dataframes:
 		ds.df_universe = ds.df_universe[ds.df_train.columns]
 		ds.df_sales = ds.df_sales[ds.df_train.columns]
@@ -213,13 +235,36 @@ class DataSplit:
 		self.df_train.sort_values(by=self.days_field, ascending=False, inplace=True)
 		self.df_test.sort_values(by=self.days_field, ascending=False, inplace=True)
 
-		self.X_univ = self.df_universe[self.dep_vars]
+		_df_univ = self.df_universe.copy()
+		_df_sales = self.df_sales.copy()
+		_df_train = self.df_train.copy()
+		_df_test = self.df_test.copy()
 
-		self.X_sales = self.df_sales[self.dep_vars]
-		self.y_sales = self.df_sales[self.ind_var]
+		# if interactions is not empty, multiply the fields together:
+		if self.interactions is not None and len(self.interactions) > 0:
+			for parent_field, fill_field in self.interactions.items():
+				target_fields = []
+				if parent_field in self.one_hot_descendants:
+					target_fields = self.one_hot_descendants[parent_field].copy()
+				if parent_field not in self.categorical_vars:
+					target_fields += parent_field
+				for target_field in target_fields:
+					if target_field in _df_univ:
+						_df_univ[target_field] = _df_univ[target_field] * _df_univ[fill_field]
+					if target_field in _df_sales:
+						_df_sales[target_field] = _df_sales[target_field] * _df_sales[fill_field]
+					if target_field in _df_train:
+						_df_train[target_field] = _df_train[target_field] * _df_train[fill_field]
+					if target_field in _df_test:
+						_df_test[target_field] = _df_test[target_field] * _df_test[fill_field]
 
-		self.X_train = self.df_train[self.dep_vars]
-		self.y_train = self.df_train[self.ind_var]
+		self.X_univ = _df_univ[self.dep_vars]
+
+		self.X_sales = _df_sales[self.dep_vars]
+		self.y_sales = _df_sales[self.ind_var]
+
+		self.X_train = _df_train[self.dep_vars]
+		self.y_train = _df_train[self.ind_var]
 
 		# convert all Float64 to float64 in X_train:
 		for col in self.X_train.columns:
@@ -231,8 +276,8 @@ class DataSplit:
 			):
 				self.X_train[col] = self.X_train[col].astype("float64")
 
-		self.X_test = self.df_test[self.dep_vars]
-		self.y_test = self.df_test[self.ind_var]
+		self.X_test = _df_test[self.dep_vars]
+		self.y_test = _df_test[self.ind_var]
 
 class ModelResults:
 	type: str
