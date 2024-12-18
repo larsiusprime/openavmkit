@@ -85,6 +85,7 @@ class DataSplit:
 	test_train_frac: float
 	random_seed: int
 	ind_var: str
+	ind_var_test: str
 	dep_vars: list[str]
 	categorical_vars: list[str]
 	interactions: dict
@@ -94,6 +95,7 @@ class DataSplit:
 	def __init__(self,
 			df: pd.DataFrame,
 			ind_var: str,
+			ind_var_test: str,
 			dep_vars: list[str],
 			categorical_vars: list[str],
 			interactions: dict,
@@ -117,6 +119,7 @@ class DataSplit:
 			raise ValueError(f"Field '{days_field}' not found in dataframe.")
 
 		self.ind_var = ind_var
+		self.ind_var_test = ind_var_test
 		self.dep_vars = dep_vars.copy()
 		self.categorical_vars = categorical_vars.copy()
 		self.interactions = interactions.copy()
@@ -132,6 +135,7 @@ class DataSplit:
 		return DataSplit(
 			self.df_universe.copy(),
 			self.ind_var,
+			self.ind_var_test,
 			self.dep_vars,
 			self.categorical_vars,
 			self.interactions,
@@ -277,11 +281,12 @@ class DataSplit:
 				self.X_train[col] = self.X_train[col].astype("float64")
 
 		self.X_test = _df_test[self.dep_vars]
-		self.y_test = _df_test[self.ind_var]
+		self.y_test = _df_test[self.ind_var_test]
 
 class ModelResults:
 	type: str
 	ind_var: str
+	ind_var_test: str
 	dep_vars: list[str]
 	model: PredictionModel
 	pred_test: PredictionResults
@@ -297,6 +302,7 @@ class ModelResults:
 			field_horizontal_equity_id: str,
 			type: str,
 			ind_var: str,
+			ind_var_test: str,
 			dep_vars: list[str],
 			model: PredictionModel,
 			y_test: pd.Series,
@@ -309,15 +315,16 @@ class ModelResults:
 	):
 		self.type = type
 		self.ind_var = ind_var
+		self.ind_var_test = ind_var_test
 		self.dep_vars = dep_vars
 		self.model = model
 
 		timing.start("stats_test")
-		self.pred_test = PredictionResults(ind_var, dep_vars, y_test, y_pred_test)
+		self.pred_test = PredictionResults(ind_var_test, dep_vars, y_test, y_pred_test)
 		timing.stop("stats_test")
 
 		timing.start("stats_sales")
-		self.pred_sales = PredictionResults(ind_var, dep_vars, y_sales, y_pred_sales)
+		self.pred_sales = PredictionResults(ind_var_test, dep_vars, y_sales, y_pred_sales)
 		timing.stop("stats_sales")
 
 		if verbose:
@@ -455,6 +462,7 @@ def run_mra(
 
 		df = ds.df_universe
 		ind_var = ds.ind_var
+		ind_var_test = ds.ind_var_test
 		dep_vars = ds.dep_vars
 
 		# gather the predictions
@@ -466,6 +474,7 @@ def run_mra(
 			"he_id",
 			"mra",
 			ind_var,
+			ind_var_test,
 			dep_vars,
 			fitted_model,
 			ds.y_test,
@@ -602,6 +611,7 @@ def run_gwr(
 
 	df = ds.df_universe
 	ind_var = ds.ind_var
+	ind_var_test = ds.ind_var_test
 	dep_vars = ds.dep_vars
 
 	df["prediction"] = y_pred_univ
@@ -611,6 +621,7 @@ def run_gwr(
 		"he_id",
 		"gwr",
 		ind_var,
+		ind_var_test,
 		dep_vars,
 		gwr,
 		ds.y_test,
@@ -676,6 +687,7 @@ def run_xgboost(
 
 	df = ds.df_universe
 	ind_var = ds.ind_var
+	ind_var_test = ds.ind_var_test
 	dep_vars = ds.dep_vars
 
 	df["prediction"] = y_pred_univ
@@ -685,6 +697,7 @@ def run_xgboost(
 		"he_id",
 		"xgboost",
 		ind_var,
+		ind_var_test,
 		dep_vars,
 		xgboost_model,
 		ds.y_test,
@@ -760,6 +773,7 @@ def run_lightgbm(
 	timing.stop("total")
 
 	ind_var = ds.ind_var
+	ind_var_test = ds.ind_var_test
 	dep_vars = ds.dep_vars
 	df = ds.df_universe
 
@@ -770,6 +784,7 @@ def run_lightgbm(
 		"he_id",
 		"lightgbm",
 		ind_var,
+		ind_var_test,
 		dep_vars,
 		gbm,
 		ds.y_test,
@@ -838,6 +853,7 @@ def run_catboost(
 
 	df = ds.df_universe
 	ind_var = ds.ind_var
+	ind_var_test = ds.ind_var_test
 	dep_vars = ds.dep_vars
 
 	df["prediction"] = y_pred_univ
@@ -847,6 +863,7 @@ def run_catboost(
 		"he_id",
 		"catboost",
 		ind_var,
+		ind_var_test,
 		dep_vars,
 		catboost_model,
 		ds.y_test,
@@ -916,6 +933,7 @@ def run_garbage(
 
 	df = ds.df_universe
 	ind_var = ds.ind_var
+	ind_var_test = ds.ind_var_test
 	dep_vars = ds.dep_vars
 
 	if sales_chase:
@@ -936,6 +954,7 @@ def run_garbage(
 		"he_id",
 		name,
 		ind_var,
+		ind_var_test,
 		dep_vars,
 		None,
 		ds.y_test,
@@ -1006,6 +1025,7 @@ def run_average(
 
 	df = ds.df_universe
 	ind_var = ds.ind_var
+	ind_var_test = ds.ind_var_test
 	dep_vars = ds.dep_vars
 
 	if sales_chase:
@@ -1026,6 +1046,7 @@ def run_average(
 		"he_id",
 		name,
 		ind_var,
+		ind_var_test,
 		dep_vars,
 		None,
 		ds.y_test,
@@ -1122,6 +1143,7 @@ def run_naive_sqft(
 
 	df = ds.df_universe
 	ind_var = ds.ind_var
+	ind_var_test = ds.ind_var_test
 	dep_vars = ds.dep_vars
 
 	if sales_chase:
@@ -1140,6 +1162,7 @@ def run_naive_sqft(
 		"he_id",
 		name,
 		ind_var,
+		ind_var_test,
 		dep_vars,
 		None,
 		ds.y_test,

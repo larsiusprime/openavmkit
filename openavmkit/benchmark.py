@@ -4,6 +4,7 @@ from IPython.core.display_functions import display
 
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, ModelResults, run_garbage, \
 	run_average, run_naive_sqft, DataSplit
+from openavmkit.time_adjustment import apply_time_adjustment
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_numeric, get_variable_interactions
 
 
@@ -137,9 +138,14 @@ def run_benchmark(
 		use_saved_params: bool = False,
 		verbose: bool = False
 ):
+
+	if "sale_price_time_adj" not in df:
+		df = apply_time_adjustment(df.copy())
+
 	s = settings
 	s_model = s.get("modeling", {})
-	ind_var = s_model.get("ind_var", "sale_price")
+	ind_var = s_model.get("ind_var", "sale_price_time_adj")
+	ind_var_test = s_model.get("ind_var_test", "sale_price")
 
 	model_dict = s_model.get("models", None)
 	if model_dict is None:
@@ -184,8 +190,7 @@ def run_benchmark(
 			raise ValueError(f"dep_vars not found for model {model}")
 
 		interactions = get_variable_interactions(entry, settings, df)
-
-		ds = DataSplit(df, ind_var, dep_vars, fields_cat, interactions)
+		ds = DataSplit(df, ind_var, ind_var_test, dep_vars, fields_cat, interactions)
 
 		if model_name == "garbage":
 			results = run_garbage(ds, normal=False, sales_chase=sales_chase, verbose=verbose)

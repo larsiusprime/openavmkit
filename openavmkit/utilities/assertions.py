@@ -13,12 +13,20 @@ def objects_are_equal(a, b):
 
 def lists_are_equal(a: list, b: list):
 	# ensure that the two lists contain the same information:
+	result = True
 	if len(a) != len(b):
+		result = False
+	else:
+		for i in range(len(a)):
+			entry_a = a[i]
+			entry_b = b[i]
+			result = objects_are_equal(entry_a, entry_b)
+	if not result:
+		# print both lists for debugging:
+		print(a)
+		print(b)
 		return False
-	for i in range(len(a)):
-		entry_a = a[i]
-		entry_b = b[i]
-		return objects_are_equal(entry_a, entry_b)
+	return True
 
 
 def dicts_are_equal(a: dict, b: dict):
