@@ -101,7 +101,7 @@ def test_apply_time_adjustment():
   df = df[df["sale_price"].gt(0) & df["valid_sale"].ge(1)]
 
   for period, color, color2 in [("M","red", "pink"), ("Q","blue", "skyblue"), ("Y","black", "lightgray")]:
-    df = apply_time_adjustment(df, period, verbose=True)
+    df = apply_time_adjustment(df, {}, period, verbose=True)
 
     df_median = df.groupby("sale_year_month")["sale_price_time_adj_per_impr_sqft"].agg(["count", "median"])
     df_median["period"] = pd.to_datetime(df_median.index)

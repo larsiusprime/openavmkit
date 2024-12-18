@@ -4,6 +4,7 @@ from datetime import timedelta, datetime
 import numpy as np
 import pandas as pd
 
+from openavmkit.data import get_sales
 from openavmkit.utilities.data import div_z_safe
 
 
@@ -189,12 +190,11 @@ def _crunch_time_adjustment(df_in: pd.DataFrame, field: str, period: str = "M", 
   return df_result
 
 
-def determine_value_driver(df_in: pd.DataFrame):
+def determine_value_driver(df_in: pd.DataFrame, settings: dict):
   # We want to determine if this modeling group's values are driven by land or improvement
   df = df_in.copy()
 
-  # TODO: get proper sales subset
-  df = df[df["valid_sale"].gt(0) & df["sale_price"].gt(0)]
+  df = get_sales(df, settings)
 
   df_impr = df[df["bldg_area_finished_sqft"].gt(0)]
   df_land = df[df["land_area_sqft"].gt(0)]
@@ -248,7 +248,7 @@ def _determine_time_resolution(df_per, sale_field, min_sale_count, period: str =
   return period
 
 
-def calculate_time_adjustment(df_sales_in: pd.DataFrame, period: str = "M", verbose: bool = False):
+def calculate_time_adjustment(df_sales_in: pd.DataFrame, settings: str, period: str = "M", verbose: bool = False):
 
   if verbose:
     print("Calculating time adjustment...")
@@ -274,7 +274,7 @@ def calculate_time_adjustment(df_sales_in: pd.DataFrame, period: str = "M", verb
   df_sales["sale_price_per_land_sqft"] = div_z_safe(df_sales, "sale_price", "land_area_sqft")
 
   # Determine whether land or improvement drives value the modeling group:
-  per = determine_value_driver(df_sales)
+  per = determine_value_driver(df_sales, settings)
   sale_field = f"sale_price_per_{per}_sqft"
 
   df_per = df_sales[df_sales[sale_field].gt(0)]
@@ -296,9 +296,9 @@ def calculate_time_adjustment(df_sales_in: pd.DataFrame, period: str = "M", verb
   return df_time
 
 
-def apply_time_adjustment(df_sales_in: pd.DataFrame, period: str = "M", verbose=False):
+def apply_time_adjustment(df_sales_in: pd.DataFrame, settings, period: str = "M", verbose=False):
   df_sales = df_sales_in.copy()
-  df_time = calculate_time_adjustment(df_sales_in, period, verbose)
+  df_time = calculate_time_adjustment(df_sales_in, settings, period, verbose)
 
   # df_time starts with 1.0 on the first day and ends with X.0 on the last day
   # if we were to divide by this value, we would time-adjust all sales BACKWARDS in time

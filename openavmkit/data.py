@@ -1,5 +1,8 @@
 import pandas as pd
 import geopandas as gpd
+from pandas import Series
+
+from openavmkit.utilities.settings import get_fields_categorical, get_fields_land, get_fields_impr
 
 
 def enrich_time(df: pd.DataFrame) -> pd.DataFrame:
@@ -22,6 +25,38 @@ def enrich_time(df: pd.DataFrame) -> pd.DataFrame:
 		df["sale_year_quarter"] = df["sale_date"].dt.to_period("Q").astype("str")
 	return df
 
+
+def simulate_removed_buildings(df: pd.DataFrame, idx_vacant: Series, settings: dict):
+	fields_impr = get_fields_impr(settings, df)
+
+	# Step 3: fill unknown values for categorical improvements:
+	fields_impr_cat = fields_impr["categorical"]
+	fields_impr_num = fields_impr["numeric"]
+	fields_impr_bool = fields_impr["boolean"]
+
+	for field in fields_impr_cat:
+		df.loc[idx_vacant, field] = "UNKNOWN"
+
+	for field in fields_impr_num:
+		df.loc[idx_vacant, field] = 0
+
+	for field in fields_impr_bool:
+		df.loc[idx_vacant, field] = 0
+
+	return df
+
+
+
+def get_sales(df_in: pd.DataFrame, settings: dict) -> pd.DataFrame:
+	# Step 1: get the sales
+	df_sales : pd.DataFrame = df_in[df_in["sale_price"].gt(0) & df_in["valid_sale"].ge(1)].copy()
+
+	if "vacant_sale" in df_in:
+		# Step 2: check for vacant sales:
+		idx_vacant_sale = df_sales["vacant_sale"].eq(1)
+		df_sales = simulate_removed_buildings(df_sales, idx_vacant_sale, settings)
+
+	return df_sales
 
 
 

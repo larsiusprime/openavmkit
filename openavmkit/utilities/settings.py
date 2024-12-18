@@ -67,6 +67,29 @@ def merge_settings(template: dict, local: dict, indent:str=""):
 	return merged
 
 
+def get_fields_land(s: dict, df: pd.DataFrame=None):
+	return _get_fields(s, "land", df)
+
+
+def get_fields_impr(s: dict, df: pd.DataFrame=None):
+	return _get_fields(s, "impr", df)
+
+
+def _get_fields(s: dict, type: str, df: pd.DataFrame = None):
+	cats = s.get("field_classification", {}).get(type, {}).get("categorical", [])
+	nums = s.get("field_classification", {}).get(type, {}).get("numeric", [])
+	bools = s.get("field_classification", {}).get(type, {}).get("boolean", [])
+	if df is not None:
+		cats = [c for c in cats if c in df]
+		nums = [n for n in nums if n in df]
+		bools = [b for b in bools if b in df]
+	return {
+		"categorical": cats,
+		"numeric": nums,
+		"boolean": bools
+	}
+
+
 def get_fields_categorical(s: dict, df: pd.DataFrame = None, include_boolean: bool = True, types: list[str] = None):
 	if types is None:
 		types = ["land", "impr", "other"]
