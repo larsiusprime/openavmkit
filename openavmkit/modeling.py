@@ -24,6 +24,7 @@ from statsmodels.nonparametric.kernel_regression import KernelReg
 from statsmodels.regression.linear_model import RegressionResults
 from xgboost import XGBRegressor
 
+from openavmkit.data import get_sales
 from openavmkit.ratio_study import RatioStudy
 from openavmkit.utilities.data import clean_column_names
 from openavmkit.utilities.stats import quick_median_chd
@@ -95,7 +96,8 @@ class DataSplit:
 	days_field: str
 
 	def __init__(self,
-			df: pd.DataFrame,
+			df: pd.DataFrame | None,
+			settings: dict,
 			ind_var: str,
 			ind_var_test: str,
 			dep_vars: list[str],
@@ -103,48 +105,73 @@ class DataSplit:
 			interactions: dict,
 			test_train_frac: float = 0.8,
 			random_seed: int = 1337,
-			days_field: str = "sale_age_days"
+			days_field: str = "sale_age_days",
+			init: bool = True
 	):
+		if init:
+			self.df_universe = df.copy()
+			self.df_sales = get_sales(df, settings).reset_index(drop=True)
 
-		self.df_universe = df.copy()
-		self.df_sales = df[df["valid_sale"].eq(1)].copy().reset_index(drop=True)
+			# Pre-sort dataframes so that rolling origin cross-validation can assume oldest observations first:
+			if days_field in self.df_universe:
+				self.df_universe.sort_values(by=days_field, ascending=False, inplace=True)
+			else:
+				raise ValueError(f"Field '{days_field}' not found in dataframe.")
 
-		# Pre-sort dataframes so that rolling origin cross-validation can assume oldest observations first:
-		if days_field in self.df_universe:
-			self.df_universe.sort_values(by=days_field, ascending=False, inplace=True)
-		else:
-			raise ValueError(f"Field '{days_field}' not found in dataframe.")
+			if days_field in self.df_sales:
+				self.df_sales.sort_values(by=days_field, ascending=False, inplace=True)
+			else:
+				raise ValueError(f"Field '{days_field}' not found in dataframe.")
 
-		if days_field in self.df_sales:
-			self.df_sales.sort_values(by=days_field, ascending=False, inplace=True)
-		else:
-			raise ValueError(f"Field '{days_field}' not found in dataframe.")
-
-		self.ind_var = ind_var
-		self.ind_var_test = ind_var_test
-		self.dep_vars = dep_vars.copy()
-		self.categorical_vars = categorical_vars.copy()
-		self.interactions = interactions.copy()
-		self.one_hot_descendants = {}
-		self.random_seed = random_seed
-		self.days_field = days_field
-		self.test_train_frac = test_train_frac
-		self.split()
+			self.ind_var = ind_var
+			self.ind_var_test = ind_var_test
+			self.dep_vars = dep_vars.copy()
+			self.categorical_vars = categorical_vars.copy()
+			self.interactions = interactions.copy()
+			self.one_hot_descendants = {}
+			self.random_seed = random_seed
+			self.days_field = days_field
+			self.test_train_frac = test_train_frac
+			self.split()
 
 
 	def copy(self):
 		# Return a deep copy
-		return DataSplit(
-			self.df_universe.copy(),
-			self.ind_var,
-			self.ind_var_test,
-			self.dep_vars,
-			self.categorical_vars,
-			self.interactions,
-			self.test_train_frac,
-			self.random_seed,
-			self.days_field
+		ds = DataSplit(
+			None,
+			{},
+			"",
+			"",
+			[],
+			[],
+			{},
+			0,
+			0,
+			"",
+			init=False
 		)
+		# manually copy every field:
+		ds.df_sales = self.df_sales.copy()
+		ds.df_universe = self.df_universe.copy()
+		ds.df_train = self.df_train.copy()
+		ds.df_test = self.df_test.copy()
+		ds.X_univ = self.X_univ.copy()
+		ds.X_sales = self.X_sales.copy()
+		ds.y_sales = self.y_sales.copy()
+		ds.X_train = self.X_train.copy()
+		ds.y_train = self.y_train.copy()
+		ds.X_test = self.X_test.copy()
+		ds.y_test = self.y_test.copy()
+		ds.test_train_frac = self.test_train_frac
+		ds.random_seed = self.random_seed
+		ds.ind_var = self.ind_var
+		ds.ind_var_test = self.ind_var_test
+		ds.dep_vars = self.dep_vars.copy()
+		ds.categorical_vars = self.categorical_vars.copy()
+		ds.interactions = self.interactions.copy()
+		ds.one_hot_descendants = self.one_hot_descendants.copy()
+		ds.days_field = self.days_field
+		return ds
 
 
 	def encode_categoricals_as_categories(self):

@@ -219,7 +219,7 @@ def _run_one_model(
 	if verbose:
 		print(f" running model {model}...")
 
-	dep_vars = entry.get("dep_vars", default_entry.get("dep_vars", None))
+	dep_vars : list | None = entry.get("dep_vars", default_entry.get("dep_vars", None))
 	if dep_vars is None:
 		raise ValueError(f"dep_vars not found for model {model}")
 
@@ -229,7 +229,17 @@ def _run_one_model(
 	test_train_frac = instructions.get("test_train_frac", 0.8)
 	random_seed = instructions.get("random_seed", 1337)
 
-	ds = DataSplit(df, ind_var, ind_var_test, dep_vars, fields_cat, interactions, test_train_frac, random_seed)
+	ds = DataSplit(
+		df,
+		settings,
+		ind_var,
+		ind_var_test,
+		dep_vars,
+		fields_cat,
+		interactions,
+		test_train_frac,
+		random_seed
+	)
 
 	intercept = entry.get("intercept", True)
 
@@ -329,7 +339,17 @@ def run_ensemble(
 	test_train_frac = instructions.get("test_train_frac", 0.8)
 	random_seed = instructions.get("random_seed", 1337)
 
-	ds = DataSplit(df, ind_var, ind_var_test, [], [], {}, test_train_frac, random_seed)
+	ds = DataSplit(
+		df,
+		settings,
+		ind_var,
+		ind_var_test,
+		[],
+		[],
+		{},
+		test_train_frac,
+		random_seed
+	)
 
 	df_test = ds.df_test
 	df_sales = ds.df_sales
@@ -409,7 +429,7 @@ def run_models(
 		if verbose:
 			print("Applying time adjustment...")
 		period = s_inst.get("time_adjustment", {}).get("period", "Q")
-		df = apply_time_adjustment(df.copy(), period=period, verbose=verbose)
+		df = apply_time_adjustment(df.copy(), settings, period=period, verbose=verbose)
 
 	ind_var = s_inst.get("ind_var", "sale_price_time_adj")
 	ind_var_test = s_inst.get("ind_var_test", "sale_price")

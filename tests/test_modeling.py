@@ -74,6 +74,8 @@ def test_models_synthetic():
 	sd = generate_basic(100)
 	df = sd.df
 
+	df["assr_market_value"] = df["total_value"]
+
 	# calculate horizontal equity cluster ID's
 	df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [], verbose=True)
 
