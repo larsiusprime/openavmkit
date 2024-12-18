@@ -284,7 +284,7 @@ class DataSplit:
 		self.X_test = _df_test[self.dep_vars]
 		self.y_test = _df_test[self.ind_var_test]
 
-class ModelResults:
+class SingleModelResults:
 	type: str
 	ind_var: str
 	ind_var_test: str
@@ -386,7 +386,7 @@ class ModelResults:
 
 
 def model_utility_score(
-		model_results: ModelResults
+		model_results: SingleModelResults
 ):
 	# We want to minimize:
 	# 1. error
@@ -469,7 +469,7 @@ def run_mra(
 		# gather the predictions
 		df["prediction"] = y_pred_univ
 
-		results = ModelResults(
+		results = SingleModelResults(
 			df,
 			"prediction",
 			"he_id",
@@ -592,7 +592,7 @@ def run_kernel(
 	# gather the predictions
 	df["prediction"] = y_pred_univ
 
-	results = ModelResults(
+	results = SingleModelResults(
 		df,
 		"prediction",
 		"he_id",
@@ -739,7 +739,7 @@ def run_gwr(
 	dep_vars = ds.dep_vars
 
 	df["prediction"] = y_pred_univ
-	results = ModelResults(
+	results = SingleModelResults(
 		df,
 		"prediction",
 		"he_id",
@@ -815,7 +815,7 @@ def run_xgboost(
 	dep_vars = ds.dep_vars
 
 	df["prediction"] = y_pred_univ
-	results = ModelResults(
+	results = SingleModelResults(
 		df,
 		"prediction",
 		"he_id",
@@ -902,7 +902,7 @@ def run_lightgbm(
 	df = ds.df_universe
 
 	df["prediction"] = y_pred_univ
-	results = ModelResults(
+	results = SingleModelResults(
 		df,
 		"prediction",
 		"he_id",
@@ -981,7 +981,7 @@ def run_catboost(
 	dep_vars = ds.dep_vars
 
 	df["prediction"] = y_pred_univ
-	results = ModelResults(
+	results = SingleModelResults(
 		df,
 		"prediction",
 		"he_id",
@@ -1072,7 +1072,7 @@ def run_garbage(
 		name += "*"
 
 	df["prediction"] = y_pred_univ
-	results = ModelResults(
+	results = SingleModelResults(
 		df,
 		"prediction",
 		"he_id",
@@ -1164,7 +1164,7 @@ def run_average(
 		name += "*"
 
 	df["prediction"] = y_pred_univ
-	results = ModelResults(
+	results = SingleModelResults(
 		df,
 		"prediction",
 		"he_id",
@@ -1280,7 +1280,7 @@ def run_naive_sqft(
 		name += "*"
 
 	df["prediction"] = y_pred_univ
-	results = ModelResults(
+	results = SingleModelResults(
 		df,
 		"prediction",
 		"he_id",

@@ -51,7 +51,7 @@ def test_models_guilford():
 		use_saved_params=True
 	)
 
-	print(results.print())
+	print(results.benchmark.print())
 
 
 def test_models_synthetic():
@@ -78,4 +78,4 @@ def test_models_synthetic():
 		use_saved_params=True
 	)
 
-	print(results.print())
+	print(results.benchmark.print())
