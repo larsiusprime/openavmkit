@@ -2,23 +2,50 @@ import numpy as np
 import pandas as pd
 
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, ModelResults, run_garbage, \
-	run_average, run_naive_sqft, DataSplit, run_kernel
+	run_average, run_naive_sqft, DataSplit, run_kernel, run_mgwr
 from openavmkit.time_adjustment import apply_time_adjustment
 from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions
 
 
+class BenchmarkResults:
+	df_time: pd.DataFrame
+	df_stats_test: pd.DataFrame
+	df_stats_full: pd.DataFrame
+
+	def __init__(self, df_time: pd.DataFrame, df_stats_test: pd.DataFrame, df_stats_full: pd.DataFrame):
+		self.df_time = df_time
+		self.df_stats_test = df_stats_test
+		self.df_stats_full = df_stats_full
+
+
+	def print(self) -> str:
+		result = "Timings:\n"
+		result += format_benchmark_df(self.df_time)
+		result += "\n\n"
+		result += "Test set:\n"
+		result += format_benchmark_df(self.df_stats_test)
+		result += "\n\n"
+		result += "Full set:\n"
+		result += format_benchmark_df(self.df_stats_full)
+		result += "\n\n"
+		return result
+
+
 def _calc_benchmark(model_results: dict[str, ModelResults]):
+	data_time = {
+		"model": [],
+		"total": [],
+		"param": [],
+		"train": [],
+		"test": [],
+		"full": [],
+		"chd": [],
+	}
+
 	data = {
 		"model":[],
 		"subset":[],
-		"t_total": [],
-		"t_param": [],
-		"t_train": [],
-		"t_predict": [],
-		"t_test": [],
-		"t_full": [],
-		"t_chd": [],
-		"utility": [],
+		"utility_score": [],
 		"mse":[],
 		"rmse":[],
 		"r2":[],
@@ -40,7 +67,7 @@ def _calc_benchmark(model_results: dict[str, ModelResults]):
 				subset = "Full set"
 			data["model"].append(key)
 			data["subset"].append(subset)
-			data["utility"].append(results.utility)
+			data["utility_score"].append(results.utility)
 			data["mse"].append(pred_results.mse)
 			data["rmse"].append(pred_results.rmse)
 			data["r2"].append(pred_results.r2)
@@ -50,34 +77,39 @@ def _calc_benchmark(model_results: dict[str, ModelResults]):
 			data["prd"].append(pred_results.ratio_study.prd)
 			data["prb"].append(pred_results.ratio_study.prb)
 
-			tim = results.timing.results
-
-			data["t_total"].append(tim["total"])
-			data["t_param"].append(tim["parameter_search"])
-			data["t_train"].append(tim["train"])
-			data["t_predict"].append(0)
-			data["t_test"].append(tim["predict_test"])
-			data["t_full"].append(tim["predict_full"])
-			data["t_chd"].append(tim["chd"])
+			chd_results = None
 
 			if kind == "full":
-				data["chd"].append(results.chd)
-			else:
-				data["chd"].append(None)
+				chd_results = results.chd
+				tim = results.timing.results
+				data_time["model"].append(key)
+				data_time["total"].append(tim["total"])
+				data_time["param"].append(tim["parameter_search"])
+				data_time["train"].append(tim["train"])
+				data_time["test"].append(tim["predict_test"])
+				data_time["full"].append(tim["predict_full"])
+				data_time["chd"].append(tim["chd"])
+
+			data["chd"].append(chd_results)
+
 	df = pd.DataFrame(data)
 
 	df_test = df[df["subset"].eq("Test set")].drop(columns=["subset"])
-	df_test["t_predict"] = df["t_test"]
-	df_test = df_test.drop(columns=["t_test", "t_full"])
-
 	df_full = df[df["subset"].eq("Full set")].drop(columns=["subset"])
-	df_full["t_predict"] = df["t_full"]
-	df_full = df_full.drop(columns=["t_test", "t_full"])
+	df_time = pd.DataFrame(data_time)
 
 	# set index to the model column:
 	df_test.set_index("model", inplace=True)
 	df_full.set_index("model", inplace=True)
-	return df_test, df_full
+	df_time.set_index("model", inplace=True)
+
+	results = BenchmarkResults(
+		df_time,
+		df_test,
+		df_full
+	)
+
+	return results
 
 def format_benchmark_df(df: pd.DataFrame):
 
@@ -101,7 +133,7 @@ def format_benchmark_df(df: pd.DataFrame):
 		return '{}{}'.format('{:f}'.format(num).rstrip('0').rstrip('.'), ['', 'K', 'M', 'B', 'T'][magnitude])
 
 	formats = {
-		"utility": fancy_format,
+		"utility_score": fancy_format,
 		"mse": fancy_format,
 		"rmse": fancy_format,
 		"r2": "{:.2f}",
@@ -110,12 +142,11 @@ def format_benchmark_df(df: pd.DataFrame):
 		"cod": "{:.2f}",
 		"prd": "{:.2f}",
 		"prb": "{:.2f}",
-		"chd": fancy_format,
-		"t_total": fancy_format,
-		"t_param": fancy_format,
-		"t_train": fancy_format,
-		"t_predict": fancy_format,
-		"t_chd": fancy_format
+		"total": fancy_format,
+		"param": fancy_format,
+		"train": fancy_format,
+		"test": fancy_format,
+		"chd": fancy_format
 	}
 
 	for col in df.columns:
@@ -129,7 +160,7 @@ def format_benchmark_df(df: pd.DataFrame):
 	return df.transpose().to_markdown()
 
 
-def run_benchmark(
+def run_models(
 		df: pd.DataFrame,
 		settings: dict,
 		save_params: bool = False,
@@ -206,6 +237,8 @@ def run_benchmark(
 			results = run_kernel(ds, outpath, save_params, use_saved_params, verbose=verbose)
 		elif model_name == "gwr":
 			results = run_gwr(ds, outpath, save_params, use_saved_params, verbose=verbose)
+		elif model_name == "mgwr":
+			results = run_mgwr(ds, outpath, save_params, use_saved_params, verbose=verbose)
 		elif model_name == "xgboost":
 			results = run_xgboost(ds, outpath, save_params, use_saved_params, verbose=verbose)
 		elif model_name == "lightgbm":

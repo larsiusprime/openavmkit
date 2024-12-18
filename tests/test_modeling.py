@@ -3,7 +3,7 @@ import os
 import pandas as pd
 from IPython.core.display_functions import display
 
-from openavmkit.benchmark import run_benchmark, format_benchmark_df
+from openavmkit.benchmark import run_models, format_benchmark_df
 from openavmkit.cleaning import fill_unknown_values_per_model_group
 from openavmkit.data import load_data
 from openavmkit.horizontal_equity_study import cluster_by_location_and_big_five
@@ -43,7 +43,7 @@ def test_models_guilford():
 	print(f"Using {len(df[df['valid_sale'].eq(1)])} sales...")
 
 	# run the predictive models
-	df_test, df_full = run_benchmark(
+	results = run_models(
 		df,
 		settings,
 		verbose=True,
@@ -51,11 +51,7 @@ def test_models_guilford():
 		use_saved_params=True
 	)
 
-	print("Test set:")
-	print(format_benchmark_df(df_test))
-	print("")
-	print("Full set:")
-	print(format_benchmark_df(df_full))
+	print(results.print())
 
 
 def test_models_synthetic():
@@ -74,7 +70,7 @@ def test_models_synthetic():
 	df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [], verbose=True)
 
 	# run the predictive models
-	df_test, df_full = run_benchmark(
+	results = run_models(
 		df,
 		settings,
 		verbose=True,
@@ -82,8 +78,4 @@ def test_models_synthetic():
 		use_saved_params=True
 	)
 
-	print("Test set:")
-	print(format_benchmark_df(df_test))
-	print("")
-	print("Full set:")
-	print(format_benchmark_df(df_full))
+	print(results.print())
