@@ -3,7 +3,6 @@ from datetime import timedelta, datetime
 
 import numpy as np
 import pandas as pd
-from IPython.core.display_functions import display
 
 from openavmkit.utilities.data import div_z_safe
 
@@ -41,7 +40,7 @@ def _get_expected_periods(df: pd.DataFrame, period: str):
   elif period == "Q":
     for year in years:
       for quarter in range(1, 5):
-        periods.append(f"{year}-Q{quarter}")
+        periods.append(f"{year}Q{quarter}")
   elif period == "M":
     for year in years:
       for month in range(1, 13):
@@ -66,7 +65,7 @@ def _convert_periods_to_middle_days(periods: list[str], period_type: str):
   days = []
   if period_type == "Q":
     for period in periods:
-      year, quarter = period.split("-Q")
+      year, quarter = period.split("Q")
       month = (int(quarter) - 1) * 3 + 1
       last_month = month + 2
       # get the first and last day of the quarter:
@@ -93,7 +92,7 @@ def _convert_periods_to_middle_days(periods: list[str], period_type: str):
   return days
 
 
-def _flatten_periods_to_days(df_in: pd.DataFrame, df_crunched: pd.DataFrame, period: str):
+def _flatten_periods_to_days(df_in: pd.DataFrame, df_crunched: pd.DataFrame, period: str, verbose=False):
   periods_expected = _get_expected_periods(df_in, "D")
   old_periods = df_crunched["period"].values
   periods_actual = _convert_periods_to_middle_days(df_crunched["period"].values, period)
@@ -104,6 +103,9 @@ def _flatten_periods_to_days(df_in: pd.DataFrame, df_crunched: pd.DataFrame, per
   # ensure that "period" is the index of df_crunched:
   df_crunched = df_crunched.set_index("period")
   df_crunched = df_crunched.rename(columns={"value": "median"})
+  if verbose:
+    print("---->interpolating missing periods...")
+
   interpolated = _interpolate_missing_periods(periods_expected, periods_actual, df_crunched)
 
   # wrap everything up in a dataframe matching periods_expected to interpolated values:
@@ -117,66 +119,28 @@ def _flatten_periods_to_days(df_in: pd.DataFrame, df_crunched: pd.DataFrame, per
 
 
 def _interpolate_missing_periods(periods_expected, periods_actual, df_median):
+  # Ensure periods_actual only includes periods in periods_expected
+  periods_actual = [p for p in periods_actual if p in periods_expected]
 
-  # First, create an array with the length of periods_expected
-  values = np.full(len(periods_expected), np.nan)
-  value = None
-  prior_value = None
-  prior_idx = None
+  # Create a mapping of periods_actual to their corresponding median values
+  period_to_value = df_median["median"].reindex(periods_actual)
 
-  # Fill it with the matching median value from df_median for each period
-  for idx, period in enumerate(periods_expected):
-    if period in periods_actual and period in df_median.index:
-      # Just grab the value
-      value = df_median.loc[period, "median"]
-      values[idx] = value
-    else:
-      # The value is missing, we need to interpolate
-      # First, find the nearest NEXT period with a value
-      # (We already have a prior value just by keeping track as we iterate)
-      next_value = None
-      next_idx = None
+  # Create an array for values aligned with periods_expected
+  values = pd.Series(index=periods_expected, dtype=np.float64)
 
-      # Iterate until we find a non-null value
-      for idx2 in range(idx + 1, len(periods_expected)):
-        if periods_expected[idx2] in periods_actual and periods_expected[idx2] in df_median.index:
-          next_period = periods_expected[idx2]
-          try:
-            next_value = df_median.loc[next_period, "median"]
-          except KeyError as e:
-            display(df_median)
-            raise e
-          next_idx = idx2
-          break
+  # Map known values directly (filtering for valid indices)
+  valid_periods = [p for p in periods_actual if p in values.index]
+  values.loc[valid_periods] = period_to_value.loc[valid_periods].values
 
-      # If we have a non-null next and prior value, we'll interpolate between them for this missing one
-      if next_value is not None and prior_value is not None:
-        # interpolate based on position between the two known samples
-        value = prior_value + (next_value - prior_value) / (next_idx - prior_idx)
-        values[idx] = value
-      else:
-        # give up, leave it blank for now
-        values[idx] = None
-    prior_value = value
-    prior_idx = idx
+  # Interpolate missing values
+  values.interpolate(method="linear", inplace=True, limit_direction="both")
 
-  # Look for any remaining null values and fill them with the closest not-null value (mostly to cap values at the ends)
-  for idx, value in enumerate(values):
-    if pd.isna(value):
-      # Look forwards for the NEXT non-null value:
-      for idx2 in range(idx + 1, len(values)):
-        if not pd.isna(values[idx2]):
-          value = values[idx2]
-          break
-      if pd.isna(value):
-        # Look backwards for the PRIOR non-null value:
-        for idx2 in range(idx - 1, -1, -1):
-          if not pd.isna(values[idx2]):
-            value = values[idx2]
-            break
-      values[idx] = value
+  # Fill remaining NaN with closest non-NaN values (cap edges)
+  values.fillna(method="ffill", inplace=True)
+  values.fillna(method="bfill", inplace=True)
 
-  return values
+  # Return as a NumPy array for compatibility
+  return values.values
 
 
 def _crunch_time_adjustment(df_in: pd.DataFrame, field: str, period: str = "M", min_count: int = 5):
@@ -326,7 +290,8 @@ def calculate_time_adjustment(df_sales_in: pd.DataFrame, period: str = "M", verb
   if verbose:
     print(f"--> Flattening time adjustment...")
   # Flatten out the time adjustment to daily values:
-  df_time = _flatten_periods_to_days(df_per, df_crunch, period)
+  df_time = _flatten_periods_to_days(df_per, df_crunch, period, verbose)
+  print(f"--> Time adjustment calculated for {len(df_time)} days.")
 
   return df_time
 

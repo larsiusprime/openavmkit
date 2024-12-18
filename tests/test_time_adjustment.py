@@ -94,7 +94,7 @@ def test_time_adjustment():
 
 def test_apply_time_adjustment():
   print("")
-  sd = generate_basic(100, verbose=True)
+  sd = generate_basic(100)
   df = sd.df
 
   # TODO: replace with proper sales subset function

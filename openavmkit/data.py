@@ -2,6 +2,29 @@ import pandas as pd
 import geopandas as gpd
 
 
+def enrich_time(df: pd.DataFrame) -> pd.DataFrame:
+	if "sale_date" not in df:
+		raise ValueError("The dataframe does not contain a 'sale_date' column.")
+	# ensure "sale_date" is a datetime object:
+	df["sale_date"] = pd.to_datetime(df["sale_date"])
+	# create a "sale_year" column if it does not exist:
+	if "sale_year" not in df:
+		df["sale_year"] = df["sale_date"].dt.year
+	if "sale_month" not in df:
+		df["sale_month"] = df["sale_date"].dt.month
+	if "sale_quarter" not in df:
+		df["sale_quarter"] = df["sale_date"].dt.quarter
+	if "sale_year_month" not in df:
+		# format sale date in the form of "YYYY-MM"
+		df["sale_year_month"] = df["sale_date"].dt.to_period("M").astype("str")
+	if "sale_year_quarter" not in df:
+		# format sale date in the form of "YYYY-QX"
+		df["sale_year_quarter"] = df["sale_date"].dt.to_period("Q").astype("str")
+	return df
+
+
+
+
 def load_data(settings: dict) -> pd.DataFrame:
 		"""
 		Load the data from the settings.
