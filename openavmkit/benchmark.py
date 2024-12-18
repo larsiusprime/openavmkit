@@ -6,6 +6,7 @@ import pandas as pd
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, SingleModelResults, run_garbage, \
 	run_average, run_naive_sqft, DataSplit, run_kernel, run_mgwr
 from openavmkit.time_adjustment import apply_time_adjustment
+from openavmkit.utilities.data import div_z_safe
 from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions
 from openavmkit.utilities.timing import TimingData
 
@@ -265,17 +266,55 @@ def _run_one_model(
 	return results
 
 
+def _assemble_model_results(results: SingleModelResults):
+	fields = ["key", "prediction", "assr_market_value", "sale_price", "sale_price_time_adj", "sale_date"]
+
+	dfs = {
+		"sales": results.df_sales[fields].copy(),
+		"universe": results.df_universe[fields].copy(),
+		"test": results.df_test[fields].copy()
+	}
+
+	for key in dfs:
+		df = dfs[key]
+		df["prediction_ratio"] = div_z_safe(df, "prediction", "sale_price")
+		df["assr_ratio"] = div_z_safe(df, "assr_market_value", "sale_price")
+	return dfs
+
+
 def write_model_results(results: SingleModelResults, outpath: str):
-	return False
-	#path = f"{outpath}/{results.model}"
-	#os.makedirs(path, exist_ok=True)
-	#results
+	dfs = _assemble_model_results(results)
+	path = f"{outpath}/{results.type}"
+	os.makedirs(path, exist_ok=True)
+	for key in dfs:
+		df = dfs[key]
+		df.to_parquet(f"{path}/pred_{key}.parquet")
+		df.to_csv(f"{path}/pred_{key}.csv", index=False)
+
+
+def write_ensemble_model_results(
+		results: SingleModelResults,
+		outpath: str,
+		dfs: dict[str, pd.DataFrame],
+		ensemble_list: list[str]
+):
+	dfs_basic = _assemble_model_results(results)
+	path = f"{outpath}/{results.type}"
+	os.makedirs(path, exist_ok=True)
+	for key in dfs_basic:
+		df_basic = dfs_basic[key]
+		df_ensemble = dfs[key]
+		df_ensemble = df_ensemble[["key"] + ensemble_list]
+		df = df_basic.merge(df_ensemble, on="key", how="left")
+		df.to_parquet(f"{path}/pred_ensemble_{key}.parquet")
+		df.to_csv(f"{path}/pred_ensemble_{key}.csv", index=False)
 
 
 def run_ensemble(
 		df: pd.DataFrame,
 		ind_var: str,
 		ind_var_test: str,
+		outpath: str,
 		all_results: MultiModelResults,
 		settings: dict,
 		verbose: bool = False
@@ -340,6 +379,13 @@ def run_ensemble(
 		verbose=verbose
 	)
 	timing.stop("total")
+
+	dfs = {
+		"sales": df_sales_ensemble,
+		"universe": df_univ_ensemble,
+		"test": df_test_ensemble
+	}
+	write_ensemble_model_results(results, outpath, dfs, ensemble_list)
 	return results
 
 
@@ -411,6 +457,7 @@ def run_models(
 		df=df,
 		ind_var=ind_var,
 		ind_var_test=ind_var_test,
+		outpath=outpath,
 		all_results=all_results,
 		settings=settings,
 		verbose=verbose
