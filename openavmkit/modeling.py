@@ -1,8 +1,8 @@
 import json
-import math
 import os
+import pickle
+
 import polars as pl
-from IPython.core.display_functions import display
 from joblib import Parallel, delayed
 from typing import Union
 
@@ -16,9 +16,10 @@ from catboost import CatBoostRegressor, Pool
 from lightgbm import Booster
 from mgwr.gwr import MGWR, GWR
 from mgwr.gwr import _compute_betas_gwr, Kernel
-from mgwr.kernels import local_cdist
+
 from mgwr.sel_bw import Sel_BW
 from sklearn.metrics import mean_squared_error
+from statsmodels.nonparametric.kernel_regression import KernelReg
 from statsmodels.regression.linear_model import RegressionResults
 from xgboost import XGBRegressor
 
@@ -28,7 +29,7 @@ from openavmkit.utilities.stats import quick_median_chd
 from openavmkit.utilities.tuning import tune_lightgbm, tune_xgboost, tune_catboost
 from openavmkit.utilities.timing import TimingData
 
-PredictionModel = Union[RegressionResults, XGBRegressor, Booster, CatBoostRegressor, GWR, MGWR, None]
+PredictionModel = Union[RegressionResults, XGBRegressor, Booster, CatBoostRegressor, GWR, MGWR, KernelReg, None]
 
 class PredictionResults:
 	ind_var: str
@@ -487,6 +488,129 @@ def run_mra(
 		)
 
 		return results
+
+
+def run_kernel(
+		ds: DataSplit,
+		outpath: str,
+		save_params: bool = False,
+		use_saved_params: bool = False,
+		verbose: bool = False
+):
+	"""
+	Runs a non-parametric kernel regression model
+	:param ds:
+	:param verbose:
+	:return:
+	"""
+	timing = TimingData()
+
+	timing.start("total")
+
+	timing.start("setup")
+	ds = ds.encode_categoricals_with_one_hot()
+	ds.split()
+	u_train = ds.df_train['longitude']
+	v_train = ds.df_train['latitude']
+
+	u_test = ds.df_test['longitude']
+	v_test = ds.df_test['latitude']
+
+	u_sales = ds.df_sales['longitude']
+	v_sales = ds.df_sales['latitude']
+
+	u = ds.df_universe['longitude']
+	v = ds.df_universe['latitude']
+
+	vars_train = (u_train, v_train)
+	for col in ds.X_train.columns:
+		vars_train += (ds.X_train[col].to_numpy(),)
+
+	vars_test = (u_test, v_test)
+	for col in ds.X_test.columns:
+		vars_test += (ds.X_test[col].to_numpy(),)
+
+	vars_sales = (u_sales, v_sales)
+	for col in ds.X_sales.columns:
+		vars_sales += (ds.X_sales[col].to_numpy(),)
+
+	vars_univ = (u, v)
+	for col in ds.X_univ.columns:
+		vars_univ += (ds.X_univ[col].to_numpy(),)
+
+	X_train = np.column_stack(vars_train)
+	X_test = np.column_stack(vars_test)
+	X_sales = np.column_stack(vars_sales)
+	X_univ = np.column_stack(vars_univ)
+	y_train = ds.y_train.to_numpy()
+	timing.stop("setup")
+
+	timing.start("parameter_search")
+
+	kernel_bw = "cv_ls"
+	if use_saved_params:
+		if os.path.exists(f"{outpath}/kernel_bw.pkl"):
+			with open(f"{outpath}/kernel_bw.pkl", "rb") as f:
+				kernel_bw = pickle.load(f)
+			if verbose:
+				print(f"--> using saved bandwidth: {kernel_bw}")
+	timing.stop("parameter_search")
+
+	timing.start("train")
+	# TODO: can adjust this to handle categorical data better
+	var_type = "c" * X_train.shape[1]
+	kr = KernelReg(endog=y_train, exog=X_train, var_type=var_type, bw=kernel_bw)
+	kernel_bw = kr.bw
+	if save_params:
+		os.makedirs(outpath, exist_ok=True)
+		with open(f"{outpath}/kernel_bw.pkl", "wb") as f:
+			pickle.dump(kernel_bw, f)
+	if verbose:
+		print(f"--> optimal bandwidth = {kernel_bw}")
+	timing.stop("train")
+
+	# Predict at original locations:
+	timing.start("predict_test")
+	y_pred_test, _ = kr.fit(X_test)
+	timing.stop("predict_test")
+
+	timing.start("predict_sales")
+	y_pred_sales, _ = kr.fit(X_sales)
+	timing.stop("predict_sales")
+
+	timing.start("predict_full")
+	y_pred_univ, _ = kr.fit(X_univ)
+	timing.stop("predict_full")
+
+	timing.stop("total")
+
+	df = ds.df_universe
+	ind_var = ds.ind_var
+	ind_var_test = ds.ind_var_test
+	dep_vars = ds.dep_vars
+
+	# gather the predictions
+	df["prediction"] = y_pred_univ
+
+	results = ModelResults(
+		df,
+		"prediction",
+		"he_id",
+		"mra",
+		ind_var,
+		ind_var_test,
+		dep_vars,
+		kr,
+		ds.y_test,
+		y_pred_test,
+		ds.y_sales,
+		y_pred_sales,
+		y_pred_univ,
+		timing,
+		verbose=verbose
+	)
+
+	return results
 
 
 def run_gwr(

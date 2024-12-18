@@ -1,11 +1,10 @@
 import numpy as np
 import pandas as pd
-from IPython.core.display_functions import display
 
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, ModelResults, run_garbage, \
-	run_average, run_naive_sqft, DataSplit
+	run_average, run_naive_sqft, DataSplit, run_kernel
 from openavmkit.time_adjustment import apply_time_adjustment
-from openavmkit.utilities.settings import get_fields_categorical, get_fields_numeric, get_variable_interactions
+from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions
 
 
 def _calc_benchmark(model_results: dict[str, ModelResults]):
@@ -33,7 +32,6 @@ def _calc_benchmark(model_results: dict[str, ModelResults]):
 	for key in model_results:
 		for kind in ["test", "full"]:
 			results = model_results[key]
-			subset = ""
 			if kind == "test":
 				pred_results = results.pred_test
 				subset = "Test set"
@@ -204,6 +202,8 @@ def run_benchmark(
 			results = run_naive_sqft(ds, sales_chase=sales_chase, verbose=verbose)
 		elif model_name == "mra":
 			results = run_mra(ds, verbose=verbose)
+		elif model_name == "kernel":
+			results = run_kernel(ds, outpath, save_params, use_saved_params, verbose=verbose)
 		elif model_name == "gwr":
 			results = run_gwr(ds, outpath, save_params, use_saved_params, verbose=verbose)
 		elif model_name == "xgboost":
