@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pandas as pd
 
@@ -5,6 +7,7 @@ from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run
 	run_average, run_naive_sqft, DataSplit, run_kernel, run_mgwr
 from openavmkit.time_adjustment import apply_time_adjustment
 from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions
+from openavmkit.utilities.timing import TimingData
 
 
 class BenchmarkResults:
@@ -42,6 +45,16 @@ class MultiModelResults:
 	):
 		self.model_results = model_results
 		self.benchmark = benchmark
+
+
+	def add_model(
+			self,
+			model: str,
+			results: SingleModelResults
+	):
+		self.model_results[model] = results
+		# recalculate the benchmark
+		self.benchmark = _calc_benchmark(self.model_results)
 
 
 def _calc_benchmark(model_results: dict[str, SingleModelResults]):
@@ -159,6 +172,7 @@ def format_benchmark_df(df: pd.DataFrame):
 		"param": fancy_format,
 		"train": fancy_format,
 		"test": fancy_format,
+		"full": fancy_format,
 		"chd": fancy_format
 	}
 
@@ -185,11 +199,12 @@ def _run_one_model(
 		save_params: bool,
 		use_saved_params: bool,
 		verbose: bool = False
-):
+) -> SingleModelResults:
 	model_name = model
-	entry = model_entries.get(model, None)
+	entry: dict | None = model_entries.get(model, None)
+	default_entry: dict | None = model_entries.get("default", None)
 	if entry is None:
-		entry = model_entries.get("default", None)
+		entry = default_entry
 		if entry is None:
 			raise ValueError(f"Model entry for {model} not found, and there is no default entry!")
 
@@ -203,12 +218,19 @@ def _run_one_model(
 	if verbose:
 		print(f" running model {model}...")
 
-	dep_vars = entry.get("dep_vars", None)
+	dep_vars = entry.get("dep_vars", default_entry.get("dep_vars", None))
 	if dep_vars is None:
 		raise ValueError(f"dep_vars not found for model {model}")
 
 	interactions = get_variable_interactions(entry, settings, df)
-	ds = DataSplit(df, ind_var, ind_var_test, dep_vars, fields_cat, interactions)
+
+	instructions = settings.get("modeling", {}).get("instructions", {})
+	test_train_frac = instructions.get("test_train_frac", 0.8)
+	random_seed = instructions.get("random_seed", 1337)
+
+	ds = DataSplit(df, ind_var, ind_var_test, dep_vars, fields_cat, interactions, test_train_frac, random_seed)
+
+	intercept = entry.get("intercept", True)
 
 	results = None
 
@@ -223,13 +245,13 @@ def _run_one_model(
 	elif model_name == "naive_sqft":
 		results = run_naive_sqft(ds, sales_chase=sales_chase, verbose=verbose)
 	elif model_name == "mra":
-		results = run_mra(ds, verbose=verbose)
+		results = run_mra(ds, intercept=intercept, verbose=verbose)
 	elif model_name == "kernel":
 		results = run_kernel(ds, outpath, save_params, use_saved_params, verbose=verbose)
 	elif model_name == "gwr":
 		results = run_gwr(ds, outpath, save_params, use_saved_params, verbose=verbose)
 	elif model_name == "mgwr":
-		results = run_mgwr(ds, outpath, save_params, use_saved_params, verbose=verbose)
+		results = run_mgwr(ds, outpath, intercept, save_params, use_saved_params, verbose=verbose)
 	elif model_name == "xgboost":
 		results = run_xgboost(ds, outpath, save_params, use_saved_params, verbose=verbose)
 	elif model_name == "lightgbm":
@@ -237,8 +259,88 @@ def _run_one_model(
 	elif model_name == "catboost":
 		results = run_catboost(ds, outpath, save_params, use_saved_params, verbose=verbose)
 
+	# write out the results:
+	write_model_results(results, outpath)
+
 	return results
 
+
+def write_model_results(results: SingleModelResults, outpath: str):
+	return False
+	#path = f"{outpath}/{results.model}"
+	#os.makedirs(path, exist_ok=True)
+	#results
+
+
+def run_ensemble(
+		df: pd.DataFrame,
+		ind_var: str,
+		ind_var_test: str,
+		all_results: MultiModelResults,
+		settings: dict,
+		verbose: bool = False
+):
+	timing = TimingData()
+
+	timing.start("total")
+
+	timing.start("setup")
+
+	instructions = settings.get("modeling", {}).get("instructions", {})
+	test_train_frac = instructions.get("test_train_frac", 0.8)
+	random_seed = instructions.get("random_seed", 1337)
+
+	ds = DataSplit(df, ind_var, ind_var_test, [], [], {}, test_train_frac, random_seed)
+
+	df_test = ds.df_test
+	df_sales = ds.df_sales
+	df_univ = ds.df_universe
+	instructions = settings.get("modeling", {}).get("instructions", {})
+	ensemble_list = instructions.get("ensemble", [])
+	df_test_ensemble = df_test[["key"]].copy()
+	df_sales_ensemble = df_sales[["key"]].copy()
+	df_univ_ensemble = df_univ[["key"]].copy()
+	if len(ensemble_list) == 0:
+		ensemble_list = [key for key in all_results.model_results.keys()]
+	timing.stop("setup")
+
+	timing.start("parameter_search")
+	timing.stop("parameter_search")
+
+	timing.start("train")
+	for m_key in ensemble_list:
+		m_results = all_results.model_results[m_key]
+		df_test_ensemble[m_key] = m_results.pred_test.y_pred
+		df_sales_ensemble[m_key] = m_results.pred_sales.y_pred
+		df_univ_ensemble[m_key] = m_results.pred_univ
+	timing.stop("train")
+
+	timing.start("predict_test")
+	y_pred_test_ensemble = df_test_ensemble[ensemble_list].median(axis=1)
+	timing.stop("predict_test")
+
+	timing.start("predict_sales")
+	y_pred_sales_ensemble = df_sales_ensemble[ensemble_list].median(axis=1)
+	timing.stop("predict_sales")
+
+	timing.start("predict_full")
+	y_pred_univ_ensemble = df_univ_ensemble[ensemble_list].median(axis=1)
+	timing.stop("predict_full")
+
+	results = SingleModelResults(
+		ds,
+		"prediction",
+		"he_id",
+		"ensemble",
+		model="ensemble",
+		y_pred_test=y_pred_test_ensemble.to_numpy(),
+		y_pred_sales=y_pred_sales_ensemble.to_numpy(),
+		y_pred_univ=y_pred_univ_ensemble.to_numpy(),
+		timing=timing,
+		verbose=verbose
+	)
+	timing.stop("total")
+	return results
 
 
 def run_models(
@@ -248,21 +350,24 @@ def run_models(
 		use_saved_params: bool = False,
 		verbose: bool = False
 ):
-	# Apply time adjustment if necessary
-	if "sale_price_time_adj" not in df:
-		df = apply_time_adjustment(df.copy())
-
 	# Gather settings
 	s = settings
 	s_model = s.get("modeling", {})
+	s_inst = s_model.get("instructions", {})
 	model_dict = s_model.get("models", None)
 	if model_dict is None:
 		raise ValueError("settings.modeling.models not found!")
 
-	ind_var = s_model.get("ind_var", "sale_price_time_adj")
-	ind_var_test = s_model.get("ind_var_test", "sale_price")
+	# Apply time adjustment if necessary
+	if "sale_price_time_adj" not in df:
+		if verbose:
+			print("Applying time adjustment...")
+		period = s_inst.get("time_adjustment", {}).get("period", "Q")
+		df = apply_time_adjustment(df.copy(), period=period, verbose=verbose)
+
+	ind_var = s_inst.get("ind_var", "sale_price_time_adj")
+	ind_var_test = s_inst.get("ind_var_test", "sale_price")
 	fields_cat = get_fields_categorical(s, df)
-	s_inst = s_model.get("instructions", {})
 	models_to_run = s_inst.get("run", None)
 	model_entries = s_model.get("models", {})
 	if models_to_run is None:
@@ -274,6 +379,8 @@ def run_models(
 
 	model_results = {}
 	outpath = f"out"
+
+	df.to_parquet(f"{outpath}/df.parquet")
 
 	# Run the models one by one and stash the results
 	for model in models_to_run:
@@ -293,7 +400,22 @@ def run_models(
 		if results is not None:
 			model_results[model] = results
 
-	return MultiModelResults(
+	# Calculate initial results (ensemble will use them)
+	all_results = MultiModelResults(
 		model_results=model_results,
 		benchmark=_calc_benchmark(model_results)
 	)
+
+	# Run the ensemble model
+	ensemble_results = run_ensemble(
+		df=df,
+		ind_var=ind_var,
+		ind_var_test=ind_var_test,
+		all_results=all_results,
+		settings=settings,
+		verbose=verbose
+	)
+
+	# Calculate final results, including ensemble
+	all_results.add_model("ensemble", ensemble_results)
+	return all_results

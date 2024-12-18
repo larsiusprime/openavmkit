@@ -24,12 +24,11 @@
 		},
 		"instructions": {
 			"run": [
-				"lightgbm",
-				"catboost",
-				"xgboost",
-				"mra",
-				"gwr"
+				"mra", "lightgbm", "catboost", "xgboost"
 			],
+			"time_adjustment": {
+				"period": "Q"
+			},
 			"ensemble": [],
 			"allocation": []
 		},

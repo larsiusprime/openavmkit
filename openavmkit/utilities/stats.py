@@ -24,6 +24,9 @@ def calc_chds(
 
 
 def quick_median_chd(df: pl.DataFrame, field_value: str, field_cluster: str) -> float:
+	# limit df to rows where field_value is not null/nan/etc
+	df = df.filter(df[field_value].is_not_null())
+
 	chds = (
 		df
 		.group_by(field_cluster)
@@ -57,6 +60,12 @@ def calc_prd(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
 
 
 def calc_prb(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
+
+	if len(predictions) != len(ground_truth):
+		raise ValueError("predictions and ground_truth must have the same length")
+
+	if predictions.size == 0 or ground_truth.size == 0:
+		return float('nan')
 
 	# TODO: this block is necessary because predictions is not guaranteed to have non-zero values
 	predictions = predictions.copy()

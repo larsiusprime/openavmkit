@@ -5,7 +5,7 @@ from IPython.core.display_functions import display
 
 from openavmkit.benchmark import run_models, format_benchmark_df
 from openavmkit.cleaning import fill_unknown_values_per_model_group
-from openavmkit.data import load_data
+from openavmkit.data import load_data, enrich_time
 from openavmkit.horizontal_equity_study import cluster_by_location_and_big_five
 from openavmkit.synthetic_data import generate_basic
 from openavmkit.utilities.settings import get_valuation_date, load_settings, get_fields_categorical
@@ -40,7 +40,15 @@ def test_models_guilford():
 	# mark which sales are to be used
 	df.loc[df["sale_year"].lt(use_sales_from), "valid_sale"] = 0
 
+	# scrub sales info from invalid sales
+	idx_invalid = df["valid_sale"].eq(0)
+	df.loc[idx_invalid, "sale_date"] = None
+	df.loc[idx_invalid, "sale_price"] = None
+
 	print(f"Using {len(df[df['valid_sale'].eq(1)])} sales...")
+
+	# enrich time:
+	df = enrich_time(df)
 
 	# run the predictive models
 	results = run_models(

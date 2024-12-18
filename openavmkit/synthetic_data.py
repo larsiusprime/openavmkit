@@ -316,7 +316,7 @@ def generate_basic(
 				sale_month = sale_date.month
 				sale_quarter = (sale_month - 1) // 3 + 1
 				sale_year_month = f"{sale_year:04}-{sale_month:02}"
-				sale_year_quarter = f"{sale_year:04}-Q{sale_quarter}"
+				sale_year_quarter = f"{sale_year:04}Q{sale_quarter}"
 
 			data["key"].append(str(key))
 			data["neighborhood"].append("")
