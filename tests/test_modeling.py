@@ -67,7 +67,8 @@ def test_models_synthetic():
 	settings = load_settings()
 
 	# load the data
-	df = generate_basic(100)
+	sd = generate_basic(100)
+	df = sd.df
 
 	# calculate horizontal equity cluster ID's
 	df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [], verbose=True)

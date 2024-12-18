@@ -6,7 +6,8 @@ from openavmkit.synthetic_data import generate_basic
 
 def test_clusters():
 	print("")
-	df = generate_basic(100)
+	sd = generate_basic(100)
+	df = sd.df
 	df["he_id"] = cluster_by_location_and_big_five(
 		df,
 		"neighborhood",
