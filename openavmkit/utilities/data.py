@@ -5,6 +5,7 @@ def clean_column_names(df: pd.DataFrame):
 	replace_map = {
 		"[": "_LBRKT_",
 		"]": "_RBRKT_",
+		"<NA>": "_NA_",
 		"<": "_LT_",
 	}
 	for key in replace_map:

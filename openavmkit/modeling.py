@@ -47,13 +47,22 @@ class PredictionResults:
 	def __init__(self,
 			ind_var: str,
 			dep_vars: list[str],
-			y: pd.Series,
-			y_pred: np.ndarray
+			prediction_field: str,
+			df: pd.DataFrame
 	):
 		self.ind_var = ind_var
 		self.dep_vars = dep_vars
+
+		y = df[ind_var].to_numpy()
+		y_pred = df[prediction_field].to_numpy()
+
 		self.y = y
 		self.y_pred = y_pred
+
+		df_valid = df[df["valid_for_ratio_study"].astype("str").eq("1")]
+
+		y = df_valid[ind_var].to_numpy()
+		y_pred = df_valid[prediction_field].to_numpy()
 
 		self.mse = mean_squared_error(y, y_pred)
 		self.rmse = np.sqrt(self.mse)
@@ -71,7 +80,7 @@ class PredictionResults:
 		k = len(dep_vars)
 
 		self.adj_r2 = 1 - ((1 - self.r2)*(n-1)/(n-k-1))
-		self.ratio_study = RatioStudy(y_pred, y.to_numpy())
+		self.ratio_study = RatioStudy(y_pred, y)
 
 class DataSplit:
 	df_sales: pd.DataFrame
@@ -335,7 +344,7 @@ class SingleModelResults:
 			type: str,
 			model: PredictionModel,
 			y_pred_test: np.ndarray,
-			y_pred_sales: np.ndarray,
+			y_pred_sales: np.ndarray | None,
 			y_pred_univ: np.ndarray,
 			timing: TimingData,
 			verbose: bool = False
@@ -348,11 +357,13 @@ class SingleModelResults:
 		y_sales = ds.y_sales
 
 		df_univ[field_prediction] = y_pred_univ
-		df_sales[field_prediction] = y_pred_sales
+		if y_pred_sales is not None:
+			df_sales[field_prediction] = y_pred_sales
 		df_test[field_prediction] = y_pred_test
 
 		self.df_universe = df_univ
-		self.df_sales = df_sales
+		if y_pred_sales is not None:
+			self.df_sales = df_sales
 		self.df_test = df_test
 
 		self.type = type
@@ -362,17 +373,20 @@ class SingleModelResults:
 		self.model = model
 
 		timing.start("stats_test")
-		self.pred_test = PredictionResults(self.ind_var_test, self.dep_vars, y_test, y_pred_test)
+		self.pred_test = PredictionResults(self.ind_var_test, self.dep_vars, field_prediction, df_test)
 		timing.stop("stats_test")
 
 		timing.start("stats_sales")
-		self.pred_sales = PredictionResults(self.ind_var_test, self.dep_vars, y_sales, y_pred_sales)
+		if y_pred_sales is not None:
+			self.pred_sales = PredictionResults(self.ind_var_test, self.dep_vars, field_prediction, df_sales)
 		timing.stop("stats_sales")
 
 		self.pred_univ = y_pred_univ
 		timing.start("chd")
-		# TODO: finish converting other stuff to polars
-		pl_df = pl.DataFrame(df_univ)
+		# Only use the rows that are valid for testing for the equity study
+		df_univ_valid = df_univ[df_univ["valid_for_ratio_study"].eq(1)]
+		df_univ_valid = df_univ
+		pl_df = pl.DataFrame(df_univ_valid)
 		self.chd = quick_median_chd(pl_df, field_prediction, field_horizontal_equity_id)
 		timing.stop("chd")
 

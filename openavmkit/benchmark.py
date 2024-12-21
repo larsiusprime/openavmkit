@@ -2,12 +2,15 @@ import os
 
 import numpy as np
 import pandas as pd
+from IPython.core.display_functions import display
 
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, SingleModelResults, run_garbage, \
 	run_average, run_naive_sqft, DataSplit, run_kernel, run_mgwr
-from openavmkit.time_adjustment import apply_time_adjustment
+from openavmkit.time_adjustment import apply_time_adjustment, enrich_time_adjustment
 from openavmkit.utilities.data import div_z_safe
 from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions
+from openavmkit.utilities.stats import calc_vif, calc_vif_recursive_drop, calc_t_values, calc_t_values_recursive_drop, \
+	calc_p_values_recursive_drop, calc_elastic_net_regularization, calc_correlations
 from openavmkit.utilities.timing import TimingData
 
 
@@ -73,6 +76,7 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 		"model":[],
 		"subset":[],
 		"utility_score": [],
+		"count":[],
 		"mse":[],
 		"rmse":[],
 		"r2":[],
@@ -95,6 +99,7 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 			data["model"].append(key)
 			data["subset"].append(subset)
 			data["utility_score"].append(results.utility)
+			data["count"].append(pred_results.ratio_study.count)
 			data["mse"].append(pred_results.mse)
 			data["rmse"].append(pred_results.rmse)
 			data["r2"].append(pred_results.r2)
@@ -161,6 +166,7 @@ def format_benchmark_df(df: pd.DataFrame):
 
 	formats = {
 		"utility_score": fancy_format,
+		"count": "{:.0f}",
 		"mse": fancy_format,
 		"rmse": fancy_format,
 		"r2": "{:.2f}",
@@ -320,11 +326,119 @@ def write_ensemble_model_results(
 		df.to_csv(f"{path}/pred_ensemble_{key}.csv", index=False)
 
 
+def optimize_ensemble(
+		df: pd.DataFrame,
+		ind_var: str,
+		ind_var_test: str,
+		all_results: MultiModelResults,
+		settings: dict,
+		verbose: bool = False
+):
+	timing = TimingData()
+	timing.start("total")
+	timing.start("setup")
+
+	instructions = settings.get("modeling", {}).get("instructions", {})
+	test_train_frac = instructions.get("test_train_frac", 0.8)
+	random_seed = instructions.get("random_seed", 1337)
+
+	ds = DataSplit(
+		df,
+		settings,
+		ind_var,
+		ind_var_test,
+		[],
+		[],
+		{},
+		test_train_frac,
+		random_seed
+	)
+
+	df_test = ds.df_test
+	df_univ = ds.df_universe
+	instructions = settings.get("modeling", {}).get("instructions", {})
+	ensemble_list = instructions.get("ensemble", [])
+	if len(ensemble_list) == 0:
+		ensemble_list = [key for key in all_results.model_results.keys()]
+
+	best_list = []
+	best_score = float('inf')
+
+	while len(ensemble_list) > 0:
+		df_test_ensemble = df_test[["key"]].copy()
+		df_univ_ensemble = df_univ[["key"]].copy()
+		if len(ensemble_list) == 0:
+			ensemble_list = [key for key in all_results.model_results.keys()]
+		timing.stop("setup")
+
+		timing.start("parameter_search")
+		timing.stop("parameter_search")
+
+		timing.start("train")
+		for m_key in ensemble_list:
+			m_results = all_results.model_results[m_key]
+			df_test_ensemble[m_key] = m_results.pred_test.y_pred
+			df_univ_ensemble[m_key] = m_results.pred_univ
+		timing.stop("train")
+
+		timing.start("predict_test")
+		y_pred_test_ensemble = df_test_ensemble[ensemble_list].median(axis=1)
+		timing.stop("predict_test")
+
+		timing.start("predict_sales")
+		timing.stop("predict_sales")
+
+		timing.start("predict_full")
+		y_pred_univ_ensemble = df_univ_ensemble[ensemble_list].median(axis=1)
+		timing.stop("predict_full")
+
+		results = SingleModelResults(
+			ds,
+			"prediction",
+			"he_id",
+			"ensemble",
+			model="ensemble",
+			y_pred_test=y_pred_test_ensemble.to_numpy(),
+			y_pred_sales=None,
+			y_pred_univ=y_pred_univ_ensemble.to_numpy(),
+			timing=timing,
+			verbose=verbose
+		)
+		timing.stop("total")
+
+		score = results.utility
+
+		if verbose:
+			print(f"score = {score:5.0f}, best = {best_score:5.0f}, ensemble = {ensemble_list}...")
+
+		if score < best_score:
+			best_score = score
+			best_list = ensemble_list.copy()
+
+		# identify the WORST individual model:
+		worst_model = None
+		worst_score = float('-inf')
+		for key in ensemble_list:
+			if key in all_results.model_results:
+				model_results = all_results.model_results[key]
+				if model_results.utility > worst_score:
+					worst_score = model_results.utility
+					worst_model = key
+					if verbose:
+						print(f"--> kicking score {worst_score:5.0f}, model = {worst_model}")
+
+		ensemble_list.remove(worst_model)
+
+	if verbose:
+		print(f"Best score = {best_score:5.0}, ensemble = {best_list}")
+	return best_list
+
 def run_ensemble(
 		df: pd.DataFrame,
 		ind_var: str,
 		ind_var_test: str,
 		outpath: str,
+		ensemble_list: list[str],
 		all_results: MultiModelResults,
 		settings: dict,
 		verbose: bool = False
@@ -354,8 +468,7 @@ def run_ensemble(
 	df_test = ds.df_test
 	df_sales = ds.df_sales
 	df_univ = ds.df_universe
-	instructions = settings.get("modeling", {}).get("instructions", {})
-	ensemble_list = instructions.get("ensemble", [])
+
 	df_test_ensemble = df_test[["key"]].copy()
 	df_sales_ensemble = df_sales[["key"]].copy()
 	df_univ_ensemble = df_univ[["key"]].copy()
@@ -409,6 +522,120 @@ def run_ensemble(
 	return results
 
 
+def _prepare_ds(
+	df: pd.DataFrame,
+	settings: dict
+):
+	s = settings
+	s_model = s.get("modeling", {})
+	model_entries = s_model.get("models")
+	entry: dict | None = model_entries.get("default", None)
+
+	dep_vars : list | None = entry.get("dep_vars", None)
+	if dep_vars is None:
+		raise ValueError(f"dep_vars not found for model 'default'")
+
+	fields_cat = get_fields_categorical(s, df)
+	interactions = get_variable_interactions(entry, s, df)
+
+	instructions = s.get("modeling", {}).get("instructions", {})
+	ind_var = instructions.get("ind_var", "sale_price")
+	ind_var_test = instructions.get("ind_var_test", "sale_price_time_adj")
+	test_train_frac = instructions.get("test_train_frac", 0.8)
+	random_seed = instructions.get("random_seed", 1337)
+
+	ds = DataSplit(
+		df,
+		settings,
+		ind_var,
+		ind_var_test,
+		dep_vars,
+		fields_cat,
+		interactions,
+		test_train_frac,
+		random_seed
+	)
+	return ds
+
+
+def _calc_variable_recommendations(
+		correlation_results: dict,
+		enr_results: dict,
+		p_values_results: dict,
+		t_values_results: dict,
+		vif_results: dict
+):
+	df = pd.merge(correlation_results["final"], enr_results["final"], on="variable", how="outer")
+	df = pd.merge(df, p_values_results["final"], on="variable", how="outer")
+	df = pd.merge(df, t_values_results["final"], on="variable", how="outer")
+	df = pd.merge(df, vif_results["final"], on="variable", how="outer")
+
+	df["tests_passed"] = 0
+
+	# remove "const" from df:
+	df = df[df["variable"].ne("const")]
+
+	df.loc[df["corr_score"].notna(), "tests_passed"] += 1
+	df.loc[df["enr_coefficient"].notna(), "tests_passed"] += 1
+	df.loc[df["p_value"].notna(), "tests_passed"] += 1
+	df.loc[df["t_value"].notna(), "tests_passed"] += 1
+	df.loc[df["vif"].notna(), "tests_passed"] += 1
+
+	df = df.sort_values(by="tests_passed", ascending=False)
+	return df
+
+
+def get_variable_recommendations(
+		df: pd.DataFrame,
+		settings: dict,
+		verbose: bool = False
+):
+	print("")
+	df = enrich_time_adjustment(df, settings, verbose=verbose)
+	ds = _prepare_ds(df, settings)
+	ds = ds.encode_categoricals_with_one_hot()
+	ds.split()
+
+	X_sales = ds.X_sales[ds.dep_vars]
+	y_sales = ds.y_sales
+
+	# Correlation
+	X_corr = ds.df_sales[[ds.ind_var] + ds.dep_vars]
+	corr_results = calc_correlations(X_corr)
+
+	# Elastic net regularization
+	enr_coefs = calc_elastic_net_regularization(X_sales, y_sales)
+
+	# P Values
+	p_values = calc_p_values_recursive_drop(X_sales, y_sales)
+
+	# T Values
+	t_values = calc_t_values_recursive_drop(X_sales, y_sales)
+
+	# VIF
+	vif = calc_vif_recursive_drop(X_sales)
+
+	# Generate final results & recommendations
+	df_results = _calc_variable_recommendations(
+		correlation_results=corr_results,
+		enr_results=enr_coefs,
+		p_values_results=p_values,
+		t_values_results=t_values,
+		vif_results=vif
+	)
+
+	best_variables = df_results[df_results["tests_passed"].ge(df_results["tests_passed"].max())]["variable"].tolist()
+	passing_variables = df_results[df_results["tests_passed"].ge(3)]["variable"].tolist()
+
+	if verbose:
+		print(f"Best variables: {best_variables}")
+		print(f"Passing variables: {passing_variables}")
+
+	return {
+		"best": best_variables,
+		"passing": passing_variables
+	}
+
 def run_models(
 		df: pd.DataFrame,
 		settings: dict,
@@ -416,22 +643,13 @@ def run_models(
 		use_saved_params: bool = False,
 		verbose: bool = False
 ):
-	# Gather settings
 	s = settings
 	s_model = s.get("modeling", {})
 	s_inst = s_model.get("instructions", {})
-	model_dict = s_model.get("models", None)
-	if model_dict is None:
-		raise ValueError("settings.modeling.models not found!")
 
-	# Apply time adjustment if necessary
-	if "sale_price_time_adj" not in df:
-		if verbose:
-			print("Applying time adjustment...")
-		period = s_inst.get("time_adjustment", {}).get("period", "Q")
-		df = apply_time_adjustment(df.copy(), settings, period=period, verbose=verbose)
+	df = enrich_time_adjustment(df, s, verbose=verbose)
 
-	ind_var = s_inst.get("ind_var", "sale_price_time_adj")
+	ind_var = s_inst.get("ind_var", "sale_price")
 	ind_var_test = s_inst.get("ind_var_test", "sale_price")
 	fields_cat = get_fields_categorical(s, df)
 	models_to_run = s_inst.get("run", None)
@@ -472,12 +690,22 @@ def run_models(
 		benchmark=_calc_benchmark(model_results)
 	)
 
+	best_ensemble = optimize_ensemble(
+		df=df,
+		ind_var=ind_var,
+		ind_var_test=ind_var_test,
+		all_results=all_results,
+		settings=settings,
+		verbose=verbose
+	)
+
 	# Run the ensemble model
 	ensemble_results = run_ensemble(
 		df=df,
 		ind_var=ind_var,
 		ind_var_test=ind_var_test,
 		outpath=outpath,
+		ensemble_list=best_ensemble,
 		all_results=all_results,
 		settings=settings,
 		verbose=verbose

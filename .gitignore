@@ -6,3 +6,6 @@ build/
 tests/catboost_info/
 tests/out/
 tests/data/
+.ipynb_checkpoints/
+
+testing.ipynb

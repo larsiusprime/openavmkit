@@ -332,3 +332,26 @@ def apply_time_adjustment(df_sales_in: pd.DataFrame, settings, period: str = "M"
     )
 
   return df_sales
+
+
+def enrich_time_adjustment(
+    df: pd.DataFrame,
+    settings: dict,
+    verbose: bool = False
+):
+  # Gather settings
+  s = settings
+  s_model = s.get("modeling", {})
+  s_inst = s_model.get("instructions", {})
+  model_dict = s_model.get("models", None)
+  if model_dict is None:
+    raise ValueError("settings.modeling.models not found!")
+
+  # Apply time adjustment if necessary
+  if "sale_price_time_adj" not in df:
+    if verbose:
+      print("Applying time adjustment...")
+    period = s_inst.get("time_adjustment", {}).get("period", "Q")
+    df = apply_time_adjustment(df.copy(), settings, period=period, verbose=verbose)
+
+  return df
