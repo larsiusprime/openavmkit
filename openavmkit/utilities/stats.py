@@ -1,7 +1,16 @@
-import numpy as np
-import pandas as pd
 import polars as pl
 import statsmodels.api as sm
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib
+from IPython.core.display_functions import display
+from sklearn.preprocessing import StandardScaler
+
+matplotlib.use('TkAgg')  # Set the interactive backend
+from matplotlib import pyplot as plt
+from sklearn.linear_model import ElasticNet
+from statsmodels.stats.outliers_influence import variance_inflation_factor
 
 
 def calc_chds(
@@ -91,3 +100,265 @@ def calc_prb(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
 	prb = mra_model.params[0]
 
 	return prb
+
+
+def plot_correlation(corr: pd.DataFrame, title:str = "Correlation of Variables"):
+	# Set a custom color map
+	cmap = sns.diverging_palette(220, 10, as_cmap=True)
+	cmap = cmap.reversed()
+
+	plt.figure(figsize=(10, 8))
+
+	# Create the heatmap with the correct labels
+	sns.heatmap(
+		corr,
+		annot=True,
+		fmt=".1f",
+		cbar=True,
+		cmap=cmap,
+		vmax=1.0,
+		vmin=-1.0,
+		xticklabels=corr.columns.tolist(),  # explicitly set the xticklabels
+		yticklabels=corr.index.tolist(),    # explicitly set the yticklabels
+		annot_kws={"size": 8},      # adjust font size if needed
+	)
+
+	plt.title(title)
+	plt.xticks(rotation=45, ha='right')  # rotate x labels if needed
+	plt.yticks(rotation=0)  # keep y labels horizontal
+	plt.tight_layout(pad=2)
+	plt.show()
+
+
+def calc_correlations(X: pd.DataFrame, threshold: float = 0.1, do_plots: bool = False):
+	X = X.copy()
+
+	first_run = None
+
+	while True:
+		# Compute the correlation matrix
+		naive_corr = X.corr()
+
+		# Identify variables with the highest correlation with the target variable (the first column)
+		target_corr = naive_corr.iloc[:, 0].abs().sort_values(ascending=False)
+
+		# Sort naive_corr by the correlation of the target variable
+		naive_corr = naive_corr.loc[target_corr.index, target_corr.index]
+
+		naive_corr_sans_target = naive_corr.iloc[1:, 1:]
+
+		# Calculate the strength of the correlation with the target variable
+		strength = naive_corr.iloc[:, 0].abs()
+
+		# drop the target variable from strength:
+		strength = strength.iloc[1:]
+
+		# Calculate the clarity of the correlation: how correlated it is with all other variables *except* the target variable
+		clarity = 1 - ((naive_corr_sans_target.abs().sum(axis=1) - 1.0) / (len(naive_corr_sans_target.columns)-1))
+
+		# Combine the strength and clarity into a single score -- bigger is better, and we want high strength and high clarity
+		score = strength * clarity * clarity
+
+		# Identify the variable with the lowest score
+		min_score_idx = score.idxmin()
+		min_score = score[min_score_idx]
+
+		data = {
+			"corr_strength": strength,
+			"corr_clarity": clarity,
+			"corr_score": score
+		}
+		df_score = pd.DataFrame(data)
+		df_score = df_score.reset_index().rename(columns={"index": "variable"})
+
+		if first_run is None:
+			first_run = df_score
+			first_run = first_run.sort_values("corr_score", ascending=False)
+
+		if min_score < threshold:
+			X = X.drop(min_score_idx, axis=1)
+		else:
+			break
+
+	# sort by score:
+	df_score = df_score.sort_values("corr_score", ascending=False)
+
+	if do_plots:
+		plot_correlation(naive_corr, "Correlation of Variables (initial)")
+
+	# recompute the correlation matrix
+	final_corr = X.corr()
+
+	if do_plots:
+		plot_correlation(final_corr, "Correlation of Variables (final)")
+
+	return {
+		"initial": first_run,
+		"final": df_score
+	}
+
+
+def calc_elastic_net_regularization(X: pd.DataFrame, y: pd.Series, threshold_fraction: float = 0.05):
+	X = X.copy()
+
+	# Standardize the features
+	scaler = StandardScaler()
+	X_scaled = scaler.fit_transform(X)
+
+	first_run = None
+
+	while True:
+
+		# Apply Elastic Net regularization
+		elastic_net = ElasticNet(alpha=1.0, l1_ratio=0.5)
+		elastic_net.fit(X_scaled, y)
+
+		# Calculate the absolute values of the coefficients
+		abs_coefficients = np.abs(elastic_net.coef_)
+
+		# Determine the threshold as a fraction of the largest coefficient
+		max_coef = np.max(abs_coefficients)
+		threshold = max_coef * threshold_fraction
+
+		coefficients = elastic_net.coef_
+		# align coefficients into a dataframe with variable names:
+		coefficients = pd.DataFrame({
+			"variable": X.columns,
+			"coefficient": coefficients
+		})
+		coefficients = coefficients.sort_values("coefficient", ascending=False, key=lambda x: x.abs())
+
+		# identify worst variable:
+		min_coef_idx = np.argmin(abs_coefficients)
+		min_coef = abs_coefficients[min_coef_idx]
+
+		if first_run is None:
+			first_run = coefficients
+
+		if min_coef < threshold:
+				# remove the worst variable from X_scaled:
+				X_scaled = np.delete(X_scaled, min_coef_idx, axis=1)
+				# remove corresponding column from X:
+				X = X.drop(X.columns[min_coef_idx], axis=1)
+		else:
+			break
+
+	return {
+		"initial": first_run.rename(columns={"coefficient": "enr_coefficient"}),
+		"final": coefficients.rename(columns={"coefficient": "enr_coefficient"})
+	}
+
+
+def calc_p_values_recursive_drop(X: pd.DataFrame, y: pd.Series, sig_threshold: float = 0.05):
+	X = X.copy()
+	X = sm.add_constant(X)
+	X = X.astype(np.float64)
+	X_orig = X.copy()
+	model = sm.OLS(y, X).fit()
+	first_run = None
+	while True:
+		max_p_value = model.pvalues.max()
+		p_values = model.pvalues
+		if first_run is None:
+			first_run = p_values
+		if max_p_value > sig_threshold:
+			var_to_drop = p_values.idxmax()
+			X = X.drop(var_to_drop, axis=1)
+			model = sm.OLS(y, X).fit()
+		else:
+			break
+
+	# align p_values into a dataframe with variable names:
+	p_values = pd.DataFrame({
+		"p_value": model.pvalues
+	}).sort_values("p_value", ascending=True).reset_index().rename(columns={"index": "variable"})
+
+	# do the same for "first_run":
+	first_run = pd.DataFrame({
+		"p_value": first_run
+	}).sort_values("p_value", ascending=True).reset_index().rename(columns={"index": "variable"})
+
+	return {
+		"initial": first_run,
+		"final": p_values,
+	}
+
+
+def calc_t_values_recursive_drop(X: pd.DataFrame, y: pd.Series):
+	X = X.copy()
+	X = sm.add_constant(X)
+	X = X.astype(np.float64)
+
+	first_run = None
+	i = 0
+	while True:
+		i += 1
+		t_values = calc_t_values(X, y)
+		if first_run is None:
+			first_run = t_values
+		min_t_var = t_values.abs().idxmin()
+		min_t_val = t_values[min_t_var]
+		if min_t_val < 2:
+			X = X.drop(min_t_var, axis=1)
+		else:
+			break
+
+	# align t_values into a dataframe with variable names:
+	t_values = pd.DataFrame({
+		"t_value": t_values
+	}).sort_values("t_value", ascending=False, key=lambda x: x.abs()).reset_index().rename(columns={"index": "variable"})
+
+	# do the same for "first_run":
+	first_run = pd.DataFrame({
+		"t_value": first_run
+	}).sort_values("t_value", ascending=False, key=lambda x: x.abs()).reset_index().rename(columns={"index": "variable"})
+
+	return {
+		"initial": first_run,
+		"final": t_values
+	}
+
+
+def calc_t_values(X: pd.DataFrame, y: pd.Series):
+	linear_model = sm.OLS(y, X)
+	fitted_model = linear_model.fit()
+	return fitted_model.tvalues
+
+
+def calc_vif_recursive_drop(X: pd.DataFrame):
+	X = X.copy()
+	X = X.astype(np.float64)
+
+	# Drop constant columns (VIF cannot be calculated for constant columns)
+	X = X.loc[:, X.nunique() > 1]  # Keep only columns with more than one unique value
+
+	# If no columns are left after removing constant columns or dropping NaN values, raise an error
+	if X.shape[1] == 0:
+		raise ValueError("All columns are constant or have missing values; VIF cannot be computed.")
+
+	first_run = None
+	while True:
+		vif_data = calc_vif(X)
+		if first_run is None:
+			first_run = vif_data
+		max_vif = vif_data["vif"].max()
+		if max_vif > 10:
+			max_vif_idx = vif_data["vif"].idxmax()
+			X = X.drop(X.columns[max_vif_idx], axis=1)
+		else:
+			break
+	return {
+		"initial": first_run,
+		"final": vif_data
+	}
+
+
+def calc_vif(X: pd.DataFrame):
+	# Create an empty dataframe for storing VIF values
+	vif_data = pd.DataFrame()
+	vif_data["variable"] = X.columns
+
+	# Calculate VIF for each column
+	vif_data["vif"] = [variance_inflation_factor(X.values, i) for i in range(X.shape[1])]
+
+	return vif_data

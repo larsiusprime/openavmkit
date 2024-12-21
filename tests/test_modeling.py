@@ -1,14 +1,55 @@
 import os
 
-import pandas as pd
-from IPython.core.display_functions import display
-
-from openavmkit.benchmark import run_models, format_benchmark_df
+from openavmkit.benchmark import run_models, get_variable_recommendations
 from openavmkit.cleaning import fill_unknown_values_per_model_group
 from openavmkit.data import load_data, enrich_time
 from openavmkit.horizontal_equity_study import cluster_by_location_and_big_five
 from openavmkit.synthetic_data import generate_basic
 from openavmkit.utilities.settings import get_valuation_date, load_settings, get_fields_categorical
+
+
+def test_variables():
+	print("")
+	# set working directory to the library's root/tests/data:
+	os.chdir("data/nc-guilford")
+
+	# load the settings:
+	settings = load_settings()
+
+	# load the data
+	df = load_data(settings)
+
+	# clean the data
+	df = fill_unknown_values_per_model_group(df, settings)
+
+	# select a subset of the data
+	df = df[df["model_group"].eq("residential_sf")].copy().reset_index(drop=True)
+
+	if "he_id" not in df:
+		df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [], verbose=True)
+
+	# load metadata
+	val_date = get_valuation_date(settings)
+	val_year = val_date.year
+	metadata = settings.get("modeling", {}).get("metadata", {})
+	use_sales_from = metadata.get("use_sales_from", val_year - 5)
+
+	# mark which sales are to be used
+	df.loc[df["sale_year"].lt(use_sales_from), "valid_sale"] = 0
+
+	# scrub sales info from invalid sales
+	idx_invalid = df["valid_sale"].eq(0)
+	df.loc[idx_invalid, "sale_date"] = None
+	df.loc[idx_invalid, "sale_price"] = None
+
+	# enrich time:
+	df = enrich_time(df)
+
+	get_variable_recommendations(
+		df,
+		settings,
+		verbose=True,
+	)
 
 
 def test_models_guilford():
