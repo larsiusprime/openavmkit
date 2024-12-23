@@ -23,6 +23,7 @@
 					"t_value": 2,
 					"enr_coef": 2,
 					"corr_score": 2,
+					"coef_sign": 2,
 					"adj_r2": 1
 				}
 			}

@@ -584,24 +584,25 @@ def _calc_variable_recommendations(
 	adj_r2_thresh = thresh.get("adj_r2", 0.1)
 	df.loc[df["adj_r2"].gt(adj_r2_thresh), "weighted_score"] += 1
 
-	# check if "enr_coefficient", "t_value", and "coef_sign" are pointing in the same direction:
-	df.loc[
-		df["enr_coef_sign"].eq(df["t_value_sign"]) &
-		df["enr_coef_sign"].eq(df["coef_sign"]),
-		"weighted_score"
-	] += 1
-
 	weight_corr_score = weights.get("corr_score", 1)
 	weight_enr_coef = weights.get("enr_coef", 1)
 	weight_p_value = weights.get("p_value", 1)
 	weight_t_value = weights.get("t_value", 1)
 	weight_vif = weights.get("vif", 1)
+	weight_coef_sign = weights.get("coef_sign", 1)
 
 	df.loc[df["corr_score"].notna(), "weighted_score"] += weight_corr_score
 	df.loc[df["enr_coef"].notna(), "weighted_score"] += weight_enr_coef
 	df.loc[df["p_value"].notna(), "weighted_score"] += weight_p_value
 	df.loc[df["t_value"].notna(), "weighted_score"] += weight_t_value
 	df.loc[df["vif"].notna(), "weighted_score"] += weight_vif
+	# check if "enr_coefficient", "t_value", and "coef_sign" are pointing in the same direction:
+	df.loc[
+		df["enr_coef_sign"].eq(df["t_value_sign"]) &
+		df["enr_coef_sign"].eq(df["coef_sign"]),
+		"weighted_score"
+	] += weight_coef_sign
+
 
 	df = df.sort_values(by="weighted_score", ascending=False)
 
