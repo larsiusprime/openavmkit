@@ -300,12 +300,15 @@ class DataSplit:
 					if target_field in _df_test:
 						_df_test[target_field] = _df_test[target_field] * _df_test[fill_field]
 
-		self.X_univ = _df_univ[self.dep_vars]
+		dep_vars = [col for col in self.dep_vars if col in _df_univ.columns]
+		self.X_univ = _df_univ[dep_vars]
 
-		self.X_sales = _df_sales[self.dep_vars]
+		dep_vars = [col for col in self.dep_vars if col in _df_sales.columns]
+		self.X_sales = _df_sales[dep_vars]
 		self.y_sales = _df_sales[self.ind_var]
 
-		self.X_train = _df_train[self.dep_vars]
+		dep_vars = [col for col in self.dep_vars if col in _df_train.columns]
+		self.X_train = _df_train[dep_vars]
 		self.y_train = _df_train[self.ind_var]
 
 		# convert all Float64 to float64 in X_train:
@@ -318,7 +321,8 @@ class DataSplit:
 			):
 				self.X_train[col] = self.X_train[col].astype("float64")
 
-		self.X_test = _df_test[self.dep_vars]
+		dep_vars = [col for col in self.dep_vars if col in _df_test.columns]
+		self.X_test = _df_test[dep_vars]
 		self.y_test = _df_test[self.ind_var_test]
 
 class SingleModelResults:
