@@ -10,7 +10,7 @@ from openavmkit.time_adjustment import apply_time_adjustment, enrich_time_adjust
 from openavmkit.utilities.data import div_z_safe
 from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions
 from openavmkit.utilities.stats import calc_vif, calc_vif_recursive_drop, calc_t_values, calc_t_values_recursive_drop, \
-	calc_p_values_recursive_drop, calc_elastic_net_regularization, calc_correlations
+	calc_p_values_recursive_drop, calc_elastic_net_regularization, calc_correlations, calc_r2, calc_cross_validation_score
 from openavmkit.utilities.timing import TimingData
 
 
@@ -559,29 +559,52 @@ def _prepare_ds(
 
 
 def _calc_variable_recommendations(
+		feature_selection: dict,
 		correlation_results: dict,
 		enr_results: dict,
+		r2_values_results: pd.DataFrame,
 		p_values_results: dict,
 		t_values_results: dict,
 		vif_results: dict
 ):
+	thresh = feature_selection.get("thresholds", {})
+	weights = feature_selection.get("weights", {})
+
 	df = pd.merge(correlation_results["final"], enr_results["final"], on="variable", how="outer")
+	df = pd.merge(df, r2_values_results, on="variable", how="outer")
 	df = pd.merge(df, p_values_results["final"], on="variable", how="outer")
 	df = pd.merge(df, t_values_results["final"], on="variable", how="outer")
 	df = pd.merge(df, vif_results["final"], on="variable", how="outer")
 
-	df["tests_passed"] = 0
+	df["weighted_score"] = 0
 
 	# remove "const" from df:
 	df = df[df["variable"].ne("const")]
 
-	df.loc[df["corr_score"].notna(), "tests_passed"] += 1
-	df.loc[df["enr_coefficient"].notna(), "tests_passed"] += 1
-	df.loc[df["p_value"].notna(), "tests_passed"] += 1
-	df.loc[df["t_value"].notna(), "tests_passed"] += 1
-	df.loc[df["vif"].notna(), "tests_passed"] += 1
+	adj_r2_thresh = thresh.get("adj_r2", 0.1)
+	df.loc[df["adj_r2"].gt(adj_r2_thresh), "weighted_score"] += 1
 
-	df = df.sort_values(by="tests_passed", ascending=False)
+	# check if "enr_coefficient", "t_value", and "coef_sign" are pointing in the same direction:
+	df.loc[
+		df["enr_coef_sign"].eq(df["t_value_sign"]) &
+		df["enr_coef_sign"].eq(df["coef_sign"]),
+		"weighted_score"
+	] += 1
+
+	weight_corr_score = weights.get("corr_score", 1)
+	weight_enr_coef = weights.get("enr_coef", 1)
+	weight_p_value = weights.get("p_value", 1)
+	weight_t_value = weights.get("t_value", 1)
+	weight_vif = weights.get("vif", 1)
+
+	df.loc[df["corr_score"].notna(), "weighted_score"] += weight_corr_score
+	df.loc[df["enr_coef"].notna(), "weighted_score"] += weight_enr_coef
+	df.loc[df["p_value"].notna(), "weighted_score"] += weight_p_value
+	df.loc[df["t_value"].notna(), "weighted_score"] += weight_t_value
+	df.loc[df["vif"].notna(), "weighted_score"] += weight_vif
+
+	df = df.sort_values(by="weighted_score", ascending=False)
+
 	return df
 
 
@@ -590,51 +613,78 @@ def get_variable_recommendations(
 		settings: dict,
 		verbose: bool = False
 ):
-	print("")
+	if verbose:
+		print("")
 	df = enrich_time_adjustment(df, settings, verbose=verbose)
 	ds = _prepare_ds(df, settings)
 	ds = ds.encode_categoricals_with_one_hot()
 	ds.split()
+
+	feature_selection = settings.get("modeling", {}).get("instructions", {}).get("feature_selection", {})
+	thresh = feature_selection.get("thresholds", {})
 
 	X_sales = ds.X_sales[ds.dep_vars]
 	y_sales = ds.y_sales
 
 	# Correlation
 	X_corr = ds.df_sales[[ds.ind_var] + ds.dep_vars]
-	corr_results = calc_correlations(X_corr)
+	corr_results = calc_correlations(X_corr, thresh.get("correlation", 0.1))
 
 	# Elastic net regularization
-	enr_coefs = calc_elastic_net_regularization(X_sales, y_sales)
+	enr_coefs = calc_elastic_net_regularization(X_sales, y_sales, thresh.get("enr", 0.01))
+
+	# R^2 values
+	r2_values = calc_r2(ds.df_sales, ds.dep_vars, y_sales)
 
 	# P Values
-	p_values = calc_p_values_recursive_drop(X_sales, y_sales)
+	p_values = calc_p_values_recursive_drop(X_sales, y_sales, thresh.get("p_value", 0.05))
 
 	# T Values
-	t_values = calc_t_values_recursive_drop(X_sales, y_sales)
+	t_values = calc_t_values_recursive_drop(X_sales, y_sales, thresh.get("t_value", 2))
 
 	# VIF
-	vif = calc_vif_recursive_drop(X_sales)
+	vif = calc_vif_recursive_drop(X_sales, thresh.get("vif", 10))
 
 	# Generate final results & recommendations
 	df_results = _calc_variable_recommendations(
+		feature_selection=feature_selection,
 		correlation_results=corr_results,
 		enr_results=enr_coefs,
+		r2_values_results=r2_values,
 		p_values_results=p_values,
 		t_values_results=t_values,
 		vif_results=vif
 	)
 
-	best_variables = df_results[df_results["tests_passed"].ge(df_results["tests_passed"].max())]["variable"].tolist()
-	passing_variables = df_results[df_results["tests_passed"].ge(3)]["variable"].tolist()
+	pd.set_option('display.max_columns', None)
+	display(df_results)
 
-	if verbose:
-		print(f"Best variables: {best_variables}")
-		print(f"Passing variables: {passing_variables}")
+	curr_variables = df_results["variable"].tolist()
+	best_variables = curr_variables.copy()
+	best_score = float('inf')
 
-	return {
-		"best": best_variables,
-		"passing": passing_variables
-	}
+	y = ds.y_sales
+	while len(curr_variables) > 0:
+		X = ds.df_sales[curr_variables]
+		cv_score = calc_cross_validation_score(X, y)
+		if cv_score < best_score:
+			best_score = cv_score
+			best_variables = curr_variables.copy()
+			if verbose:
+				print(f"--> BEST SO FAR!")
+		worst_idx = df_results["weighted_score"].idxmin()
+		worst_score = df_results.loc[worst_idx, "weighted_score"]
+		worst_variable = df_results.loc[worst_idx, "variable"]
+		curr_variables.remove(worst_variable)
+		# remove the variable from the dataframe:
+		df_results = df_results[df_results["variable"].ne(worst_variable)]
+		if verbose:
+			print(f"{len(curr_variables)} variables: {curr_variables}")
+			print(f"--> score: {cv_score:,.0f}")
+			print(f"-->  drop: {worst_variable}, score {worst_score}...")
+
+	return best_variables
+
 
 def run_models(
 		df: pd.DataFrame,

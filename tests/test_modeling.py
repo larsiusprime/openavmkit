@@ -45,7 +45,7 @@ def test_variables():
 	# enrich time:
 	df = enrich_time(df)
 
-	get_variable_recommendations(
+	best_variables = get_variable_recommendations(
 		df,
 		settings,
 		verbose=True,
