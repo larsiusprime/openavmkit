@@ -7,6 +7,26 @@
 	},
 	"modeling": {
 		"metadata": {},
+		"instructions": {
+			"feature_selection": {
+				"thresholds": {
+					"correlation": 0.1,
+					"vif": 10,
+					"p_value": 0.05,
+					"t_value": 2,
+					"enr_coef": 0.01,
+					"adj_r2": 0.1
+				},
+				"weights": {
+					"vif": 3,
+					"p_value": 3,
+					"t_value": 2,
+					"enr_coef": 2,
+					"corr_score": 2,
+					"adj_r2": 1
+				}
+			}
+		},
 		"models": {
 			"default": {
 				"dep_vars": [],

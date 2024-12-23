@@ -5,11 +5,12 @@ import numpy as np
 import seaborn as sns
 import matplotlib
 from IPython.core.display_functions import display
+from sklearn.model_selection import cross_val_score
 from sklearn.preprocessing import StandardScaler
 
 matplotlib.use('TkAgg')  # Set the interactive backend
 from matplotlib import pyplot as plt
-from sklearn.linear_model import ElasticNet
+from sklearn.linear_model import ElasticNet, LinearRegression
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 
 
@@ -224,9 +225,10 @@ def calc_elastic_net_regularization(X: pd.DataFrame, y: pd.Series, threshold_fra
 		# align coefficients into a dataframe with variable names:
 		coefficients = pd.DataFrame({
 			"variable": X.columns,
-			"coefficient": coefficients
+			"enr_coef": coefficients,
+			"enr_coef_sign": np.sign(coefficients)
 		})
-		coefficients = coefficients.sort_values("coefficient", ascending=False, key=lambda x: x.abs())
+		coefficients = coefficients.sort_values("enr_coef", ascending=False, key=lambda x: x.abs())
 
 		# identify worst variable:
 		min_coef_idx = np.argmin(abs_coefficients)
@@ -244,16 +246,42 @@ def calc_elastic_net_regularization(X: pd.DataFrame, y: pd.Series, threshold_fra
 			break
 
 	return {
-		"initial": first_run.rename(columns={"coefficient": "enr_coefficient"}),
-		"final": coefficients.rename(columns={"coefficient": "enr_coefficient"})
+		"initial": first_run,
+		"final": coefficients
 	}
+
+
+def calc_r2(df: pd.DataFrame, variables: list[str], y: pd.Series):
+
+	results = {
+		"variable": [],
+		"r2": [],
+		"adj_r2": [],
+		"coef_sign": []
+	}
+
+	for var in variables:
+		X = df[var].copy()
+		X = sm.add_constant(X)
+		X = X.astype(np.float64)
+		model = sm.OLS(y, X).fit()
+		r2 = model.rsquared
+		adj_r2 = model.rsquared_adj
+		coef = model.params[var]
+		coef_sign = 1 if coef >= 0 else -1
+		results["variable"].append(var)
+		results["r2"].append(r2)
+		results["adj_r2"].append(adj_r2)
+		results["coef_sign"].append(coef_sign)
+
+	df_results = pd.DataFrame(data=results)
+	return df_results
 
 
 def calc_p_values_recursive_drop(X: pd.DataFrame, y: pd.Series, sig_threshold: float = 0.05):
 	X = X.copy()
 	X = sm.add_constant(X)
 	X = X.astype(np.float64)
-	X_orig = X.copy()
 	model = sm.OLS(y, X).fit()
 	first_run = None
 	while True:
@@ -284,7 +312,7 @@ def calc_p_values_recursive_drop(X: pd.DataFrame, y: pd.Series, sig_threshold: f
 	}
 
 
-def calc_t_values_recursive_drop(X: pd.DataFrame, y: pd.Series):
+def calc_t_values_recursive_drop(X: pd.DataFrame, y: pd.Series, threshold: float = 2):
 	X = X.copy()
 	X = sm.add_constant(X)
 	X = X.astype(np.float64)
@@ -298,19 +326,21 @@ def calc_t_values_recursive_drop(X: pd.DataFrame, y: pd.Series):
 			first_run = t_values
 		min_t_var = t_values.abs().idxmin()
 		min_t_val = t_values[min_t_var]
-		if min_t_val < 2:
+		if min_t_val < threshold:
 			X = X.drop(min_t_var, axis=1)
 		else:
 			break
 
 	# align t_values into a dataframe with variable names:
 	t_values = pd.DataFrame({
-		"t_value": t_values
+		"t_value": t_values,
+		"t_value_sign": np.sign(t_values)
 	}).sort_values("t_value", ascending=False, key=lambda x: x.abs()).reset_index().rename(columns={"index": "variable"})
 
 	# do the same for "first_run":
 	first_run = pd.DataFrame({
-		"t_value": first_run
+		"t_value": first_run,
+		"t_value_sign": np.sign(first_run)
 	}).sort_values("t_value", ascending=False, key=lambda x: x.abs()).reset_index().rename(columns={"index": "variable"})
 
 	return {
@@ -325,7 +355,7 @@ def calc_t_values(X: pd.DataFrame, y: pd.Series):
 	return fitted_model.tvalues
 
 
-def calc_vif_recursive_drop(X: pd.DataFrame):
+def calc_vif_recursive_drop(X: pd.DataFrame, threshold: float = 10):
 	X = X.copy()
 	X = X.astype(np.float64)
 
@@ -342,7 +372,7 @@ def calc_vif_recursive_drop(X: pd.DataFrame):
 		if first_run is None:
 			first_run = vif_data
 		max_vif = vif_data["vif"].max()
-		if max_vif > 10:
+		if max_vif > threshold:
 			max_vif_idx = vif_data["vif"].idxmax()
 			X = X.drop(X.columns[max_vif_idx], axis=1)
 		else:
@@ -362,3 +392,10 @@ def calc_vif(X: pd.DataFrame):
 	vif_data["vif"] = [variance_inflation_factor(X.values, i) for i in range(X.shape[1])]
 
 	return vif_data
+
+
+def calc_cross_validation_score(X, y):
+	model = LinearRegression()
+	# Use negative MSE and negate it to return positive MSE
+	scores = cross_val_score(model, X, y, cv=5, scoring="neg_mean_squared_error")
+	return -scores.mean()  # Convert negative MSE to positive
