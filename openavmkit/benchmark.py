@@ -6,9 +6,11 @@ from IPython.core.display_functions import display
 
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, SingleModelResults, run_garbage, \
 	run_average, run_naive_sqft, DataSplit, run_kernel, run_mgwr
+from openavmkit.reports import MarkdownReport
 from openavmkit.time_adjustment import apply_time_adjustment, enrich_time_adjustment
 from openavmkit.utilities.data import div_z_safe
-from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions
+from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions, get_valuation_date, \
+	get_modeling_group
 from openavmkit.utilities.stats import calc_vif, calc_vif_recursive_drop, calc_t_values, calc_t_values_recursive_drop, \
 	calc_p_values_recursive_drop, calc_elastic_net_regularization, calc_correlations, calc_r2, calc_cross_validation_score
 from openavmkit.utilities.timing import TimingData
@@ -201,6 +203,7 @@ def _run_one_model(
 		settings: dict,
 		ind_var: str,
 		ind_var_test: str,
+		best_variables: list[str],
 		fields_cat: list[str],
 		outpath: str,
 		save_params: bool,
@@ -225,9 +228,18 @@ def _run_one_model(
 	if verbose:
 		print(f" running model {model}...")
 
+	are_dep_vars_default = entry.get("dep_vars", None) is None
+
 	dep_vars : list | None = entry.get("dep_vars", default_entry.get("dep_vars", None))
 	if dep_vars is None:
 		raise ValueError(f"dep_vars not found for model {model}")
+
+	# if not are_dep_vars_default:
+	# 	get_variable_recommendations(
+	# 		df,
+	# 		settings
+	#
+	# 	)
 
 	interactions = get_variable_interactions(entry, settings, df)
 
@@ -524,12 +536,13 @@ def run_ensemble(
 
 def _prepare_ds(
 	df: pd.DataFrame,
-	settings: dict
+	settings: dict,
+	model: str = None
 ):
 	s = settings
 	s_model = s.get("modeling", {})
 	model_entries = s_model.get("models")
-	entry: dict | None = model_entries.get("default", None)
+	entry: dict | None = model_entries.get("model", model_entries.get("default"))
 
 	dep_vars : list | None = entry.get("dep_vars", None)
 	if dep_vars is None:
@@ -565,7 +578,8 @@ def _calc_variable_recommendations(
 		r2_values_results: pd.DataFrame,
 		p_values_results: dict,
 		t_values_results: dict,
-		vif_results: dict
+		vif_results: dict,
+		report: MarkdownReport = None
 ):
 	thresh = feature_selection.get("thresholds", {})
 	weights = feature_selection.get("weights", {})
@@ -603,8 +617,30 @@ def _calc_variable_recommendations(
 		"weighted_score"
 	] += weight_coef_sign
 
-
 	df = df.sort_values(by="weighted_score", ascending=False)
+
+	if report is not None:
+		dfr = df.copy()
+		dfr = dfr.rename(columns={
+			"variable": "Variable",
+			"corr_score": "Correlation",
+			"enr_coef": "ENR",
+			"adj_r2": "R-squared",
+			"p_value": "P Value",
+			"t_value": "T Value",
+			"vif": "VIF",
+			"coef_sign": "Coef. sign",
+			"weighted_score": "Weighted Score"
+		})
+		dfr["Rank"] = range(1, len(dfr) + 1)
+		dfr = dfr[["Rank", "Weighted Score", "Variable", "Correlation", "ENR", "R-squared", "P Value", "T Value", "VIF", "Coef. sign"]]
+		dfr.set_index("Rank", inplace=True)
+		for col in dfr.columns:
+			if col == "R-squared":
+				dfr[col] = dfr[col].apply(lambda x: "✅" if x > adj_r2_thresh else "❌")
+			elif col not in ["Rank", "Weighted Score", "Variable"]:
+				dfr[col] = dfr[col].apply(lambda x: "✅" if not pd.isna(x) else "❌")
+		report.set_var("pre_model_table", dfr.to_markdown())
 
 	return df
 
@@ -612,12 +648,17 @@ def _calc_variable_recommendations(
 def get_variable_recommendations(
 		df: pd.DataFrame,
 		settings: dict,
+		model: str,
+		modeling_group: str,
 		verbose: bool = False
 ):
 	if verbose:
 		print("")
+
+	report = MarkdownReport("variables")
+
 	df = enrich_time_adjustment(df, settings, verbose=verbose)
-	ds = _prepare_ds(df, settings)
+	ds = _prepare_ds(df, settings, model)
 	ds = ds.encode_categoricals_with_one_hot()
 	ds.split()
 
@@ -654,7 +695,8 @@ def get_variable_recommendations(
 		r2_values_results=r2_values,
 		p_values_results=p_values,
 		t_values_results=t_values,
-		vif_results=vif
+		vif_results=vif,
+		report=report
 	)
 
 	pd.set_option('display.max_columns', None)
@@ -684,7 +726,104 @@ def get_variable_recommendations(
 			print(f"--> score: {cv_score:,.0f}")
 			print(f"-->  drop: {worst_variable}, score {worst_score}...")
 
-	return best_variables
+	report = generate_variable_report(
+		report,
+		settings,
+		modeling_group,
+		best_variables
+	)
+
+	return {
+		"variables": best_variables,
+		"report": report
+	}
+
+
+def generate_variable_report(
+		report: MarkdownReport,
+		settings: dict,
+		modeling_group: str,
+		best_variables: list[str]
+):
+	mg = get_modeling_group(settings, modeling_group)
+	report.set_var("val_date", get_valuation_date(settings).strftime("%Y-%m-%d"))
+	report.set_var("modeling_group", mg.get("name", mg))
+
+	instructions = settings.get("modeling", {}).get("instructions", {})
+	feature_selection = instructions.get("feature_selection", {})
+	thresh = feature_selection.get("thresholds", {})
+
+	report.set_var("thresh_correlation", thresh.get("correlation"), fmt=".2f")
+	report.set_var("thresh_enr_coef", thresh.get("enr_coef"), fmt=".2f")
+	report.set_var("thresh_vif", thresh.get("vif"), fmt=".2f")
+	report.set_var("thresh_p_value", thresh.get("p_value"), fmt=".2f")
+	report.set_var("thresh_t_value", thresh.get("t_value"), fmt=".2f")
+	report.set_var("thresh_adj_r2", thresh.get("adj_r2"), fmt=".2f")
+
+	weights = feature_selection.get("weights", {})
+	df_weights = pd.DataFrame(weights.items(), columns=["Statistic", "Weight"])
+	df_weights["Statistic"] = df_weights["Statistic"].map({
+		"vif": "VIF",
+		"p_value": "P-value",
+		"t_value": "T-value",
+		"corr_score": "Correlation",
+		"enr_coef": "ENR",
+		"coef_sign": "Coef. sign",
+		"adj_r2": "R-squared"
+	})
+	df_weights.set_index("Statistic", inplace=True)
+	report.set_var("pre_model_weights", df_weights.to_markdown())
+
+	# TODO: construct these
+	summary_table = "...SUMMARY TABLE..."
+	report.set_var("summary_table", summary_table)
+
+	post_model_table = "...POST MODEL TABLE..."
+	report.set_var("post_model_table", post_model_table)
+
+	table_corr_initial = "...CORRELATION INITIAL..."
+	report.set_var("table_corr_initial", table_corr_initial)
+
+	table_corr_final = "...CORRELATION FINAL..."
+	report.set_var("table_corr_final", table_corr_final)
+
+	table_vif_initial = "...VIF INITIAL..."
+	report.set_var("table_vif_initial", table_vif_initial)
+
+	table_vif_final = "...VIF FINAL..."
+	report.set_var("table_vif_final", table_vif_final)
+
+	table_p_value_initial = "...P VALUE INITIAL..."
+	report.set_var("table_p_value_initial", table_p_value_initial)
+
+	table_p_value_final = "...P VALUE FINAL..."
+	report.set_var("table_p_value_final", table_p_value_final)
+
+	table_p_value_initial = "...T VALUE INITIAL..."
+	report.set_var("table_t_value_initial", table_p_value_initial)
+
+	table_p_value_final = "...T VALUE FINAL..."
+	report.set_var("table_t_value_final", table_p_value_final)
+
+	table_enr_initial = "...ENR INITIAL..."
+	report.set_var("table_enr_initial", table_enr_initial)
+
+	table_enr_final = "...ENR FINAL..."
+	report.set_var("table_enr_final", table_enr_final)
+
+	table_r_squared_initial = "...R SQUARED INITIAL..."
+	report.set_var("table_r_squared_initial", table_r_squared_initial)
+
+	table_r_squared_final = "...R SQUARED FINAL..."
+	report.set_var("table_r_squared_final", table_r_squared_final)
+
+	table_coef_initial = "...COEF INITIAL..."
+	report.set_var("table_coef_initial", table_coef_initial)
+
+	table_coef_final = "...COEF FINAL..."
+	report.set_var("table_coef_final", table_coef_final)
+
+	return report
 
 
 def run_models(
@@ -717,6 +856,20 @@ def run_models(
 
 	df.to_parquet(f"{outpath}/df.parquet")
 
+	var_recs = get_variable_recommendations(
+		df,
+		settings,
+		"default",
+		"residential_sf",
+		verbose=True,
+	)
+	best_variables = var_recs["variables"]
+	var_report = var_recs["report"]
+	var_report_md = var_report.render()
+	os.makedirs(f"{outpath}/reports", exist_ok=True)
+	with open(f"{outpath}/reports/variable_report.md", "w", encoding="utf-8") as f:
+		f.write(var_report_md)
+
 	# Run the models one by one and stash the results
 	for model in models_to_run:
 		results = _run_one_model(
@@ -726,6 +879,7 @@ def run_models(
 			settings=settings,
 			ind_var=ind_var,
 			ind_var_test=ind_var_test,
+			best_variables=best_variables,
 			fields_cat=fields_cat,
 			outpath=outpath,
 			save_params=save_params,
