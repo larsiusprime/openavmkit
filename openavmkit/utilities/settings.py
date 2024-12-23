@@ -11,6 +11,10 @@ def get_base_dir(s: dict):
 	return slug
 
 
+def get_modeling_group(s: dict, key: str):
+	return s.get("modeling", {}).get("model_groups", {}).get(key, {})
+
+
 def get_valuation_date(s: dict):
 	val_date_str: str | None = s.get("modeling", {}).get("metadata", {}).get("valuation_date", None)
 
