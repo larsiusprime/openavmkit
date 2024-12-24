@@ -105,7 +105,7 @@ And here are the results after we removed variables with a correlation score low
 
 ### VIF -- Variance Inflation Factor
 
-[Variance inflation factor](https://en.wikipedia.org/wiki/Variance_inflation_factor) measures a property called "multi-collinearity." Multi-collinearity is when two or more variables in a regression model are highly correlated. This can cause problems because it can be difficult to determine the effect of each variable on the dependent variable.
+[Variance inflation factor](https://en.wikipedia.org/wiki/Variance_inflation_factor), or VIF, is another measure of a variable's correlation with other variables ("multi-collinearity"). Variables with high VIF can cause problems because it can be difficult to determine the effect of each variable on the dependent variable.
 
 | VIF  | Interpretation                                      |
 |------|-----------------------------------------------------|
@@ -118,48 +118,31 @@ Our test considers a VIF lower than {{{thresh_vif}}} as a *pass* (✅).
 
 Here are the initial results from the variables in this model:
 
-| Variable | VIF | Pass/Fail |
-|----------|-----|-----------|
-| Blah     | 1.2 | ✅        |
-| Blah     | 5   | ✅        |
-| Blah     | 12  | ❌        |
-
 {{{table_vif_initial}}}
 
 And here are the results after we removed variables with a VIF higher than {{{thresh_vif}}}:
-
-| Variable | VIF | Pass/Fail |
-|----------|-----|-----------|
-| Blah     | 1.2 | ✅        |
-| Blah     | 5   | ✅        |
 
 {{{table_vif_final}}}
 
 ### P-value -- Probability value
 
-[P-value](https://en.wikipedia.org/wiki/P-value) is a common measure of statistical significance. It is expressed as a percentage, and pertains to a concept called the "Null hypothesis" -- which in this case, would be the hypothesis that this particular variable being studies is *not* significant and has no relationship with `selling price`.
+[P-value](https://en.wikipedia.org/wiki/P-value) is a common measure of statistical significance. It is expressed as a percentage, and pertains to a concept called the "null hypothesis." What's that? In this context, it's the hypothesis that whatever variable we're looking at basically does nothing; it's *not* significant and has no relationship with `selling price`. Imagine that we stepped into a magic portal to another world, a world in which we are 100% sure that whatever variable we are studying is totally meaningless. The p-value tells us our likelihood of getting the same statistical signal (or an even stronger one) in that world, purely by chance, that we actually get here in the real world, where we're not sure whether the variable is significant or not.
 
-Contrary to popular belief, p-value is *not* a measure of the probability that the "Null hypothesis" is *true*, instead it is the probability of getting the same statistical result as extreme (or more extreme) than the one we actually got, *in a hypothetical world where the "Null hypothesis" is true.* In other words, p-value represents the chance of us getting the same answer if we stepped in a magic portal and were transported to a world where we were sure that this variable had no relationship with `selling price`.
+Here's a made up example -- is `vinyl siding` a significant variable or not? Imagine we have access to two worlds -- Earth 1 and Earth 2, and we can travel between them any time. Over on Earth 2, God comes down from the heavens and informs us that `vinyl siding` has absolutely no statistical relationship whatsoever with `selling price`. But over here on Earth 1, God won't tell us what the relationship is. We run some naive statistics, and it sure _looks_ like there might be a relationship -- `vinyl siding` is positively correlated with sale price, and it has a decent r-squared statistic. We run a p-value test on `vinyl siding`, and it comes out to 15% -- meaning that we have a 15% chance of getting the same good-looking statistics on Earth 2 as we did here on Earth 1, even though we know that `vinyl siding` isn't significant over there.
 
-If a p-value is sufficiently low, that's strong evidence *against* the "null hypothesis" -- ie, it's strong evidence *for* the variable being significant. However, the p-value should never be taken as evidence all by itself, just one indicator among many.
+A common misconception is that the p-value directly tells you the % chance that your variable is significant. That's not actually true. It just tells you how likely it is for you to get the same good-looking results (or even better ones)--even in a world where your variable is actually meaningless--purely by chance.
+
+The bottom line is that the lower the p-value is, the better. A sufficiently low p-value is strong evidence *against* the "null hypothesis." That is, it's strong evidence *for* the variable being significant. 
+
+However, the p-value should never be taken as evidence all by itself, just one indicator among many.
 
 Our test considers a p-value of {{{thresh_p_value}}} or lower as a **pass** (✅).
 
 Here are the initial results from the variables in this model:
 
-| Variable | P-value | Pass/Fail |
-|----------|---------|-----------|
-| Blah     | 0.01    | ✅        |
-| Blah     | 0.1     | ❌        |
-| Blah     | 0.5     | ❌        |
-
 {{{table_p_value_initial}}}
 
 And here are the results after we removed variables with a p-value higher than {{{thresh_p_value}}}:
-
-| Variable | P-value | Pass/Fail |
-|----------|---------|-----------|
-| Blah     | 0.01    | ✅        |
 
 {{{table_p_value_final}}}
 
@@ -167,51 +150,29 @@ And here are the results after we removed variables with a p-value higher than {
 
 [T-value](https://en.wikipedia.org/wiki/Student%27s_t-test) is a measure from the Student's T-test. It measures the strength of the relationship between the independent variable and the dependent variable. The higher the T-value, the more significant the relationship.
 
-Our test considers a T-value of {{{thresh_t_value}}} or higher as a **pass** (✅).
+Our test considers a T-value with an absolute value of {{{thresh_t_value}}} or higher as a **pass** (✅).
 
 Here are the initial results from the variables in this model:
 
-| Variable | T-value | Pass/Fail |
-|----------|---------|-----------|
-| Blah     | 1       | ❌        |
-| Blah     | 2       | ✅        |
-| Blah     | 3       | ✅        |
-
 {{{table_t_value_initial}}}
 
-Here are the results after we removed variables with a T-value lower than {{{thresh_t_value}}}:
-
-| Variable | T-value | Pass/Fail |
-|----------|---------|-----------|
-| Blah     | 2       | ✅        |
-| Blah     | 3       | ✅        |
+Here are the results after we removed variables with a T-value whose absolute value is lower than {{{thresh_t_value}}}:
 
 {{{table_t_value_final}}}
 
 ### ENR -- Elastic Net Regularization
 
-[Elastic Net Regularization](https://en.wikipedia.org/wiki/Elastic_net_regularization) is a method of "regularization". [Regularization](https://en.wikipedia.org/wiki/Regularization_(mathematics)) is a way to avoid over-fitting; it works by encouraging the model not to focus too much on irrelevant details. Elastic Net Regularization specifically combines the effects of two methods -- "Ridge Regularization", and "Lasso Regularization." Taken together, these two methods help the model avoid relying too heavily on any one variable, and also encourages it to eliminate useless variables entirely.
+[Elastic Net Regularization](https://en.wikipedia.org/wiki/Elastic_net_regularization) uses a method called [Regularization](https://en.wikipedia.org/wiki/Regularization_(mathematics)) to avoid over-fitting; it works by encouraging the model not to focus too much on irrelevant details. Elastic Net Regularization specifically combines the effects of two methods -- "Ridge Regularization", and "Lasso Regularization." Taken together, these two methods help the model avoid relying too heavily on any one variable, and also encourages it to eliminate useless variables entirely.
 
-The bottom line is this method spits out a score for each variable that tells you how important a variable is to the model, with useless variables being shrunk very close to zero.
+The bottom line is this method spits out a score for each variable that tells you how important that variable is to the model, with useless variables being shrunk very close to zero.
 
 Our test considers a score of {{{thresh_enr_coef}}} or higher as a **pass** (✅).
 
 Here are the initial results from the variables in this model:
 
-| Variable | ENR   | Pass/Fail |
-|----------|-------|-----------|
-| Blah     | 0.005 | ❌        |
-| Blah     | 0.015 | ✅        |
-| Blah     | 0.250 | ✅        |
-
 {{{table_enr_initial}}}
 
 Here are the results after we removed variables with an ENR lower than {{{thresh_enr}}}:
-
-| Variable | ENR   | Pass/Fail |
-|----------|-------|-----------|
-| Blah     | 0.015 | ✅        |
-| Blah     | 0.250 | ✅        |
 
 {{{table_enr_final}}}
 
@@ -221,26 +182,15 @@ Here are the results after we removed variables with an ENR lower than {{{thresh
 
 For our test, we run a single-variable linear model for every variable in the dataset, and calculate the R-squared and the [Adjusted R-squared](https://en.wikipedia.org/wiki/Coefficient_of_determination#Adjusted_R2) (generally considered a more robust statistic than R-squared alone) for each one. A higher value means the variable is more important to the model.
 
-Our test considers a threshold of {{{thresh_r_squared}}} or higher as a **pass** (✅).
+Our test considers a threshold of {{{thresh_adj_r2}}} or higher as a **pass** (✅).
 
 Here are the initial results from the variables in this model:
 
-| Variable | Adjusted R-squared | Pass/Fail |
-|----------|--------------------|-----------|
-| Blah     | 0.05               | ❌        |
-| Blah     | 0.5                | ✅        |
-| Blah     | 0.9                | ✅        |
+{{{table_adj_r2_initial}}}
 
-{{{table_r_squared_initial}}}
+Here are the results after we removed variables with an Adjusted R-squared lower than {{{thresh_adj_r2}}}:
 
-Here are the results after we removed variables with an Adjusted R-squared lower than {{{thresh_r_squared}}}:
-
-| Variable | Adjusted R-squared | Pass/Fail |
-|----------|--------------------|-----------|
-| Blah     | 0.5                | ✅        |
-| Blah     | 0.9                | ✅        |
-
-{{{table_r_squared_final}}}
+{{{table_adj_r2_final}}}
 
 ### Coefficient sign
 
@@ -252,19 +202,8 @@ When we run the R-squared test, the Elastic Net Regularization test, and the T-v
 
 Here are the initial results from the variables in this model:
 
-| Variable | R-Squared Coef | ENR Coef | T-value Coef | Pass/Fail |
-|----------|----------------|----------|--------------|-----------|
-| Blah     | 1000           | 1000     | 1000         | ✅        |
-| Blah     | -1000          | -1000    | -1000        | ✅        |
-| Blah     | 1000           | -1000    | 1000         | ❌        |
-
-{{{table_coef_initial}}}
+{{{table_coef_sign_initial}}}
 
 Here are the results after we removed variables with a coefficient sign mismatch:
 
-| Variable | R-Squared Coef | ENR Coef | T-value Coef | Pass/Fail |
-|----------|----------------|----------|--------------|-----------|
-| Blah     | 1000           | 1000     | 1000         | ✅        |
-| Blah     | -1000          | -1000    | -1000        | ✅        |
-
-{{{table_coef_final}}}
+{{{table_coef_sign_final}}}
