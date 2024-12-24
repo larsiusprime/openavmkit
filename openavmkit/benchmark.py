@@ -3,14 +3,15 @@ import os
 import numpy as np
 import pandas as pd
 from IPython.core.display_functions import display
+from tabulate import tabulate
 
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, SingleModelResults, run_garbage, \
 	run_average, run_naive_sqft, DataSplit, run_kernel, run_mgwr
 from openavmkit.reports import MarkdownReport
 from openavmkit.time_adjustment import apply_time_adjustment, enrich_time_adjustment
-from openavmkit.utilities.data import div_z_safe
+from openavmkit.utilities.data import div_z_safe, dataframe_to_markdown
 from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions, get_valuation_date, \
-	get_modeling_group
+	get_modeling_group, apply_dd_to_df
 from openavmkit.utilities.stats import calc_vif, calc_vif_recursive_drop, calc_t_values, calc_t_values_recursive_drop, \
 	calc_p_values_recursive_drop, calc_elastic_net_regularization, calc_correlations, calc_r2, calc_cross_validation_score
 from openavmkit.utilities.timing import TimingData
@@ -572,7 +573,8 @@ def _prepare_ds(
 
 
 def _calc_variable_recommendations(
-		feature_selection: dict,
+		ds: DataSplit,
+		settings: dict,
 		correlation_results: dict,
 		enr_results: dict,
 		r2_values_results: pd.DataFrame,
@@ -581,6 +583,7 @@ def _calc_variable_recommendations(
 		vif_results: dict,
 		report: MarkdownReport = None
 ):
+	feature_selection = settings.get("modeling", {}).get("instructions", {}).get("feature_selection", {})
 	thresh = feature_selection.get("thresholds", {})
 	weights = feature_selection.get("weights", {})
 
@@ -610,14 +613,18 @@ def _calc_variable_recommendations(
 	df.loc[df["p_value"].notna(), "weighted_score"] += weight_p_value
 	df.loc[df["t_value"].notna(), "weighted_score"] += weight_t_value
 	df.loc[df["vif"].notna(), "weighted_score"] += weight_vif
+
 	# check if "enr_coefficient", "t_value", and "coef_sign" are pointing in the same direction:
 	df.loc[
 		df["enr_coef_sign"].eq(df["t_value_sign"]) &
 		df["enr_coef_sign"].eq(df["coef_sign"]),
-		"weighted_score"
-	] += weight_coef_sign
+		"signs_match"
+	] = 1
+
+	df.loc[df["signs_match"].eq(1), "weighted_score"] += weight_coef_sign
 
 	df = df.sort_values(by="weighted_score", ascending=False)
+
 
 	if report is not None:
 		dfr = df.copy()
@@ -629,15 +636,48 @@ def _calc_variable_recommendations(
 			"p_value": "P Value",
 			"t_value": "T Value",
 			"vif": "VIF",
-			"coef_sign": "Coef. sign",
+			"signs_match": "Coef. sign",
 			"weighted_score": "Weighted Score"
 		})
+
+		thresh_corr = thresh.get("correlation", 0.1)
+		report.set_var("thresh_corr", thresh_corr, ".2f")
+		corr_fields = ["variable", "corr_strength", "corr_clarity", "corr_score"]
+		corr_renames = {
+			"variable": "Variable",
+			"corr_strength": "Strength",
+			"corr_clarity": "Clarity",
+			"corr_score": "Score"
+		}
+		for state in ["initial", "final"]:
+			dfr_corr = correlation_results[state][corr_fields].copy()
+			dfr_corr["Pass/Fail"] = dfr_corr["corr_score"].apply(lambda x: "✅" if x > thresh_corr else "❌")
+			for field in corr_fields:
+				if field == "variable":
+					continue
+				if field not in dfr_corr:
+					print("missing field", field)
+				dfr_corr[field] = dfr_corr[field].apply(lambda x: f"{x:.2f}").astype("string")
+
+			dfr_corr = dfr_corr.rename(columns=corr_renames)
+			dfr_corr["Rank"] = range(1, len(dfr_corr) + 1)
+			dfr_corr = dfr_corr[["Rank", "Variable", "Strength", "Clarity", "Score", "Pass/Fail"]]
+			dfr_corr.set_index("Rank", inplace=True)
+			dfr_corr = apply_dd_to_df(dfr_corr, "Variable", settings, ds.one_hot_descendants)
+			markdown_output = dataframe_to_markdown(dfr_corr)
+			display(markdown_output)
+			report.set_var(f"table_corr_{state}", markdown_output)
+
 		dfr["Rank"] = range(1, len(dfr) + 1)
-		dfr = dfr[["Rank", "Weighted Score", "Variable", "Correlation", "ENR", "R-squared", "P Value", "T Value", "VIF", "Coef. sign"]]
+		dfr = apply_dd_to_df(dfr, "Variable", settings, ds.one_hot_descendants)
+
+		dfr = dfr[["Rank", "Weighted Score", "Variable", "VIF", "P Value", "T Value", "ENR", "Correlation", "Coef. sign", "R-squared"]]
 		dfr.set_index("Rank", inplace=True)
 		for col in dfr.columns:
 			if col == "R-squared":
 				dfr[col] = dfr[col].apply(lambda x: "✅" if x > adj_r2_thresh else "❌")
+			elif col == "Coef. sign":
+				dfr[col] = dfr[col].apply(lambda x: "✅" if x == 1 else "❌")
 			elif col not in ["Rank", "Weighted Score", "Variable"]:
 				dfr[col] = dfr[col].apply(lambda x: "✅" if not pd.isna(x) else "❌")
 		report.set_var("pre_model_table", dfr.to_markdown())
@@ -689,7 +729,8 @@ def get_variable_recommendations(
 
 	# Generate final results & recommendations
 	df_results = _calc_variable_recommendations(
-		feature_selection=feature_selection,
+		ds=ds,
+		settings=settings,
 		correlation_results=corr_results,
 		enr_results=enr_coefs,
 		r2_values_results=r2_values,
@@ -726,6 +767,21 @@ def get_variable_recommendations(
 			print(f"--> score: {cv_score:,.0f}")
 			print(f"-->  drop: {worst_variable}, score {worst_score}...")
 
+	# make a table from the list of best variables:
+	df_best = pd.DataFrame(best_variables, columns=["Variable"])
+	df_best["Rank"] = range(1, len(df_best) + 1)
+	df_best["Description"] = df_best["Variable"]
+	df_best = apply_dd_to_df(df_best, "Variable", settings, ds.one_hot_descendants, "name")
+	df_best = apply_dd_to_df(df_best, "Description", settings, ds.one_hot_descendants, "description")
+	df_best = df_best[["Rank", "Variable", "Description"]]
+	df_best.loc[
+		df_best["Variable"].eq(df_best["Description"]),
+		"Description"
+	] = ""
+	df_best.set_index("Rank", inplace=True)
+	report.set_var("summary_table", df_best.to_markdown())
+
+
 	report = generate_variable_report(
 		report,
 		settings,
@@ -745,9 +801,14 @@ def generate_variable_report(
 		modeling_group: str,
 		best_variables: list[str]
 ):
+
+	locality = settings.get("locality", {})
+	report.set_var("locality", locality.get("name", "...LOCALITY..."))
+
 	mg = get_modeling_group(settings, modeling_group)
 	report.set_var("val_date", get_valuation_date(settings).strftime("%Y-%m-%d"))
 	report.set_var("modeling_group", mg.get("name", mg))
+
 
 	instructions = settings.get("modeling", {}).get("instructions", {})
 	feature_selection = instructions.get("feature_selection", {})
@@ -775,17 +836,11 @@ def generate_variable_report(
 	report.set_var("pre_model_weights", df_weights.to_markdown())
 
 	# TODO: construct these
-	summary_table = "...SUMMARY TABLE..."
-	report.set_var("summary_table", summary_table)
+	#summary_table = "...SUMMARY TABLE..."
+	#report.set_var("summary_table", summary_table)
 
 	post_model_table = "...POST MODEL TABLE..."
 	report.set_var("post_model_table", post_model_table)
-
-	table_corr_initial = "...CORRELATION INITIAL..."
-	report.set_var("table_corr_initial", table_corr_initial)
-
-	table_corr_final = "...CORRELATION FINAL..."
-	report.set_var("table_corr_final", table_corr_final)
 
 	table_vif_initial = "...VIF INITIAL..."
 	report.set_var("table_vif_initial", table_vif_initial)

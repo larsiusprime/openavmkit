@@ -12,7 +12,7 @@ def get_base_dir(s: dict):
 
 
 def get_modeling_group(s: dict, key: str):
-	return s.get("modeling", {}).get("model_groups", {}).get(key, {})
+	return s.get("modeling", {}).get("modeling_groups", {}).get(key, {})
 
 
 def get_valuation_date(s: dict):
@@ -32,9 +32,19 @@ def load_settings(settings_file: str = "settings.json"):
 	with open(settings_file, "r") as f:
 		settings = json.load(f)
 	template = load_settings_template()
-
 	# merge settings with template; settings will overwrite template values
-	return merge_settings(template, settings)
+	settings = merge_settings(template, settings)
+	base_dd = {
+		"data_dictionary": load_data_dictionary_template()
+	}
+	settings = merge_settings(base_dd, settings)
+	return settings
+
+
+def load_data_dictionary_template():
+	with open("../data_dictionary.json", "r") as f:
+		data_dictionary = json.load(f)
+	return data_dictionary
 
 
 def load_settings_template():
@@ -154,3 +164,26 @@ def get_variable_interactions(entry: dict, settings: dict, df: pd.DataFrame = No
 		return result
 	else:
 		return interactions.get("fields", {})
+
+
+def get_data_dictionary(settings: dict):
+	return settings.get("data_dictionary", {})
+
+
+def apply_dd_to_df(
+		df: pd.DataFrame,
+		column: str,
+		settings: dict,
+		one_hot_descendants: dict = None,
+		dd_field: str = "name"
+) -> pd.DataFrame:
+	dd = settings.get("data_dictionary", {})
+	df[column] = df[column].map(lambda x: dd.get(x, {}).get(dd_field, x))
+	if one_hot_descendants is not None:
+		one_hot_rename_map = {}
+		for ancestor in one_hot_descendants:
+			descendants = one_hot_descendants[ancestor]
+			for descendant in descendants:
+				one_hot_rename_map[descendant] = dd.get(ancestor, {}).get(dd_field, ancestor) + " = " + descendant[len(ancestor)+1:]
+		df[column] = df[column].map(lambda x: one_hot_rename_map.get(x, x))
+	return df
