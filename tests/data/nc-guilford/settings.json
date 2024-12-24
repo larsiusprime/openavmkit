@@ -1,5 +1,6 @@
 {
 	"locality": {
+		"name": "Guilford county",
 		"county": "Guilford",
 		"state": "NC",
 		"slug": "nc-guilford"
@@ -64,6 +65,35 @@
 					"elevation_mean"
 				]
 			}
+		},
+		"modeling_groups": {
+			"residential_sf": {
+				"name": "Residential single-family"
+			},
+			"th": {
+				"name": "Residential townhouse"
+			},
+			"mf": {
+				"name": "Residential multi-family"
+			},
+			"condo": {
+				"name": "Residential condominiums"
+			},
+			"apt": {
+				"name": "Apartments"
+			},
+			"mh": {
+				"name": "Manufactured/mobile home"
+			},
+			"com": {
+				"name": "Commercial"
+			},
+			"ind": {
+				"name": "Industrial"
+			},
+			"ag": {
+				"name": "Agricultural"
+			}
 		}
 	},
 	"field_classification": {
@@ -110,5 +140,8 @@
 				"property_owner"
 			]
 		}
+	},
+	"data_dictionary": {
+
 	}
 }

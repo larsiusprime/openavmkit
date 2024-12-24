@@ -640,6 +640,7 @@ def _calc_variable_recommendations(
 			"weighted_score": "Weighted Score"
 		})
 
+		# Correlation:
 		thresh_corr = thresh.get("correlation", 0.1)
 		report.set_var("thresh_corr", thresh_corr, ".2f")
 		corr_fields = ["variable", "corr_strength", "corr_clarity", "corr_score"]
@@ -649,7 +650,52 @@ def _calc_variable_recommendations(
 			"corr_clarity": "Clarity",
 			"corr_score": "Score"
 		}
+
+		# VIF:
+		thresh_vif = thresh.get("vif", 10)
+		vif_renames = {
+			"variable": "Variable",
+			"vif": "VIF"
+		}
+
+		# P-value:
+		thresh_p_value = thresh.get("p_value", 0.05)
+		p_value_renames = {
+			"variable": "Variable",
+			"p_value": "P-value"
+		}
+
+		# T-value:
+		thresh_t_value = thresh.get("t_value", 2)
+		t_value_renames = {
+			"variable": "Variable",
+			"t_value": "T-value"
+		}
+
+		# ENR:
+		thresh_enr = thresh.get("enr", 0.1)
+		enr_renames = {
+			"variable": "Variable",
+			"enr_coef": "Coefficient"
+		}
+
+		# R-Squared:
+		thresh_r2 = thresh.get("adj_r2", 0.1)
+		r2_renames = {
+			"variable": "Variable",
+			"adj_r2": "R-squared"
+		}
+
+		# Coef signs:
+		coef_sign_renames = {
+			"variable": "Variable",
+			"enr_coef_sign": "ENR sign",
+			"t_value_sign": "T-value sign",
+			"coef_sign": "Coef. sign"
+		}
+
 		for state in ["initial", "final"]:
+			# Correlation:
 			dfr_corr = correlation_results[state][corr_fields].copy()
 			dfr_corr["Pass/Fail"] = dfr_corr["corr_score"].apply(lambda x: "✅" if x > thresh_corr else "❌")
 			for field in corr_fields:
@@ -664,9 +710,96 @@ def _calc_variable_recommendations(
 			dfr_corr = dfr_corr[["Rank", "Variable", "Strength", "Clarity", "Score", "Pass/Fail"]]
 			dfr_corr.set_index("Rank", inplace=True)
 			dfr_corr = apply_dd_to_df(dfr_corr, "Variable", settings, ds.one_hot_descendants)
-			markdown_output = dataframe_to_markdown(dfr_corr)
-			display(markdown_output)
-			report.set_var(f"table_corr_{state}", markdown_output)
+			report.set_var(f"table_corr_{state}", dataframe_to_markdown(dfr_corr))
+
+			# TODO: refactor this down to DRY it out a bit
+
+			# VIF:
+			dfr_vif = vif_results[state][["variable", "vif"]].copy()
+			dfr_vif = dfr_vif.sort_values(by="vif", ascending=True)
+			dfr_vif["Pass/Fail"] = dfr_vif["vif"].apply(lambda x: "✅" if x < thresh_vif else "❌")
+			dfr_vif["vif"] = dfr_vif["vif"].apply(lambda x: f"{x:.2f}" if x < 10 else f"{x:.1f}" if x < 100 else f"{x:,.0f}").astype("string")
+			dfr_vif = dfr_vif.rename(columns=vif_renames)
+			dfr_vif["Rank"] = range(1, len(dfr_vif) + 1)
+			dfr_vif = dfr_vif[["Rank", "Variable", "VIF", "Pass/Fail"]]
+			dfr_vif.set_index("Rank", inplace=True)
+			dfr_vif = apply_dd_to_df(dfr_vif, "Variable", settings, ds.one_hot_descendants)
+			report.set_var(f"table_vif_{state}", dataframe_to_markdown(dfr_vif))
+
+			# P-value:
+			dfr_p_value = p_values_results[state][["variable", "p_value"]].copy()
+			dfr_p_value = dfr_p_value[dfr_p_value["variable"].ne("const")]
+			dfr_p_value = dfr_p_value.sort_values(by="p_value", ascending=True)
+			dfr_p_value["Pass/Fail"] = dfr_p_value["p_value"].apply(lambda x: "✅" if x < thresh_p_value else "❌")
+			dfr_p_value["p_value"] = dfr_p_value["p_value"].apply(lambda x: f"{x:.3f}").astype("string")
+			dfr_p_value = dfr_p_value.rename(columns=p_value_renames)
+			dfr_p_value["Rank"] = range(1, len(dfr_p_value) + 1)
+			dfr_p_value = dfr_p_value[["Rank", "Variable", "P-value", "Pass/Fail"]]
+			dfr_p_value.set_index("Rank", inplace=True)
+			dfr_p_value = apply_dd_to_df(dfr_p_value, "Variable", settings, ds.one_hot_descendants)
+			report.set_var(f"table_p_value_{state}", dataframe_to_markdown(dfr_p_value))
+
+			# T-value:
+			dfr_t_value = t_values_results[state][["variable", "t_value"]].copy()
+			dfr_t_value = dfr_t_value[dfr_t_value["variable"].ne("const")]
+			dfr_t_value = dfr_t_value.sort_values(by="t_value", ascending=False, key=abs)
+			dfr_t_value["Pass/Fail"] = dfr_t_value["t_value"].apply(lambda x: "✅" if abs(x) > thresh_t_value else "❌")
+			dfr_t_value["t_value"] = dfr_t_value["t_value"].apply(lambda x: f"{x:.2f}").astype("string")
+			dfr_t_value = dfr_t_value.rename(columns=t_value_renames)
+			dfr_t_value["Rank"] = range(1, len(dfr_t_value) + 1)
+			dfr_t_value = dfr_t_value[["Rank", "Variable", "T-value", "Pass/Fail"]]
+			dfr_t_value.set_index("Rank", inplace=True)
+			dfr_t_value = apply_dd_to_df(dfr_t_value, "Variable", settings, ds.one_hot_descendants)
+			report.set_var(f"table_t_value_{state}", dataframe_to_markdown(dfr_t_value))
+
+			# ENR:
+			dfr_enr = enr_results[state][["variable", "enr_coef"]].copy()
+			dfr_enr = dfr_enr.sort_values(by="enr_coef", ascending=False, key=abs)
+			dfr_enr["Pass/Fail"] = dfr_enr["enr_coef"].apply(lambda x: "✅" if abs(x) > thresh_enr else "❌")
+			dfr_enr["enr_coef"] = dfr_enr["enr_coef"].apply(lambda x: f"{x:.2f}" if abs(x) < 100 else f"{x:,.0f}").astype("string")
+			dfr_enr = dfr_enr.rename(columns=enr_renames)
+			dfr_enr["Rank"] = range(1, len(dfr_enr) + 1)
+			dfr_enr = dfr_enr[["Rank", "Variable", "Coefficient", "Pass/Fail"]]
+			dfr_enr.set_index("Rank", inplace=True)
+			dfr_enr = apply_dd_to_df(dfr_enr, "Variable", settings, ds.one_hot_descendants)
+			report.set_var(f"table_enr_{state}", dataframe_to_markdown(dfr_enr))
+
+			# R-squared
+			dfr_r2 = r2_values_results.copy()
+			dfr_r2 = dfr_r2.sort_values(by="adj_r2", ascending=False)
+			dfr_r2["Pass/Fail"] = dfr_r2["adj_r2"].apply(lambda x: "✅" if x > thresh_r2 else "❌")
+			dfr_r2["adj_r2"] = dfr_r2["adj_r2"].apply(lambda x: f"{x:.2f}").astype("string")
+			dfr_r2 = dfr_r2.rename(columns=r2_renames)
+			dfr_r2["Rank"] = range(1, len(dfr_r2) + 1)
+			dfr_r2 = dfr_r2[["Rank", "Variable", "R-squared", "Pass/Fail"]]
+			dfr_r2.set_index("Rank", inplace=True)
+			dfr_r2 = apply_dd_to_df(dfr_r2, "Variable", settings, ds.one_hot_descendants)
+			if state == "final":
+				dfr_r2 = dfr_r2[dfr_r2["Pass/Fail"].eq("✅")]
+			report.set_var(f"table_adj_r2_{state}", dataframe_to_markdown(dfr_r2))
+
+			# Coef sign:
+			dfr_coef_sign = enr_results[state][["variable", "enr_coef_sign"]].copy()
+			dfr_coef_sign = dfr_coef_sign.merge(t_values_results[state][["variable", "t_value_sign"]], on="variable", how="outer")
+			dfr_coef_sign = dfr_coef_sign.merge(r2_values_results[["variable", "coef_sign"]], on="variable", how="outer")
+			dfr_coef_sign["signs_match"] = False
+			dfr_coef_sign.loc[
+				dfr_coef_sign["enr_coef_sign"].eq(dfr_coef_sign["t_value_sign"]) &
+				dfr_coef_sign["enr_coef_sign"].eq(dfr_coef_sign["coef_sign"]),
+				"signs_match"
+			] = True
+			dfr_coef_sign["Pass/Fail"] = dfr_coef_sign["signs_match"].apply(lambda x: "✅" if x else "❌")
+			dfr_coef_sign = dfr_coef_sign.sort_values(by="signs_match", ascending=False)
+			dfr_coef_sign = dfr_coef_sign[dfr_coef_sign["variable"].ne("const")]
+			dfr_coef_sign = dfr_coef_sign.rename(columns=coef_sign_renames)
+			dfr_coef_sign = dfr_coef_sign[["Variable", "ENR sign", "T-value sign", "Coef. sign", "Pass/Fail"]]
+			for field in ["ENR sign", "T-value sign", "Coef. sign"]:
+				dfr_coef_sign[field] = dfr_coef_sign[field].apply(lambda x: f"{x:.0f}").astype("string")
+			dfr_coef_sign = apply_dd_to_df(dfr_coef_sign, "Variable", settings, ds.one_hot_descendants)
+			if state == "final":
+				dfr_coef_sign = dfr_coef_sign[dfr_coef_sign["Pass/Fail"].eq("✅")]
+			report.set_var(f"table_coef_sign_{state}", dataframe_to_markdown(dfr_coef_sign))
+
 
 		dfr["Rank"] = range(1, len(dfr) + 1)
 		dfr = apply_dd_to_df(dfr, "Variable", settings, ds.one_hot_descendants)
@@ -841,42 +974,6 @@ def generate_variable_report(
 
 	post_model_table = "...POST MODEL TABLE..."
 	report.set_var("post_model_table", post_model_table)
-
-	table_vif_initial = "...VIF INITIAL..."
-	report.set_var("table_vif_initial", table_vif_initial)
-
-	table_vif_final = "...VIF FINAL..."
-	report.set_var("table_vif_final", table_vif_final)
-
-	table_p_value_initial = "...P VALUE INITIAL..."
-	report.set_var("table_p_value_initial", table_p_value_initial)
-
-	table_p_value_final = "...P VALUE FINAL..."
-	report.set_var("table_p_value_final", table_p_value_final)
-
-	table_p_value_initial = "...T VALUE INITIAL..."
-	report.set_var("table_t_value_initial", table_p_value_initial)
-
-	table_p_value_final = "...T VALUE FINAL..."
-	report.set_var("table_t_value_final", table_p_value_final)
-
-	table_enr_initial = "...ENR INITIAL..."
-	report.set_var("table_enr_initial", table_enr_initial)
-
-	table_enr_final = "...ENR FINAL..."
-	report.set_var("table_enr_final", table_enr_final)
-
-	table_r_squared_initial = "...R SQUARED INITIAL..."
-	report.set_var("table_r_squared_initial", table_r_squared_initial)
-
-	table_r_squared_final = "...R SQUARED FINAL..."
-	report.set_var("table_r_squared_final", table_r_squared_final)
-
-	table_coef_initial = "...COEF INITIAL..."
-	report.set_var("table_coef_initial", table_coef_initial)
-
-	table_coef_final = "...COEF FINAL..."
-	report.set_var("table_coef_final", table_coef_final)
 
 	return report
 
