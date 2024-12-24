@@ -15,7 +15,7 @@
 					"p_value": 0.05,
 					"t_value": 2,
 					"enr_coef": 0.01,
-					"adj_r2": 0.1
+					"adj_r2": 0.05
 				},
 				"weights": {
 					"vif": 3,

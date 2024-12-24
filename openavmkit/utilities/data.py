@@ -34,3 +34,12 @@ def div_z_safe(df: pd.DataFrame, numerator: str, denominator: str):
 	return result
 
 
+# Function to manually build Markdown
+def dataframe_to_markdown(df):
+	# Create the header
+	header = "| " + " | ".join(df.columns) + " |"
+	separator = "| " + " | ".join(["---"] * len(df.columns)) + " |"
+	rows = "\n".join(
+		"| " + " | ".join(row) + " |" for row in df.astype(str).values
+	)
+	return f"{header}\n{separator}\n{rows}"

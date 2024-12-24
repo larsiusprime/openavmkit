@@ -1,22 +1,16 @@
 # Variables that drive value
 
-Valuation date: {{{val_date}}}
+Locality: {{{locality}}}  
+Valuation date: {{{val_date}}}  
+Modeling group: {{{modeling_group}}}
 
 ## Executive Summary
 
-**Modeling group: {{{modeling_group}}}**
-
-The most significant variables that drive real estate value in {{{jurisdiction}}} are:
-
-| Rank | Variable | Description |
-|------|----------|-------------|
-| 1    | Blah     | Whatever    |
-| 2    | Blah     | Whatever    |
-| 3    | Blah     | Whatever    |
+The most significant variables that drive real estate value in {{{locality}}} are:
 
 {{{summary_table}}}
 
-There are countless variables that can be included in any particular model, but only certain ones will wind up being significant. If the most significant variables that drive real estate value can be identified, then {{{jurisdiction}}} can focus their data-gathering efforts on just those.
+There are countless variables that can be included in any particular model, but only certain ones will wind up being significant. If the most significant variables that drive real estate value can be identified, then {{{locality}}} can focus their data-gathering efforts on just those.
 
 We perform several kinds of analysis to determine which variables are the most important, an analysis we perform separately for each modeling group.
 
@@ -31,15 +25,15 @@ Let's put complicated statistics aside for a moment and just think about what an
 
 What do we mean by that?
 
-A variable that **drives value** is one whose presence is strongly associated with what we're trying to predict -- `selling price`. `Total finished square footage` is a typical example -- bigger houses tend to sell for more money, and the bigger they are, the more expensive they are. There can be variables that drive value *down* as well, building age being a typical example -- as a house's age increases (gets older), all else held equal, its price tends to decrease.
+A variable that **drives value** is one whose presence is strongly associated with what we're trying to predict -- `selling price`. A variable like `finished square footage` is a typical example -- bigger houses tend to sell for more money, and the bigger they are, the more expensive they are. There can be variables that drive value *down* as well, `building age in years` being a typical example -- as a house's age increases (gets older), all else held equal, its price tends to decrease.
 
-A variable is **not redundant** if it is not correlated too much with other variables. Good examples of highly correlated variables include `number of bedrooms`, `number of bathrooms`, and `number of stories`. Most statistical tests will show these all have a positive relationship with price. However, they are all strongly correlated with finished square footage -- bigger homes tend to have more bedrooms, bathrooms, and stories. Just because a variable is correlated with another variable isn't a reason to rule it out, however -- what matters is how *strongly* it is correlated with other variables. Redundant variables can destroy a model's performance and/or make it difficult to interpret.
+A variable is **not redundant** if it is not correlated too much with other variables. What are some variables that are highly correlated with others? Good examples include `number of bedrooms`, `number of bathrooms`, and `number of stories`. In most localities, these will all have a positive relationship with price, but also a strong relationship with one another. That's because they're all strongly correlated with `finished square footage` -- bigger homes tend to have more bedrooms, bathrooms, and stories. Some correlation with other variables is okay, but truly redundant variables can not only destroy a model's predictive power, they can also make it impossible to interpret.
 
-A variable is **intuitive** if its relationship with price matches what you would naturally expect. You would naturally expect the price to go up when total square footage goes up, for instance, and would expect the value your model puts on total square footage to reflect that. If total square footage causes the marginal price to go *down*, that would be surprising and might suggest the model is **over-fit**. This is the least important characteristic by itself, but can serve as a good gut check on a model's explainability.
+Finally, a variable is **intuitive** if its relationship with price matches what common sense would predict. We naturally expect `selling price` to go up when `finished square footage` goes up, for instance. If `finished square footage` causes the marginal price to go *down*, that would be surprising and might suggest the model is **over-fit**. Noticing when variables defy intuition can serve as a good gut-check.
 
 ### What is an "over-fit" model?
 
-An over-fit model is one that has learned to cheat without actually understanding the material. For instance, you can get a model that seems predictive just by feeding it each parcel's primary key. However, this model hasn't actually learned anything -- it's simply memorizing selling prices for particular keys and echoing them back. We want to force the model to learn the real relationship between `selling price` and the various characteristics like `location`, `built square footage`, `building age`, `building quality`, etc., are, and apply those consistently. The problem with including variables with a weak relationship with `selling price`, or which are redundant with other variables, is they give the model too much irrelevant noise which can distract it from learning the true relationship. We have many methods for detecting and avoiding over-fitting throughout the Open AVM Kit pipeline, starting with variable selection right at the start.
+An over-fit model is one that has learned to cheat at its predictions without understanding the underlying material. For instance, one can create a highly predictive model just by feeding it `selling price` paired to each parcel's `primary key`. However, this model hasn't actually learned anything -- it's simply memorizing individual prices and echoing them back without understanding anything about the houses themselves. We want to force the model to learn the real relationship between `selling price` and fundamental characteristics like `location`, `built square footage`, `building age`, `building quality`, etc. The problem with variables with a weak relationship with `selling price`, or which are highly correlated with other variables, is that they distract and overwhelm the model with noise. We have many methods for detecting and avoiding over-fitting throughout the Open AVM Kit pipeline, starting with variable analysis.
 
 
 ## Pre-modeling analysis
@@ -102,20 +96,9 @@ Our test considers a correlation score of {{{thresh_correlation}}} or higher as 
 
 Here are the initial results from the variables in this model:
 
-| Variable | Correlation Strength | Correlation Clarity | Correlation Score | Pass/Fail |
-|----------|----------------------|---------------------|-------------------|-----------|
-| Blah     | 0.9                  | 0.1                 | 0.009             | ❌        |
-| Blah     | 0.8                  | 0.2                 | 0.032             | ✅        |
-| Blah     | 0.7                  | 0.3                 | 0.063             | ✅        |
-
 {{{table_corr_initial}}}
 
-And here are the results after we removed variables with a correlation score lower than {{{thresh_corr_score}}}:
-
-| Variable | Correlation Strength | Correlation Clarity | Correlation Score | Pass/Fail |
-|----------|----------------------|---------------------|-------------------|-----------|
-| Blah     | 0.8                  | 0.2                 | 0.032             | ✅        |
-| Blah     | 0.7                  | 0.3                 | 0.063             | ✅        |
+And here are the results after we removed variables with a correlation score lower than {{{thresh_correlation}}}:
 
 {{{table_corr_final}}}
 
