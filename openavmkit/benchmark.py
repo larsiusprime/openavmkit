@@ -11,7 +11,7 @@ from openavmkit.reports import MarkdownReport
 from openavmkit.time_adjustment import apply_time_adjustment, enrich_time_adjustment
 from openavmkit.utilities.data import div_z_safe, dataframe_to_markdown
 from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions, get_valuation_date, \
-	get_modeling_group, apply_dd_to_df
+	get_modeling_group, apply_dd_to_df_rows
 from openavmkit.utilities.stats import calc_vif, calc_vif_recursive_drop, calc_t_values, calc_t_values_recursive_drop, \
 	calc_p_values_recursive_drop, calc_elastic_net_regularization, calc_correlations, calc_r2, calc_cross_validation_score
 from openavmkit.utilities.timing import TimingData
@@ -709,7 +709,7 @@ def _calc_variable_recommendations(
 			dfr_corr["Rank"] = range(1, len(dfr_corr) + 1)
 			dfr_corr = dfr_corr[["Rank", "Variable", "Strength", "Clarity", "Score", "Pass/Fail"]]
 			dfr_corr.set_index("Rank", inplace=True)
-			dfr_corr = apply_dd_to_df(dfr_corr, "Variable", settings, ds.one_hot_descendants)
+			dfr_corr = apply_dd_to_df_rows(dfr_corr, "Variable", settings, ds.one_hot_descendants)
 			report.set_var(f"table_corr_{state}", dataframe_to_markdown(dfr_corr))
 
 			# TODO: refactor this down to DRY it out a bit
@@ -723,7 +723,7 @@ def _calc_variable_recommendations(
 			dfr_vif["Rank"] = range(1, len(dfr_vif) + 1)
 			dfr_vif = dfr_vif[["Rank", "Variable", "VIF", "Pass/Fail"]]
 			dfr_vif.set_index("Rank", inplace=True)
-			dfr_vif = apply_dd_to_df(dfr_vif, "Variable", settings, ds.one_hot_descendants)
+			dfr_vif = apply_dd_to_df_rows(dfr_vif, "Variable", settings, ds.one_hot_descendants)
 			report.set_var(f"table_vif_{state}", dataframe_to_markdown(dfr_vif))
 
 			# P-value:
@@ -736,7 +736,7 @@ def _calc_variable_recommendations(
 			dfr_p_value["Rank"] = range(1, len(dfr_p_value) + 1)
 			dfr_p_value = dfr_p_value[["Rank", "Variable", "P-value", "Pass/Fail"]]
 			dfr_p_value.set_index("Rank", inplace=True)
-			dfr_p_value = apply_dd_to_df(dfr_p_value, "Variable", settings, ds.one_hot_descendants)
+			dfr_p_value = apply_dd_to_df_rows(dfr_p_value, "Variable", settings, ds.one_hot_descendants)
 			report.set_var(f"table_p_value_{state}", dataframe_to_markdown(dfr_p_value))
 
 			# T-value:
@@ -749,7 +749,7 @@ def _calc_variable_recommendations(
 			dfr_t_value["Rank"] = range(1, len(dfr_t_value) + 1)
 			dfr_t_value = dfr_t_value[["Rank", "Variable", "T-value", "Pass/Fail"]]
 			dfr_t_value.set_index("Rank", inplace=True)
-			dfr_t_value = apply_dd_to_df(dfr_t_value, "Variable", settings, ds.one_hot_descendants)
+			dfr_t_value = apply_dd_to_df_rows(dfr_t_value, "Variable", settings, ds.one_hot_descendants)
 			report.set_var(f"table_t_value_{state}", dataframe_to_markdown(dfr_t_value))
 
 			# ENR:
@@ -761,7 +761,7 @@ def _calc_variable_recommendations(
 			dfr_enr["Rank"] = range(1, len(dfr_enr) + 1)
 			dfr_enr = dfr_enr[["Rank", "Variable", "Coefficient", "Pass/Fail"]]
 			dfr_enr.set_index("Rank", inplace=True)
-			dfr_enr = apply_dd_to_df(dfr_enr, "Variable", settings, ds.one_hot_descendants)
+			dfr_enr = apply_dd_to_df_rows(dfr_enr, "Variable", settings, ds.one_hot_descendants)
 			report.set_var(f"table_enr_{state}", dataframe_to_markdown(dfr_enr))
 
 			# R-squared
@@ -773,7 +773,7 @@ def _calc_variable_recommendations(
 			dfr_r2["Rank"] = range(1, len(dfr_r2) + 1)
 			dfr_r2 = dfr_r2[["Rank", "Variable", "R-squared", "Pass/Fail"]]
 			dfr_r2.set_index("Rank", inplace=True)
-			dfr_r2 = apply_dd_to_df(dfr_r2, "Variable", settings, ds.one_hot_descendants)
+			dfr_r2 = apply_dd_to_df_rows(dfr_r2, "Variable", settings, ds.one_hot_descendants)
 			if state == "final":
 				dfr_r2 = dfr_r2[dfr_r2["Pass/Fail"].eq("✅")]
 			report.set_var(f"table_adj_r2_{state}", dataframe_to_markdown(dfr_r2))
@@ -795,14 +795,14 @@ def _calc_variable_recommendations(
 			dfr_coef_sign = dfr_coef_sign[["Variable", "ENR sign", "T-value sign", "Coef. sign", "Pass/Fail"]]
 			for field in ["ENR sign", "T-value sign", "Coef. sign"]:
 				dfr_coef_sign[field] = dfr_coef_sign[field].apply(lambda x: f"{x:.0f}").astype("string")
-			dfr_coef_sign = apply_dd_to_df(dfr_coef_sign, "Variable", settings, ds.one_hot_descendants)
+			dfr_coef_sign = apply_dd_to_df_rows(dfr_coef_sign, "Variable", settings, ds.one_hot_descendants)
 			if state == "final":
 				dfr_coef_sign = dfr_coef_sign[dfr_coef_sign["Pass/Fail"].eq("✅")]
 			report.set_var(f"table_coef_sign_{state}", dataframe_to_markdown(dfr_coef_sign))
 
 
 		dfr["Rank"] = range(1, len(dfr) + 1)
-		dfr = apply_dd_to_df(dfr, "Variable", settings, ds.one_hot_descendants)
+		dfr = apply_dd_to_df_rows(dfr, "Variable", settings, ds.one_hot_descendants)
 
 		dfr = dfr[["Rank", "Weighted Score", "Variable", "VIF", "P Value", "T Value", "ENR", "Correlation", "Coef. sign", "R-squared"]]
 		dfr.set_index("Rank", inplace=True)
@@ -904,8 +904,8 @@ def get_variable_recommendations(
 	df_best = pd.DataFrame(best_variables, columns=["Variable"])
 	df_best["Rank"] = range(1, len(df_best) + 1)
 	df_best["Description"] = df_best["Variable"]
-	df_best = apply_dd_to_df(df_best, "Variable", settings, ds.one_hot_descendants, "name")
-	df_best = apply_dd_to_df(df_best, "Description", settings, ds.one_hot_descendants, "description")
+	df_best = apply_dd_to_df_rows(df_best, "Variable", settings, ds.one_hot_descendants, "name")
+	df_best = apply_dd_to_df_rows(df_best, "Description", settings, ds.one_hot_descendants, "description")
 	df_best = df_best[["Rank", "Variable", "Description"]]
 	df_best.loc[
 		df_best["Variable"].eq(df_best["Description"]),
@@ -988,8 +988,6 @@ def run_models(
 	s = settings
 	s_model = s.get("modeling", {})
 	s_inst = s_model.get("instructions", {})
-
-	df = enrich_time_adjustment(df, s, verbose=verbose)
 
 	ind_var = s_inst.get("ind_var", "sale_price")
 	ind_var_test = s_inst.get("ind_var_test", "sale_price")

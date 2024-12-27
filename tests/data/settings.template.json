@@ -8,6 +8,7 @@
 	"modeling": {
 		"metadata": {},
 		"instructions": {
+			"time_adjustment": {},
 			"feature_selection": {
 				"thresholds": {
 					"correlation": 0.1,
@@ -38,6 +39,11 @@
 		}
 	},
 	"analysis": {
+		"sales_scrutiny": {
+			"location": "neighborhood",
+			"fields_categorical_improved": [],
+			"fields_numeric": []
+		},
 		"horizontal_equity": {
 			"location": "neighborhood",
 			"fields_categorical": [],

@@ -3,12 +3,14 @@ import os
 from openavmkit.benchmark import run_models, get_variable_recommendations
 from openavmkit.cleaning import fill_unknown_values_per_model_group
 from openavmkit.data import load_data, enrich_time
-from openavmkit.horizontal_equity_study import cluster_by_location_and_big_five
+from openavmkit.horizontal_equity_study import make_clusters, mark_horizontal_equity_clusters
+from openavmkit.sales_scrutiny_study import SalesScrutinyStudy
 from openavmkit.synthetic_data import generate_basic
+from openavmkit.time_adjustment import enrich_time_adjustment
 from openavmkit.utilities.settings import get_valuation_date, load_settings, get_fields_categorical
 
 
-def test_variables():
+def test_guilford_sales_scrutiny():
 	print("")
 	# set working directory to the library's root/tests/data:
 	os.chdir("data/nc-guilford")
@@ -26,7 +28,7 @@ def test_variables():
 	df = df[df["model_group"].eq("residential_sf")].copy().reset_index(drop=True)
 
 	if "he_id" not in df:
-		df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [], verbose=True)
+		df = mark_horizontal_equity_clusters(df, settings)
 
 	# load metadata
 	val_date = get_valuation_date(settings)
@@ -44,12 +46,16 @@ def test_variables():
 
 	# enrich time:
 	df = enrich_time(df)
+	df = enrich_time_adjustment(df, settings, verbose=True)
 
-	best_variables = get_variable_recommendations(
-		df,
-		settings,
-		verbose=True,
-	)
+	# run sales validity:
+	ss = SalesScrutinyStudy(df, settings)
+
+	print("vacant sales scrutiny:")
+	display(ss.df_vacant)
+
+	print("improved sales scrutiny:")
+	display(ss.df_improved)
 
 
 def test_models_guilford():
@@ -70,7 +76,7 @@ def test_models_guilford():
 	df = df[df["model_group"].eq("residential_sf")].copy().reset_index(drop=True)
 
 	if "he_id" not in df:
-		df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [], verbose=True)
+		df = mark_horizontal_equity_clusters(df, settings)
 
 	# load metadata
 	val_date = get_valuation_date(settings)
@@ -118,7 +124,7 @@ def test_models_synthetic():
 	df["assr_market_value"] = df["total_value"]
 
 	# calculate horizontal equity cluster ID's
-	df["he_id"] = cluster_by_location_and_big_five(df, "neighborhood", [], verbose=True)
+	df["he_id"] = mark_horizontal_equity_clusters(df, settings)
 
 	# run the predictive models
 	results = run_models(
