@@ -13,6 +13,26 @@ def clean_column_names(df: pd.DataFrame):
 	return df
 
 
+def div_field_z_safe(numerator: pd.Series, denominator: pd.Series):
+	# perform a divide-by-zero-safe division of the two series, replacing divide by zero values with NaN:
+
+	# get the index of all rows where the denominator is zero:
+	idx_denominator_zero = denominator.eq(0)
+
+	# get the series of the numerator and denominator for all rows where the denominator is not zero:
+	series_numerator = numerator[~idx_denominator_zero]
+	series_denominator = denominator[~idx_denominator_zero]
+
+	# make a copy of the denominator
+	result = denominator.copy()
+
+	# replace all values where it is zero with None
+	result[idx_denominator_zero] = None
+
+	# replace all other values with the result of the division
+	result[~idx_denominator_zero] = series_numerator / series_denominator
+	return result
+
 def div_z_safe(df: pd.DataFrame, numerator: str, denominator: str):
 	# perform a divide-by-zero-safe division of the two columns, replacing divide by zero values with NaN:
 

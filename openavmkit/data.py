@@ -46,6 +46,31 @@ def simulate_removed_buildings(df: pd.DataFrame, idx_vacant: Series, settings: d
 	return df
 
 
+def get_sale_field(settings: dict) -> str:
+	ta = settings.get("modeling", {}).get("instructions", {}).get("time_adjustment", {})
+	use = ta.get("use", True)
+	if use:
+		return "sale_price_time_adj"
+	return "sale_price"
+
+
+def get_vacant(df_in: pd.DataFrame, settings: dict, invert:bool = False) -> pd.DataFrame:
+	# TODO : custom vacant filter
+	df = df_in.copy()
+
+	if df["is_vacant"].dtype in ["object", "string", "str"]:
+		df["is_vacant"] = df["is_vacant"].str.lower().str.strip()
+		df["is_vacant"] = df["is_vacant"].replace(["true", "t", "1"], True)
+		df["is_vacant"] = df["is_vacant"].replace(["false", "f", "0"], False)
+
+	df["is_vacant"] = df["is_vacant"].astype(bool)
+
+	idx_vacant = df["is_vacant"].eq(True)
+	if invert:
+		idx_vacant = ~idx_vacant
+	df_vacant = df[idx_vacant].copy()
+	return df_vacant
+
 
 def get_sales(df_in: pd.DataFrame, settings: dict) -> pd.DataFrame:
 	# Step 1: get the sales

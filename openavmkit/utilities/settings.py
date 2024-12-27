@@ -170,7 +170,28 @@ def get_data_dictionary(settings: dict):
 	return settings.get("data_dictionary", {})
 
 
-def apply_dd_to_df(
+def apply_dd_to_df_cols(
+		df: pd.DataFrame,
+		settings: dict,
+		one_hot_descendants: dict = None,
+		dd_field: str = "name"
+) -> pd.DataFrame:
+	dd = settings.get("data_dictionary", {})
+
+	rename_map = {}
+	for column in df.columns:
+		rename_map[column] = dd.get(column, {}).get(dd_field, column)
+
+	if one_hot_descendants is not None:
+		for ancestor in one_hot_descendants:
+			descendants = one_hot_descendants[ancestor]
+			for descendant in descendants:
+				rename_map[descendant] = dd.get(ancestor, {}).get(dd_field, ancestor) + " = " + descendant[len(ancestor)+1:]
+
+	df = df.rename(columns=rename_map)
+	return df
+
+def apply_dd_to_df_rows(
 		df: pd.DataFrame,
 		column: str,
 		settings: dict,
@@ -178,6 +199,7 @@ def apply_dd_to_df(
 		dd_field: str = "name"
 ) -> pd.DataFrame:
 	dd = settings.get("data_dictionary", {})
+
 	df[column] = df[column].map(lambda x: dd.get(x, {}).get(dd_field, x))
 	if one_hot_descendants is not None:
 		one_hot_rename_map = {}
