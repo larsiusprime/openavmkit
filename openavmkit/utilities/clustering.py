@@ -6,6 +6,7 @@ def make_clusters(
     field_location: str,
     fields_categorical: list[str],
     fields_numeric: list[str | list[str]] = None,
+    min_cluster_size: int = 15,
     verbose: bool = False
 ):
   df = df_in.copy()
@@ -32,8 +33,6 @@ def make_clusters(
       ["bldg_effective_age_years", "bldg_age_years"], # Try effective age years first, then normal age
       "bldg_condition_num"
     ]
-
-  min_cluster_size = 15
 
   if verbose:
     print(f"Clustering by location and big five:")
