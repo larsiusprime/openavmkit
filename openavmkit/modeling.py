@@ -20,6 +20,7 @@ from mgwr.gwr import _compute_betas_gwr, Kernel
 
 from mgwr.sel_bw import Sel_BW
 from sklearn.metrics import mean_squared_error
+from statsmodels.nonparametric._kernel_base import EstimatorSettings
 from statsmodels.nonparametric.kernel_regression import KernelReg
 from statsmodels.regression.linear_model import RegressionResults
 from xgboost import XGBRegressor
@@ -594,19 +595,28 @@ def run_kernel(
 
 	timing.start("parameter_search")
 
-	kernel_bw = "cv_ls"
+	kernel_bw = None
 	if use_saved_params:
 		if os.path.exists(f"{outpath}/kernel_bw.pkl"):
 			with open(f"{outpath}/kernel_bw.pkl", "rb") as f:
 				kernel_bw = pickle.load(f)
+				# if kernel_bw is not the same length as the number of variables:
+				if len(kernel_bw) != X_train.shape[1]:
+					print(f"-->saved bandwidth ({len(kernel_bw)} does not match the number of variables ({X_train.shape[1]}), regenerating...")
+					kernel_bw = None
 			if verbose:
 				print(f"--> using saved bandwidth: {kernel_bw}")
+	if kernel_bw is None:
+		kernel_bw = "cv_ls"
+		if verbose:
+			print(f"--> searching for optimal bandwidth...")
 	timing.stop("parameter_search")
 
 	timing.start("train")
 	# TODO: can adjust this to handle categorical data better
 	var_type = "c" * X_train.shape[1]
-	kr = KernelReg(endog=y_train, exog=X_train, var_type=var_type, bw=kernel_bw)
+	defaults = EstimatorSettings(efficient=True)
+	kr = KernelReg(endog=y_train, exog=X_train, var_type=var_type, bw=kernel_bw, defaults=defaults)
 	kernel_bw = kr.bw
 	if save_params:
 		os.makedirs(outpath, exist_ok=True)
@@ -630,11 +640,6 @@ def run_kernel(
 	timing.stop("predict_full")
 
 	timing.stop("total")
-
-	df = ds.df_universe
-	ind_var = ds.ind_var
-	ind_var_test = ds.ind_var_test
-	dep_vars = ds.dep_vars
 
 	results = SingleModelResults(
 		ds,
