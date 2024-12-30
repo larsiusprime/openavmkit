@@ -3,7 +3,7 @@ import os
 import pandas as pd
 from diptest import diptest
 
-from openavmkit.data import get_sales, get_sale_field, get_vacant, get_important_fields, get_locations
+from openavmkit.data import get_sales, get_sale_field, get_vacant, get_important_fields, get_locations, get_vacant_sales
 from openavmkit.horizontal_equity_study import HorizontalEquityStudy
 from openavmkit.utilities.clustering import make_clusters
 from openavmkit.utilities.data import div_z_safe, div_field_z_safe, rename_dict
@@ -24,8 +24,8 @@ class SalesScrutinyStudy:
 
     df = get_sales(df, settings)
 
-    df_vacant = get_vacant(df, settings)
-    df_improved = get_vacant(df, settings, invert=True)
+    df_vacant = get_vacant_sales(df, settings)
+    df_improved = get_vacant_sales(df, settings, invert=True)
 
     stuff = {
       "i": df_improved,
@@ -72,6 +72,22 @@ class SalesScrutinyStudy:
     self._write(path, True)
     self._write(path, False)
 
+
+  def get_scrutinized(self, df: pd.DataFrame):
+    df_v = self.df_vacant
+    df_i = self.df_improved
+
+    # remove flagged sales:
+    keys_flagged = df_v[df_v["flagged"].eq(True)]["key"].tolist()
+    keys_flagged += df_i[df_i["flagged"].eq(True)]["key"].tolist()
+
+    # ensure unique:
+    keys_flagged = list(dict.fromkeys(keys_flagged))
+
+    df.loc[df["key"].isin(keys_flagged), "valid_sale"] = 0
+    return df
+
+
   def _write(self, path: str, is_vacant: bool):
     os.makedirs(f"{path}/sales_scrutiny", exist_ok=True)
 
@@ -84,7 +100,11 @@ class SalesScrutinyStudy:
 
     idx_flagged = df[df["flagged"].eq(True)].index
     idx_bimodal = df[df["bimodal"].eq(True)].index
+
     df = _prettify(df, self.settings)
+
+    df = df.sort_values(by="CHD", ascending=False)
+
     df.to_csv(f"{path}.csv", index=False)
 
     _curr_0 = {"num_format": "#,##0"}
@@ -216,9 +236,11 @@ def calc_sales_scrutiny(df: pd.DataFrame, sales_field: str):
     df["relative_ratio"] = div_z_safe(df, sales_field, "median")
     df["med_dist_stdevs"] = div_field_z_safe(df[sales_field] - df["median"], df["stdev"])
 
+    # Calculate standard deviation thresholds:
     df["low_thresh"] = -float('inf')
     df["high_thresh"] = float('inf')
 
+    # Flag anything above or below 2 standard deviations from the median
     df.loc[
       ~df["median"].isna() &
       ~df["stdev"].isna(),
@@ -233,6 +255,15 @@ def calc_sales_scrutiny(df: pd.DataFrame, sales_field: str):
 
     df["flagged"] = False
     df.loc[idx_low | idx_high, "flagged"] = True
+
+    # Additionally, flag anything with a relative ratio >= 4.0
+    df.loc[df["relative_ratio"].ge(4.0), "flagged"] = True
+
+    # Additionally, flag anything with a relative ratio <= .35 AND a stdev distance of < -1.0
+    df.loc[
+      df["relative_ratio"].le(0.35) &
+      df["med_dist_stdevs"].lt(-1.0),
+    "flagged"] = True
 
     df["bimodal"] = False
     bimodal_clusters = _identify_bimodal_clusters(df, sales_field)
@@ -276,5 +307,5 @@ def mark_sales_scrutiny_clusters(df: pd.DataFrame, settings: dict, verbose: bool
     impr_fields = get_fields_categorical(settings, df, include_boolean=False, types=["impr"])
     fields_categorical = [f for f in fields_categorical if f not in impr_fields]
 
-  df_sales["ss_id"], fields_used = make_clusters(df_sales, location, fields_categorical, fields_numeric, verbose=verbose)
+  df_sales["ss_id"], fields_used = make_clusters(df_sales, location, fields_categorical, fields_numeric, min_cluster_size=5, verbose=verbose)
   return df_sales, fields_used

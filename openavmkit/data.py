@@ -83,14 +83,27 @@ def get_vacant(df_in: pd.DataFrame, settings: dict, invert:bool = False) -> pd.D
 
 
 def get_sales(df_in: pd.DataFrame, settings: dict) -> pd.DataFrame:
-	# Step 1: get the sales
-	df_sales : pd.DataFrame = df_in[df_in["sale_price"].gt(0) & df_in["valid_sale"].ge(1)].copy()
 
-	if "vacant_sale" in df_in:
-		# Step 2: check for vacant sales:
-		df_sales = boolify_column(df_sales, "vacant_sale")
-		idx_vacant_sale = df_sales["vacant_sale"].eq(True)
-		df_sales = simulate_removed_buildings(df_sales, idx_vacant_sale, settings)
+	df = df_in.copy()
+	df = boolify_column(df, "valid_sale")
+
+	if "vacant_sale" in df:
+		# check for vacant sales:
+		df = boolify_column(df, "vacant_sale")
+		idx_vacant_sale = df["vacant_sale"].eq(True)
+		df = simulate_removed_buildings(df, idx_vacant_sale, settings)
+
+		# if a property was NOT vacant at time of sale, but is vacant now, then the sale is invalid, because we don't
+		# know e.g. what the square footage was at the time of sale
+		# TODO: deal with this better when we support frozen characteristics
+		df.loc[
+			~idx_vacant_sale &
+			df["is_vacant"].eq(True),
+			"valid_sale"
+		] = False
+
+	# get the sales
+	df_sales : pd.DataFrame = df[df["sale_price"].gt(0) & df["valid_sale"].eq(True)].copy()
 
 	return df_sales
 
