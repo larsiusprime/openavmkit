@@ -14,14 +14,12 @@ class MarkdownReport:
     self.rendered = ""
 
   def set_var(self, key: str, value, fmt: str = None):
-    formatted_value = str(value)
     if value is None:
       formatted_value = "<NULL>"
     elif fmt is not None:
-      print(f"Formatting {value} as {fmt}")
       formatted_value = format(value, fmt)
     else:
-      formatted_value = value
+      formatted_value = str(value)
     self.variables[key] = formatted_value
 
   def render(self):

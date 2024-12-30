@@ -297,6 +297,7 @@ def _run_one_model(
 
 def _assemble_model_results(results: SingleModelResults):
 	fields = ["key", "prediction", "assr_market_value", "sale_price", "sale_price_time_adj", "sale_date"]
+	fields = [field for field in fields if field in results.df_sales.columns]
 
 	dfs = {
 		"sales": results.df_sales[fields].copy(),
@@ -424,7 +425,7 @@ def optimize_ensemble(
 		if verbose:
 			print(f"score = {score:5.0f}, best = {best_score:5.0f}, ensemble = {ensemble_list}...")
 
-		if score < best_score:
+		if score < best_score and len(ensemble_list) >= 3:
 			best_score = score
 			best_list = ensemble_list.copy()
 
@@ -434,13 +435,15 @@ def optimize_ensemble(
 		for key in ensemble_list:
 			if key in all_results.model_results:
 				model_results = all_results.model_results[key]
+
 				if model_results.utility > worst_score:
 					worst_score = model_results.utility
 					worst_model = key
 					if verbose:
 						print(f"--> kicking score {worst_score:5.0f}, model = {worst_model}")
 
-		ensemble_list.remove(worst_model)
+		if worst_model is not None:
+			ensemble_list.remove(worst_model)
 
 	if verbose:
 		print(f"Best score = {best_score:5.0}, ensemble = {best_list}")
