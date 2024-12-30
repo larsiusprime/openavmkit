@@ -63,3 +63,12 @@ def dataframe_to_markdown(df):
 		"| " + " | ".join(row) + " |" for row in df.astype(str).values
 	)
 	return f"{header}\n{separator}\n{rows}"
+
+
+def rename_dict(dict, renames):
+	# rename the keys of a dictionary according to a rename map:
+	new_dict = {}
+	for key in dict:
+		new_key = renames.get(key, key)
+		new_dict[new_key] = dict[key]
+	return new_dict

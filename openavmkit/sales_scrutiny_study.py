@@ -1,11 +1,13 @@
 import os
 
 import pandas as pd
+from diptest import diptest
 
-from openavmkit.data import get_sales, get_sale_field, get_vacant
+from openavmkit.data import get_sales, get_sale_field, get_vacant, get_important_fields, get_locations
 from openavmkit.horizontal_equity_study import HorizontalEquityStudy
 from openavmkit.utilities.clustering import make_clusters
-from openavmkit.utilities.data import div_z_safe, div_field_z_safe
+from openavmkit.utilities.data import div_z_safe, div_field_z_safe, rename_dict
+from openavmkit.utilities.excel import write_to_excel
 from openavmkit.utilities.settings import get_fields_categorical, apply_dd_to_df_cols
 
 
@@ -31,6 +33,8 @@ class SalesScrutinyStudy:
     }
 
     sale_field = get_sale_field(settings)
+    important_fields = get_important_fields(settings, df)
+    location_fields = get_locations(settings, df)
 
     for key in stuff:
       df = stuff[key]
@@ -39,16 +43,22 @@ class SalesScrutinyStudy:
       per_sqft = ""
       denominator = ""
       if key == "i":
-        per_sqft = "per_impr_sqft"
+        per_sqft = "impr_sqft"
         denominator = "bldg_area_finished_sqft"
       elif key == "v":
-        per_sqft = "per_land_sqft"
+        per_sqft = "land_sqft"
         denominator = "land_area_sqft"
 
       sale_field_per = f"{sale_field}_{per_sqft}"
       df[sale_field_per] = div_z_safe(df, sale_field, denominator)
 
-      df_cluster_fields = df[["key"] + cluster_fields]
+      other_fields = cluster_fields + location_fields + important_fields
+      other_fields = list(dict.fromkeys(other_fields))
+      other_fields += ["address", "sale_date", "valid_sale", "vacant_sale"]
+
+      other_fields = [f for f in other_fields if f in df]
+
+      df_cluster_fields = df[["key"] + other_fields]
       df = calc_sales_scrutiny(df, sale_field_per)
       df = df.merge(df_cluster_fields, on="key", how="left")
 
@@ -59,24 +69,85 @@ class SalesScrutinyStudy:
     self.settings = settings
 
   def write(self, path: str):
+    self._write(path, True)
+    self._write(path, False)
+
+  def _write(self, path: str, is_vacant: bool):
     os.makedirs(f"{path}/sales_scrutiny", exist_ok=True)
 
-    df_vacant = _prettify(self.df_vacant, self.settings)
-    df_improved = _prettify(self.df_improved, self.settings)
+    if is_vacant:
+      df = self.df_vacant
+      path = f"{path}/sales_scrutiny/vacant"
+    else:
+      df = self.df_improved
+      path = f"{path}/sales_scrutiny/improved"
 
-    df_vacant.to_csv(f"{path}/sales_scrutiny/vacant.csv", index=False)
-    df_improved.to_csv(f"{path}/sales_scrutiny/improved.csv", index=False)
+    idx_flagged = df[df["flagged"].eq(True)].index
+    idx_bimodal = df[df["bimodal"].eq(True)].index
+    df = _prettify(df, self.settings)
+    df.to_csv(f"{path}.csv", index=False)
+
+    _curr_0 = {"num_format": "#,##0"}
+    _curr_2 = {"num_format": "#,##0.00"}
+    _dec_0 = {"num_format": "#,##0"}
+    _dec_2 = {"num_format": "#,##0.00"}
+    _float_2 = {"num_format": "0.00"}
+    _float_0 = {"num_format": "#,##0"}
+    _date = {"num_format": "yyyy-mm-dd"}
+    _int = {"num_format": "0"}
+    _bigint = {"num_format": "#,##0"}
+
+    # Write to excel:
+    columns = rename_dict({
+      "sale_price": _curr_0,
+      "sale_price_time_adj": _curr_0,
+      "sale_price_impr_sqft": _curr_2,
+      "sale_price_land_sqft": _curr_2,
+      "sale_price_time_adj_impr_sqft": _curr_2,
+      "sale_price_time_adj_land_sqft": _curr_2,
+      "Median": _curr_2,
+      "Max": _curr_2,
+      "Min": _curr_2,
+      "CHD": _float_2,
+      "Standard deviation": _curr_2,
+      "Relative ratio": _float_2,
+      "Median distance from median, in std. deviations": _float_2
+    }, _get_ss_renames())
+
+    column_conditions = {
+      "Flagged": {
+        "type": "cell",
+        "criteria": "==",
+        "value": "TRUE",
+        "format": {"bold": True, "font_color": "red"}
+      },
+      "Bimodal cluster": {
+        "type": "cell",
+        "criteria": "==",
+        "value": "TRUE",
+        "format": {"bold": True, "font_color": "red"}
+      }
+    }
+
+    write_to_excel(df, f"{path}.xlsx", {
+      "columns": {
+        "formats": columns,
+        "conditions": column_conditions
+      }
+    })
 
 
-def _prettify(df: pd.DataFrame, settings: dict) -> pd.DataFrame:
-  renames = {
+def _get_ss_renames():
+  return {
     "key": "Primary key",
     "ss_id": "Sales scrutiny cluster",
     "count": "# of sales in cluster",
-    "sale_price_time_adj_per_impr_sqft": "Sale price / improved sqft (time adjusted)",
-    "sale_price_time_adj_per_land_sqft": "Sale price / land sqft (time adjusted)",
-    "sale_price_per_impr_sqft": "Sale price / improved sqft",
-    "sale_price_per_land_sqft": "Sale price / land sqft",
+    "sale_price": "Sale price",
+    "sale_price_impr_sqft": "Sale price / improved sqft",
+    "sale_price_land_sqft": "Sale price / land sqft",
+    "sale_price_time_adj": "Sale price (time adjusted)",
+    "sale_price_time_adj_impr_sqft": "Sale price / improved sqft (time adjusted)",
+    "sale_price_time_adj_land_sqft": "Sale price / land sqft (time adjusted)",
     "median": "Median",
     "chd": "CHD",
     "max": "Max",
@@ -84,9 +155,13 @@ def _prettify(df: pd.DataFrame, settings: dict) -> pd.DataFrame:
     "stdev": "Standard deviation",
     "relative_ratio": "Relative ratio",
     "med_dist_stdevs": "Median distance from median, in std. deviations",
-    "flagged": "Flagged"
+    "flagged": "Flagged",
+    "bimodal": "Bimodal cluster"
   }
-  df = df.rename(columns=renames)
+
+
+def _prettify(df: pd.DataFrame, settings: dict) -> pd.DataFrame:
+  df = df.rename(columns=_get_ss_renames())
   df = apply_dd_to_df_cols(df, settings)
   return df
 
@@ -134,7 +209,9 @@ def calc_sales_scrutiny(df: pd.DataFrame, sales_field: str):
 
     df_cluster = pd.DataFrame(data)
 
-    df = df[["key", "ss_id", sales_field]].copy()
+    base_sales_field = _get_base_sales_field(sales_field)
+
+    df = df[["key", "ss_id", sales_field, base_sales_field]].copy()
     df = df.merge(df_cluster, on="ss_id", how="left")
     df["relative_ratio"] = div_z_safe(df, sales_field, "median")
     df["med_dist_stdevs"] = div_field_z_safe(df[sales_field] - df["median"], df["stdev"])
@@ -157,12 +234,32 @@ def calc_sales_scrutiny(df: pd.DataFrame, sales_field: str):
     df["flagged"] = False
     df.loc[idx_low | idx_high, "flagged"] = True
 
+    df["bimodal"] = False
+    bimodal_clusters = _identify_bimodal_clusters(df, sales_field)
+    df.loc[df["ss_id"].isin(bimodal_clusters), "bimodal"] = True
+
     # drop low_thresh/high_thresh:
     df = df.drop(columns=["low_thresh", "high_thresh"])
 
-    df = df[["key", "ss_id", "count", sales_field, "median", "max", "min", "chd", "stdev", "relative_ratio", "med_dist_stdevs", "flagged"]]
+    df = df[["key", "ss_id", "count", sales_field, base_sales_field,   "median", "max", "min", "chd", "stdev", "relative_ratio", "med_dist_stdevs", "flagged", "bimodal"]]
 
     return df
+
+
+def _get_base_sales_field(field: str):
+  return "sale_price" if "time_adj" not in field else "sale_price_time_adj"
+
+
+def _identify_bimodal_clusters(df, sales_field):
+  bimodal_clusters = []
+
+  for cluster_id, group in df.groupby('ss_id'):
+    values = group[sales_field].values
+    dip, p_value = diptest(values)
+    if p_value < 0.05:  # Statistically significant deviation from unimodality
+      bimodal_clusters.append(cluster_id)
+
+  return bimodal_clusters
 
 
 def mark_sales_scrutiny_clusters(df: pd.DataFrame, settings: dict, verbose: bool = False):
