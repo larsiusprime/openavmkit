@@ -54,6 +54,16 @@ def get_sale_field(settings: dict) -> str:
 	return "sale_price"
 
 
+def get_vacant_sales(df_in: pd.DataFrame, settings: dict, invert:bool = False) -> pd.DataFrame:
+	df = df_in.copy()
+	df = boolify_column(df, "vacant_sale")
+	idx_vacant_sale = df["vacant_sale"].eq(True)
+	if invert:
+		idx_vacant_sale = ~idx_vacant_sale
+	df_vacant_sales = df[idx_vacant_sale].copy()
+	return df_vacant_sales
+
+
 def get_vacant(df_in: pd.DataFrame, settings: dict, invert:bool = False) -> pd.DataFrame:
 	# TODO : custom vacant filter
 	df = df_in.copy()
@@ -63,7 +73,7 @@ def get_vacant(df_in: pd.DataFrame, settings: dict, invert:bool = False) -> pd.D
 		df["is_vacant"] = df["is_vacant"].replace(["true", "t", "1"], True)
 		df["is_vacant"] = df["is_vacant"].replace(["false", "f", "0"], False)
 
-	df["is_vacant"] = df["is_vacant"].astype(bool)
+	df = boolify_column(df, "is_vacant")
 
 	idx_vacant = df["is_vacant"].eq(True)
 	if invert:
@@ -78,11 +88,52 @@ def get_sales(df_in: pd.DataFrame, settings: dict) -> pd.DataFrame:
 
 	if "vacant_sale" in df_in:
 		# Step 2: check for vacant sales:
-		idx_vacant_sale = df_sales["vacant_sale"].eq(1)
+		df_sales = boolify_column(df_sales, "vacant_sale")
+		idx_vacant_sale = df_sales["vacant_sale"].eq(True)
 		df_sales = simulate_removed_buildings(df_sales, idx_vacant_sale, settings)
 
 	return df_sales
 
+
+def boolify_column(df: pd.DataFrame, field: str):
+	if df[field].dtype in ["object", "string", "str"]:
+		df[field] = df[field].str.lower().str.strip()
+		df[field] = df[field].replace(["true", "t", "1"], True)
+		df[field] = df[field].replace(["false", "f", "0"], False)
+	df[field] = df[field].astype(bool)
+	return df
+
+
+def get_locations(settings: dict, df: pd.DataFrame = None) -> list[str]:
+	locations = settings.get("field_classification", {}).get("important", {}).get("locations", [])
+	if df is not None:
+		locations = [loc for loc in locations if loc in df]
+	return locations
+
+
+def get_important_fields(settings: dict, df: pd.DataFrame = None) -> list[str]:
+	imp = settings.get("field_classification", {}).get("important", {})
+	fields = imp.get("fields", {})
+	print(f"get important fields imp = {imp}")
+	print(f"fields = {fields}")
+	list_fields = []
+	if df is not None:
+		for field in fields:
+			other_name = fields[field]
+			if other_name in df:
+				list_fields.append(other_name)
+	return list_fields
+
+
+def get_important_field(settings: dict, field_name: str, df: pd.DataFrame = None) -> str | None:
+	imp = settings.get("field_classification", {}).get("important", {})
+	other_name = imp.get("fields", {}).get(field_name, None)
+	if df is not None:
+		if other_name is not None and other_name in df:
+			return other_name
+		else:
+			return None
+	return other_name
 
 
 def load_data(settings: dict) -> pd.DataFrame:

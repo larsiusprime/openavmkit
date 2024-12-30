@@ -50,12 +50,20 @@ def test_guilford_sales_scrutiny():
 
 	# run sales validity:
 	ss = SalesScrutinyStudy(df, settings)
+	ss.write(f"out")
 
-	print("vacant sales scrutiny:")
-	display(ss.df_vacant)
 
-	print("improved sales scrutiny:")
-	display(ss.df_improved)
+	# # run the predictive models
+	# results = run_models(
+	# 	df,
+	# 	settings,
+	# 	verbose=True,
+	# 	save_params=True,
+	# 	use_saved_params=True
+	# )
+	#
+	# print(results.benchmark.print())
+
 
 
 def test_models_guilford():
