@@ -97,6 +97,22 @@
 		}
 	},
 	"field_classification": {
+		"important": {
+			"fields": {
+				"impr_category": "bldg_style",
+				"land_category": "land_class",
+				"loc_neighborhood": "neighborhood",
+				"loc_market_area": "census_tract",
+				"loc_region": "census_block_group"
+			},
+			"locations": [
+				"neighborhood",
+				"census_tract",
+				"census_block_group",
+				"city",
+				"school_district"
+			]
+		},
 		"land": {
 			"numeric": [
 				"noise_max",

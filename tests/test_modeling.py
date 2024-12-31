@@ -53,18 +53,6 @@ def test_guilford_sales_scrutiny():
 	ss.write(f"out")
 
 
-	# # run the predictive models
-	# results = run_models(
-	# 	df,
-	# 	settings,
-	# 	verbose=True,
-	# 	save_params=True,
-	# 	use_saved_params=True
-	# )
-	#
-	# print(results.benchmark.print())
-
-
 
 def test_models_guilford():
 	print("")
@@ -104,6 +92,10 @@ def test_models_guilford():
 
 	# enrich time:
 	df = enrich_time(df)
+
+	# run sales validity:
+	ss = SalesScrutinyStudy(df, settings)
+	df = ss.get_scrutinized(df)
 
 	# run the predictive models
 	results = run_models(
