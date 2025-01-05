@@ -5,9 +5,12 @@ import pandas as pd
 from IPython.core.display_functions import display
 from tabulate import tabulate
 
-from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, SingleModelResults, run_garbage, \
-	run_average, run_naive_sqft, DataSplit, run_kernel, run_mgwr
-from openavmkit.reports import MarkdownReport
+from openavmkit.data import get_important_field
+from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, SingleModelResults, \
+	run_garbage, \
+	run_average, run_naive_sqft, DataSplit, run_kernel, run_mgwr, run_local_sqft
+from openavmkit.reports import MarkdownReport, markdown_to_pdf
+from openavmkit.sales_scrutiny_study import SalesScrutinyStudy
 from openavmkit.time_adjustment import apply_time_adjustment, enrich_time_adjustment
 from openavmkit.utilities.data import div_z_safe, dataframe_to_markdown
 from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions, get_valuation_date, \
@@ -235,12 +238,11 @@ def _run_one_model(
 	if dep_vars is None:
 		raise ValueError(f"dep_vars not found for model {model}")
 
-	# if not are_dep_vars_default:
-	# 	get_variable_recommendations(
-	# 		df,
-	# 		settings
-	#
-	# 	)
+	if are_dep_vars_default:
+		if verbose:
+			if set(dep_vars) != set(best_variables):
+				print(f"--> using default variables, auto-optimized variable list: {best_variables}")
+		dep_vars = best_variables
 
 	interactions = get_variable_interactions(entry, settings, df)
 
@@ -248,17 +250,29 @@ def _run_one_model(
 	test_train_frac = instructions.get("test_train_frac", 0.8)
 	random_seed = instructions.get("random_seed", 1337)
 
-	ds = DataSplit(
-		df,
-		settings,
-		ind_var,
-		ind_var_test,
-		dep_vars,
-		fields_cat,
-		interactions,
-		test_train_frac,
-		random_seed
-	)
+	location_field = get_important_field(settings, "loc_neighborhood", df)
+
+	def _get_data_split_for(name: str):
+		if name == "local_naive_sqft":
+			_dep_vars = [location_field, "bldg_area_finished_sqft", "land_area_sqft"]
+		elif name == "local_smart_sqft":
+			_dep_vars = ["ss_id", location_field, "bldg_area_finished_sqft", "land_area_sqft"]
+		else:
+			_dep_vars = dep_vars
+
+		return DataSplit(
+			df,
+			settings,
+			ind_var,
+			ind_var_test,
+			_dep_vars,
+			fields_cat,
+			interactions,
+			test_train_frac,
+			random_seed
+		)
+
+	ds = _get_data_split_for(model_name)
 
 	intercept = entry.get("intercept", True)
 
@@ -274,6 +288,10 @@ def _run_one_model(
 		results = run_average(ds, type="median", sales_chase=sales_chase, verbose=verbose)
 	elif model_name == "naive_sqft":
 		results = run_naive_sqft(ds, sales_chase=sales_chase, verbose=verbose)
+	elif model_name == "local_naive_sqft":
+		results = run_local_sqft(ds, location_fields=[location_field], sales_chase=sales_chase, verbose=verbose)
+	elif model_name == "local_smart_sqft":
+		results = run_local_sqft(ds, location_fields=["ss_id", location_field], sales_chase=sales_chase, verbose=verbose)
 	elif model_name == "mra":
 		results = run_mra(ds, intercept=intercept, verbose=verbose)
 	elif model_name == "kernel":
@@ -315,6 +333,8 @@ def _assemble_model_results(results: SingleModelResults):
 def write_model_results(results: SingleModelResults, outpath: str):
 	dfs = _assemble_model_results(results)
 	path = f"{outpath}/{results.type}"
+	if "*" in path:
+		path = path.replace("*", "_star")
 	os.makedirs(path, exist_ok=True)
 	for key in dfs:
 		df = dfs[key]
@@ -917,7 +937,6 @@ def get_variable_recommendations(
 	df_best.set_index("Rank", inplace=True)
 	report.set_var("summary_table", df_best.to_markdown())
 
-
 	report = generate_variable_report(
 		report,
 		settings,
@@ -984,6 +1003,7 @@ def generate_variable_report(
 def run_models(
 		df: pd.DataFrame,
 		settings: dict,
+		sales_scrutiny: SalesScrutinyStudy = None,
 		save_params: bool = False,
 		use_saved_params: bool = False,
 		verbose: bool = False
@@ -1022,6 +1042,9 @@ def run_models(
 	os.makedirs(f"{outpath}/reports", exist_ok=True)
 	with open(f"{outpath}/reports/variable_report.md", "w", encoding="utf-8") as f:
 		f.write(var_report_md)
+
+	pdf_path = f"{outpath}/reports/variable_report.pdf"
+	markdown_to_pdf(var_report_md, pdf_path, css_file="variable")
 
 	# Run the models one by one and stash the results
 	for model in models_to_run:

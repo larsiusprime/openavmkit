@@ -24,8 +24,10 @@ def test_guilford_sales_scrutiny():
 	# clean the data
 	df = fill_unknown_values_per_model_group(df, settings)
 
+	model_group = "residential_sf"
+
 	# select a subset of the data
-	df = df[df["model_group"].eq("residential_sf")].copy().reset_index(drop=True)
+	df = df[df["model_group"].eq(model_group)].copy().reset_index(drop=True)
 
 	if "he_id" not in df:
 		df = mark_horizontal_equity_clusters(df, settings)
@@ -49,7 +51,7 @@ def test_guilford_sales_scrutiny():
 	df = enrich_time_adjustment(df, settings, verbose=True)
 
 	# run sales validity:
-	ss = SalesScrutinyStudy(df, settings)
+	ss = SalesScrutinyStudy(df, settings, model_group=model_group)
 	ss.write(f"out")
 
 
@@ -68,8 +70,10 @@ def test_models_guilford():
 	# clean the data
 	df = fill_unknown_values_per_model_group(df, settings)
 
+	model_group = "residential_sf"
+
 	# select a subset of the data
-	df = df[df["model_group"].eq("residential_sf")].copy().reset_index(drop=True)
+	df = df[df["model_group"].eq(model_group)].copy().reset_index(drop=True)
 
 	if "he_id" not in df:
 		df = mark_horizontal_equity_clusters(df, settings)
@@ -92,15 +96,20 @@ def test_models_guilford():
 
 	# enrich time:
 	df = enrich_time(df)
+	df = enrich_time_adjustment(df, settings, verbose=True)
 
 	# run sales validity:
-	ss = SalesScrutinyStudy(df, settings)
+	ss = SalesScrutinyStudy(df, settings, model_group=model_group)
+	ss.write(f"out")
+
+	# clean sales data:
 	df = ss.get_scrutinized(df)
 
 	# run the predictive models
 	results = run_models(
 		df,
 		settings,
+		sales_scrutiny=ss,
 		verbose=True,
 		save_params=True,
 		use_saved_params=True

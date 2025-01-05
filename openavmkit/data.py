@@ -172,11 +172,11 @@ def load_data(settings: dict) -> pd.DataFrame:
 				# TODO: process dtypes
 				df = pd.read_csv(filename)
 				dataframes.append(df)
-		df = merge_dataframes(dataframes, settings)
+		df = merge_list_of_dfs(dataframes, settings)
 		return df
 
 
-def merge_dataframes(dfs: list[pd.DataFrame], settings: dict) -> pd.DataFrame:
+def merge_list_of_dfs(dfs: list[pd.DataFrame], settings: dict) -> pd.DataFrame:
 		"""
 		Merge the dataframes.
 		"""
@@ -193,3 +193,30 @@ def merge_dataframes(dfs: list[pd.DataFrame], settings: dict) -> pd.DataFrame:
 				else:
 					merged = pd.merge(merged, df, how=how, on=on)
 		return merged
+
+
+def combine_dfs(df1:pd.DataFrame, df2:pd.DataFrame, index="key") -> pd.DataFrame:
+		"""
+		Combine the dataframes on a given index column.
+		"""
+		df = df1.copy()
+
+		index_orig = df.index
+
+		df.index = df[index]
+		df2.index = df2[index]
+
+		for column in df2:
+			if column == index:
+				continue
+			if column in df:
+				# if the column already exists, then fill NA values in df with values from df2
+				df.loc[pd.isna(df[column]), column] = df2[column]
+			else:
+				# if the column does not exist, then add it
+				df[column] = df2[column]
+
+		# reset the index to the original one
+		df.index = index_orig
+
+		return df

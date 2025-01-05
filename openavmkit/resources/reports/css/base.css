@@ -1,0 +1,92 @@
+/* General Reset and Body Styling */
+body {
+    font-family: 'Arial', sans-serif;
+    line-height: 1.6;
+    margin: 0;
+    padding: 20px;
+}
+
+/* Headings */
+h1, h2, h3 {
+    color: #2c3e50; /* Deep blue-gray for headings */
+    margin-bottom: 10px;
+    font-weight: 600;
+}
+
+h1 {
+    font-size: 2em;
+    border-bottom: 2px solid #3498db; /* Light blue underline */
+    padding-bottom: 5px;
+}
+
+h2 {
+    font-size: 1.5em;
+    color: #2980b9; /* Bright blue for subheadings */
+}
+
+h3 {
+    font-size: 1.2em;
+    color: #7f8c8d; /* Subtle gray for smaller headings */
+}
+
+/* Paragraphs */
+p {
+    margin: 10px 0;
+}
+
+/* Blockquotes */
+blockquote {
+    font-style: italic;
+    color: #555; /* Subtle gray for blockquote text */
+    margin: 20px 40px; /* Indented for emphasis */
+    padding: 10px 20px;
+    border-left: 4px solid #3498db; /* Highlighted left border */
+    background-color: #f5f8fa; /* Light blue-gray background */
+}
+
+/* Tables */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 20px 0;
+    font-size: 1em;
+    min-width: 400px;
+    background-color: #fff; /* White background for the table */
+    border: 1px solid #ddd;
+}
+
+/* Table Header */
+table thead tr {
+    background-color: #3498db; /* Bright blue for headers */
+    color: #ffffff;
+    text-align: left;
+    font-weight: bold;
+}
+
+/* Table Rows */
+table tbody tr {
+    border-bottom: 1px solid #ddd;
+}
+
+/* Alternating Row Colors */
+table tbody tr:nth-of-type(even) {
+    background-color: #f2f2f2; /* Light gray for alternate rows */
+}
+
+/* Highlight on Hover */
+table tbody tr:hover {
+    background-color: #eaeaea; /* Slightly darker gray for hover */
+}
+
+/* Table Cells */
+table th, table td {
+    padding: 12px 15px;
+    text-align: left;
+}
+
+/* Table Footer */
+table tfoot tr {
+    background-color: #ecf0f1; /* Subtle gray for footer */
+    font-weight: bold;
+    color: #2c3e50;
+}
