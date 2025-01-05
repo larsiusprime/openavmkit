@@ -8,7 +8,7 @@ from tabulate import tabulate
 from openavmkit.data import get_important_field
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, SingleModelResults, \
 	run_garbage, \
-	run_average, run_naive_sqft, DataSplit, run_kernel, run_mgwr, run_local_sqft
+	run_average, run_naive_sqft, DataSplit, run_kernel, run_mgwr, run_local_sqft, run_assessor
 from openavmkit.reports import MarkdownReport, markdown_to_pdf
 from openavmkit.sales_scrutiny_study import SalesScrutinyStudy
 from openavmkit.time_adjustment import apply_time_adjustment, enrich_time_adjustment
@@ -89,6 +89,7 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 		"adj_r2":[],
 		"median_ratio":[],
 		"cod":[],
+		"cod_trim":[],
 		"prd":[],
 		"prb":[],
 		"chd":[]
@@ -112,6 +113,7 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 			data["adj_r2"].append(pred_results.adj_r2)
 			data["median_ratio"].append(pred_results.ratio_study.median_ratio)
 			data["cod"].append(pred_results.ratio_study.cod)
+			data["cod_trim"].append(pred_results.ratio_study.cod_trim)
 			data["prd"].append(pred_results.ratio_study.prd)
 			data["prb"].append(pred_results.ratio_study.prb)
 
@@ -179,6 +181,7 @@ def format_benchmark_df(df: pd.DataFrame):
 		"adj_r2": "{:.2f}",
 		"median_ratio": "{:.2f}",
 		"cod": "{:.2f}",
+		"cod_trim": "{:.2f}",
 		"prd": "{:.2f}",
 		"prb": "{:.2f}",
 		"total": fancy_format,
@@ -257,6 +260,8 @@ def _run_one_model(
 			_dep_vars = [location_field, "bldg_area_finished_sqft", "land_area_sqft"]
 		elif name == "local_smart_sqft":
 			_dep_vars = ["ss_id", location_field, "bldg_area_finished_sqft", "land_area_sqft"]
+		elif name == "assessor":
+			_dep_vars = ["assr_market_value"]
 		else:
 			_dep_vars = dep_vars
 
@@ -292,6 +297,8 @@ def _run_one_model(
 		results = run_local_sqft(ds, location_fields=[location_field], sales_chase=sales_chase, verbose=verbose)
 	elif model_name == "local_smart_sqft":
 		results = run_local_sqft(ds, location_fields=["ss_id", location_field], sales_chase=sales_chase, verbose=verbose)
+	elif model_name == "assessor":
+		results = run_assessor(ds, verbose=verbose)
 	elif model_name == "mra":
 		results = run_mra(ds, intercept=intercept, verbose=verbose)
 	elif model_name == "kernel":

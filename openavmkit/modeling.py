@@ -520,11 +520,6 @@ def run_mra(
 
 		timing.stop("total")
 
-		df_univ = ds.df_universe
-		ind_var = ds.ind_var
-		ind_var_test = ds.ind_var_test
-		dep_vars = ds.dep_vars
-
 		results = SingleModelResults(
 			ds,
 			"prediction",
@@ -539,6 +534,57 @@ def run_mra(
 		)
 
 		return results
+
+
+def run_assessor(
+		ds: DataSplit,
+		verbose: bool = False
+):
+	timing = TimingData()
+
+	timing.start("total")
+
+	timing.start("setup")
+	ds.split()
+	timing.stop("setup")
+
+	timing.start("parameter_search")
+	timing.stop("parameter_search")
+
+	timing.start("train")
+	timing.stop("train")
+
+	# predict on test set:
+	timing.start("predict_test")
+	y_pred_test = ds.X_test["assr_market_value"].to_numpy()
+	timing.stop("predict_test")
+
+	# predict on the sales set:
+	timing.start("predict_sales")
+	y_pred_sales = ds.X_sales["assr_market_value"].to_numpy()
+	timing.stop("predict_sales")
+
+	# predict on the full set:
+	timing.start("predict_full")
+	y_pred_univ = ds.X_univ["assr_market_value"].to_numpy()
+	timing.stop("predict_full")
+
+	timing.stop("total")
+
+	results = SingleModelResults(
+		ds,
+		"prediction",
+		"he_id",
+		"assessor",
+		None,
+		y_pred_test,
+		y_pred_sales,
+		y_pred_univ,
+		timing,
+		verbose=verbose
+	)
+
+	return results
 
 
 def run_kernel(

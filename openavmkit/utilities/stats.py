@@ -69,6 +69,12 @@ def calc_prd(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
 	return prd
 
 
+def trim_outliers(values: np.ndarray, lower_quantile: float = 0.25, upper_quantile: float = 0.75) -> np.ndarray:
+	lower_bound = np.quantile(values, lower_quantile)
+	upper_bound = np.quantile(values, upper_quantile)
+	return values[(values >= lower_bound) & (values <= upper_bound)]
+
+
 def calc_prb(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
 
 	if len(predictions) != len(ground_truth):
