@@ -1,0 +1,12 @@
+code {
+    display: inline-block; /* Makes it render as an inline element but allows for styling like a block */
+    font-weight: bold;
+    background-color: #3498db; /* Light blue background */
+    color: #ffffff; /* White text */
+    font-family: 'Arial', sans-serif;
+    padding: 0.2em 0.5em; /* Adds padding to create the capsule shape */
+    border-radius: 12px; /* Rounds the edges to make it look like a capsule */
+    font-size: 0.9em; /* Slightly smaller font for a compact appearance */
+    text-align: center; /* Ensures the text is centered */
+    vertical-align: -0.1em; /* Adjusts alignment to match surrounding text */
+}

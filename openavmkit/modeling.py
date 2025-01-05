@@ -65,9 +65,12 @@ class PredictionResults:
 		y = df_valid[ind_var].to_numpy()
 		y_pred = df_valid[prediction_field].to_numpy()
 
-		self.mse = mean_squared_error(y, y_pred)
+		y_clean = y[~pd.isna(y_pred)]
+		y_pred_clean = y_pred[~pd.isna(y_pred)]
+
+		self.mse = mean_squared_error(y_clean, y_pred_clean)
 		self.rmse = np.sqrt(self.mse)
-		self.r2 = 1 - self.mse / np.var(y)
+		self.r2 = 1 - self.mse / np.var(y_clean)
 
 		# Adjusted R2 = 1 – [(1-R2)*(n-1)/(n-k-1)]
 		#
@@ -81,7 +84,7 @@ class PredictionResults:
 		k = len(dep_vars)
 
 		self.adj_r2 = 1 - ((1 - self.r2)*(n-1)/(n-k-1))
-		self.ratio_study = RatioStudy(y_pred, y)
+		self.ratio_study = RatioStudy(y_pred_clean, y_clean)
 
 class DataSplit:
 	df_sales: pd.DataFrame
@@ -626,17 +629,23 @@ def run_kernel(
 		print(f"--> optimal bandwidth = {kernel_bw}")
 	timing.stop("train")
 
+	if verbose:
+		print(f"--> predicting on test set...")
 	# Predict at original locations:
 	timing.start("predict_test")
-	y_pred_test, _ = kr.fit(X_test)
+	y_pred_test, _ = kr.fit(X_test, verbose=verbose)
 	timing.stop("predict_test")
 
+	if verbose:
+		print(f"--> predicting on sales set...")
 	timing.start("predict_sales")
-	y_pred_sales, _ = kr.fit(X_sales)
+	y_pred_sales, _ = kr.fit(X_sales, verbose=verbose)
 	timing.stop("predict_sales")
 
+	if verbose:
+		print(f"--> predicting on full set...")
 	timing.start("predict_full")
-	y_pred_univ, _ = kr.fit(X_univ)
+	y_pred_univ, _ = kr.fit(X_univ, verbose=verbose)
 	timing.stop("predict_full")
 
 	timing.stop("total")
@@ -1321,8 +1330,6 @@ def run_average(
 
 	df = ds.df_universe
 	ind_var = ds.ind_var
-	ind_var_test = ds.ind_var_test
-	dep_vars = ds.dep_vars
 
 	if sales_chase:
 		y_pred_test = ds.y_test * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_test))
@@ -1433,8 +1440,6 @@ def run_naive_sqft(
 
 	df = ds.df_universe
 	ind_var = ds.ind_var
-	ind_var_test = ds.ind_var_test
-	dep_vars = ds.dep_vars
 
 	if sales_chase:
 		y_pred_test = ds.y_test * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_test))
@@ -1442,6 +1447,239 @@ def run_naive_sqft(
 		y_pred_univ = _sales_chase_univ(df, ind_var, y_pred_univ) * np.random.choice([1-sales_chase, 1+sales_chase], len(y_pred_univ))
 
 	name = "naive_sqft"
+	if sales_chase:
+		name += "*"
+
+	results = SingleModelResults(
+		ds,
+		"prediction",
+		"he_id",
+		name,
+		None,
+		y_pred_test,
+		y_pred_sales,
+		y_pred_univ,
+		timing
+	)
+
+	return results
+
+
+def run_local_sqft(
+		ds: DataSplit,
+		location_fields: list[str],
+		sales_chase: float = 0.0,
+		verbose: bool = False
+):
+	"""
+	Runs a model that simply predicts the median $/sqft of the training set on a per-location basis
+	:param ds: The data split object containing processed input data
+	:param type: The type of average to use ("mean" or "median")
+	:param sales_chase: If not 0, simulate sales chasing by predicting the sales set as the test set, with this much noise
+	:param verbose: Whether to print verbose output
+	:return: The model results
+	"""
+	timing = TimingData()
+
+	timing.start("total")
+
+	timing.start("parameter_search")
+	timing.stop("parameter_search")
+
+	timing.start("setup")
+	ds.split()
+	timing.stop("setup")
+
+	timing.start("train")
+
+	X_train = ds.X_train
+
+	# filter out vacant land where bldg_area_finished_sqft is zero:
+	X_train_improved = X_train[X_train["bldg_area_finished_sqft"].gt(0)]
+
+	# filter out improved land where bldg_area_finished_sqft is > zero:
+	X_train_vacant = X_train[X_train["bldg_area_finished_sqft"].eq(0)]
+
+	# our aim is to construct a dataframe which will contain the local $/sqft values for each individual location value,
+	# for multiple location fields. We will then use this to calculate final values for every permutation, and merge
+	# that onto our main dataframe to assign $/sqft values from which to generate our final predictions
+
+	loc_map = {}
+
+	for location_field in location_fields:
+
+		data_sqft_land = {}
+		data_sqft_impr = {}
+
+		if location_field not in ds.df_train:
+			print(f"Location field {location_field} not found in dataset")
+			continue
+
+		data_sqft_land[location_field] = []
+		data_sqft_land[f"{location_field}_per_land_sqft"] = []
+
+		data_sqft_impr[location_field] = []
+		data_sqft_impr[f"{location_field}_per_impr_sqft"] = []
+
+		# for every specific location, calculate the local median $/sqft for improved & vacant property
+		for loc in ds.df_train[location_field].unique():
+			y_train_loc = ds.y_train[ds.df_train[location_field].eq(loc)]
+			X_train_loc = ds.X_train[ds.df_train[location_field].eq(loc)]
+
+			X_train_loc_improved = X_train_loc[X_train_loc["bldg_area_finished_sqft"].gt(0)]
+			X_train_loc_vacant = X_train_loc[X_train_loc["bldg_area_finished_sqft"].eq(0)]
+
+			local_per_impr_sqft = (y_train_loc / X_train_loc_improved["bldg_area_finished_sqft"]).median()
+			local_per_land_sqft = (y_train_loc / X_train_loc_vacant["land_area_sqft"]).median()
+
+			# some values will be null so replace them with zeros
+			if pd.isna(local_per_impr_sqft):
+				local_per_impr_sqft = 0
+			if pd.isna(local_per_land_sqft):
+				local_per_land_sqft = 0
+
+			data_sqft_impr[location_field].append(loc)
+			data_sqft_land[location_field].append(loc)
+
+			data_sqft_impr[f"{location_field}_per_impr_sqft"].append(local_per_impr_sqft)
+			data_sqft_land[f"{location_field}_per_land_sqft"].append(local_per_land_sqft)
+
+		for key in data_sqft_impr:
+			print(f"--> {key}: {len(data_sqft_impr[key])}")
+
+		# create dataframes from the calculated values
+		df_sqft_impr = pd.DataFrame(data=data_sqft_impr)
+		df_sqft_land = pd.DataFrame(data=data_sqft_land)
+
+		loc_map[location_field] = (df_sqft_impr, df_sqft_land)
+
+	# intent is to create a primary-keyed dataframe that we can fill with the appropriate local $/sqft value
+	# we will merge this in to the main dataframes, then mult. local size by local $/sqft value to predict
+	df_land = ds.df_universe[["key"] + location_fields].copy()
+	df_impr = ds.df_universe[["key"] + location_fields].copy()
+
+	# start with zero
+	df_land["per_land_sqft"] = 0
+	df_impr["per_impr_sqft"] = 0
+
+	# go from most specific to the least specific location (first to last)
+	for location_field in location_fields:
+		df_sqft_impr, df_sqft_land = loc_map[location_field]
+		df_impr = df_impr.merge(df_sqft_impr[[location_field, f"{location_field}_per_impr_sqft"]], on=location_field, how="left")
+		df_land = df_land.merge(df_sqft_land[[location_field, f"{location_field}_per_land_sqft"]], on=location_field, how="left")
+
+		df_impr.loc[df_impr["per_impr_sqft"].eq(0), "per_impr_sqft"] = df_impr[f"{location_field}_per_impr_sqft"]
+		df_land.loc[df_land["per_land_sqft"].eq(0), "per_land_sqft"] = df_land[f"{location_field}_per_land_sqft"]
+
+	# calculate the median overall values
+	overall_per_impr_sqft = (ds.y_train / X_train_improved["bldg_area_finished_sqft"]).median()
+	overall_per_land_sqft = (ds.y_train / X_train_vacant["land_area_sqft"]).median()
+
+	# any remaining zeroes get filled with the locality-wide median value
+	df_impr.loc[df_impr["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
+	df_land.loc[df_land["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
+
+	timing.stop("train")
+	if verbose:
+		print("Tuning Naive Sqft: searching for optimal parameters...")
+		print(f"--> optimal improved $/finished sqft (overall) = {overall_per_impr_sqft:0.2f}")
+		print(f"--> local:")
+		display(df_impr)
+		print("")
+		print(f"--> optimal vacant   $/land     sqft (overall) = {overall_per_land_sqft:0.2f}")
+		print(f"--> local:")
+		display(df_land)
+
+	timing.start("predict_test")
+	X_test = ds.X_test
+
+	pd.set_option('display.max_columns', None)
+	if verbose:
+		print("LOOKIT")
+		display(df_impr)
+		display(df_land)
+
+	df_impr = df_impr[["key", "per_impr_sqft"]]
+	df_land = df_land[["key", "per_land_sqft"]]
+
+	# merge the df_sqft_land/impr values into the X_test dataframe:
+	X_test["key"] = ds.df_test["key"]
+	X_test = X_test.merge(df_land, on="key", how="left")
+	X_test = X_test.merge(df_impr, on="key", how="left")
+	X_test.loc[X_test["per_impr_sqft"].isna() | X_test["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
+	X_test.loc[X_test["per_land_sqft"].isna() | X_test["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
+	X_test = X_test.drop(columns=["key"])
+
+	X_test_improved = X_test[X_test["bldg_area_finished_sqft"].gt(0)]
+	X_test_vacant = X_test[X_test["bldg_area_finished_sqft"].eq(0)]
+	X_test["prediction_impr"] = X_test_improved["bldg_area_finished_sqft"] * X_test_improved["per_impr_sqft"]
+	X_test["prediction_land"] = X_test_vacant["land_area_sqft"] * X_test_vacant["per_land_sqft"]
+	X_test["prediction"] = np.where(X_test["bldg_area_finished_sqft"].gt(0), X_test["prediction_impr"], X_test["prediction_land"])
+
+	y_pred_test = X_test["prediction"].to_numpy()
+	# TODO: later, don't drop these columns, use them to predict land value everywhere
+	X_test.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_sqft"], inplace=True)
+	timing.stop("predict_test")
+
+	timing.start("predict_sales")
+	X_sales = ds.X_sales
+
+	if verbose:
+		print("df_land/df_impr:")
+		display(df_land)
+		print("")
+		display(df_impr)
+
+	# merge the df_sqft_land/impr values into the X_sales dataframe:
+	X_sales["key"] = ds.df_sales["key"]
+	X_sales = X_sales.merge(df_land, on="key", how="left")
+	X_sales = X_sales.merge(df_impr, on="key", how="left")
+	X_sales.loc[X_sales["per_impr_sqft"].isna() | X_sales["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
+	X_sales.loc[X_sales["per_land_sqft"].isna() | X_sales["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
+	X_sales = X_sales.drop(columns=["key"])
+
+	X_sales_improved = X_sales[X_sales["bldg_area_finished_sqft"].gt(0)]
+	X_sales_vacant = X_sales[X_sales["bldg_area_finished_sqft"].eq(0)]
+	X_sales["prediction_impr"] = X_sales_improved["bldg_area_finished_sqft"] * X_sales_improved["per_impr_sqft"]
+	X_sales["prediction_land"] = X_sales_vacant["land_area_sqft"] * X_sales_vacant["per_land_sqft"]
+	X_sales["prediction"] = np.where(X_sales["bldg_area_finished_sqft"].gt(0), X_sales["prediction_impr"], X_sales["prediction_land"])
+	y_pred_sales = X_sales["prediction"].to_numpy()
+	X_sales.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_sqft"], inplace=True)
+	timing.stop("predict_sales")
+
+	timing.start("predict_full")
+	X_univ = ds.X_univ
+
+	# merge the df_sqft_land/impr values into the X_univ dataframe:
+	X_univ["key"] = ds.df_universe["key"]
+	X_univ = X_univ.merge(df_land, on="key", how="left")
+	X_univ = X_univ.merge(df_impr, on="key", how="left")
+	X_univ.loc[X_univ["per_impr_sqft"].isna() | X_univ["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
+	X_univ.loc[X_univ["per_land_sqft"].isna() | X_univ["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
+	X_univ = X_univ.drop(columns=["key"])
+
+	X_univ_improved = X_univ[X_univ["bldg_area_finished_sqft"].gt(0)]
+	X_univ_vacant = X_univ[X_univ["bldg_area_finished_sqft"].eq(0)]
+	X_univ["prediction_impr"] = X_univ_improved["bldg_area_finished_sqft"] * X_univ_improved["per_impr_sqft"]
+	X_univ["prediction_land"] = X_univ_vacant["land_area_sqft"] * X_univ_vacant["per_land_sqft"]
+	X_univ.loc[X_univ["prediction_impr"].isna() | X_univ["prediction_impr"].eq(0)] = overall_per_impr_sqft
+	X_univ.loc[X_univ["prediction_land"].isna() | X_univ["prediction_land"].eq(0)] = overall_per_land_sqft
+	X_univ["prediction"] = np.where(X_univ["bldg_area_finished_sqft"].gt(0), X_univ["prediction_impr"], X_univ["prediction_land"])
+	y_pred_univ = X_univ["prediction"].to_numpy()
+	X_univ.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_sqft"], inplace=True)
+	timing.stop("predict_full")
+
+	timing.stop("total")
+
+	df = ds.df_universe
+	ind_var = ds.ind_var
+
+	if sales_chase:
+		y_pred_test = ds.y_test * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_test))
+		y_pred_sales = ds.y_sales * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_sales))
+		y_pred_univ = _sales_chase_univ(df, ind_var, y_pred_univ) * np.random.choice([1-sales_chase, 1+sales_chase], len(y_pred_univ))
+
+	name = "local_sqft"
 	if sales_chase:
 		name += "*"
 

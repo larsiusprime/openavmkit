@@ -3,25 +3,46 @@ import os
 import pandas as pd
 from diptest import diptest
 
-from openavmkit.data import get_sales, get_sale_field, get_vacant, get_important_fields, get_locations, get_vacant_sales
+from openavmkit.data import get_sales, get_sale_field, get_vacant, get_important_fields, get_locations, \
+  get_vacant_sales, combine_dfs
 from openavmkit.horizontal_equity_study import HorizontalEquityStudy
+from openavmkit.reports import MarkdownReport, markdown_to_pdf
 from openavmkit.utilities.clustering import make_clusters
 from openavmkit.utilities.data import div_z_safe, div_field_z_safe, rename_dict
 from openavmkit.utilities.excel import write_to_excel
-from openavmkit.utilities.settings import get_fields_categorical, apply_dd_to_df_cols
+from openavmkit.utilities.settings import get_fields_categorical, apply_dd_to_df_cols, get_valuation_date, \
+  get_modeling_group
+
+
+class SalesScrutinyStudySummary:
+  num_sales_flagged: int
+  num_sales_total: int
+  num_sales_total: int
+  num_flagged_sales_by_type: dict[str : int]
+
+  def __init__(self):
+    self.num_sales_flagged = 0
+    self.num_sales_total = 0
+    self.num_flagged_sales_by_type = {}
 
 
 class SalesScrutinyStudy:
   df_vacant: pd.DataFrame
   df_improved: pd.DataFrame
   settings: dict
+  model_group: str
+  summaries: dict[str, SalesScrutinyStudySummary]
 
   def __init__(
     self,
     df: pd.DataFrame,
-    settings: dict
+    settings: dict,
+    model_group: str
   ):
 
+    self.model_group = model_group
+
+    df = df[df["model_group"].eq(model_group)]
     df = get_sales(df, settings)
 
     df_vacant = get_vacant_sales(df, settings)
@@ -35,6 +56,10 @@ class SalesScrutinyStudy:
     sale_field = get_sale_field(settings)
     important_fields = get_important_fields(settings, df)
     location_fields = get_locations(settings, df)
+    self.summaries = {
+      "i": SalesScrutinyStudySummary(),
+      "v": SalesScrutinyStudySummary()
+    }
 
     for key in stuff:
       df = stuff[key]
@@ -62,6 +87,16 @@ class SalesScrutinyStudy:
       df = calc_sales_scrutiny(df, sale_field_per)
       df = df.merge(df_cluster_fields, on="key", how="left")
 
+      total_anomalies = 0
+      for i in range(1, 6):
+        field = f"anomaly_{i}"
+        count_anomaly = len(df[df[field].eq(True)])
+        total_anomalies += count_anomaly
+        self.summaries[key].num_flagged_sales_by_type[field] = count_anomaly
+
+      self.summaries[key].num_sales_flagged = len(df[df["flagged"].eq(True)])
+      self.summaries[key].num_sales_total = len(df)
+
       stuff[key] = df
 
     self.df_vacant = stuff["v"]
@@ -85,11 +120,18 @@ class SalesScrutinyStudy:
     keys_flagged = list(dict.fromkeys(keys_flagged))
 
     df.loc[df["key"].isin(keys_flagged), "valid_sale"] = 0
+
+    # merge ss_id into df:
+    df = combine_dfs(df, df_v[["key", "ss_id"]])
+    df = combine_dfs(df, df_i[["key", "ss_id"]])
+
     return df
 
 
   def _write(self, path: str, is_vacant: bool):
     os.makedirs(f"{path}/sales_scrutiny", exist_ok=True)
+
+    root_path = path
 
     if is_vacant:
       df = self.df_vacant
@@ -155,6 +197,50 @@ class SalesScrutinyStudy:
         "conditions": column_conditions
       }
     })
+
+    key = "v" if is_vacant else "i"
+    self._write_report(root_path, key=key)
+
+
+  def _write_report(self, path: str, key: str):
+    report = MarkdownReport("sales_scrutiny")
+    locality = self.settings.get("locality", {}).get("name")
+    val_date = get_valuation_date(self.settings)
+    val_date = val_date.strftime("%Y-%m-%d")
+
+    model_group = get_modeling_group(self.settings, self.model_group)
+    model_group_name = model_group.get("name", model_group)
+
+    report.set_var("locality", locality)
+    report.set_var("val_date", val_date)
+    report.set_var("model_group", model_group_name)
+
+    summary = self.summaries.get(key)
+
+    num_sales_total = summary.num_sales_total
+    num_sales_flagged = summary.num_sales_flagged
+
+    for i in range(1, 6):
+      field = f"anomaly_{i}"
+      count = summary.num_flagged_sales_by_type.get(field, 0)
+      percent = count / num_sales_total
+      report.set_var(f"num_sales_flagged_type_{i}", f"{count:0,.0f}")
+      report.set_var(f"pct_sales_flagged_type_{i}", f"{percent:0.2%}")
+
+    pct_sales_flagged = num_sales_flagged / num_sales_total
+    report.set_var("num_sales_flagged", f"{num_sales_flagged:0,.0f}")
+    report.set_var("num_sales_total", f"{num_sales_total:0,.0f}")
+    report.set_var("pct_sales_flagged", f"{pct_sales_flagged:0.2%}")
+
+    report_text = report.render()
+
+    vacant_type = "vacant" if key == "v" else "improved"
+
+    with open(f"{path}/reports/sales_scrutiny_{vacant_type}.md", "w", encoding="utf-8") as f:
+      f.write(report_text)
+
+    pdf_path = f"{path}/reports/sales_scrutiny_{vacant_type}.pdf"
+    markdown_to_pdf(report_text, pdf_path, css_file="sales_scrutiny")
 
 
 def _get_ss_renames():
@@ -228,7 +314,6 @@ def calc_sales_scrutiny(df_in: pd.DataFrame, sales_field: str):
     "flagged"] = True
 
     # Check for the five anomalies:
-
     df = _check_for_anomalies(df, df_in, sales_field)
 
     df["bimodal"] = False
@@ -319,6 +404,7 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
   df_price = _apply_he_stats(df_sales, "ss_id", price)
 
   df_fl = df[df["flagged"].eq(True)]
+
   df_sqft_fl = df_sqft[df_sqft["key"].isin(df_fl["key"].values)]
   df_price_fl = df_price[df_sqft["key"].isin(df_fl["key"].values)]
 
@@ -340,8 +426,8 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
   idx_price_not_low = df["key"].isin(df_price_fl[idx_price_not_low]["key"].values)
   idx_price_not_high = df["key"].isin(df_price_fl[idx_price_not_high]["key"].values)
 
-  idx_sqft_low = df_sqft_fl["relative_ratio"].le(1.0)
-  idx_sqft_high = df_sqft_fl["relative_ratio"].ge(1.0)
+  idx_sqft_low = df_sqft_fl["med_dist_stdevs"].le(-2.0)
+  idx_sqft_high = df_sqft_fl["med_dist_stdevs"].ge(2.0)
 
   idx_sqft_low = df["key"].isin(df_sqft_fl[idx_sqft_low]["key"].values)
   idx_sqft_high = df["key"].isin(df_sqft_fl[idx_sqft_high]["key"].values)
@@ -361,14 +447,10 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
   idx_price_sqft_not_low = df_fl["med_dist_stdevs"].ge(-1.0)
   idx_price_sqft_not_high = df_fl["med_dist_stdevs"].le(1.0)
 
-  idx_price_sqft_not_low = df["key"].isin(df_fl[idx_price_sqft_not_low]["key"].values)
-  idx_price_sqft_not_high = df["key"].isin(df_fl[idx_price_sqft_not_high]["key"].values)
-
   # Check for the five anomalies:
 
-  # 1. Price in range, price/sqft is high or low, sqft is high or low:
+  # 1. Price/sqft is high or low, sqft is high or low:
   df.loc[
-    (idx_price_not_low & idx_price_not_high) &
     (idx_price_sqft_low | idx_price_sqft_high) &
     (idx_sqft_low | idx_sqft_high),
   "anomaly_1"] = True
@@ -402,10 +484,18 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
   "anomaly_5"] = True
 
   df_out = df_in.copy()
+  df_out["anomalies"] = 0
   for i in range(1, 6):
     field = f"anomaly_{i}"
     df_out[field] = False
     df_out[field] = df[field]
+    df_out["anomalies"] = df_out["anomalies"] + df[field].fillna(0).astype("Int64")
+
+  df_out.loc[
+    df_out["anomalies"].le(0),
+    "flagged"] = False
+
+  df_out.drop(columns=["anomalies"], inplace=True)
 
   return df_out
 
