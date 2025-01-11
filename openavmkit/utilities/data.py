@@ -55,7 +55,7 @@ def div_z_safe(df: pd.DataFrame, numerator: str, denominator: str):
 
 
 # Function to manually build Markdown
-def dataframe_to_markdown(df):
+def dataframe_to_markdown(df: pd.DataFrame):
 	# Create the header
 	header = "| " + " | ".join(df.columns) + " |"
 	separator = "| " + " | ".join(["---"] * len(df.columns)) + " |"

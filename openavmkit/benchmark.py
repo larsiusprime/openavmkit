@@ -13,6 +13,7 @@ from openavmkit.reports import MarkdownReport, markdown_to_pdf
 from openavmkit.sales_scrutiny_study import SalesScrutinyStudy
 from openavmkit.time_adjustment import apply_time_adjustment, enrich_time_adjustment
 from openavmkit.utilities.data import div_z_safe, dataframe_to_markdown
+from openavmkit.utilities.format import fancy_format
 from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions, get_valuation_date, \
 	get_modeling_group, apply_dd_to_df_rows
 from openavmkit.utilities.stats import calc_vif, calc_vif_recursive_drop, calc_t_values, calc_t_values_recursive_drop, \
@@ -152,25 +153,6 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 	return results
 
 def format_benchmark_df(df: pd.DataFrame):
-
-	def fancy_format(num):
-		if np.isinf(num):
-			if num > 0:
-				return " ∞"
-			else:
-				return "-∞"
-		if pd.isna(num):
-			return "N/A"
-		if num == 0:
-			return '0.00'
-		if num < 1:
-			return '{:.2f}'.format(num)
-		num = float('{:.3g}'.format(num))
-		magnitude = 0
-		while abs(num) >= 1000 and abs(num) > 1e-6:
-			magnitude += 1
-			num /= 1000.0
-		return '{}{}'.format('{:f}'.format(num).rstrip('0').rstrip('.'), ['', 'K', 'M', 'B', 'T'][magnitude])
 
 	formats = {
 		"utility_score": fancy_format,
@@ -405,7 +387,7 @@ def optimize_ensemble(
 	best_list = []
 	best_score = float('inf')
 
-	while len(ensemble_list) > 0:
+	while len(ensemble_list) > 1:
 		df_test_ensemble = df_test[["key"]].copy()
 		df_univ_ensemble = df_univ[["key"]].copy()
 		if len(ensemble_list) == 0:
@@ -469,7 +451,7 @@ def optimize_ensemble(
 					if verbose:
 						print(f"--> kicking score {worst_score:5.0f}, model = {worst_model}")
 
-		if worst_model is not None:
+		if worst_model is not None and len(ensemble_list) > 1:
 			ensemble_list.remove(worst_model)
 
 	if verbose:
@@ -903,9 +885,6 @@ def get_variable_recommendations(
 		report=report
 	)
 
-	pd.set_option('display.max_columns', None)
-	display(df_results)
-
 	curr_variables = df_results["variable"].tolist()
 	best_variables = curr_variables.copy()
 	best_score = float('inf')
@@ -1010,7 +989,6 @@ def generate_variable_report(
 def run_models(
 		df: pd.DataFrame,
 		settings: dict,
-		sales_scrutiny: SalesScrutinyStudy = None,
 		save_params: bool = False,
 		use_saved_params: bool = False,
 		verbose: bool = False

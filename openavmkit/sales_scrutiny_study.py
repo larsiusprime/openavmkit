@@ -3,10 +3,11 @@ import os
 import pandas as pd
 from diptest import diptest
 
-from openavmkit.data import get_sales, get_sale_field, get_vacant, get_important_fields, get_locations, \
+from openavmkit.checkpoint import read_checkpoint, write_checkpoint
+from openavmkit.data import get_sales, get_sale_field, get_important_fields, get_locations, \
   get_vacant_sales, combine_dfs
 from openavmkit.horizontal_equity_study import HorizontalEquityStudy
-from openavmkit.reports import MarkdownReport, markdown_to_pdf
+from openavmkit.reports import MarkdownReport, markdown_to_pdf, start_report, finish_report
 from openavmkit.utilities.clustering import make_clusters
 from openavmkit.utilities.data import div_z_safe, div_field_z_safe, rename_dict
 from openavmkit.utilities.excel import write_to_excel
@@ -102,6 +103,7 @@ class SalesScrutinyStudy:
     self.df_vacant = stuff["v"]
     self.df_improved = stuff["i"]
     self.settings = settings
+
 
   def write(self, path: str):
     self._write(path, True)
@@ -199,21 +201,11 @@ class SalesScrutinyStudy:
     })
 
     key = "v" if is_vacant else "i"
-    self._write_report(root_path, key=key)
+    self._write_report(root_path, key=key, model_group=self.model_group)
 
 
-  def _write_report(self, path: str, key: str):
-    report = MarkdownReport("sales_scrutiny")
-    locality = self.settings.get("locality", {}).get("name")
-    val_date = get_valuation_date(self.settings)
-    val_date = val_date.strftime("%Y-%m-%d")
-
-    model_group = get_modeling_group(self.settings, self.model_group)
-    model_group_name = model_group.get("name", model_group)
-
-    report.set_var("locality", locality)
-    report.set_var("val_date", val_date)
-    report.set_var("model_group", model_group_name)
+  def _write_report(self, path: str, key: str, model_group: str):
+    report = start_report("sales_scrutiny", self.settings, model_group)
 
     summary = self.summaries.get(key)
 
@@ -232,15 +224,10 @@ class SalesScrutinyStudy:
     report.set_var("num_sales_total", f"{num_sales_total:0,.0f}")
     report.set_var("pct_sales_flagged", f"{pct_sales_flagged:0.2%}")
 
-    report_text = report.render()
-
     vacant_type = "vacant" if key == "v" else "improved"
+    outpath = f"{path}/reports/sales_scrutiny_{vacant_type}"
 
-    with open(f"{path}/reports/sales_scrutiny_{vacant_type}.md", "w", encoding="utf-8") as f:
-      f.write(report_text)
-
-    pdf_path = f"{path}/reports/sales_scrutiny_{vacant_type}.pdf"
-    markdown_to_pdf(report_text, pdf_path, css_file="sales_scrutiny")
+    finish_report(report, outpath, "sales_scrutiny")
 
 
 def _get_ss_renames():
@@ -549,3 +536,23 @@ def identify_suspicious_characteristics(df: pd.DataFrame, settings: dict, is_vac
   df_sales.groupby("location")[[sale_field, sale_field_per]].agg(["count", "min", "median", "max", "std"])
 
   # What we are looking for is parcels where the sale_field is in line with the overall area but the sale_field_per is not
+
+
+def clean_sales(df: pd.DataFrame, settings: dict, model_group: str, verbose=False):
+
+  df_clean = read_checkpoint("01_sales_scrutiny")
+  if df_clean is not None:
+    if verbose:
+      print(f"Found checkpoint for sales scrutiny, skipping...")
+    return df_clean
+
+  # run sales validity:
+  ss = SalesScrutinyStudy(df, settings, model_group=model_group)
+  ss.write(f"out")
+
+  # clean sales data:
+  df = ss.get_scrutinized(df)
+
+  write_checkpoint(df, "01_sales_scrutiny")
+
+  return df

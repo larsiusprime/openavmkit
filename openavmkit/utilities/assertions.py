@@ -1,10 +1,16 @@
-def objects_are_equal(a, b):
+import numpy as np
+
+
+def objects_are_equal(a, b, epsilon:float = 1e-6):
 	# ensure that the two objects contain the same information:
 	if isinstance(a, dict) and isinstance(b, dict):
 		return dicts_are_equal(a, b)
 	elif isinstance(a, list) and isinstance(b, list):
 		return lists_are_equal(a, b)
 	else:
+		if isinstance(a, (int, float)) or isinstance(b, (int, float)) or np.isreal(a) or np.isreal(b):
+			# compare floats with epsilon:
+			return abs(a - b) < epsilon
 		# ensure types are the same:
 		if type(a) != type(b):
 			return False

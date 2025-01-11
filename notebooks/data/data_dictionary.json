@@ -1,0 +1,665 @@
+{
+	"key":{
+		"name": "Primary key",
+		"description": "Unique identifier for each record",
+		"type": "string"
+	},
+	"key2":{
+		"name": "Secondary key",
+		"description": "Unique identifier for each record",
+		"type": "string"
+	},
+	"model_group":{
+		"name": "Modeling group",
+		"description": "Properties of different types are separated into different modeling groups for analysis",
+		"type": "string"
+	},
+	"geometry":{
+		"name": "Geometry",
+		"description": "Spatial data",
+		"type": "geometry"
+	},
+	"census_tract":{
+		"name": "Census tract",
+		"type": "string",
+		"groups": ["location"]
+	},
+	"census_block_group":{
+		"name": "Census block group",
+		"type": "string",
+		"groups": ["location"]
+	},
+	"city":{
+		"name": "City",
+		"description": "City",
+		"type": "string",
+		"groups": ["location"]
+	},
+	"zoning":{
+		"name": "Zoning code",
+		"description": "The zoning code itself",
+		"type": "string",
+		"groups": ["land use"]
+	},
+	"zoning_desc":{
+		"name": "Zoning description",
+		"description": "Description of the zoning code",
+		"type": "string",
+		"groups": ["land use"]
+	},
+	"school_district":{
+		"name": "School district",
+		"description": "School district",
+		"type": "string",
+		"groups": ["location"]
+	},
+	"land_area_sqft":{
+		"name": "Land area in square feet",
+		"description": "Land area in square feet",
+		"type": "number",
+		"groups": ["land"]
+	},
+	"land_area_gis_sqft":{
+		"name": "Land area (GIS) in square feet",
+		"description": "Land area in square feet as automatically calculated by GIS",
+		"type": "number",
+		"groups": ["land"]
+	},
+	"land_area_sqft_unaltered":{
+		"name": "Land area (unaltered) in square feet",
+		"description": "Land area in square feet as given by {jurisdiction}",
+		"type": "number",
+		"groups": ["land"]
+	},
+	"delta_land_area_sqft":{
+		"name": "Delta land area in square feet",
+		"description": "Difference between the land area as given by {jurisdiction} and the land area as automatically calculated by GIS",
+		"type": "number",
+		"groups": ["land"]
+	},
+	"percent_delta_land_area_sqft":{
+		"name": "Percent delta land area",
+		"description": "Percent difference between the land area as given by {jurisdiction} and the land area as automatically calculated by GIS",
+		"type": "percent",
+		"groups": ["land"]
+	},
+	"floor_area_ratio":{
+		"name": "Floor area ratio",
+		"description": "Ratio between the total floor area of the building(s) on the parcel and the size of the parcel",
+		"type": "number",
+		"groups": ["land"]
+	},
+	"land_area_delta_from_median_sqft":{
+		"name": "Land area delta from median",
+		"description": "Difference between the land area of the parcel and the median land area in the jurisdiction",
+		"type": "number",
+		"groups": ["land"]
+	},
+	"is_below_buildable_size":{},
+	"min_buildable_size":{},
+	"he_id": {},
+	"rectangularity_num":{
+		"name": "Rectangularity (numeric)",
+		"description": "How rectangular the parcel is, expressed as a numeric value (1.0 is a perfect rectangle)",
+		"type": "number",
+		"groups": ["land"]
+	},
+	"rectangularity_txt":{
+		"name": "Rectangularity (text)",
+		"description": "How rectangular the parcel is, expressed as a text value",
+		"type": "string",
+		"groups": ["land"]
+	},
+	"longitude":{
+		"name": "Longitude",
+		"description": "Longitude",
+		"type": "number",
+		"groups": ["location"]
+	},
+	"latitude":{
+		"name": "Latitude",
+		"description": "Latitude",
+		"type": "number",
+		"groups": ["location"]
+	},
+	"is_triangular":{
+		"name": "Is triangular",
+		"description": "Whether the parcel is triangular in shape",
+		"type": "boolean",
+		"groups": ["land"]
+	},
+	"num_vertices":{
+		"name": "Number of vertices",
+		"description": "Number of vertices in the parcel's simplified polygon",
+		"type": "number",
+		"groups": ["land"]
+	},
+	"is_complex_geometry":{
+		"name": "Is complex geometry",
+		"description": "Whether the parcel has complex geometry",
+		"type": "boolean",
+		"groups": ["land"]
+	},
+	"aspect_ratio":{
+		"name": "Aspect ratio",
+		"description": "Aspect ratio of the parcel (width divided by height)",
+		"type": "number",
+		"groups": ["land"]
+	},
+	"is_elongated":{
+		"name": "Is elongated",
+		"description": "Whether the parcel is elongated",
+		"type": "boolean",
+		"groups": ["land"]
+	},
+	"is_irregular":{
+		"name": "Is irregular",
+		"description": "Whether the parcel is irregular in shape",
+		"type": "boolean",
+		"groups": ["land"]
+	},
+	"dist_to_cbd":{
+		"name": "Distance to central business district",
+		"description": "Distance to the central business district",
+		"type": "number",
+		"groups": ["location"]
+	},
+	"dist_to_airport":{
+		"name": "Distance to airport",
+		"description": "Distance to the nearest airport",
+		"type": "number",
+		"groups": ["location"]
+	},
+	"dist_to_universities":{
+		"name": "Distance to universities",
+		"description": "Distance to the nearest university",
+		"type": "number",
+		"groups": ["location"]
+	},
+	"dist_to_colleges":{
+		"name": "Distance to colleges",
+		"description": "Distance to the nearest college",
+		"type": "number",
+		"groups": ["location"]
+	},
+	"dist_to_greenspace":{
+		"name": "Distance to greenspace",
+		"description": "Distance to the nearest greenspace (e.g., park)",
+		"type": "number",
+		"groups": ["location"]
+	},
+	"address":{
+		"name": "Address",
+		"description": "Street address of the parcel",
+		"type": "string",
+		"groups": ["location"]
+	},
+	"land_class":{
+		"name": "Land class",
+		"description": "Land class",
+		"type": "string",
+		"groups": ["land"]
+	},
+	"bldg_class":{
+		"name": "Building class",
+		"description": "Building class",
+		"type": "string",
+		"groups": ["building"]
+	},
+	"bldg_count":{
+		"name": "Building count",
+		"description": "Number of buildings on the parcel",
+		"type": "number",
+		"groups": ["building"]
+	},
+	"neighborhood":{
+		"name": "Neighborhood",
+		"description": "Neighborhood",
+		"type": "string",
+		"groups": ["location"]
+	},
+	"assr_land_value":{
+		"name": "{jurisdiction} land value",
+		"description": "{jurisdiction} land value",
+		"type": "number",
+		"groups": ["valuation"]
+	},
+	"assr_impr_value":{
+		"name": "{jurisdiction} improvement value",
+		"description": "{jurisdiction} improvement value",
+		"type": "number",
+		"groups": ["valuation"]
+	},
+	"assr_market_value":{
+		"name": "{jurisdiction} market value",
+		"description": "{jurisdiction} market value",
+		"type": "number",
+		"groups": ["valuation"]
+	},
+	"assr_land_alloc":{
+		"name": "{jurisdiction} land allocation",
+		"description": "{jurisdiction}'s estimate of what % of the total value of the parcel is due to the land value alone",
+		"type": "percent",
+		"groups": ["valuation"]
+	},
+	"assr_market_value_land_sqft":{
+		"name": "{jurisdiction} market value per land square foot",
+		"description": "{jurisdiction} market value, divided by the size of the parcel",
+		"type": "number",
+		"groups": ["valuation"]
+	},
+	"assr_land_value_land_sqft":{
+		"name": "{jurisdiction} land value per land square foot",
+		"description": "{jurisdiction} land value, divided by the size of the parcel",
+		"type": "number",
+		"groups": ["valuation"]
+	},
+	"assr_market_value_impr_sqft":{},
+	"assr_impr_value_impr_sqft":{},
+	"bldg_desc":{
+		"name": "Building description",
+		"description": "Building description",
+		"type": "string",
+		"groups": ["building"]
+	},
+	"bldg_type":{
+		"name": "Building type",
+		"description": "Building type",
+		"type": "string",
+		"groups": ["building"]
+	},
+	"bldg_units":{
+		"name": "Building units",
+		"description": "Number of units in the building",
+		"type": "number",
+		"groups": ["building"]
+	},
+	"bldg_area_finished_sqft":{
+		"name": "Building area (finished) in square feet",
+		"description": "Building area (finished) in square feet",
+		"type": "number",
+		"groups": ["building"]
+	},
+	"bldg_area_footprint_sqft":{
+		"name": "Building area (footprint) in square feet",
+		"description": "Building area (footprint) in square feet",
+		"type": "number",
+		"groups": ["building"]
+	},
+	"bldg_stories":{
+		"name": "Building stories",
+		"description": "Number of stories in the building",
+		"type": "number",
+		"groups": ["building"]
+	},
+	"bldg_style":{
+		"name": "Building style",
+		"description": "Building style",
+		"type": "string",
+		"groups": ["building"]
+	},
+	"bldg_exterior":{
+		"name": "Building exterior",
+		"description": "Building exterior",
+		"type": "string",
+		"groups": ["building"]
+	},
+	"bldg_heating":{
+		"name": "Building heating",
+		"description": "Building heating",
+		"type": "string",
+		"groups": ["building"]
+	},
+	"bldg_ac":{
+		"name": "Building air conditioning",
+		"description": "Building air conditioning",
+		"type": "string",
+		"groups": ["building"]
+	},
+	"bldg_year_built":{
+		"name": "Building year built",
+		"description": "Building year built",
+		"type": "number",
+		"groups": ["building"]
+	},
+	"bldg_effective_year_built":{
+		"name": "Building effective year built",
+		"description": "Building effective year built",
+		"type": "number",
+		"groups": ["building"]
+	},
+	"bldg_rooms_bed":{
+		"name": "Bedrooms",
+		"description": "Number of bedrooms in the building",
+		"type": "number",
+		"groups": ["building"]
+	},
+	"bldg_rooms_bath": {
+		"name": "Bathrooms",
+		"description": "Number of bathrooms in the building",
+		"type": "number",
+		"groups": ["building"]
+	},
+	"bldg_rooms_bath_full":{
+		"name": "Full baths",
+		"description": "Number of full bathrooms in the building",
+		"type": "number",
+		"groups": ["building"]
+	},
+	"bldg_rooms_bath_half":{
+		"name": "Half baths",
+		"description": "Number of half-bathrooms in the building",
+		"type": "number",
+		"groups": ["building"]
+	},
+	"bldg_foundation":{
+		"name": "Building foundation",
+		"description": "Building foundation",
+		"type": "string",
+		"groups": ["building"]
+	},
+	"total_replacement_value":{},
+	"total_depreciated_value":{},
+	"total_depreciation":{},
+	"percent_depreciation":{},
+	"outbuilding_value":{},
+	"bldg_quality_txt":{
+		"name": "Building quality",
+		"description": "Building quality",
+		"type": "string",
+		"groups": ["building"]
+	},
+	"bldg_quality_num":{
+		"name": "Building quality (numeric)",
+		"description": "Building quality (numeric)",
+		"type": "number",
+		"groups": ["building"]
+	},
+	"bldg_condition_num":{
+		"name": "Building condition (numeric)",
+		"description": "Building condition (numeric)",
+		"type": "number",
+		"groups": ["building"]
+	},
+	"bldg_condition_txt":{
+		"name": "Building condition",
+		"description": "Building condition",
+		"type": "string",
+		"groups": ["building"]
+	},
+	"bldg_age_years":{
+		"name": "Building age (years)",
+		"description": "Building age in years",
+		"type": "number",
+		"groups": ["building"]
+	},
+	"bldg_effective_age_years":{
+		"name": "Building effective age (years)",
+		"description": "Building effective age in years",
+		"type": "number",
+		"groups": ["building"]
+	},
+	"vacant_sale":{
+		"name": "Vacant sale",
+		"description": "Whether the sale was for a vacant parcel",
+		"type": "boolean",
+		"groups": ["sale"]
+	},
+	"elevation_mean":{
+		"name": "Elevation",
+		"description": "Elevation of the parcel",
+		"type": "number",
+		"groups": ["location"]
+	},
+	"elevation_stdev":{
+		"name": "Elevation change",
+		"description": "Change in elevation across the parcel (standard deviation)",
+		"type": "number",
+		"groups": ["location"]
+	},
+	"slope_mean":{
+		"name": "Slope",
+		"description": "Mean slope across the parcel (in degrees)",
+		"type": "number",
+		"groups": ["location"]
+	},
+	"slope_stdev":{
+		"name": "Slope change",
+		"description": "Change in slope across the parcel (standard deviation)",
+		"type": "number",
+		"groups": ["location"]
+	},
+	"noise_mean":{
+		"name": "Noise",
+		"description": "Mean noise level across the parcel (in decibels)",
+		"type": "number",
+		"groups": ["location"]
+	},
+	"noise_max":{
+		"name": "Noise (max)",
+		"description": "Maximum noise level at any pat of the parcel (in decibels)",
+		"type": "number",
+		"groups": ["location"]
+	},
+	"osm_street_name":{
+		"name": "Street name",
+		"description": "Street name (from Open Street Map)",
+		"type": "string",
+		"groups": ["location", "osm"]
+	},
+	"osm_street_speed_limit":{
+		"name": "Street speed limit",
+		"description": "Street speed limit (from Open Street Map)",
+		"type": "number",
+		"groups": ["location", "osm"]
+	},
+	"osm_street_lanes":{
+		"name": "Street lanes",
+		"description": "Number of lanes on the street (from Open Street Map)",
+		"type": "number",
+		"groups": ["location", "osm"]
+	},
+	"osm_street_type":{
+		"name": "Street type",
+		"description": "Street type (from Open Street Map)",
+		"type": "string",
+		"groups": ["location", "osm"]
+	},
+	"osm_corner_lot_type":{
+		"name": "Corner lot type",
+		"description": "Type of corner lot (from Open Street Map)",
+		"type": "string",
+		"groups": ["location", "osm"]
+	},
+	"osm_is_corner_lot":{
+		"name": "Is corner lot",
+		"description": "Whether the parcel is a corner lot (from Open Street Map)",
+		"type": "boolean",
+		"groups": ["location", "osm"]
+	},
+	"osm_corner_lot_street":{
+		"name": "Corner lot street",
+		"description": "Street of the corner lot (from Open Street Map)",
+		"type": "string",
+		"groups": ["location", "osm"]
+	},
+	"osm_is_cul_de_sac":{
+		"name": "Is cul-de-sac",
+		"description": "Whether the parcel is on a cul-de-sac (from Open Street Map)",
+		"type": "boolean",
+		"groups": ["location", "osm"]
+	},
+	"osm_waterfront_name":{
+		"name": "Waterfront name",
+		"description": "Name of the waterfront (from Open Street Map)",
+		"type": "string",
+		"groups": ["location", "osm"]
+	},
+	"osm_is_waterfront":{
+		"name": "Is waterfront",
+		"description": "Whether the parcel is on the waterfront (from Open Street Map)",
+		"type": "boolean",
+		"groups": ["location", "osm"]
+	},
+	"osm_golf_course_name":{
+		"name": "Golf course name",
+		"description": "Name of the golf course (from Open Street Map)",
+		"type": "string",
+		"groups": ["location", "osm"]
+	},
+	"osm_on_golf_course":{
+		"name": "On golf course",
+		"description": "Whether the parcel is on a golf course (from Open Street Map)",
+		"type": "boolean",
+		"groups": ["location", "osm"]
+	},
+	"osm_park_name":{
+		"name": "Park name",
+		"description": "Name of the park (from Open Street Map)",
+		"type": "string",
+		"groups": ["location", "osm"]
+	},
+	"osm_on_park":{
+		"name": "On park",
+		"description": "Whether the parcel is on a park (from Open Street Map)",
+		"type": "boolean",
+		"groups": ["location", "osm"]
+	},
+	"latitude_norm":{
+		"name": "Northerliness",
+		"description": "The percentage of the distance from the southernmost point to the northernmost point in the jurisdiction, with 100% being the northernmost point",
+		"type": "percent",
+		"groups": ["location"]
+	},
+	"longitude_norm":{
+		"name": "Easterliness",
+		"description": "The percentage of the distance from the westernmost point to the easternmost point in the jurisdiction, with 100% being the easternmost point",
+		"type": "percent",
+		"groups": ["location"]
+	},
+	"is_vacant":{
+		"name": "Is vacant",
+		"description": "Whether the parcel is vacant (no building is present)",
+		"type": "boolean",
+		"groups": ["land"]
+	},
+	"potential_vacant_sale":{
+		"name": "Potential vacant sale",
+		"description": "Whether the auto-detector flagged the parcel as potentially vacant at time of sale",
+		"type": "boolean",
+		"groups": ["sale"]
+	},
+	"valid_for_ratio_study":{
+		"name": "Valid for ratio study",
+		"description": "Whether the parcel is valid for a ratio study (e.g. the sale is valid and the parcel has not changed significantly since the sale)",
+		"type": "boolean",
+		"groups": ["sale"]
+	},
+	"valid_for_land_ratio_study":{
+		"name": "Valid for land ratio study",
+		"description": "Whether the parcel is valid for a land ratio study (e.g. the sale is valid, and only the land value will be used int he study)",
+		"type": "boolean",
+		"groups": ["sale"]
+	},
+	"valid_for_modeling":{
+		"name": "Valid for modeling",
+		"description": "Whether the parcel is valid for modeling (e.g. the sale is valid and we know what the parcel looked like at time of sale)",
+		"type": "boolean",
+		"groups": ["sale"]
+	},
+	"warning_vacant_discrepancy":{
+		"name": "Vacant discrepancy warning",
+		"description": "Whether there is a discrepancy in characteristics indicating whether the parcel is currently vacant or improved",
+		"type": "boolean",
+		"groups": ["land"]
+	},
+	"warning_vacant_positive_year_built":{
+		"name": "Vacant discrepancy: positive year built",
+		"description": "If true, the parcel has a year built (indicating a building), yet the parcel is listed as vacant",
+		"type": "boolean",
+		"groups": ["land"]
+	},
+	"warning_vacant_positive_impr_numeric":{
+		"name": "Vacant discrepancy: numeric improvement",
+		"description": "If true, the parcel has a non-zero improvement value such as finished square feet (indicating a building), yet the parcel is listed as vacant",
+		"type": "boolean",
+		"groups": ["land"]
+	},
+	"warning_vacant_has_impr_categorical":{
+		"name": "Vacant discrepancy: categorical improvement",
+		"description": "If true, the parcel has a non-null improvement description such as building type (indicating a building), yet the parcel is listed as vacant",
+		"type": "boolean",
+		"groups": ["land"]
+	},
+	"sale_price":{
+		"name": "Sale price",
+		"type": "number",
+		"groups": ["sale"]
+	},
+	"sale_price_land_sqft":{
+		"name": "Sale price per land square foot",
+		"description": "Sale price divided by the size of the parcel",
+		"type": "number",
+		"groups": ["sale"]
+	},
+	"sale_price_impr_sqft":{
+		"name": "Sale price per improvement square foot",
+		"description": "Sale price divided by the size of the improvement",
+		"type": "number",
+		"groups": ["sale"]
+	},
+	"sale_price_time_adj":{
+		"name": "Sale price (time adjusted)",
+		"description": "Sale price adjusted for property inflation, as of the valuation date",
+		"type": "number",
+		"groups": ["sale"]
+	},
+	"sale_price_time_adj_land_sqft":{
+		"name": "Sale price (time adjusted) per land square foot",
+		"description": "Time-adjusted sale price divided by the size of the parcel",
+		"type": "number",
+		"groups": ["sale"]
+	},
+	"sale_price_time_adj_impr_sqft":{
+		"name": "Sale price (time adjusted) per improvement square foot",
+		"description": "Time-adjusted sale price divided by the size of the improvement",
+		"type": "number",
+		"groups": ["sale"]
+	},
+	"sale_date":{
+		"name": "Sale date",
+		"description": "Date of sale",
+		"type": "date",
+		"groups": ["sale"]
+	},
+	"sale_age_days":{
+		"name": "Sale age (days)",
+		"description": "Number of days that have transpired between the date of sale and the valuation date",
+		"type": "number",
+		"groups": ["sale"]
+	},
+	"sale_year":{
+		"name": "Sale year",
+		"description": "Year of sale",
+		"type": "number",
+		"groups": ["sale"]
+	},
+	"sale_month":{
+		"name": "Sale month",
+		"description": "Month of sale",
+		"type": "number",
+		"groups": ["sale"]
+	},
+	"sale_day":{
+		"name": "Sale day",
+		"description": "Day of sale",
+		"type": "number",
+		"groups": ["sale"]
+	},
+	"valid_sale":{
+		"name": "Valid sale",
+		"description": "Whether the sale is valid",
+		"type": "boolean",
+		"groups": ["sale"]
+	}
+}
