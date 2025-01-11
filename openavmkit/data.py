@@ -2,7 +2,8 @@ import pandas as pd
 import geopandas as gpd
 from pandas import Series
 
-from openavmkit.utilities.settings import get_fields_categorical, get_fields_land, get_fields_impr
+from openavmkit.utilities.settings import get_fields_categorical, get_fields_land, get_fields_impr, get_fields_boolean, \
+	get_fields_numeric
 
 
 def enrich_time(df: pd.DataFrame) -> pd.DataFrame:
@@ -56,7 +57,7 @@ def get_sale_field(settings: dict) -> str:
 
 def get_vacant_sales(df_in: pd.DataFrame, settings: dict, invert:bool = False) -> pd.DataFrame:
 	df = df_in.copy()
-	df = boolify_column(df, "vacant_sale")
+	df = boolify_column_in_df(df, "vacant_sale")
 	idx_vacant_sale = df["vacant_sale"].eq(True)
 	if invert:
 		idx_vacant_sale = ~idx_vacant_sale
@@ -73,7 +74,7 @@ def get_vacant(df_in: pd.DataFrame, settings: dict, invert:bool = False) -> pd.D
 		df["is_vacant"] = df["is_vacant"].replace(["true", "t", "1"], True)
 		df["is_vacant"] = df["is_vacant"].replace(["false", "f", "0"], False)
 
-	df = boolify_column(df, "is_vacant")
+	df = boolify_column_in_df(df, "is_vacant")
 
 	idx_vacant = df["is_vacant"].eq(True)
 	if invert:
@@ -85,11 +86,11 @@ def get_vacant(df_in: pd.DataFrame, settings: dict, invert:bool = False) -> pd.D
 def get_sales(df_in: pd.DataFrame, settings: dict) -> pd.DataFrame:
 
 	df = df_in.copy()
-	df = boolify_column(df, "valid_sale")
+	df = boolify_column_in_df(df, "valid_sale")
 
 	if "vacant_sale" in df:
 		# check for vacant sales:
-		df = boolify_column(df, "vacant_sale")
+		df = boolify_column_in_df(df, "vacant_sale")
 		idx_vacant_sale = df["vacant_sale"].eq(True)
 		df = simulate_removed_buildings(df, idx_vacant_sale, settings)
 
@@ -108,12 +109,20 @@ def get_sales(df_in: pd.DataFrame, settings: dict) -> pd.DataFrame:
 	return df_sales
 
 
-def boolify_column(df: pd.DataFrame, field: str):
-	if df[field].dtype in ["object", "string", "str"]:
-		df[field] = df[field].str.lower().str.strip()
-		df[field] = df[field].replace(["true", "t", "1"], True)
-		df[field] = df[field].replace(["false", "f", "0"], False)
-	df[field] = df[field].astype(bool)
+def boolify_series(series: pd.Series):
+	if series.dtype in ["object", "string", "str"]:
+		series = series.str.lower().str.strip()
+		series = series.replace(["true", "t", "1"], 1)
+		series = series.replace(["false", "f", "0"], 0)
+	series = series.fillna(0)
+	series = series.astype(bool)
+	return series
+
+
+def boolify_column_in_df(df: pd.DataFrame, field: str):
+	series = df[field]
+	series = boolify_series(series)
+	df[field] = series
 	return df
 
 
@@ -149,6 +158,21 @@ def get_important_field(settings: dict, field_name: str, df: pd.DataFrame = None
 	return other_name
 
 
+def get_dtypes_from_settings(settings: dict):
+	cats = get_fields_categorical(settings, include_boolean=False)
+	bools = get_fields_boolean(settings)
+	nums = get_fields_numeric(settings, include_boolean=False)
+	dtypes = {}
+	for c in cats:
+		dtypes[c] = "string"
+	for b in bools:
+		dtypes[b] = "bool"
+	for n in nums:
+		dtypes[n] = "Float64"
+	return dtypes
+
+
+
 def load_data(settings: dict) -> pd.DataFrame:
 		"""
 		Load the data from the settings.
@@ -156,23 +180,45 @@ def load_data(settings: dict) -> pd.DataFrame:
 		s_data = settings.get("data", {})
 		s_load = s_data.get("load", {})
 		dataframes = []
+
+		dtype_map = get_dtypes_from_settings(settings)
+
+		fields_cat = get_fields_categorical(settings, include_boolean=False)
+		fields_bool = get_fields_boolean(settings)
+		fields_num = get_fields_numeric(settings, include_boolean=False)
+
 		for key in s_load:
 			entry = s_load[key]
 			filename = entry.get("filename", None)
 			if filename is None:
 				continue
 			ext = filename.split(".")[-1]
+
+			df: pd.DataFrame = None
+
 			if ext == "parquet":
 				try:
 					df = gpd.read_parquet(filename)
 				except ValueError as e:
 					df = pd.read_parquet(filename)
-				dataframes.append(df)
 			elif ext == "csv":
-				# TODO: process dtypes
-				df = pd.read_csv(filename)
-				dataframes.append(df)
+				df = pd.read_csv(filename, dtype=dtype_map)
+			else:
+				raise ValueError(f"Unsupported file extension: {ext}")
+
+			# Fix up the types appropriately
+			for col in df.columns:
+				if col in fields_cat:
+					df[col] = df[col].astype("string")
+				elif col in fields_bool:
+					df[col] = boolify_series(df[col])
+				elif col in fields_num:
+					df[col] = df[col].astype("Float64")
+
+			dataframes.append(df)
+
 		df = merge_list_of_dfs(dataframes, settings)
+
 		return df
 
 

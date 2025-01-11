@@ -1,9 +1,11 @@
 import calendar
+import os
 from datetime import timedelta, datetime
 
 import numpy as np
 import pandas as pd
 
+from openavmkit.checkpoint import read_checkpoint, write_checkpoint
 from openavmkit.data import get_sales
 from openavmkit.utilities.data import div_z_safe
 
@@ -339,6 +341,12 @@ def enrich_time_adjustment(
     settings: dict,
     verbose: bool = False
 ):
+  df_check = read_checkpoint("02_time_adjustment")
+  if df_check is not None:
+    if verbose:
+      print(f"Time adjustment already exists, skipping...")
+    return df_check
+
   # Gather settings
   s = settings
   s_model = s.get("modeling", {})
@@ -354,4 +362,5 @@ def enrich_time_adjustment(
     period = s_inst.get("time_adjustment", {}).get("period", "Q")
     df = apply_time_adjustment(df.copy(), settings, period=period, verbose=verbose)
 
+  write_checkpoint(df, "02_time_adjustment")
   return df

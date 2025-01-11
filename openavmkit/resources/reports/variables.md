@@ -1,8 +1,10 @@
 # Variables that drive value
 
-Locality: {{{locality}}}  
-Valuation date: {{{val_date}}}  
-Modeling group: {{{modeling_group}}}
+|  |  |
+|--|--|
+| Locality | {{{locality}}} |  
+| Valuation date | {{{val_date}}} |  
+| Modeling group | {{{modeling_group}}} |
 
 ## Executive Summary
 

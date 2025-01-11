@@ -52,13 +52,29 @@ def quick_median_chd(df: pl.DataFrame, field_value: str, field_cluster: str) -> 
 
 
 def calc_cod(values: np.ndarray) -> float:
+	if len(values) == 0:
+		return float('nan')
 	median_value = np.median(values)
 	abs_delta_values = np.abs(values - median_value)
-	sum_deltas = np.sum(abs_delta_values)
-	avg_abs_deviation = sum_deltas / len(values)
+	avg_abs_deviation = np.sum(abs_delta_values) / len(values)
 	cod = avg_abs_deviation / median_value
 	cod *= 100
 	return cod
+
+
+def calc_cod_bootstrap(values: np.ndarray, confidence_interval=0.95, iterations=10000, seed=777) -> (float, float, float):
+	n = len(values)
+	if n == 0:
+		return float('nan'), float('nan'), float('nan')
+	np.random.seed(seed)
+	median = np.median(values)
+	samples = np.random.choice(values, size=(iterations, n), replace=True)
+	abs_delta_values = np.abs(samples - median)
+	bootstrap_cods = np.mean(abs_delta_values, axis=1) / median * 100
+	alpha = (1.0 - confidence_interval) / 2
+	lower_bound, upper_bound = np.quantile(bootstrap_cods, [alpha, 1.0 - alpha])
+	median_cod = np.median(bootstrap_cods)
+	return median_cod, lower_bound, upper_bound
 
 
 def calc_prd(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
@@ -69,13 +85,29 @@ def calc_prd(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
 	return prd
 
 
+def calc_prd_bootstrap(predictions: np.ndarray, ground_truth: np.ndarray, confidence_interval=0.95, iterations=10000, seed=777) -> (float, float, float):
+	np.random.seed(seed)
+	n = len(predictions)
+	ratios = predictions / ground_truth
+	samples = np.random.choice(ratios, size=(iterations, n), replace=True)
+	mean_ratios = np.mean(samples, axis=1)
+	weighted_mean_ratios = np.sum(predictions) / np.sum(ground_truth)
+	prds = mean_ratios / weighted_mean_ratios
+	alpha = (1.0 - confidence_interval) / 2
+	lower_bound, upper_bound = np.quantile(prds, [alpha, 1.0 - alpha])
+	median_prd = np.median(prds)
+	return lower_bound, median_prd, upper_bound
+
+
 def trim_outliers(values: np.ndarray, lower_quantile: float = 0.25, upper_quantile: float = 0.75) -> np.ndarray:
+	if len(values) == 0:
+		return values
 	lower_bound = np.quantile(values, lower_quantile)
 	upper_bound = np.quantile(values, upper_quantile)
 	return values[(values >= lower_bound) & (values <= upper_bound)]
 
 
-def calc_prb(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
+def calc_prb(predictions: np.ndarray, ground_truth: np.ndarray, confidence_interval: float = 0.95) -> (float, float, float):
 
 	if len(predictions) != len(ground_truth):
 		raise ValueError("predictions and ground_truth must have the same length")
@@ -87,6 +119,10 @@ def calc_prb(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
 	predictions = predictions.copy()
 	ground_truth = ground_truth.copy()
 
+	na_indices = np.where(pd.isna(predictions))
+	predictions = np.delete(predictions, na_indices)
+	ground_truth = np.delete(ground_truth, na_indices)
+
 	zero_indices = np.where(predictions <= 0)
 	predictions = np.delete(predictions, zero_indices)
 	ground_truth = np.delete(ground_truth, zero_indices)
@@ -96,9 +132,12 @@ def calc_prb(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
 	ratios = predictions / ground_truth
 	median_ratio = np.median(ratios)
 
-	left_hand = (ratios - median_ratio) / median_ratio
-	right_hand = np.log2(((predictions / median_ratio) + ground_truth))
-	right_hand = sm.tools.tools.add_constant(right_hand)
+	try:
+		left_hand = (ratios - median_ratio) / median_ratio
+		right_hand = np.log2(((predictions / median_ratio) + ground_truth))
+		right_hand = sm.tools.tools.add_constant(right_hand)
+	except ValueError:
+		return float('nan'), float('nan'), float('nan')
 
 	mra_model = sm.OLS(
 		endog=left_hand,
@@ -106,7 +145,16 @@ def calc_prb(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
 	).fit()
 	prb = mra_model.params[0]
 
-	return prb
+	# get confidence interval from MRA model:
+	conf_int = mra_model.conf_int(alpha=1.0-confidence_interval, cols=None)
+	try:
+		prb_lower = conf_int[0, 0]  # Lower bound for the first parameter
+		prb_upper = conf_int[0, 1]  # Upper bound for the first parameter
+	except IndexError:
+		prb_lower = float('nan')
+		prb_upper = float('nan')
+
+	return prb, prb_lower, prb_upper
 
 
 def plot_correlation(corr: pd.DataFrame, title:str = "Correlation of Variables"):

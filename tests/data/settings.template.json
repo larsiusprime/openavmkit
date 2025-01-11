@@ -6,7 +6,9 @@
 		"clean": {}
 	},
 	"modeling": {
-		"metadata": {},
+		"metadata": {
+			"modeler": "Modeler"
+		},
 		"instructions": {
 			"time_adjustment": {},
 			"feature_selection": {
@@ -39,6 +41,20 @@
 		}
 	},
 	"analysis": {
+		"ratio_study": {
+			"look_back_years": 1,
+			"breakdowns": [
+				{"by": "sale_price", "quantiles": 10},
+				{"by": "bldg_area_finished_sqft", "quantiles": 10},
+				{"by": "bldg_age_years", "slice_size": 10},
+				{"by": "land_area_sqft", "quantiles":  10},
+				{"by": "bldg_quality_txt"},
+				{"by": "bldg_condition_txt"},
+				{"by": "<loc_neighborhood>"},
+				{"by": "<loc_market_area>"},
+				{"by": "<loc_region>"}
+			]
+		},
 		"sales_scrutiny": {
 			"location": "neighborhood",
 			"fields_categorical_improved": [],
@@ -87,7 +103,12 @@
 				"assr_land_value_land_sqft",
 				"predicted_land_value",
 				"predicted_land_value_per_land_sqft",
-				"dist_to_cbd"
+				"dist_to_cbd",
+				"aspect_ratio",
+				"num_vertices",
+				"dist_to_colleges",
+				"dist_to_greenspace",
+				"dist_to_airport"
 			],
 			"categorical": [
 				"land_class",
@@ -133,7 +154,16 @@
 				"bldg_quality_num",
 				"bldg_condition_num",
 				"bldg_age_years",
-				"bldg_effective_age_years"
+				"bldg_effective_age_years",
+				"bldg_units",
+				"bldg_stories",
+				"bldg_year_built",
+				"bldg_effective_year_built",
+				"bldg_year_remodeled",
+				"bldg_rooms_bed",
+				"bldg_rooms_bath",
+				"bld_rooms_bath_full",
+				"bldg_rooms_bath_half"
 			],
 			"categorical": [
 				"bldg_fixtures",

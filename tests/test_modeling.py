@@ -1,10 +1,12 @@
 import os
 
-from openavmkit.benchmark import run_models, get_variable_recommendations
+from openavmkit.benchmark import run_models, get_variable_recommendations, MultiModelResults
 from openavmkit.cleaning import fill_unknown_values_per_model_group
 from openavmkit.data import load_data, enrich_time
 from openavmkit.horizontal_equity_study import make_clusters, mark_horizontal_equity_clusters
-from openavmkit.sales_scrutiny_study import SalesScrutinyStudy
+from openavmkit.modeling import SingleModelResults
+from openavmkit.ratio_study import run_and_write_ratio_study_breakdowns
+from openavmkit.sales_scrutiny_study import SalesScrutinyStudy, clean_sales
 from openavmkit.synthetic_data import generate_basic
 from openavmkit.time_adjustment import enrich_time_adjustment
 from openavmkit.utilities.settings import get_valuation_date, load_settings, get_fields_categorical
@@ -98,22 +100,30 @@ def test_models_guilford():
 	df = enrich_time(df)
 	df = enrich_time_adjustment(df, settings, verbose=True)
 
-	# run sales validity:
-	ss = SalesScrutinyStudy(df, settings, model_group=model_group)
-	ss.write(f"out")
-
-	# clean sales data:
-	df = ss.get_scrutinized(df)
+	df = clean_sales(df, settings, model_group, verbose=True)
 
 	# run the predictive models
-	results = run_models(
+	results : MultiModelResults = run_models(
 		df,
 		settings,
-		sales_scrutiny=ss,
 		verbose=True,
 		save_params=True,
 		use_saved_params=True
 	)
+
+	# run ratio study reports
+	run_and_write_ratio_study_breakdowns(
+		settings,
+		results.model_results["ensemble"].df_sales,
+		model_group,
+		"out",
+		iterations=100
+	)
+
+	df_univ = results.model_results["ensemble"].df_universe
+	df_sales = results.model_results["ensemble"].df_sales
+	df_univ[["key", "model_group", "sale_date", "sale_price", "sale_price_time_adj", "assr_market_value", "prediction"]].to_csv("out/univ.csv")
+	df_sales[["key", "model_group", "sale_date", "sale_price", "sale_price_time_adj", "assr_market_value", "prediction"]].to_csv("out/sales.csv")
 
 	print(results.benchmark.print())
 
