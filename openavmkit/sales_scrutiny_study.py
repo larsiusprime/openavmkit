@@ -7,12 +7,11 @@ from openavmkit.checkpoint import read_checkpoint, write_checkpoint
 from openavmkit.data import get_sales, get_sale_field, get_important_fields, get_locations, \
   get_vacant_sales, combine_dfs
 from openavmkit.horizontal_equity_study import HorizontalEquityStudy
-from openavmkit.reports import MarkdownReport, markdown_to_pdf, start_report, finish_report
+from openavmkit.reports import start_report, finish_report
 from openavmkit.utilities.clustering import make_clusters
-from openavmkit.utilities.data import div_z_safe, div_field_z_safe, rename_dict
+from openavmkit.utilities.data import div_z_safe, div_field_z_safe, rename_dict, do_per_model_group
 from openavmkit.utilities.excel import write_to_excel
-from openavmkit.utilities.settings import get_fields_categorical, apply_dd_to_df_cols, get_valuation_date, \
-  get_modeling_group
+from openavmkit.utilities.settings import get_fields_categorical, apply_dd_to_df_cols
 
 
 class SalesScrutinyStudySummary:
@@ -121,7 +120,7 @@ class SalesScrutinyStudy:
     # ensure unique:
     keys_flagged = list(dict.fromkeys(keys_flagged))
 
-    df.loc[df["key"].isin(keys_flagged), "valid_sale"] = 0
+    df.loc[df["key"].isin(keys_flagged), "valid_sale"] = False
 
     # merge ss_id into df:
     df = combine_dfs(df, df_v[["key", "ss_id"]])
@@ -497,9 +496,10 @@ def _identify_bimodal_clusters(df, sales_field):
 
   for cluster_id, group in df.groupby('ss_id'):
     values = group[sales_field].values
-    dip, p_value = diptest(values)
-    if p_value < 0.05:  # Statistically significant deviation from unimodality
-      bimodal_clusters.append(cluster_id)
+    if len(values) > 3:
+      dip, p_value = diptest(values)
+      if p_value < 0.05:  # Statistically significant deviation from unimodality
+        bimodal_clusters.append(cluster_id)
 
   return bimodal_clusters
 
@@ -538,21 +538,14 @@ def identify_suspicious_characteristics(df: pd.DataFrame, settings: dict, is_vac
   # What we are looking for is parcels where the sale_field is in line with the overall area but the sale_field_per is not
 
 
-def clean_sales(df: pd.DataFrame, settings: dict, model_group: str, verbose=False):
+def run_sales_scrutiny_per_model_group(df_in: pd.DataFrame, settings: dict, verbose=False):
+  return do_per_model_group(df_in, run_sales_scrutiny, {"settings": settings, "verbose": verbose})
 
-  df_clean = read_checkpoint("01_sales_scrutiny")
-  if df_clean is not None:
-    if verbose:
-      print(f"Found checkpoint for sales scrutiny, skipping...")
-    return df_clean
 
+def run_sales_scrutiny(df_in: pd.DataFrame, settings: dict, model_group: str, verbose=False):
   # run sales validity:
-  ss = SalesScrutinyStudy(df, settings, model_group=model_group)
+  ss = SalesScrutinyStudy(df_in, settings, model_group=model_group)
   ss.write(f"out")
 
   # clean sales data:
-  df = ss.get_scrutinized(df)
-
-  write_checkpoint(df, "01_sales_scrutiny")
-
-  return df
+  return ss.get_scrutinized(df_in)

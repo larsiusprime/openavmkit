@@ -7,7 +7,7 @@ import pandas as pd
 
 from openavmkit.checkpoint import read_checkpoint, write_checkpoint
 from openavmkit.data import get_sales
-from openavmkit.utilities.data import div_z_safe
+from openavmkit.utilities.data import div_z_safe, do_per_model_group
 
 
 def _generate_days(start_date: datetime, end_date: datetime):
@@ -139,8 +139,8 @@ def _interpolate_missing_periods(periods_expected, periods_actual, df_median):
   values.interpolate(method="linear", inplace=True, limit_direction="both")
 
   # Fill remaining NaN with closest non-NaN values (cap edges)
-  values.fillna(method="ffill", inplace=True)
-  values.fillna(method="bfill", inplace=True)
+  values.ffill(inplace=True)
+  values.bfill(inplace=True)
 
   # Return as a NumPy array for compatibility
   return values.values
@@ -337,15 +337,11 @@ def apply_time_adjustment(df_sales_in: pd.DataFrame, settings, period: str = "M"
 
 
 def enrich_time_adjustment(
-    df: pd.DataFrame,
+    df_in: pd.DataFrame,
     settings: dict,
     verbose: bool = False
 ):
-  df_check = read_checkpoint("02_time_adjustment")
-  if df_check is not None:
-    if verbose:
-      print(f"Time adjustment already exists, skipping...")
-    return df_check
+  df = df_in.copy()
 
   # Gather settings
   s = settings
@@ -362,5 +358,4 @@ def enrich_time_adjustment(
     period = s_inst.get("time_adjustment", {}).get("period", "Q")
     df = apply_time_adjustment(df.copy(), settings, period=period, verbose=verbose)
 
-  write_checkpoint(df, "02_time_adjustment")
   return df

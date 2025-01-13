@@ -42,7 +42,7 @@ def simulate_removed_buildings(df: pd.DataFrame, idx_vacant: Series, settings: d
 		df.loc[idx_vacant, field] = 0
 
 	for field in fields_impr_bool:
-		df.loc[idx_vacant, field] = 0
+		df.loc[idx_vacant, field] = False
 
 	return df
 
