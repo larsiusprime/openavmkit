@@ -73,8 +73,8 @@ def make_clusters(
           if i % 100 == 0:
             print(f"----> {i}/{len(clusters)}, {i/len(clusters):0.0%} clustering on {cluster}, field = {field}, size = {len(series)}")
         # if we succeeded, update the cluster names with the new breakdowns
-        df_sub["next_cluster"] = df_sub["next_cluster"] + "_" + series.astype(str)
-        df.loc[df["cluster"].eq(cluster), "next_cluster"] = df_sub["next_cluster"]
+        df_sub.loc[:, "next_cluster"] = df_sub["next_cluster"] + "_" + series.astype(str)
+        df.loc[df["cluster"].eq(cluster), "next_cluster"] = df_sub["next_cluster"].values
         fields_used[field] = True
 
       i += 1

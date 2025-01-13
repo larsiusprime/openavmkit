@@ -72,3 +72,15 @@ def rename_dict(dict, renames):
 		new_key = renames.get(key, key)
 		new_dict[new_key] = dict[key]
 	return new_dict
+
+
+def do_per_model_group(df_in:pd.DataFrame, func: callable, params: dict) -> pd.DataFrame:
+	df = df_in.copy()
+	model_groups = df["model_group"].unique()
+	for model_group in model_groups:
+		params["model_group"] = model_group
+		df_sub = df[df["model_group"].eq(model_group)]
+		df_sub = func(df_sub, **params)
+		if df_sub is not None:
+			df.loc[df["model_group"].eq(model_group), :] = df_sub
+	return df

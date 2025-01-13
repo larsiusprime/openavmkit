@@ -1,7 +1,8 @@
 import pandas as pd
 from IPython.core.display_functions import display
 
-from openavmkit.utilities.settings import get_valuation_date, get_fields_categorical
+from openavmkit.utilities.data import do_per_model_group
+from openavmkit.utilities.settings import get_valuation_date, get_fields_categorical, get_fields_boolean
 
 
 def fill_median_impr_field(df, field):
@@ -26,25 +27,7 @@ def fill_median_impr_field(df, field):
 	return df
 
 
-def fill_unknown_values_per_model_group(df, settings: dict):
-	model_groups = df["model_group"].unique()
-	cat_fields = get_fields_categorical(settings, df)
-
-	df_return: pd.DataFrame | None = None
-
-	for model_group in model_groups:
-		df_group = df[df["model_group"].eq(model_group)]
-		df_group = fill_unknown_values(df_group, settings, cat_fields)
-
-		if df_return is None:
-			df_return = df_group
-		else:
-			df_return = pd.concat([df_return, df_group], ignore_index=True)
-
-	return df_return
-
-
-def fill_unknown_values(df, settings: dict, categorical_fields: list[str]=None):
+def fill_unknown_values(df, settings: dict):
 	fills = [
 		"bldg_area_finished_sqft",
 		"bldg_quality_num",
@@ -56,6 +39,9 @@ def fill_unknown_values(df, settings: dict, categorical_fields: list[str]=None):
 		"bldg_quality_num",
 		"bldg_condition_num"
 	]
+
+	cat_fields = get_fields_categorical(settings, df, include_boolean=False)
+	bool_fields = get_fields_boolean(settings, df)
 
 	for fill in fills:
 		if fill in impr_fills:
@@ -71,10 +57,32 @@ def fill_unknown_values(df, settings: dict, categorical_fields: list[str]=None):
 	df["bldg_age_years"] = valuation_year - df["bldg_year_built"]
 	df["bldg_effective_age_years"] = valuation_year - df["bldg_effective_year_built"]
 
-	if categorical_fields is not None:
-		for field in categorical_fields:
+	if cat_fields is not None:
+		for field in cat_fields:
 			df[field] = df[field].astype("str")
 			df[field] = df[field].fillna("UNKNOWN")
 
+	if bool_fields is not None:
+		for field in bool_fields:
+			df[field] = df[field].fillna(False)
+
 	return df
 
+
+def clean_valid_sales(df, settings):
+	# load metadata
+	val_date = get_valuation_date(settings)
+	val_year = val_date.year
+	metadata = settings.get("modeling", {}).get("metadata", {})
+	use_sales_from = metadata.get("use_sales_from", val_year - 5)
+
+	# mark which sales are to be used
+	df.loc[df["sale_year"].lt(use_sales_from), "valid_sale"] = False
+
+	# scrub sales info from invalid sales
+	idx_invalid = df["valid_sale"].eq(False)
+	df.loc[idx_invalid, "sale_date"] = None
+	df.loc[idx_invalid, "sale_price"] = None
+
+	print(f"Using {len(df[df['valid_sale'].eq(1)])} sales...")
+	return df
