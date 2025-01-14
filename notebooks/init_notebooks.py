@@ -6,7 +6,4 @@ def setup_environment():
     repo_root = os.path.abspath("..")
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
-    print("Environment setup completed. Current PYTHONPATH:")
-    print("\n".join(sys.path))
-
-setup_environment()
+    print("Environment setup completed.")

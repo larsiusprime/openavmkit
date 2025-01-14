@@ -105,6 +105,7 @@ class DataSplit:
 	y_test: pd.Series
 	test_train_frac: float
 	random_seed: int
+	vacant_only: bool
 	ind_var: str
 	ind_var_test: str
 	dep_vars: list[str]
@@ -123,12 +124,13 @@ class DataSplit:
 			interactions: dict,
 			test_train_frac: float = 0.8,
 			random_seed: int = 1337,
+			vacant_only: bool = False,
 			days_field: str = "sale_age_days",
 			init: bool = True
 	):
 		if init:
 			self.df_universe = df.copy()
-			self.df_sales = get_sales(df, settings).reset_index(drop=True)
+			self.df_sales = get_sales(df, settings, vacant_only).reset_index(drop=True)
 
 			# Pre-sort dataframes so that rolling origin cross-validation can assume oldest observations first:
 			if days_field in self.df_universe:
@@ -148,6 +150,7 @@ class DataSplit:
 			self.interactions = interactions.copy()
 			self.one_hot_descendants = {}
 			self.random_seed = random_seed
+			self.vacant_only = vacant_only
 			self.days_field = days_field
 			self.test_train_frac = test_train_frac
 			self.split()
@@ -165,6 +168,7 @@ class DataSplit:
 			{},
 			0,
 			0,
+			False,
 			"",
 			init=False
 		)
@@ -182,6 +186,7 @@ class DataSplit:
 		ds.y_test = self.y_test.copy()
 		ds.test_train_frac = self.test_train_frac
 		ds.random_seed = self.random_seed
+		ds.vacant_only = self.vacant_only
 		ds.ind_var = self.ind_var
 		ds.ind_var_test = self.ind_var_test
 		ds.dep_vars = self.dep_vars.copy()
@@ -403,13 +408,12 @@ class SingleModelResults:
 		# drop problematic columns:
 		df_univ_valid.drop(columns=["geometry"], errors="ignore", inplace=True)
 
-		# convert all category, object, and string[python] types to string:
+		# convert all category and string[python] types to string:
 		for col in df_univ_valid.columns:
-			if df_univ_valid[col].dtype in ["category", "object", "string"]:
+			if df_univ_valid[col].dtype in ["category", "string"]:
 				df_univ_valid[col] = df_univ_valid[col].astype("str")
 
 		pl_df = pl.DataFrame(df_univ_valid)
-
 		self.chd = quick_median_chd(pl_df, field_prediction, field_horizontal_equity_id)
 		timing.stop("chd")
 
@@ -779,6 +783,15 @@ def run_gwr(
 	# this is to prevent singular matrix errors in the GWR
 	X_train += np.random.normal(0, 1e-6, X_train.shape)
 	X_test += np.random.normal(0, 1e-6, X_test.shape)
+
+	# ensure that every dtype of every column in X_* is a float and not an object:
+	X_train = X_train.astype(np.float64)
+	X_test = X_test.astype(np.float64)
+	X_sales = X_sales.astype(np.float64)
+	X_univ = X_univ.astype(np.float64)
+
+	# ensure that every dtype of y_train is a float and not an object:
+	y_train = y_train.astype(np.float64)
 
 	timing.stop("setup")
 
