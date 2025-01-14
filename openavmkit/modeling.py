@@ -984,10 +984,14 @@ def run_lightgbm(
 
 	params["verbosity"] = -1
 
+	num_boost_round = 1000
+	if "num_iterations" in params:
+		num_boost_round = params.pop("num_iterations")
+
 	gbm = lgb.train(
 		params,
 		lgb_train,
-		num_boost_round=1000,
+		num_boost_round=num_boost_round,
 		valid_sets=lgb_test,
 		callbacks=[
 			lgb.early_stopping(stopping_rounds=5, verbose=False),

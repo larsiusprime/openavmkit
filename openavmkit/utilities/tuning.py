@@ -24,16 +24,16 @@ def tune_xgboost(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False)
             "objective": "reg:squarederror",  # Regression objective
             "eval_metric": "mae",  # Mean Absolute Error
             "tree_method": "hist",  # Use 'hist' for performance; use 'gpu_hist' for GPUs
-            "learning_rate": trial.suggest_loguniform("learning_rate", 0.001, 0.1),
+            "learning_rate": trial.suggest_float("learning_rate", 0.001, 0.1, log=True),
             "max_depth": trial.suggest_int("max_depth", 3, 15),
-            "min_child_weight": trial.suggest_loguniform("min_child_weight", 1, 10),
-            "subsample": trial.suggest_uniform("subsample", 0.5, 1.0),
-            "colsample_bytree": trial.suggest_uniform("colsample_bytree", 0.4, 1.0),
-            "colsample_bylevel": trial.suggest_uniform("colsample_bylevel", 0.4, 1.0),
-            "colsample_bynode": trial.suggest_uniform("colsample_bynode", 0.4, 1.0),
-            "gamma": trial.suggest_loguniform("gamma", 0.1, 10),  # min_split_loss
-            "lambda": trial.suggest_loguniform("lambda", 1e-4, 10),  # reg_lambda
-            "alpha": trial.suggest_loguniform("alpha", 1e-4, 10),  # reg_alpha
+            "min_child_weight": trial.suggest_float("min_child_weight", 1, 10, log=True),
+            "subsample": trial.suggest_float("subsample", 0.5, 1.0, log=False),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.4, 1.0, log=False),
+            "colsample_bylevel": trial.suggest_float("colsample_bylevel", 0.4, 1.0, log=False),
+            "colsample_bynode": trial.suggest_float("colsample_bynode", 0.4, 1.0, log=False),
+            "gamma": trial.suggest_float("gamma", 0.1, 10, log=True),  # min_split_loss
+            "lambda": trial.suggest_float("lambda", 1e-4, 10, log=True),  # reg_lambda
+            "alpha": trial.suggest_float("alpha", 1e-4, 10, log=True),  # reg_alpha
             "max_bin": trial.suggest_int("max_bin", 64, 512),  # Relevant for 'hist' tree_method
             "grow_policy": trial.suggest_categorical("grow_policy", ["depthwise", "lossguide"]),
         }
@@ -78,16 +78,16 @@ def tune_lightgbm(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False
             "metric": "mae",  # Mean Absolute Error for regression
             "boosting_type": "gbdt",
             "num_iterations": trial.suggest_int("num_iterations", 300, 5000),
-            "learning_rate": trial.suggest_loguniform("learning_rate", 0.0001, 0.1),
+            "learning_rate": trial.suggest_float("learning_rate", 0.0001, 0.1, log=True),
             "max_bin": trial.suggest_int("max_bin", 64, 1024),
             "num_leaves": trial.suggest_int("num_leaves", 64, 2048),
             "max_depth": trial.suggest_int("max_depth", 5, 15),
-            "min_gain_to_split": trial.suggest_loguniform("min_gain_to_split", 1e-4, 50),
+            "min_gain_to_split": trial.suggest_float("min_gain_to_split", 1e-4, 50, log=True),
             "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 20, 500),
-            "feature_fraction": trial.suggest_uniform("feature_fraction", 0.4, 0.9),
-            "subsample": trial.suggest_uniform("subsample", 0.5, 0.8),
-            "lambda_l1": trial.suggest_loguniform("lambda_l1", 0.1, 10),
-            "lambda_l2": trial.suggest_loguniform("lambda_l2", 0.1, 10),
+            "feature_fraction": trial.suggest_float("feature_fraction", 0.4, 0.9, log=False),
+            "subsample": trial.suggest_float("subsample", 0.5, 0.8, log=False),
+            "lambda_l1": trial.suggest_float("lambda_l1", 0.1, 10, log=True),
+            "lambda_l2": trial.suggest_float("lambda_l2", 0.1, 10, log=True),
             "cat_smooth": trial.suggest_int("cat_smooth", 5, 200),
             "verbosity": -1,
             "early_stopping_round": 50
@@ -132,15 +132,15 @@ def tune_catboost(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False
             "loss_function": "MAE",  # Mean Absolute Error
             "eval_metric": "MAE",
             "iterations": trial.suggest_int("iterations", 500, 3000),
-            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.3),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             "depth": trial.suggest_int("depth", 4, 10),
-            "random_strength": trial.suggest_uniform("random_strength", 0, 10),
-            "bagging_temperature": trial.suggest_uniform("bagging_temperature", 0, 1),
+            "random_strength": trial.suggest_float("random_strength", 0, 10, log=False),
+            "bagging_temperature": trial.suggest_float("bagging_temperature", 0, 1, log=False),
             "border_count": trial.suggest_int("border_count", 32, 255),
             "grow_policy": trial.suggest_categorical("grow_policy", ["SymmetricTree", "Depthwise", "Lossguide"]),
-            "subsample": trial.suggest_uniform("subsample", 0.5, 1.0),
+            "subsample": trial.suggest_float("subsample", 0.5, 1.0, log=False),
             "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 1, 50),
-            "reg_lambda": trial.suggest_loguniform("reg_lambda", 1e-4, 10),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 10, log=True),
             "random_seed": random_state,
             "verbose": 0  # Suppresses CatBoost output
         }
