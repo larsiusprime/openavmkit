@@ -5,11 +5,11 @@ from diptest import diptest
 
 from openavmkit.checkpoint import read_checkpoint, write_checkpoint
 from openavmkit.data import get_sales, get_sale_field, get_important_fields, get_locations, \
-  get_vacant_sales, combine_dfs
+  get_vacant_sales
 from openavmkit.horizontal_equity_study import HorizontalEquityStudy
 from openavmkit.reports import start_report, finish_report
 from openavmkit.utilities.clustering import make_clusters
-from openavmkit.utilities.data import div_z_safe, div_field_z_safe, rename_dict, do_per_model_group
+from openavmkit.utilities.data import div_z_safe, div_field_z_safe, rename_dict, do_per_model_group, combine_dfs
 from openavmkit.utilities.excel import write_to_excel
 from openavmkit.utilities.settings import get_fields_categorical, apply_dd_to_df_cols
 
@@ -519,7 +519,9 @@ def mark_sales_scrutiny_clusters(df: pd.DataFrame, settings: dict, verbose: bool
     fields_categorical = [f for f in fields_categorical if f not in impr_fields]
 
   df_sales["ss_id"], fields_used = make_clusters(df_sales, location, fields_categorical, fields_numeric, min_cluster_size=5, verbose=verbose)
-  return df_sales, fields_used
+
+  # TODO: we don't return fields_used at the moment
+  return df_sales
 
 
 def identify_suspicious_characteristics(df: pd.DataFrame, settings: dict, is_vacant: bool = False, verbose: bool = False):
@@ -538,8 +540,13 @@ def identify_suspicious_characteristics(df: pd.DataFrame, settings: dict, is_vac
   # What we are looking for is parcels where the sale_field is in line with the overall area but the sale_field_per is not
 
 
+def _mark_ss_ids(df_in: pd.DataFrame, model_group: str, settings: dict, verbose: bool):
+  df = mark_sales_scrutiny_clusters(df_in, settings, verbose)
+  df["ss_id"] = model_group + "_" + df["ss_id"]
+  return df
+
 def run_sales_scrutiny_per_model_group(df_in: pd.DataFrame, settings: dict, verbose=False):
-  return do_per_model_group(df_in, run_sales_scrutiny, {"settings": settings, "verbose": verbose})
+  return do_per_model_group(df_in, _mark_ss_ids, {"settings": settings, "verbose": verbose})
 
 
 def run_sales_scrutiny(df_in: pd.DataFrame, settings: dict, model_group: str, verbose=False):

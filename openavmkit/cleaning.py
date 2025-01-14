@@ -64,7 +64,7 @@ def fill_unknown_values(df, settings: dict):
 
 	if bool_fields is not None:
 		for field in bool_fields:
-			df[field] = df[field].fillna(False)
+			df[field] = df[field].fillna(False).astype(bool)
 
 	return df
 

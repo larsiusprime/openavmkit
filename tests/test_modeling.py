@@ -1,15 +1,14 @@
 import os
 
-from openavmkit.benchmark import run_models, get_variable_recommendations, MultiModelResults
-from openavmkit.cleaning import fill_unknown_values_per_model_group
+from openavmkit.benchmark import run_models, MultiModelResults
+from openavmkit.cleaning import clean_valid_sales
 from openavmkit.data import load_data, enrich_time
-from openavmkit.horizontal_equity_study import make_clusters, mark_horizontal_equity_clusters
-from openavmkit.modeling import SingleModelResults
+from openavmkit.horizontal_equity_study import mark_horizontal_equity_clusters
 from openavmkit.ratio_study import run_and_write_ratio_study_breakdowns
-from openavmkit.sales_scrutiny_study import SalesScrutinyStudy, clean_sales
+from openavmkit.sales_scrutiny_study import SalesScrutinyStudy, run_sales_scrutiny
 from openavmkit.synthetic_data import generate_basic
 from openavmkit.time_adjustment import enrich_time_adjustment
-from openavmkit.utilities.settings import get_valuation_date, load_settings, get_fields_categorical
+from openavmkit.utilities.settings import get_valuation_date, load_settings
 
 
 def test_guilford_sales_scrutiny():
@@ -80,19 +79,7 @@ def test_models_guilford():
 	if "he_id" not in df:
 		df = mark_horizontal_equity_clusters(df, settings)
 
-	# load metadata
-	val_date = get_valuation_date(settings)
-	val_year = val_date.year
-	metadata = settings.get("modeling", {}).get("metadata", {})
-	use_sales_from = metadata.get("use_sales_from", val_year - 5)
-
-	# mark which sales are to be used
-	df.loc[df["sale_year"].lt(use_sales_from), "valid_sale"] = 0
-
-	# scrub sales info from invalid sales
-	idx_invalid = df["valid_sale"].eq(0)
-	df.loc[idx_invalid, "sale_date"] = None
-	df.loc[idx_invalid, "sale_price"] = None
+	df = clean_valid_sales(df, settings)
 
 	print(f"Using {len(df[df['valid_sale'].eq(1)])} sales...")
 
@@ -100,15 +87,13 @@ def test_models_guilford():
 	df = enrich_time(df)
 	df = enrich_time_adjustment(df, settings, verbose=True)
 
-	df = clean_sales(df, settings, model_group, verbose=True)
+	df = run_sales_scrutiny(df, settings, model_group, verbose=True)
 
 	# run the predictive models
 	results : MultiModelResults = run_models(
 		df,
 		settings,
-		verbose=True,
-		save_params=True,
-		use_saved_params=True
+		verbose=True
 	)
 
 	# run ratio study reports
