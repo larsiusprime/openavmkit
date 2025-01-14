@@ -1,4 +1,5 @@
 import os
+import pickle
 
 import numpy as np
 import pandas as pd
@@ -197,9 +198,18 @@ def _run_one_model(
 		outpath: str,
 		save_params: bool,
 		use_saved_params: bool,
+		use_saved_results: bool,
 		verbose: bool = False
 ) -> SingleModelResults:
+
 	model_name = model
+
+	out_pickle = f"{outpath}/model_{model_name}.pickle"
+	if use_saved_results and os.path.exists(out_pickle):
+		with open(out_pickle, "rb") as file:
+			results = pickle.load(file)
+		return results
+
 	entry: dict | None = model_entries.get(model, None)
 	default_entry: dict | None = model_entries.get("default", None)
 	if entry is None:
@@ -287,8 +297,6 @@ def _run_one_model(
 		results = run_kernel(ds, outpath, save_params, use_saved_params, verbose=verbose)
 	elif model_name == "gwr":
 		results = run_gwr(ds, outpath, save_params, use_saved_params, verbose=verbose)
-	elif model_name == "mgwr":
-		results = run_mgwr(ds, outpath, intercept, save_params, use_saved_params, verbose=verbose)
 	elif model_name == "xgboost":
 		results = run_xgboost(ds, outpath, save_params, use_saved_params, verbose=verbose)
 	elif model_name == "lightgbm":
@@ -298,6 +306,9 @@ def _run_one_model(
 
 	# write out the results:
 	write_model_results(results, outpath)
+
+	with open(out_pickle, "wb") as file:
+		pickle.dump(results, file)
 
 	return results
 
@@ -989,8 +1000,9 @@ def generate_variable_report(
 def run_models(
 		df: pd.DataFrame,
 		settings: dict,
-		save_params: bool = False,
-		use_saved_params: bool = False,
+		save_params: bool = True,
+		use_saved_params: bool = True,
+		use_saved_results: bool = True,
 		verbose: bool = False
 ):
 	s = settings
@@ -1011,8 +1023,6 @@ def run_models(
 
 	model_results = {}
 	outpath = f"out"
-
-	df.to_parquet(f"{outpath}/df.parquet")
 
 	var_recs = get_variable_recommendations(
 		df,
@@ -1045,6 +1055,7 @@ def run_models(
 			outpath=outpath,
 			save_params=save_params,
 			use_saved_params=use_saved_params,
+			use_saved_results=use_saved_results,
 			verbose=verbose
 		)
 		if results is not None:

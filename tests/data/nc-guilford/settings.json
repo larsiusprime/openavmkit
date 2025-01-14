@@ -96,6 +96,22 @@
 			}
 		}
 	},
+	"analysis": {
+		"ratio_study": {
+			"look_back_years": 1,
+			"breakdowns": [
+				{"by": "sale_price", "quantiles": 10},
+				{"by": "bldg_area_finished_sqft", "quantiles": 10},
+				{"by": "bldg_age_years", "slice_size": 10},
+				{"by": "land_area_sqft", "quantiles":  10},
+				{"by": "bldg_quality_txt"},
+				{"by": "bldg_condition_num", "quantiles": 5},
+				{"by": "<loc_neighborhood>"},
+				{"by": "<loc_market_area>"},
+				{"by": "<loc_region>"}
+			]
+		}
+	},
 	"field_classification": {
 		"important": {
 			"fields": {

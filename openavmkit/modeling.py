@@ -15,7 +15,7 @@ import lightgbm as lgb
 import catboost
 from catboost import CatBoostRegressor, Pool
 from lightgbm import Booster
-from mgwr.gwr import MGWR, GWR
+from mgwr.gwr import GWR
 from mgwr.gwr import _compute_betas_gwr, Kernel
 
 from mgwr.sel_bw import Sel_BW
@@ -32,7 +32,7 @@ from openavmkit.utilities.stats import quick_median_chd
 from openavmkit.utilities.tuning import tune_lightgbm, tune_xgboost, tune_catboost
 from openavmkit.utilities.timing import TimingData
 
-PredictionModel = Union[RegressionResults, XGBRegressor, Booster, CatBoostRegressor, GWR, MGWR, KernelReg, str, None]
+PredictionModel = Union[RegressionResults, XGBRegressor, Booster, CatBoostRegressor, GWR, KernelReg, str, None]
 
 class PredictionResults:
 	ind_var: str
@@ -68,9 +68,14 @@ class PredictionResults:
 		y_clean = y[~pd.isna(y_pred)]
 		y_pred_clean = y_pred[~pd.isna(y_pred)]
 
-		self.mse = mean_squared_error(y_clean, y_pred_clean)
-		self.rmse = np.sqrt(self.mse)
-		self.r2 = 1 - self.mse / np.var(y_clean)
+		if len(y_clean) > 0:
+			self.mse = mean_squared_error(y_clean, y_pred_clean)
+			self.rmse = np.sqrt(self.mse)
+			self.r2 = 1 - self.mse / np.var(y_clean)
+		else:
+			self.mse = float('nan')
+			self.rmse = float('nan')
+			self.r2 = float('nan')
 
 		# Adjusted R2 = 1 – [(1-R2)*(n-1)/(n-k-1)]
 		#
@@ -323,7 +328,7 @@ class DataSplit:
 					self.X_train[col].dtype == "boolean" or
 					self.X_train[col].dtype == "bool"
 			):
-				self.X_train[col] = self.X_train[col].astype("float64")
+				self.X_train.loc[:, col] = self.X_train[col].astype("float64")
 
 		dep_vars = [col for col in self.dep_vars if col in _df_test.columns]
 		self.X_test = _df_test[dep_vars]
@@ -391,10 +396,20 @@ class SingleModelResults:
 
 		self.pred_univ = y_pred_univ
 		timing.start("chd")
-		# Only use the rows that are valid for testing for the equity study
-		df_univ_valid = df_univ[df_univ["valid_for_ratio_study"].eq(1)]
 		df_univ_valid = df_univ
+
+		df_univ_valid = pd.DataFrame(df_univ_valid)  # Ensure it's a Pandas DataFrame
+
+		# drop problematic columns:
+		df_univ_valid.drop(columns=["geometry"], errors="ignore", inplace=True)
+
+		# convert all category, object, and string[python] types to string:
+		for col in df_univ_valid.columns:
+			if df_univ_valid[col].dtype in ["category", "object", "string"]:
+				df_univ_valid[col] = df_univ_valid[col].astype("str")
+
 		pl_df = pl.DataFrame(df_univ_valid)
+
 		self.chd = quick_median_chd(pl_df, field_prediction, field_horizontal_equity_id)
 		timing.stop("chd")
 
@@ -497,10 +512,12 @@ def run_mra(
 		timing.start("parameter_search")
 		timing.stop("parameter_search")
 
+		ds.X_train = ds.X_train.astype(float)
+		ds.y_train = ds.y_train.astype(float)
+
 		timing.start("train")
 		linear_model = sm.OLS(ds.y_train, ds.X_train)
 		fitted_model = linear_model.fit()
-		# convert to Float64 dtype
 		timing.stop("train")
 
 		# predict on test set:
@@ -712,179 +729,6 @@ def run_kernel(
 	return results
 
 
-def run_mgwr(
-		ds: DataSplit,
-		outpath: str,
-		intercept: bool = True,
-		save_params: bool = False,
-		use_saved_params: bool = False,
-		verbose: bool = False
-):
-	"""
-  Runs an MGWR model with optional intercept handling.
-  :param ds: The data split object containing processed input data
-  :param outpath: The output path
-  :param intercept: Whether to include an intercept
-  :param save_params: Whether to save the parameters
-  :param use_saved_params: Whether to use saved parameters
-  :param verbose: Whether to print verbose output
-  :return: The model results
-  """
-	timing = TimingData()
-	timing.start("total")
-
-	# Setup data
-	timing.start("setup")
-	ds = ds.encode_categoricals_with_one_hot()
-	ds.split()
-	coords_train = list(zip(ds.df_train['longitude'], ds.df_train['latitude']))
-	coords_test = list(zip(ds.df_test['longitude'], ds.df_test['latitude']))
-	coords_sales = list(zip(ds.df_sales['longitude'], ds.df_sales['latitude']))
-	coords_univ = list(zip(ds.df_universe['longitude'], ds.df_universe['latitude']))
-
-	y_train = ds.y_train.to_numpy().reshape((-1, 1))
-	X_train = ds.X_train.values
-	X_test = ds.X_test.values
-	X_sales = ds.X_sales.values
-	X_univ = ds.X_univ.values
-
-	# Add intercept column if enabled
-	if intercept:
-		intercept_train = np.ones((X_train.shape[0], 1))
-		intercept_test = np.ones((X_test.shape[0], 1))
-		intercept_sales = np.ones((X_sales.shape[0], 1))
-		intercept_univ = np.ones((X_univ.shape[0], 1))
-
-		X_train = np.hstack([intercept_train, X_train])
-		X_test = np.hstack([intercept_test, X_test])
-		X_sales = np.hstack([intercept_sales, X_sales])
-		X_univ = np.hstack([intercept_univ, X_univ])
-
-	# Add small noise to prevent singular matrix issues
-	X_train += np.random.normal(0, 1e-6, X_train.shape)
-	X_test += np.random.normal(0, 1e-6, X_test.shape)
-
-	timing.stop("setup")
-
-	# Bandwidth selection
-	timing.start("parameter_search")
-	selector = None
-	if verbose:
-		print("Tuning MGWR: searching for variable-specific bandwidths...")
-
-	if use_saved_params:
-		if os.path.exists(f"{outpath}/mgwr_selector.pkl"):
-			with open(f"{outpath}/mgwr_selector.pkl", "rb") as f:
-				selector = pickle.load(f)
-			if verbose:
-				print(f"--> using saved bandwidths: {selector}")
-
-	if selector is None:
-		if intercept:
-			print(f"Passing X_train with intercept to Sel_BW: {X_train.shape}")
-			selector = Sel_BW(coords_train, y_train, X_train, multi=True)
-		else:
-			print(f"Passing X_train without intercept to Sel_BW: {X_train[:, 1:].shape}")
-			selector = Sel_BW(coords_train, y_train, X_train[:, 1:], multi=True)
-
-		print(f"Selector bandwidths before search: {len(selector.bw)}")
-		selector.search(multi_bw_min=[2])
-		print(f"Selector bandwidths after search: {len(selector.bw)}")
-
-		# Validate selector output
-		if intercept:
-			expected_bandwidths = X_train[:, 1:].shape[1]  # Ignore intercept for bandwidths
-		else:
-			expected_bandwidths = X_train.shape[1]
-
-		if len(selector.bw) != expected_bandwidths:
-			raise ValueError(
-				f"Mismatch: {len(selector.bw)} bandwidths selected for {expected_bandwidths} predictors."
-			)
-
-		if save_params:
-			os.makedirs(outpath, exist_ok=True)
-			with open(f"{outpath}/mgwr_selector.pkl", "wb") as f:
-				pickle.dump(selector, f)
-
-	timing.stop("parameter_search")
-
-	# Train MGWR model
-	timing.start("train")
-
-	if intercept:
-		selector = Sel_BW(coords_train, y_train, X_train[:, 1:], multi=True)
-		mgwr = MGWR(coords_train, y_train, X_train, selector, constant=True)
-	else:
-		selector = Sel_BW(coords_train, y_train, X_train, multi=True)
-		mgwr = MGWR(coords_train, y_train, X_train[:, 1:], selector, constant=False)
-
-	mgwr_results = mgwr.fit()
-	timing.stop("train")
-
-	# Prediction for test set
-	timing.start("predict_test")
-	y_pred_test = _run_mgwr_prediction(
-		coords_test,
-		coords_train,
-		X_test,
-		X_train,
-		mgwr,
-		y_train,
-		mgwr_results=mgwr_results,
-		intercept=intercept,
-		verbose=verbose
-	).flatten()
-	timing.stop("predict_test")
-
-	# Prediction for sales set
-	timing.start("predict_sales")
-	if verbose:
-		print("MGWR: predicting sales set...")
-	y_pred_sales = _run_mgwr_prediction(
-		coords_sales,
-		coords_train,
-		X_sales,
-		X_train,
-		mgwr,
-		y_train,
-		intercept=intercept,
-		verbose=verbose
-	).flatten()
-	timing.stop("predict_sales")
-
-	# Prediction for full universe set
-	timing.start("predict_full")
-	if verbose:
-		print("MGWR: predicting full set...")
-	y_pred_univ = _run_mgwr_prediction(
-		coords_univ,
-		coords_train,
-		X_univ,
-		X_train,
-		mgwr,
-		y_train,
-		intercept=intercept,
-		verbose=verbose
-	).flatten()
-	timing.stop("predict_full")
-
-	results = SingleModelResults(
-		ds,
-		"prediction",
-		"he_id",
-		"mgwr",
-		mgwr,
-		y_pred_test,
-		y_pred_sales,
-		y_pred_univ,
-		timing
-	)
-	timing.stop("total")
-
-	return results
-
-
 def run_gwr(
 		ds: DataSplit,
 		outpath: str,
@@ -961,6 +805,8 @@ def run_gwr(
 			print(f"--> optimal bandwidth = {gwr_bw:0.2f}")
 
 	timing.stop("parameter_search")
+
+	X_train = np.asarray(X_train, dtype=np.float64)
 
 	timing.start("train")
 	gwr = GWR(coords_train, y_train, X_train, gwr_bw)
@@ -1575,8 +1421,15 @@ def run_local_sqft(
 			X_train_loc_improved = X_train_loc[X_train_loc["bldg_area_finished_sqft"].gt(0)]
 			X_train_loc_vacant = X_train_loc[X_train_loc["bldg_area_finished_sqft"].eq(0)]
 
-			local_per_impr_sqft = (y_train_loc / X_train_loc_improved["bldg_area_finished_sqft"]).median()
-			local_per_land_sqft = (y_train_loc / X_train_loc_vacant["land_area_sqft"]).median()
+			if len(X_train_loc_improved) > 0:
+				local_per_impr_sqft = (y_train_loc / X_train_loc_improved["bldg_area_finished_sqft"]).median()
+			else:
+				local_per_impr_sqft = 0
+
+			if len(X_train_loc_vacant) > 0:
+				local_per_land_sqft = (y_train_loc / X_train_loc_vacant["land_area_sqft"]).median()
+			else:
+				local_per_land_sqft = 0
 
 			# some values will be null so replace them with zeros
 			if pd.isna(local_per_impr_sqft):
@@ -1836,82 +1689,6 @@ def _local_gwr_predict_external(model, point, predictors):
 	# Predict response
 	y_pred = np.dot(predictors, betas)[0]
 	return betas.reshape(-1), y_pred
-
-
-def _run_mgwr_prediction(
-		coords, coords_train, X, X_train, mgwr_model, y_train, mgwr_results=None, intercept=True, verbose=False
-):
-	"""
-  Predict using an MGWR model for a set of coordinates and predictors.
-
-  :param coords: Coordinates for the prediction points.
-  :param coords_train: Training coordinates used for MGWR calibration.
-  :param X: Predictors for the prediction points.
-  :param X_train: Predictors used during MGWR calibration.
-  :param mgwr_model: Pre-trained MGWR model object.
-  :param y_train: Target variable used during MGWR calibration.
-  :param mgwr_results: (Optional) Fitted MGWR results object containing precomputed parameters.
-  :param intercept: Whether to include an intercept term in the predictors.
-  :param verbose: Whether to print verbose output.
-  :return: Predicted values for the given prediction coordinates and predictors.
-  """
-	coords = np.asarray(coords, dtype=np.float64)
-	coords_train = np.asarray(coords_train, dtype=np.float64)
-	X = np.asarray(X, dtype=np.float64)
-
-	# Validate alignment of predictors and bandwidths
-	if intercept:
-		bws_to_compare = mgwr_model.bws[1:]  # Ignore intercept bandwidth
-	else:
-		bws_to_compare = mgwr_model.bws
-
-	if X_train.shape[1] != len(bws_to_compare):
-		raise ValueError(
-			f"Mismatch between predictors and bandwidths: "
-			f"{X_train.shape[1]} predictors vs. {len(bws_to_compare)} bandwidths."
-		)
-
-	# Fast path: Use precomputed coefficients if available and coordinates match
-	if mgwr_results and np.array_equal(coords, coords_train):
-		if verbose:
-			print("Using precomputed coefficients from MGWR results...")
-		local_params = mgwr_results.params
-		return np.sum(X * local_params, axis=1)
-
-	if verbose:
-		print(f"Starting MGWR predictions for {len(coords)} points...")
-
-	# Slow path: Dynamically compute weights and coefficients
-	predictions = []
-	for i, point in enumerate(coords):
-		if verbose and i % 100 == 0:
-			print(f"Predicting point {i + 1}/{len(coords)}...")
-
-		point = np.asarray(point, dtype=np.float64).reshape(1, -1)
-
-		weights = [
-			Kernel(
-				0,
-				coords_train,
-				bw,
-				fixed=mgwr_model.fixed,
-				function=mgwr_model.kernel,
-				spherical=mgwr_model.spherical,
-				points=point
-			).kernel.reshape(-1, 1)
-			for bw in mgwr_model.bws
-		]
-
-		betas = []
-		for j, weight in enumerate(weights):
-			beta, _ = _compute_betas_gwr(y_train, X_train[:, [j]], weight)
-			betas.append(beta)
-
-		betas = np.hstack(betas)
-		y_pred = np.dot(X[i], betas)
-		predictions.append(y_pred)
-
-	return np.array(predictions)
 
 
 def _run_gwr_prediction(
