@@ -25,7 +25,7 @@
 		},
 		"instructions": {
 			"run": [
-				"mra", "lightgbm", "catboost", "xgboost"
+				"assessor", "mra", "gwr", "lightgbm", "catboost", "xgboost", "local_naive_sqft", "local_smart_sqft"
 			],
 			"time_adjustment": {
 				"period": "Q"

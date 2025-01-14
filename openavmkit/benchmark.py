@@ -6,10 +6,10 @@ import pandas as pd
 from IPython.core.display_functions import display
 from tabulate import tabulate
 
-from openavmkit.data import get_important_field
+from openavmkit.data import get_important_field, get_vacant
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, SingleModelResults, \
 	run_garbage, \
-	run_average, run_naive_sqft, DataSplit, run_kernel, run_mgwr, run_local_sqft, run_assessor
+	run_average, run_naive_sqft, DataSplit, run_kernel, run_local_sqft, run_assessor
 from openavmkit.reports import MarkdownReport, markdown_to_pdf
 from openavmkit.sales_scrutiny_study import SalesScrutinyStudy
 from openavmkit.time_adjustment import apply_time_adjustment, enrich_time_adjustment
@@ -188,6 +188,7 @@ def format_benchmark_df(df: pd.DataFrame):
 
 def _run_one_model(
 		df: pd.DataFrame,
+		vacant_only: bool,
 		model: str,
 		model_entries: dict,
 		settings: dict,
@@ -266,7 +267,8 @@ def _run_one_model(
 			fields_cat,
 			interactions,
 			test_train_frac,
-			random_seed
+			random_seed,
+			vacant_only=vacant_only
 		)
 
 	ds = _get_data_split_for(model_name)
@@ -362,6 +364,7 @@ def write_ensemble_model_results(
 
 def optimize_ensemble(
 		df: pd.DataFrame,
+		vacant_only: bool,
 		ind_var: str,
 		ind_var_test: str,
 		all_results: MultiModelResults,
@@ -385,13 +388,16 @@ def optimize_ensemble(
 		[],
 		{},
 		test_train_frac,
-		random_seed
+		random_seed,
+		vacant_only=vacant_only
 	)
+
+	vacant_status = "vacant" if vacant_only else "main"
 
 	df_test = ds.df_test
 	df_univ = ds.df_universe
 	instructions = settings.get("modeling", {}).get("instructions", {})
-	ensemble_list = instructions.get("ensemble", [])
+	ensemble_list = instructions.get(vacant_status, {}).get("ensemble", [])
 	if len(ensemble_list) == 0:
 		ensemble_list = [key for key in all_results.model_results.keys()]
 
@@ -471,6 +477,7 @@ def optimize_ensemble(
 
 def run_ensemble(
 		df: pd.DataFrame,
+		vacant_only: bool,
 		ind_var: str,
 		ind_var_test: str,
 		outpath: str,
@@ -498,7 +505,8 @@ def run_ensemble(
 		[],
 		{},
 		test_train_frac,
-		random_seed
+		random_seed,
+		vacant_only=vacant_only
 	)
 
 	df_test = ds.df_test
@@ -560,12 +568,13 @@ def run_ensemble(
 
 def _prepare_ds(
 	df: pd.DataFrame,
-	settings: dict,
-	model: str = None
+	vacant_only: bool,
+	settings: dict
 ):
 	s = settings
 	s_model = s.get("modeling", {})
-	model_entries = s_model.get("models")
+	vacant_status = "vacant" if vacant_only else "main"
+	model_entries = s_model.get("models", {}).get(vacant_status, {})
 	entry: dict | None = model_entries.get("model", model_entries.get("default"))
 
 	dep_vars : list | None = entry.get("dep_vars", None)
@@ -590,7 +599,8 @@ def _prepare_ds(
 		fields_cat,
 		interactions,
 		test_train_frac,
-		random_seed
+		random_seed,
+		vacant_only
 	)
 	return ds
 
@@ -843,6 +853,7 @@ def _calc_variable_recommendations(
 
 def get_variable_recommendations(
 		df: pd.DataFrame,
+		vacant_only: bool,
 		settings: dict,
 		model: str,
 		modeling_group: str,
@@ -854,7 +865,7 @@ def get_variable_recommendations(
 	report = MarkdownReport("variables")
 
 	df = enrich_time_adjustment(df, settings, verbose=verbose)
-	ds = _prepare_ds(df, settings, model)
+	ds = _prepare_ds(df, vacant_only, settings)
 	ds = ds.encode_categoricals_with_one_hot()
 	ds.split()
 
@@ -1005,15 +1016,30 @@ def run_models(
 		use_saved_results: bool = True,
 		verbose: bool = False
 ):
+		for vacant_only in [False, True]:
+			_run_models(df, settings, vacant_only, save_params, use_saved_params, use_saved_results, verbose)
+
+
+def _run_models(
+		df: pd.DataFrame,
+		settings: dict,
+		vacant_only: bool = False,
+		save_params: bool = True,
+		use_saved_params: bool = True,
+		use_saved_results: bool = True,
+		verbose: bool = False
+):
+
 	s = settings
 	s_model = s.get("modeling", {})
 	s_inst = s_model.get("instructions", {})
+	vacant_status = "vacant" if vacant_only else "main"
 
 	ind_var = s_inst.get("ind_var", "sale_price")
 	ind_var_test = s_inst.get("ind_var_test", "sale_price")
 	fields_cat = get_fields_categorical(s, df)
-	models_to_run = s_inst.get("run", None)
-	model_entries = s_model.get("models", {})
+	models_to_run = s_inst.get(vacant_status, {}).get("run", None)
+	model_entries = s_model.get("models").get(vacant_status, {})
 	if models_to_run is None:
 		models_to_run = list(model_entries.keys())
 
@@ -1022,10 +1048,13 @@ def run_models(
 		raise ValueError("Could not find equity cluster ID's in the dataframe (he_id)")
 
 	model_results = {}
-	outpath = f"out"
+	outpath = f"out/models/{vacant_status}"
+	if not os.path.exists(outpath):
+		os.makedirs(outpath)
 
 	var_recs = get_variable_recommendations(
 		df,
+		vacant_only,
 		settings,
 		"default",
 		"residential_sf",
@@ -1045,6 +1074,7 @@ def run_models(
 	for model in models_to_run:
 		results = _run_one_model(
 			df=df,
+			vacant_only=vacant_only,
 			model=model,
 			model_entries=model_entries,
 			settings=settings,
@@ -1069,6 +1099,7 @@ def run_models(
 
 	best_ensemble = optimize_ensemble(
 		df=df,
+		vacant_only=vacant_only,
 		ind_var=ind_var,
 		ind_var_test=ind_var_test,
 		all_results=all_results,
@@ -1079,6 +1110,7 @@ def run_models(
 	# Run the ensemble model
 	ensemble_results = run_ensemble(
 		df=df,
+		vacant_only=vacant_only,
 		ind_var=ind_var,
 		ind_var_test=ind_var_test,
 		outpath=outpath,

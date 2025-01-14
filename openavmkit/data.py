@@ -65,16 +65,13 @@ def get_vacant_sales(df_in: pd.DataFrame, settings: dict, invert:bool = False) -
 	return df_vacant_sales
 
 
-def get_vacant(df_in: pd.DataFrame, settings: dict, invert:bool = False) -> pd.DataFrame:
-	# TODO : custom vacant filter
+def  get_vacant(df_in: pd.DataFrame, settings: dict, invert:bool = False) -> pd.DataFrame:
+	# TODO : support custom vacant filter from user settings
 	df = df_in.copy()
 
-	if df["is_vacant"].dtype in ["object", "string", "str"]:
-		df["is_vacant"] = df["is_vacant"].str.lower().str.strip()
-		df["is_vacant"] = df["is_vacant"].replace(["true", "t", "1"], True)
-		df["is_vacant"] = df["is_vacant"].replace(["false", "f", "0"], False)
-
-	df = boolify_column_in_df(df, "is_vacant")
+	is_vacant_dtype = df["is_vacant"].dtype
+	if is_vacant_dtype != bool:
+		raise ValueError(f"The 'is_vacant' column must be a boolean type (found: {is_vacant_dtype})")
 
 	idx_vacant = df["is_vacant"].eq(True)
 	if invert:
@@ -83,14 +80,18 @@ def get_vacant(df_in: pd.DataFrame, settings: dict, invert:bool = False) -> pd.D
 	return df_vacant
 
 
-def get_sales(df_in: pd.DataFrame, settings: dict) -> pd.DataFrame:
+def get_sales(df_in: pd.DataFrame, settings: dict, vacant_only: bool = False) -> pd.DataFrame:
 
 	df = df_in.copy()
-	df = boolify_column_in_df(df, "valid_sale")
+	valid_sale_dtype = df["valid_sale"].dtype
+	if valid_sale_dtype != bool:
+		raise ValueError(f"The 'valid_sale' column must be a boolean type (found: {valid_sale_dtype})")
 
 	if "vacant_sale" in df:
+		vacant_sale_dtype = df["vacant_sale"].dtype
+		if vacant_sale_dtype != bool:
+			raise ValueError(f"The 'vacant_sale' column must be a boolean type (found: {vacant_sale_dtype})")
 		# check for vacant sales:
-		df = boolify_column_in_df(df, "vacant_sale")
 		idx_vacant_sale = df["vacant_sale"].eq(True)
 		df = simulate_removed_buildings(df, idx_vacant_sale, settings)
 
@@ -104,7 +105,11 @@ def get_sales(df_in: pd.DataFrame, settings: dict) -> pd.DataFrame:
 		] = False
 
 	# get the sales
-	df_sales : pd.DataFrame = df[df["sale_price"].gt(0) & df["valid_sale"].eq(True)].copy()
+	df_sales : pd.DataFrame = df[
+		df["sale_price"].gt(0) &
+		df["valid_sale"].eq(True) &
+		(df["vacant_sale"].eq(True) if vacant_only else True)
+	].copy()
 
 	return df_sales
 
