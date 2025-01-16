@@ -448,6 +448,10 @@ def calc_vif(X: pd.DataFrame):
 	return vif_data
 
 
+def calc_mse(prediction: np.ndarray, ground_truth: np.ndarray):
+	return np.mean((prediction - ground_truth) ** 2)
+
+
 def calc_cross_validation_score(X, y):
 	model = LinearRegression()
 	# Use negative MSE and negate it to return positive MSE
