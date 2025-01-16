@@ -1149,37 +1149,15 @@ def run_catboost(
 	return predict_catboost(ds, catboost_model, timing, verbose)
 
 
-def run_garbage(
+def predict_garbage(
 		ds: DataSplit,
-		normal: bool = False,
-		sales_chase: float = 0.0,
+		normal: bool,
+		timing: TimingData,
+		min_value: float,
+		max_value: float,
+		sales_chase: float,
 		verbose: bool = False
 ):
-	"""
-	Runs a garbage model that simply predicts random values between the min and max of the training set.
-	:param ds: The data split object containing processed input data
-	:param normal: Whether to use a normal or uniform distribution when randomly picking
-	:param sales_chase: If not 0, simulate sales chasing by predicting the sales set as the test set, with this much noise
-	:param verbose: Whether to print verbose output
-	:return: The model results
-	"""
-	timing = TimingData()
-
-	timing.start("total")
-
-	timing.start("parameter_search")
-	timing.stop("parameter_search")
-
-	timing.start("setup")
-	ds = ds.encode_categoricals_with_one_hot()
-	ds.split()
-	timing.stop("setup")
-
-	timing.start("train")
-	min_value = ds.y_train.min()
-	max_value = ds.y_train.max()
-	timing.stop("train")
-
 	timing.start("predict_test")
 	if normal:
 		y_pred_test = np.random.normal(loc=ds.y_train.mean(), scale=ds.y_train.std(), size=len(ds.X_test))
@@ -1226,22 +1204,24 @@ def run_garbage(
 		y_pred_test,
 		y_pred_sales,
 		y_pred_univ,
-		timing
+		timing,
+		verbose=verbose
 	)
 
 	return results
 
 
-def run_average(
+
+def run_garbage(
 		ds: DataSplit,
-		type: str = "mean",
+		normal: bool = False,
 		sales_chase: float = 0.0,
 		verbose: bool = False
 ):
 	"""
-	Runs a garbage model that simply predicts the average of the training set for everything
+	Runs a garbage model that simply predicts random values between the min and max of the training set.
 	:param ds: The data split object containing processed input data
-	:param type: The type of average to use ("mean" or "median")
+	:param normal: Whether to use a normal or uniform distribution when randomly picking
 	:param sales_chase: If not 0, simulate sales chasing by predicting the sales set as the test set, with this much noise
 	:param verbose: Whether to print verbose output
 	:return: The model results
@@ -1259,8 +1239,20 @@ def run_average(
 	timing.stop("setup")
 
 	timing.start("train")
+	min_value = ds.y_train.min()
+	max_value = ds.y_train.max()
 	timing.stop("train")
 
+	return predict_garbage(ds, normal, timing, min_value, max_value, sales_chase, verbose)
+
+
+def predict_average(
+		ds: DataSplit,
+		timing: TimingData,
+		type: str,
+		sales_chase: float,
+		verbose: bool = False
+):
 	timing.start("predict_test")
 	if type == "median":
 		# get a series of equal length to ds.X_test filled with the mean of the training set
@@ -1308,7 +1300,111 @@ def run_average(
 		y_pred_test,
 		y_pred_sales,
 		y_pred_univ,
-		timing
+		timing,
+		verbose=verbose
+	)
+
+	return results
+
+
+def run_average(
+		ds: DataSplit,
+		average_type: str = "mean",
+		sales_chase: float = 0.0,
+		verbose: bool = False
+):
+	"""
+	Runs a garbage model that simply predicts the average of the training set for everything
+	:param ds: The data split object containing processed input data
+	:param average_type: The type of average to use ("mean" or "median")
+	:param sales_chase: If not 0, simulate sales chasing by predicting the sales set as the test set, with this much noise
+	:param verbose: Whether to print verbose output
+	:return: The model results
+	"""
+	timing = TimingData()
+
+	timing.start("total")
+
+	timing.start("parameter_search")
+	timing.stop("parameter_search")
+
+	timing.start("setup")
+	ds = ds.encode_categoricals_with_one_hot()
+	ds.split()
+	timing.stop("setup")
+
+	timing.start("train")
+	timing.stop("train")
+
+	return predict_average(ds, timing, average_type, sales_chase, verbose)
+
+
+def predict_naive_sqft(
+		ds: DataSplit,
+		timing: TimingData,
+		ind_per_built_sqft: float,
+		ind_per_land_sqft: float,
+		sales_chase: float,
+		verbose: bool = False
+):
+	timing.start("predict_test")
+	X_test = ds.X_test
+	X_test_improved = X_test[X_test["bldg_area_finished_sqft"].gt(0)]
+	X_test_vacant = X_test[X_test["bldg_area_finished_sqft"].eq(0)]
+	X_test["prediction_impr"] = X_test_improved["bldg_area_finished_sqft"] * ind_per_built_sqft
+	X_test["prediction_vacant"] = X_test_vacant["land_area_sqft"] * ind_per_land_sqft
+	X_test["prediction"] = np.where(X_test["bldg_area_finished_sqft"].gt(0), X_test["prediction_impr"], X_test["prediction_vacant"])
+	y_pred_test = X_test["prediction"].to_numpy()
+	X_test.drop(columns=["prediction_impr", "prediction_vacant", "prediction"], inplace=True)
+	timing.stop("predict_test")
+
+	timing.start("predict_sales")
+	X_sales = ds.X_sales
+	X_sales_improved = X_sales[X_sales["bldg_area_finished_sqft"].gt(0)]
+	X_sales_vacant = X_sales[X_sales["bldg_area_finished_sqft"].eq(0)]
+	X_sales["prediction_impr"] = X_sales_improved["bldg_area_finished_sqft"] * ind_per_built_sqft
+	X_sales["prediction_vacant"] = X_sales_vacant["land_area_sqft"] * ind_per_land_sqft
+	X_sales["prediction"] = np.where(X_sales["bldg_area_finished_sqft"].gt(0), X_sales["prediction_impr"], X_sales["prediction_vacant"])
+	y_pred_sales = X_sales["prediction"].to_numpy()
+	X_sales.drop(columns=["prediction_impr", "prediction_vacant", "prediction"], inplace=True)
+	timing.stop("predict_sales")
+
+	timing.start("predict_full")
+	X_univ = ds.X_univ
+	X_univ_improved = X_univ[X_univ["bldg_area_finished_sqft"].gt(0)]
+	X_univ_vacant = X_univ[X_univ["bldg_area_finished_sqft"].eq(0)]
+	X_univ["prediction_impr"] = X_univ_improved["bldg_area_finished_sqft"] * ind_per_built_sqft
+	X_univ["prediction_vacant"] = X_univ_vacant["land_area_sqft"] * ind_per_land_sqft
+	X_univ["prediction"] = np.where(X_univ["bldg_area_finished_sqft"].gt(0), X_univ["prediction_impr"], X_univ["prediction_vacant"])
+	y_pred_univ = X_univ["prediction"].to_numpy()
+	X_univ.drop(columns=["prediction_impr", "prediction_vacant", "prediction"], inplace=True)
+	timing.stop("predict_full")
+
+	timing.stop("total")
+
+	df = ds.df_universe
+	ind_var = ds.ind_var
+
+	if sales_chase:
+		y_pred_test = ds.y_test * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_test))
+		y_pred_sales = ds.y_sales * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_sales))
+		y_pred_univ = _sales_chase_univ(df, ind_var, y_pred_univ) * np.random.choice([1-sales_chase, 1+sales_chase], len(y_pred_univ))
+
+	name = "naive_sqft"
+	if sales_chase:
+		name += "*"
+
+	results = SingleModelResults(
+		ds,
+		"prediction",
+		"he_id",
+		name,
+		None,
+		y_pred_test,
+		y_pred_sales,
+		y_pred_univ,
+		timing,
+		verbose=verbose
 	)
 
 	return results
@@ -1359,37 +1455,92 @@ def run_naive_sqft(
 
 	timing.stop("train")
 
+	return predict_naive_sqft(ds, timing, ind_per_built_sqft, ind_per_land_sqft, sales_chase, verbose)
+
+
+def predict_local_sqft(
+		ds: DataSplit,
+		df_impr: pd.DataFrame,
+		df_land: pd.DataFrame,
+		timing: TimingData,
+		overall_per_impr_sqft: float,
+		overall_per_land_sqft: float,
+		sales_chase: float = 0.0,
+		verbose: bool = False
+):
 	timing.start("predict_test")
 	X_test = ds.X_test
+
+	pd.set_option('display.max_columns', None)
+
+	df_impr = df_impr[["key", "per_impr_sqft"]]
+	df_land = df_land[["key", "per_land_sqft"]]
+
+	# merge the df_sqft_land/impr values into the X_test dataframe:
+	X_test["key"] = ds.df_test["key"]
+	X_test = X_test.merge(df_land, on="key", how="left")
+	X_test = X_test.merge(df_impr, on="key", how="left")
+	X_test.loc[X_test["per_impr_sqft"].isna() | X_test["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
+	X_test.loc[X_test["per_land_sqft"].isna() | X_test["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
+	X_test = X_test.drop(columns=["key"])
+
 	X_test_improved = X_test[X_test["bldg_area_finished_sqft"].gt(0)]
 	X_test_vacant = X_test[X_test["bldg_area_finished_sqft"].eq(0)]
-	X_test["prediction_impr"] = X_test_improved["bldg_area_finished_sqft"] * ind_per_built_sqft
-	X_test["prediction_vacant"] = X_test_vacant["land_area_sqft"] * ind_per_land_sqft
-	X_test["prediction"] = np.where(X_test["bldg_area_finished_sqft"].gt(0), X_test["prediction_impr"], X_test["prediction_vacant"])
+	X_test["prediction_impr"] = X_test_improved["bldg_area_finished_sqft"] * X_test_improved["per_impr_sqft"]
+	X_test["prediction_land"] = X_test_vacant["land_area_sqft"] * X_test_vacant["per_land_sqft"]
+	X_test["prediction"] = np.where(X_test["bldg_area_finished_sqft"].gt(0), X_test["prediction_impr"], X_test["prediction_land"])
+
 	y_pred_test = X_test["prediction"].to_numpy()
-	X_test.drop(columns=["prediction_impr", "prediction_vacant", "prediction"], inplace=True)
+	# TODO: later, don't drop these columns, use them to predict land value everywhere
+	X_test.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_sqft"], inplace=True)
 	timing.stop("predict_test")
 
 	timing.start("predict_sales")
 	X_sales = ds.X_sales
+
+	if verbose:
+		print("df_land/df_impr:")
+		display(df_land)
+		print("")
+		display(df_impr)
+
+	# merge the df_sqft_land/impr values into the X_sales dataframe:
+	X_sales["key"] = ds.df_sales["key"]
+	X_sales = X_sales.merge(df_land, on="key", how="left")
+	X_sales = X_sales.merge(df_impr, on="key", how="left")
+	X_sales.loc[X_sales["per_impr_sqft"].isna() | X_sales["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
+	X_sales.loc[X_sales["per_land_sqft"].isna() | X_sales["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
+	X_sales = X_sales.drop(columns=["key"])
+
 	X_sales_improved = X_sales[X_sales["bldg_area_finished_sqft"].gt(0)]
 	X_sales_vacant = X_sales[X_sales["bldg_area_finished_sqft"].eq(0)]
-	X_sales["prediction_impr"] = X_sales_improved["bldg_area_finished_sqft"] * ind_per_built_sqft
-	X_sales["prediction_vacant"] = X_sales_vacant["land_area_sqft"] * ind_per_land_sqft
-	X_sales["prediction"] = np.where(X_sales["bldg_area_finished_sqft"].gt(0), X_sales["prediction_impr"], X_sales["prediction_vacant"])
+	X_sales["prediction_impr"] = X_sales_improved["bldg_area_finished_sqft"] * X_sales_improved["per_impr_sqft"]
+	X_sales["prediction_land"] = X_sales_vacant["land_area_sqft"] * X_sales_vacant["per_land_sqft"]
+	X_sales["prediction"] = np.where(X_sales["bldg_area_finished_sqft"].gt(0), X_sales["prediction_impr"], X_sales["prediction_land"])
 	y_pred_sales = X_sales["prediction"].to_numpy()
-	X_sales.drop(columns=["prediction_impr", "prediction_vacant", "prediction"], inplace=True)
+	X_sales.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_sqft"], inplace=True)
 	timing.stop("predict_sales")
 
 	timing.start("predict_full")
 	X_univ = ds.X_univ
+
+	# merge the df_sqft_land/impr values into the X_univ dataframe:
+	X_univ["key"] = ds.df_universe["key"]
+	X_univ = X_univ.merge(df_land, on="key", how="left")
+	X_univ = X_univ.merge(df_impr, on="key", how="left")
+	X_univ.loc[X_univ["per_impr_sqft"].isna() | X_univ["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
+	X_univ.loc[X_univ["per_land_sqft"].isna() | X_univ["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
+	X_univ = X_univ.drop(columns=["key"])
+
 	X_univ_improved = X_univ[X_univ["bldg_area_finished_sqft"].gt(0)]
 	X_univ_vacant = X_univ[X_univ["bldg_area_finished_sqft"].eq(0)]
-	X_univ["prediction_impr"] = X_univ_improved["bldg_area_finished_sqft"] * ind_per_built_sqft
-	X_univ["prediction_vacant"] = X_univ_vacant["land_area_sqft"] * ind_per_land_sqft
-	X_univ["prediction"] = np.where(X_univ["bldg_area_finished_sqft"].gt(0), X_univ["prediction_impr"], X_univ["prediction_vacant"])
+	X_univ["prediction_impr"] = X_univ_improved["bldg_area_finished_sqft"] * X_univ_improved["per_impr_sqft"]
+	X_univ["prediction_land"] = X_univ_vacant["land_area_sqft"] * X_univ_vacant["per_land_sqft"]
+	X_univ.loc[X_univ["prediction_impr"].isna() | X_univ["prediction_impr"].eq(0)] = overall_per_impr_sqft
+	X_univ.loc[X_univ["prediction_land"].isna() | X_univ["prediction_land"].eq(0)] = overall_per_land_sqft
+	X_univ["prediction"] = np.where(X_univ["bldg_area_finished_sqft"].gt(0), X_univ["prediction_impr"], X_univ["prediction_land"])
 	y_pred_univ = X_univ["prediction"].to_numpy()
-	X_univ.drop(columns=["prediction_impr", "prediction_vacant", "prediction"], inplace=True)
+	X_univ.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_sqft"], inplace=True)
 	timing.stop("predict_full")
 
 	timing.stop("total")
@@ -1402,7 +1553,7 @@ def run_naive_sqft(
 		y_pred_sales = ds.y_sales * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_sales))
 		y_pred_univ = _sales_chase_univ(df, ind_var, y_pred_univ) * np.random.choice([1-sales_chase, 1+sales_chase], len(y_pred_univ))
 
-	name = "naive_sqft"
+	name = "local_sqft"
 	if sales_chase:
 		name += "*"
 
@@ -1553,108 +1704,7 @@ def run_local_sqft(
 		print(f"--> local:")
 		display(df_land)
 
-	timing.start("predict_test")
-	X_test = ds.X_test
-
-	pd.set_option('display.max_columns', None)
-
-	df_impr = df_impr[["key", "per_impr_sqft"]]
-	df_land = df_land[["key", "per_land_sqft"]]
-
-	# merge the df_sqft_land/impr values into the X_test dataframe:
-	X_test["key"] = ds.df_test["key"]
-	X_test = X_test.merge(df_land, on="key", how="left")
-	X_test = X_test.merge(df_impr, on="key", how="left")
-	X_test.loc[X_test["per_impr_sqft"].isna() | X_test["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
-	X_test.loc[X_test["per_land_sqft"].isna() | X_test["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
-	X_test = X_test.drop(columns=["key"])
-
-	X_test_improved = X_test[X_test["bldg_area_finished_sqft"].gt(0)]
-	X_test_vacant = X_test[X_test["bldg_area_finished_sqft"].eq(0)]
-	X_test["prediction_impr"] = X_test_improved["bldg_area_finished_sqft"] * X_test_improved["per_impr_sqft"]
-	X_test["prediction_land"] = X_test_vacant["land_area_sqft"] * X_test_vacant["per_land_sqft"]
-	X_test["prediction"] = np.where(X_test["bldg_area_finished_sqft"].gt(0), X_test["prediction_impr"], X_test["prediction_land"])
-
-	y_pred_test = X_test["prediction"].to_numpy()
-	# TODO: later, don't drop these columns, use them to predict land value everywhere
-	X_test.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_sqft"], inplace=True)
-	timing.stop("predict_test")
-
-	timing.start("predict_sales")
-	X_sales = ds.X_sales
-
-	if verbose:
-		print("df_land/df_impr:")
-		display(df_land)
-		print("")
-		display(df_impr)
-
-	# merge the df_sqft_land/impr values into the X_sales dataframe:
-	X_sales["key"] = ds.df_sales["key"]
-	X_sales = X_sales.merge(df_land, on="key", how="left")
-	X_sales = X_sales.merge(df_impr, on="key", how="left")
-	X_sales.loc[X_sales["per_impr_sqft"].isna() | X_sales["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
-	X_sales.loc[X_sales["per_land_sqft"].isna() | X_sales["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
-	X_sales = X_sales.drop(columns=["key"])
-
-	X_sales_improved = X_sales[X_sales["bldg_area_finished_sqft"].gt(0)]
-	X_sales_vacant = X_sales[X_sales["bldg_area_finished_sqft"].eq(0)]
-	X_sales["prediction_impr"] = X_sales_improved["bldg_area_finished_sqft"] * X_sales_improved["per_impr_sqft"]
-	X_sales["prediction_land"] = X_sales_vacant["land_area_sqft"] * X_sales_vacant["per_land_sqft"]
-	X_sales["prediction"] = np.where(X_sales["bldg_area_finished_sqft"].gt(0), X_sales["prediction_impr"], X_sales["prediction_land"])
-	y_pred_sales = X_sales["prediction"].to_numpy()
-	X_sales.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_sqft"], inplace=True)
-	timing.stop("predict_sales")
-
-	timing.start("predict_full")
-	X_univ = ds.X_univ
-
-	# merge the df_sqft_land/impr values into the X_univ dataframe:
-	X_univ["key"] = ds.df_universe["key"]
-	X_univ = X_univ.merge(df_land, on="key", how="left")
-	X_univ = X_univ.merge(df_impr, on="key", how="left")
-	X_univ.loc[X_univ["per_impr_sqft"].isna() | X_univ["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
-	X_univ.loc[X_univ["per_land_sqft"].isna() | X_univ["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
-	X_univ = X_univ.drop(columns=["key"])
-
-	X_univ_improved = X_univ[X_univ["bldg_area_finished_sqft"].gt(0)]
-	X_univ_vacant = X_univ[X_univ["bldg_area_finished_sqft"].eq(0)]
-	X_univ["prediction_impr"] = X_univ_improved["bldg_area_finished_sqft"] * X_univ_improved["per_impr_sqft"]
-	X_univ["prediction_land"] = X_univ_vacant["land_area_sqft"] * X_univ_vacant["per_land_sqft"]
-	X_univ.loc[X_univ["prediction_impr"].isna() | X_univ["prediction_impr"].eq(0)] = overall_per_impr_sqft
-	X_univ.loc[X_univ["prediction_land"].isna() | X_univ["prediction_land"].eq(0)] = overall_per_land_sqft
-	X_univ["prediction"] = np.where(X_univ["bldg_area_finished_sqft"].gt(0), X_univ["prediction_impr"], X_univ["prediction_land"])
-	y_pred_univ = X_univ["prediction"].to_numpy()
-	X_univ.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_sqft"], inplace=True)
-	timing.stop("predict_full")
-
-	timing.stop("total")
-
-	df = ds.df_universe
-	ind_var = ds.ind_var
-
-	if sales_chase:
-		y_pred_test = ds.y_test * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_test))
-		y_pred_sales = ds.y_sales * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_sales))
-		y_pred_univ = _sales_chase_univ(df, ind_var, y_pred_univ) * np.random.choice([1-sales_chase, 1+sales_chase], len(y_pred_univ))
-
-	name = "local_sqft"
-	if sales_chase:
-		name += "*"
-
-	results = SingleModelResults(
-		ds,
-		"prediction",
-		"he_id",
-		name,
-		None,
-		y_pred_test,
-		y_pred_sales,
-		y_pred_univ,
-		timing
-	)
-
-	return results
+	return predict_local_sqft(ds, df_impr, df_land, timing, overall_per_impr_sqft, overall_per_land_sqft, sales_chase, verbose)
 
 
 ##### PRIVATE:
