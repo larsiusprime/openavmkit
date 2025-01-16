@@ -509,33 +509,33 @@ def predict_mra(
 		verbose: bool = False
 ):
 	# predict on test set:
-		timing.start("predict_test")
-		y_pred_test = fitted_model.predict(ds.X_test).to_numpy()
-		timing.stop("predict_test")
+	timing.start("predict_test")
+	y_pred_test = fitted_model.predict(ds.X_test).to_numpy()
+	timing.stop("predict_test")
 
-		# predict on the sales set:
-		timing.start("predict_sales")
-		y_pred_sales = fitted_model.predict(ds.X_sales).to_numpy()
-		timing.stop("predict_sales")
+	# predict on the sales set:
+	timing.start("predict_sales")
+	y_pred_sales = fitted_model.predict(ds.X_sales).to_numpy()
+	timing.stop("predict_sales")
 
-		# predict on the full set:
-		timing.start("predict_full")
-		y_pred_univ = fitted_model.predict(ds.X_univ).to_numpy()
-		timing.stop("predict_full")
+	# predict on the full set:
+	timing.start("predict_full")
+	y_pred_univ = fitted_model.predict(ds.X_univ).to_numpy()
+	timing.stop("predict_full")
 
-		timing.stop("total")
+	timing.stop("total")
 
-		results = SingleModelResults(
-			ds,
-			"prediction",
-			"he_id",
-			"mra",
-			fitted_model,
-			y_pred_test,
-			y_pred_sales,
-			y_pred_univ,
-			timing,
-			verbose=verbose
+	results = SingleModelResults(
+		ds,
+		"prediction",
+		"he_id",
+		"mra",
+		fitted_model,
+		y_pred_test,
+		y_pred_sales,
+		y_pred_univ,
+		timing,
+		verbose=verbose
 	)
 
 	return results
@@ -574,24 +574,11 @@ def run_mra(
 		return predict_mra(ds, fitted_model, timing, verbose)
 
 
-def run_assessor(
+def predict_assessor(
 		ds: DataSplit,
+		timing: TimingData,
 		verbose: bool = False
 ):
-	timing = TimingData()
-
-	timing.start("total")
-
-	timing.start("setup")
-	ds.split()
-	timing.stop("setup")
-
-	timing.start("parameter_search")
-	timing.stop("parameter_search")
-
-	timing.start("train")
-	timing.stop("train")
-
 	# predict on test set:
 	timing.start("predict_test")
 	y_pred_test = ds.X_test["assr_market_value"].to_numpy()
@@ -623,6 +610,27 @@ def run_assessor(
 	)
 
 	return results
+
+
+def run_assessor(
+		ds: DataSplit,
+		verbose: bool = False
+):
+	timing = TimingData()
+
+	timing.start("total")
+
+	timing.start("setup")
+	ds.split()
+	timing.stop("setup")
+
+	timing.start("parameter_search")
+	timing.stop("parameter_search")
+
+	timing.start("train")
+	timing.stop("train")
+
+	return predict_assessor(ds, timing, verbose)
 
 
 def run_kernel(
@@ -891,6 +899,41 @@ def run_gwr(
 	return results
 
 
+def predict_xgboost(
+		ds: DataSplit,
+		xgboost_model: xgboost.XGBRegressor,
+		timing: TimingData,
+		verbose: bool = False
+):
+	timing.start("predict_test")
+	y_pred_test = xgboost_model.predict(ds.X_test)
+	timing.stop("predict_test")
+
+	timing.start("predict_sales")
+	y_pred_sales = xgboost_model.predict(ds.X_sales)
+	timing.stop("predict_sales")
+
+	timing.start("predict_full")
+	y_pred_univ = xgboost_model.predict(ds.X_univ)
+	timing.stop("predict_full")
+
+	timing.stop("total")
+
+	results = SingleModelResults(
+		ds,
+		"prediction",
+		"he_id",
+		"xgboost",
+		xgboost_model,
+		y_pred_test,
+		y_pred_sales,
+		y_pred_univ,
+		timing,
+		verbose=verbose
+	)
+	return results
+
+
 def run_xgboost(
 		ds: DataSplit,
 		outpath: str,
@@ -926,16 +969,30 @@ def run_xgboost(
 	xgboost_model.fit(ds.X_train, ds.y_train)
 	timing.stop("train")
 
+	return predict_xgboost(
+		ds,
+		xgboost_model,
+		timing,
+		verbose
+	)
+
+
+def predict_lightgbm(
+		ds: DataSplit,
+		gbm: lgb.Booster,
+		timing: TimingData,
+		verbose: bool = False
+):
 	timing.start("predict_test")
-	y_pred_test = xgboost_model.predict(ds.X_test)
+	y_pred_test = gbm.predict(ds.X_test, num_iteration=gbm.best_iteration)
 	timing.stop("predict_test")
 
 	timing.start("predict_sales")
-	y_pred_sales = xgboost_model.predict(ds.X_sales)
+	y_pred_sales = gbm.predict(ds.X_sales, num_iteration=gbm.best_iteration)
 	timing.stop("predict_sales")
 
 	timing.start("predict_full")
-	y_pred_univ = xgboost_model.predict(ds.X_univ)
+	y_pred_univ = gbm.predict(ds.X_univ, num_iterations=gbm.best_iteration)
 	timing.stop("predict_full")
 
 	timing.stop("total")
@@ -944,12 +1001,13 @@ def run_xgboost(
 		ds,
 		"prediction",
 		"he_id",
-		"xgboost",
-		xgboost_model,
+		"lightgbm",
+		gbm,
 		y_pred_test,
 		y_pred_sales,
 		y_pred_univ,
-		timing
+		timing,
+		verbose=verbose
 	)
 	return results
 
@@ -1006,16 +1064,31 @@ def run_lightgbm(
 	)
 	timing.stop("train")
 
+	return predict_lightgbm(ds, gbm, timing, verbose)
+
+
+def predict_catboost(
+		ds: DataSplit,
+		catboost_model: catboost.CatBoostRegressor,
+		timing: TimingData,
+		verbose: bool = False
+):
+	cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
+
+	test_pool = Pool(data=ds.X_test, label=ds.y_test, cat_features=cat_vars)
+	sales_pool = Pool(data=ds.X_sales, label=ds.y_sales, cat_features=cat_vars)
+	univ_pool = Pool(data=ds.X_univ, cat_features=cat_vars)
+
 	timing.start("predict_test")
-	y_pred_test = gbm.predict(ds.X_test, num_iteration=gbm.best_iteration)
+	y_pred_test = catboost_model.predict(test_pool)
 	timing.stop("predict_test")
 
 	timing.start("predict_sales")
-	y_pred_sales = gbm.predict(ds.X_sales, num_iteration=gbm.best_iteration)
+	y_pred_sales = catboost_model.predict(sales_pool)
 	timing.stop("predict_sales")
 
 	timing.start("predict_full")
-	y_pred_univ = gbm.predict(ds.X_univ, num_iterations=gbm.best_iteration)
+	y_pred_univ = catboost_model.predict(univ_pool)
 	timing.stop("predict_full")
 
 	timing.stop("total")
@@ -1024,13 +1097,15 @@ def run_lightgbm(
 		ds,
 		"prediction",
 		"he_id",
-		"lightgbm",
-		gbm,
+		"catboost",
+		catboost_model,
 		y_pred_test,
 		y_pred_sales,
 		y_pred_univ,
-		timing
+		timing,
+		verbose=verbose
 	)
+
 	return results
 
 
@@ -1064,9 +1139,6 @@ def run_catboost(
 	cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
 	catboost_model = catboost.CatBoostRegressor(**params)
 	train_pool = Pool(data=ds.X_train, label=ds.y_train, cat_features=cat_vars)
-	test_pool = Pool(data=ds.X_test, label=ds.y_test, cat_features=cat_vars)
-	sales_pool = Pool(data=ds.X_sales, label=ds.y_sales, cat_features=cat_vars)
-	univ_pool = Pool(data=ds.X_univ, cat_features=cat_vars)
 
 	timing.stop("setup")
 
@@ -1074,33 +1146,7 @@ def run_catboost(
 	catboost_model.fit(train_pool)
 	timing.stop("train")
 
-	timing.start("predict_test")
-	y_pred_test = catboost_model.predict(test_pool)
-	timing.stop("predict_test")
-
-	timing.start("predict_sales")
-	y_pred_sales = catboost_model.predict(sales_pool)
-	timing.stop("predict_sales")
-
-	timing.start("predict_full")
-	y_pred_univ = catboost_model.predict(univ_pool)
-	timing.stop("predict_full")
-
-	timing.stop("total")
-
-	results = SingleModelResults(
-		ds,
-		"prediction",
-		"he_id",
-		"catboost",
-		catboost_model,
-		y_pred_test,
-		y_pred_sales,
-		y_pred_univ,
-		timing
-	)
-
-	return results
+	return predict_catboost(ds, catboost_model, timing, verbose)
 
 
 def run_garbage(
