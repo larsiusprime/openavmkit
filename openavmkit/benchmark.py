@@ -1,23 +1,19 @@
 import os
 import pickle
 
-import numpy as np
 import pandas as pd
-from IPython.core.display_functions import display
-from tabulate import tabulate
 
-from openavmkit.data import get_important_field, get_vacant
+from openavmkit.data import get_important_field
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, SingleModelResults, \
 	run_garbage, \
 	run_average, run_naive_sqft, DataSplit, run_kernel, run_local_sqft, run_assessor
 from openavmkit.reports import MarkdownReport, markdown_to_pdf
-from openavmkit.sales_scrutiny_study import SalesScrutinyStudy
-from openavmkit.time_adjustment import apply_time_adjustment, enrich_time_adjustment
+from openavmkit.time_adjustment import enrich_time_adjustment
 from openavmkit.utilities.data import div_z_safe, dataframe_to_markdown
 from openavmkit.utilities.format import fancy_format
 from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions, get_valuation_date, \
 	get_modeling_group, apply_dd_to_df_rows
-from openavmkit.utilities.stats import calc_vif, calc_vif_recursive_drop, calc_t_values, calc_t_values_recursive_drop, \
+from openavmkit.utilities.stats import calc_vif_recursive_drop, calc_t_values_recursive_drop, \
 	calc_p_values_recursive_drop, calc_elastic_net_regularization, calc_correlations, calc_r2, calc_cross_validation_score
 from openavmkit.utilities.timing import TimingData
 
@@ -84,7 +80,8 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 		"model":[],
 		"subset":[],
 		"utility_score": [],
-		"count":[],
+		"count_sales":[],
+		"count_univ":[],
 		"mse":[],
 		"rmse":[],
 		"r2":[],
@@ -108,7 +105,8 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 			data["model"].append(key)
 			data["subset"].append(subset)
 			data["utility_score"].append(results.utility)
-			data["count"].append(pred_results.ratio_study.count)
+			data["count_sales"].append(pred_results.ratio_study.count)
+			data["count_univ"].append(results.df_universe.shape[0])
 			data["mse"].append(pred_results.mse)
 			data["rmse"].append(pred_results.rmse)
 			data["r2"].append(pred_results.r2)
@@ -157,7 +155,8 @@ def format_benchmark_df(df: pd.DataFrame):
 
 	formats = {
 		"utility_score": fancy_format,
-		"count": "{:.0f}",
+		"count_sales": "{:,.0f}",
+		"count_univ": "{:,.0f}",
 		"mse": fancy_format,
 		"rmse": fancy_format,
 		"r2": "{:.2f}",
@@ -400,6 +399,10 @@ def optimize_ensemble(
 	ensemble_list = instructions.get(vacant_status, {}).get("ensemble", [])
 	if len(ensemble_list) == 0:
 		ensemble_list = [key for key in all_results.model_results.keys()]
+
+	# Never use an assessor's model in an ensemble!
+	if "assessor" in ensemble_list:
+		ensemble_list.remove("assessor")
 
 	best_list = []
 	best_score = float('inf')
@@ -1122,4 +1125,8 @@ def _run_models(
 
 	# Calculate final results, including ensemble
 	all_results.add_model("ensemble", ensemble_results)
+
+	print(f"BENCHMARK vacant_only={vacant_only}")
+	print(all_results.benchmark.print())
+
 	return all_results

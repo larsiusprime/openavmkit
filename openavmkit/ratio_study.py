@@ -43,7 +43,6 @@ class RatioStudy:
 				self.prb = float("nan")
 				return
 
-
 			self.count = len(predictions)
 			self.predictions = predictions
 			self.ground_truth = ground_truth
@@ -222,9 +221,6 @@ def _run_ratio_study_breakdowns(settings: dict, df_sales: pd.DataFrame, confiden
 					valid_field = "valid_for_ratio_study"
 					results_key = "improved"
 
-				# TODO: fix this upstream so we can assume the field is already boolean
-
-				df = boolify_column_in_df(df, valid_field)
 				df = df[df[valid_field].eq(True)]
 
 				for breakdown in breakdowns:

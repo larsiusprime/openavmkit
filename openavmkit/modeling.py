@@ -60,7 +60,7 @@ class PredictionResults:
 		self.y = y
 		self.y_pred = y_pred
 
-		df_valid = df[df["valid_for_ratio_study"].astype("str").eq("1")]
+		df_valid = df[df["valid_for_ratio_study"].eq(True)]
 
 		y = df_valid[ind_var].to_numpy()
 		y_pred = df_valid[prediction_field].to_numpy()
@@ -1510,10 +1510,6 @@ def run_local_sqft(
 	X_test = ds.X_test
 
 	pd.set_option('display.max_columns', None)
-	if verbose:
-		print("LOOKIT")
-		display(df_impr)
-		display(df_land)
 
 	df_impr = df_impr[["key", "per_impr_sqft"]]
 	df_land = df_land[["key", "per_land_sqft"]]
