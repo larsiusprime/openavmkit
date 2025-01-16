@@ -295,10 +295,15 @@ def _lightgbm_rolling_origin_cv(X, y, params, n_splits=5, random_state=42):
 
         params["verbosity"] = -1
 
+        num_boost_round = 1000
+        if "num_iterations" in params:
+            num_boost_round = params.pop("num_iterations")
+
         # Train LightGBM
         model = lgb.train(
             params,
             train_data,
+            num_boost_round = num_boost_round,
             valid_sets=[val_data],
             callbacks=[
                 lgb.early_stopping(stopping_rounds=5, verbose=False),  # Early stopping after 50 rounds
