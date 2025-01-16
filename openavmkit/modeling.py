@@ -502,6 +502,45 @@ def model_utility_score(
 	return final_score
 
 
+def predict_mra(
+		ds: DataSplit,
+		fitted_model: RegressionResults,
+		timing: TimingData,
+		verbose: bool = False
+):
+	# predict on test set:
+		timing.start("predict_test")
+		y_pred_test = fitted_model.predict(ds.X_test).to_numpy()
+		timing.stop("predict_test")
+
+		# predict on the sales set:
+		timing.start("predict_sales")
+		y_pred_sales = fitted_model.predict(ds.X_sales).to_numpy()
+		timing.stop("predict_sales")
+
+		# predict on the full set:
+		timing.start("predict_full")
+		y_pred_univ = fitted_model.predict(ds.X_univ).to_numpy()
+		timing.stop("predict_full")
+
+		timing.stop("total")
+
+		results = SingleModelResults(
+			ds,
+			"prediction",
+			"he_id",
+			"mra",
+			fitted_model,
+			y_pred_test,
+			y_pred_sales,
+			y_pred_univ,
+			timing,
+			verbose=verbose
+	)
+
+	return results
+
+
 def run_mra(
 		ds: DataSplit,
 		intercept: bool = True,
@@ -532,37 +571,7 @@ def run_mra(
 		fitted_model = linear_model.fit()
 		timing.stop("train")
 
-		# predict on test set:
-		timing.start("predict_test")
-		y_pred_test = fitted_model.predict(ds.X_test).to_numpy()
-		timing.stop("predict_test")
-
-		# predict on the sales set:
-		timing.start("predict_sales")
-		y_pred_sales = fitted_model.predict(ds.X_sales).to_numpy()
-		timing.stop("predict_sales")
-
-		# predict on the full set:
-		timing.start("predict_full")
-		y_pred_univ = fitted_model.predict(ds.X_univ).to_numpy()
-		timing.stop("predict_full")
-
-		timing.stop("total")
-
-		results = SingleModelResults(
-			ds,
-			"prediction",
-			"he_id",
-			"mra",
-			fitted_model,
-			y_pred_test,
-			y_pred_sales,
-			y_pred_univ,
-			timing,
-			verbose=verbose
-		)
-
-		return results
+		return predict_mra(ds, fitted_model, timing, verbose)
 
 
 def run_assessor(
