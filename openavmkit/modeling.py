@@ -752,6 +752,88 @@ def run_kernel(
 	return results
 
 
+def predict_gwr(
+		ds: DataSplit,
+		timing: TimingData,
+		gwr: GWR,
+		gwr_bw: float,
+		coords_train: list[tuple[float, float]],
+		X_train: np.ndarray,
+		y_train: np.ndarray,
+		verbose: bool
+):
+	X_test = ds.X_test.values
+	X_test = X_test.astype(np.float64)
+
+	X_sales = ds.X_sales.values
+	X_univ = ds.X_univ.values
+	X_sales = X_sales.astype(np.float64)
+	X_univ = X_univ.astype(np.float64)
+
+	u_test = ds.df_test['longitude']
+	v_test = ds.df_test['latitude']
+	coords_test = list(zip(u_test, v_test))
+
+	u_sales = ds.df_sales['longitude']
+	v_sales = ds.df_sales['latitude']
+	coords_sales = list(zip(u_sales, v_sales))
+
+	u = ds.df_universe['longitude']
+	v = ds.df_universe['latitude']
+	coords_univ = list(zip(u,v))
+
+	np_coords_test = np.array(coords_test)
+	timing.start("predict_test")
+	gwr_result_test = gwr.predict(
+		np_coords_test,
+		X_test
+	)
+	y_pred_test = gwr_result_test.predictions.flatten()
+	timing.stop("predict_test")
+
+	timing.start("predict_sales")
+	if verbose:
+		print("GWR: predicting sales set...")
+	y_pred_sales = _run_gwr_prediction(
+		coords_sales,
+		coords_train,
+		X_sales,
+		X_train,
+		gwr_bw,
+		y_train
+	).flatten()
+	timing.stop("predict_sales")
+
+	timing.start("predict_full")
+	if verbose:
+		print("GWR: predicting full set...")
+	y_pred_univ = _run_gwr_prediction(
+		coords_univ,
+		coords_train,
+		X_univ,
+		X_train,
+		gwr_bw,
+		y_train
+	).flatten()
+	timing.stop("predict_full")
+
+	results = SingleModelResults(
+		ds,
+		"prediction",
+		"he_id",
+		"gwr",
+		gwr,
+		y_pred_test,
+		y_pred_sales,
+		y_pred_univ,
+		timing
+	)
+	timing.stop("total")
+
+	return results
+
+
+
 def run_gwr(
 		ds: DataSplit,
 		outpath: str,
@@ -779,35 +861,16 @@ def run_gwr(
 	v_train = ds.df_train['latitude']
 	coords_train = list(zip(u_train, v_train))
 
-	u_test = ds.df_test['longitude']
-	v_test = ds.df_test['latitude']
-	coords_test = list(zip(u_test, v_test))
-
-	u_sales = ds.df_sales['longitude']
-	v_sales = ds.df_sales['latitude']
-	coords_sales = list(zip(u_sales, v_sales))
-
-	u = ds.df_universe['longitude']
-	v = ds.df_universe['latitude']
-	coords_univ = list(zip(u,v))
-
 	y_train = ds.y_train.to_numpy().reshape((-1, 1))
 
 	X_train = ds.X_train.values
-	X_test = ds.X_test.values
-	X_sales = ds.X_sales.values
-	X_univ = ds.X_univ.values
 
 	# add a very small amount of random noise to every row in every column of X_train:
 	# this is to prevent singular matrix errors in the GWR
 	X_train += np.random.normal(0, 1e-6, X_train.shape)
-	X_test += np.random.normal(0, 1e-6, X_test.shape)
 
 	# ensure that every dtype of every column in X_* is a float and not an object:
 	X_train = X_train.astype(np.float64)
-	X_test = X_test.astype(np.float64)
-	X_sales = X_sales.astype(np.float64)
-	X_univ = X_univ.astype(np.float64)
 
 	# ensure that every dtype of y_train is a float and not an object:
 	y_train = y_train.astype(np.float64)
@@ -846,57 +909,7 @@ def run_gwr(
 	gwr = gwr_fit.model
 	timing.stop("train")
 
-	np_coords_test = np.array(coords_test)
-	timing.start("predict_test")
-	gwr_result_test = gwr.predict(
-		np_coords_test,
-		X_test
-	)
-	y_pred_test = gwr_result_test.predictions.flatten()
-	timing.stop("predict_test")
-
-	timing.start("predict_sales")
-	if verbose:
-		print("GWR: predicting sales set...")
-	y_pred_sales = _run_gwr_prediction(
-		coords_sales,
-		coords_train,
-		X_sales,
-		X_train,
-		gwr_bw,
-		y_train,
-		verbose=verbose
-	).flatten()
-	timing.stop("predict_sales")
-
-	timing.start("predict_full")
-	if verbose:
-		print("GWR: predicting full set...")
-	y_pred_univ = _run_gwr_prediction(
-		coords_univ,
-		coords_train,
-		X_univ,
-		X_train,
-		gwr_bw,
-		y_train,
-		verbose=verbose
-	).flatten()
-	timing.stop("predict_full")
-
-	results = SingleModelResults(
-		ds,
-		"prediction",
-		"he_id",
-		"gwr",
-		gwr,
-		y_pred_test,
-		y_pred_sales,
-		y_pred_univ,
-		timing
-	)
-	timing.stop("total")
-
-	return results
+	return predict_gwr(ds, timing, gwr, gwr_bw, coords_train, X_train, y_train, verbose)
 
 
 def predict_xgboost(
@@ -1810,8 +1823,7 @@ def _run_gwr_prediction(
 		X,
 		X_train,
 		gwr_bw,
-		y_train,
-		verbose:bool = False
+		y_train
 ):
 	gwr = GWR(coords_train, y_train, X_train, gwr_bw)
 	gwr_results = _gwr_predict(gwr, coords, X)
