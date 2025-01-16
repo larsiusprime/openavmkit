@@ -25,7 +25,7 @@ from statsmodels.nonparametric.kernel_regression import KernelReg
 from statsmodels.regression.linear_model import RegressionResults
 from xgboost import XGBRegressor
 
-from openavmkit.data import get_sales
+from openavmkit.data import get_sales, simulate_removed_buildings
 from openavmkit.ratio_study import RatioStudy
 from openavmkit.utilities.data import clean_column_names
 from openavmkit.utilities.stats import quick_median_chd
@@ -106,6 +106,7 @@ class DataSplit:
 	test_train_frac: float
 	random_seed: int
 	vacant_only: bool
+	hedonic: bool
 	ind_var: str
 	ind_var_test: str
 	dep_vars: list[str]
@@ -125,12 +126,19 @@ class DataSplit:
 			test_train_frac: float = 0.8,
 			random_seed: int = 1337,
 			vacant_only: bool = False,
+			hedonic: bool = False,
 			days_field: str = "sale_age_days",
 			init: bool = True
 	):
 		if init:
 			self.df_universe = df.copy()
 			self.df_sales = get_sales(df, settings, vacant_only).reset_index(drop=True)
+
+			if hedonic:
+				self.df_universe = simulate_removed_buildings(self.df_universe, settings)
+				self.df_sales = simulate_removed_buildings(self.df_sales, settings)
+				# transform df_universe & df_sales such that all improved characteristics are removed
+				pass
 
 			# Pre-sort dataframes so that rolling origin cross-validation can assume oldest observations first:
 			if days_field in self.df_universe:
@@ -151,6 +159,7 @@ class DataSplit:
 			self.one_hot_descendants = {}
 			self.random_seed = random_seed
 			self.vacant_only = vacant_only
+			self.hedonic = hedonic
 			self.days_field = days_field
 			self.test_train_frac = test_train_frac
 			self.split()
@@ -168,6 +177,7 @@ class DataSplit:
 			{},
 			0,
 			0,
+			False,
 			False,
 			"",
 			init=False
@@ -187,6 +197,7 @@ class DataSplit:
 		ds.test_train_frac = self.test_train_frac
 		ds.random_seed = self.random_seed
 		ds.vacant_only = self.vacant_only
+		ds.hedonic = self.hedonic
 		ds.ind_var = self.ind_var
 		ds.ind_var_test = self.ind_var_test
 		ds.dep_vars = self.dep_vars.copy()
@@ -371,9 +382,6 @@ class SingleModelResults:
 		df_sales = ds.df_sales.copy()
 		df_test = ds.df_test.copy()
 
-		y_test = ds.y_test
-		y_sales = ds.y_sales
-
 		df_univ[field_prediction] = y_pred_univ
 		if y_pred_sales is not None:
 			df_sales[field_prediction] = y_pred_sales
@@ -425,29 +433,29 @@ class SingleModelResults:
 	def summary(self):
 		str = ""
 
-		str += (f"Model type: {self.type}\n")
+		str += f"Model type: {self.type}\n"
 		# Print the # of rows in test & full set
 		# Print the MSE, RMSE, R2, and Adj R2 for test & full set
-		str += (f"-->Test set, rows: {len(self.pred_test.y)}\n")
-		str += (f"---->RMSE   : {self.pred_test.rmse:8.0f}\n")
-		str += (f"---->R2     : {self.pred_test.r2:8.4f}\n")
-		str += (f"---->Adj R2 : {self.pred_test.adj_r2:8.4f}\n")
-		str += (f"---->M.Ratio: {self.pred_test.ratio_study.median_ratio:8.4f}\n")
-		str += (f"---->COD    : {self.pred_test.ratio_study.cod:8.4f}\n")
-		str += (f"---->PRD    : {self.pred_test.ratio_study.prd:8.4f}\n")
-		str += (f"---->PRB    : {self.pred_test.ratio_study.prb:8.4f}\n")
-		str += (f"\n")
-		str += (f"-->Full set, rows: {len(self.pred_sales.y)}\n")
-		str += (f"---->RMSE   : {self.pred_sales.rmse:8.0f}\n")
-		str += (f"---->R2     : {self.pred_sales.r2:8.4f}\n")
-		str += (f"---->Adj R2 : {self.pred_sales.adj_r2:8.4f}\n")
-		str += (f"---->M.Ratio: {self.pred_sales.ratio_study.median_ratio:8.4f}\n")
-		str += (f"---->COD    : {self.pred_sales.ratio_study.cod:8.4f}\n")
-		str += (f"---->PRD    : {self.pred_sales.ratio_study.prd:8.4f}\n")
-		str += (f"---->PRB    : {self.pred_sales.ratio_study.prb:8.4f}\n")
-		str += (f"---->CHD    : {self.chd:8.4f}\n")
+		str += f"-->Test set, rows: {len(self.pred_test.y)}\n"
+		str += f"---->RMSE   : {self.pred_test.rmse:8.0f}\n"
+		str += f"---->R2     : {self.pred_test.r2:8.4f}\n"
+		str += f"---->Adj R2 : {self.pred_test.adj_r2:8.4f}\n"
+		str += f"---->M.Ratio: {self.pred_test.ratio_study.median_ratio:8.4f}\n"
+		str += f"---->COD    : {self.pred_test.ratio_study.cod:8.4f}\n"
+		str += f"---->PRD    : {self.pred_test.ratio_study.prd:8.4f}\n"
+		str += f"---->PRB    : {self.pred_test.ratio_study.prb:8.4f}\n"
+		str += f"\n"
+		str += f"-->Full set, rows: {len(self.pred_sales.y)}\n"
+		str += f"---->RMSE   : {self.pred_sales.rmse:8.0f}\n"
+		str += f"---->R2     : {self.pred_sales.r2:8.4f}\n"
+		str += f"---->Adj R2 : {self.pred_sales.adj_r2:8.4f}\n"
+		str += f"---->M.Ratio: {self.pred_sales.ratio_study.median_ratio:8.4f}\n"
+		str += f"---->COD    : {self.pred_sales.ratio_study.cod:8.4f}\n"
+		str += f"---->PRD    : {self.pred_sales.ratio_study.prd:8.4f}\n"
+		str += f"---->PRB    : {self.pred_sales.ratio_study.prb:8.4f}\n"
+		str += f"---->CHD    : {self.chd:8.4f}\n"
 
-		str += (f"\n")
+		str += f"\n"
 		if self.type == "mra":
 			# print the coefficients?
 			pass
@@ -615,12 +623,6 @@ def run_kernel(
 		use_saved_params: bool = False,
 		verbose: bool = False
 ):
-	"""
-	Runs a non-parametric kernel regression model
-	:param ds:
-	:param verbose:
-	:return:
-	"""
 	timing = TimingData()
 
 	timing.start("total")
@@ -864,11 +866,6 @@ def run_gwr(
 	).flatten()
 	timing.stop("predict_full")
 
-	df = ds.df_universe
-	ind_var = ds.ind_var
-	ind_var_test = ds.ind_var_test
-	dep_vars = ds.dep_vars
-
 	results = SingleModelResults(
 		ds,
 		"prediction",
@@ -980,7 +977,7 @@ def run_lightgbm(
 	timing.start("train")
 	cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
 	lgb_train = lgb.Dataset(ds.X_train, ds.y_train, categorical_feature=cat_vars)
-	lgb_test  = lgb.Dataset(ds.X_test,  ds.y_test,  categorical_feature=cat_vars, reference=lgb_train)
+	lgb_test = lgb.Dataset(ds.X_test,  ds.y_test,  categorical_feature=cat_vars, reference=lgb_train)
 
 	params["verbosity"] = -1
 
@@ -992,7 +989,7 @@ def run_lightgbm(
 		params,
 		lgb_train,
 		num_boost_round=num_boost_round,
-		valid_sets=lgb_test,
+		valid_sets=[lgb_test],
 		callbacks=[
 			lgb.early_stopping(stopping_rounds=5, verbose=False),
 			lgb.log_evaluation(period=0)
@@ -1153,8 +1150,6 @@ def run_garbage(
 
 	df = ds.df_universe
 	ind_var = ds.ind_var
-	ind_var_test = ds.ind_var_test
-	dep_vars = ds.dep_vars
 
 	if sales_chase:
 		y_pred_test = ds.y_test * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_test))
@@ -1209,8 +1204,6 @@ def run_average(
 	timing.stop("setup")
 
 	timing.start("train")
-	min_value = ds.y_train.min()
-	max_value = ds.y_train.max()
 	timing.stop("train")
 
 	timing.start("predict_test")
@@ -1274,7 +1267,6 @@ def run_naive_sqft(
 	"""
 	Runs a garbage model that simply predicts the median $/sqft of the training set for everything
 	:param ds: The data split object containing processed input data
-	:param type: The type of average to use ("mean" or "median")
 	:param sales_chase: If not 0, simulate sales chasing by predicting the sales set as the test set, with this much noise
 	:param verbose: Whether to print verbose output
 	:return: The model results
@@ -1383,7 +1375,7 @@ def run_local_sqft(
 	"""
 	Runs a model that simply predicts the median $/sqft of the training set on a per-location basis
 	:param ds: The data split object containing processed input data
-	:param type: The type of average to use ("mean" or "median")
+	:param location_fields: The fields to use for location-based prediction
 	:param sales_chase: If not 0, simulate sales chasing by predicting the sales set as the test set, with this much noise
 	:param verbose: Whether to print verbose output
 	:return: The model results
@@ -1627,7 +1619,7 @@ def _sales_chase_univ(df_in, ind_var, y_pred_univ):
 	return df_univ["prediction"].to_numpy()
 
 
-def _gwr_predict(model, points, P, exog_scale=None, exog_resid=None, fit_params={}):
+def _gwr_predict(model, points, P, exog_scale=None, exog_resid=None, fit_params=None):
 	"""
 	Standalone function for GWR predictions for a larger set of samples in one go.
 
@@ -1651,6 +1643,9 @@ def _gwr_predict(model, points, P, exog_scale=None, exog_resid=None, fit_params=
 	results      : dict
 								 A dictionary with keys "params" and "predy" containing the predictions.
 	"""
+	if fit_params is None:
+		fit_params = {}
+
 	# Use model's fit method to get training scale and residuals if not provided
 	if (exog_scale is None) and (exog_resid is None):
 		train_gwr = model.fit(**fit_params)
