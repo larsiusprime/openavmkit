@@ -633,22 +633,12 @@ def run_assessor(
 	return predict_assessor(ds, timing, verbose)
 
 
-def run_kernel(
+def predict_kernel(
 		ds: DataSplit,
-		outpath: str,
-		save_params: bool = False,
-		use_saved_params: bool = False,
+		timing: TimingData,
+		kr: KernelReg,
 		verbose: bool = False
 ):
-	timing = TimingData()
-
-	timing.start("total")
-
-	timing.start("setup")
-	ds = ds.encode_categoricals_with_one_hot()
-	ds.split()
-	u_train = ds.df_train['longitude']
-	v_train = ds.df_train['latitude']
 
 	u_test = ds.df_test['longitude']
 	v_test = ds.df_test['latitude']
@@ -658,10 +648,6 @@ def run_kernel(
 
 	u = ds.df_universe['longitude']
 	v = ds.df_universe['latitude']
-
-	vars_train = (u_train, v_train)
-	for col in ds.X_train.columns:
-		vars_train += (ds.X_train[col].to_numpy(),)
 
 	vars_test = (u_test, v_test)
 	for col in ds.X_test.columns:
@@ -675,45 +661,9 @@ def run_kernel(
 	for col in ds.X_univ.columns:
 		vars_univ += (ds.X_univ[col].to_numpy(),)
 
-	X_train = np.column_stack(vars_train)
 	X_test = np.column_stack(vars_test)
 	X_sales = np.column_stack(vars_sales)
 	X_univ = np.column_stack(vars_univ)
-	y_train = ds.y_train.to_numpy()
-	timing.stop("setup")
-
-	timing.start("parameter_search")
-
-	kernel_bw = None
-	if use_saved_params:
-		if os.path.exists(f"{outpath}/kernel_bw.pkl"):
-			with open(f"{outpath}/kernel_bw.pkl", "rb") as f:
-				kernel_bw = pickle.load(f)
-				# if kernel_bw is not the same length as the number of variables:
-				if len(kernel_bw) != X_train.shape[1]:
-					print(f"-->saved bandwidth ({len(kernel_bw)} does not match the number of variables ({X_train.shape[1]}), regenerating...")
-					kernel_bw = None
-			if verbose:
-				print(f"--> using saved bandwidth: {kernel_bw}")
-	if kernel_bw is None:
-		kernel_bw = "cv_ls"
-		if verbose:
-			print(f"--> searching for optimal bandwidth...")
-	timing.stop("parameter_search")
-
-	timing.start("train")
-	# TODO: can adjust this to handle categorical data better
-	var_type = "c" * X_train.shape[1]
-	defaults = EstimatorSettings(efficient=True)
-	kr = KernelReg(endog=y_train, exog=X_train, var_type=var_type, bw=kernel_bw, defaults=defaults)
-	kernel_bw = kr.bw
-	if save_params:
-		os.makedirs(outpath, exist_ok=True)
-		with open(f"{outpath}/kernel_bw.pkl", "wb") as f:
-			pickle.dump(kernel_bw, f)
-	if verbose:
-		print(f"--> optimal bandwidth = {kernel_bw}")
-	timing.stop("train")
 
 	if verbose:
 		print(f"--> predicting on test set...")
@@ -750,6 +700,68 @@ def run_kernel(
 	)
 
 	return results
+
+
+def run_kernel(
+		ds: DataSplit,
+		outpath: str,
+		save_params: bool = False,
+		use_saved_params: bool = False,
+		verbose: bool = False
+):
+	timing = TimingData()
+
+	timing.start("total")
+
+	timing.start("setup")
+	ds = ds.encode_categoricals_with_one_hot()
+	ds.split()
+	u_train = ds.df_train['longitude']
+	v_train = ds.df_train['latitude']
+
+	vars_train = (u_train, v_train)
+	for col in ds.X_train.columns:
+		vars_train += (ds.X_train[col].to_numpy(),)
+
+	X_train = np.column_stack(vars_train)
+
+	y_train = ds.y_train.to_numpy()
+	timing.stop("setup")
+
+	timing.start("parameter_search")
+
+	kernel_bw = None
+	if use_saved_params:
+		if os.path.exists(f"{outpath}/kernel_bw.pkl"):
+			with open(f"{outpath}/kernel_bw.pkl", "rb") as f:
+				kernel_bw = pickle.load(f)
+				# if kernel_bw is not the same length as the number of variables:
+				if len(kernel_bw) != X_train.shape[1]:
+					print(f"-->saved bandwidth ({len(kernel_bw)} does not match the number of variables ({X_train.shape[1]}), regenerating...")
+					kernel_bw = None
+			if verbose:
+				print(f"--> using saved bandwidth: {kernel_bw}")
+	if kernel_bw is None:
+		kernel_bw = "cv_ls"
+		if verbose:
+			print(f"--> searching for optimal bandwidth...")
+	timing.stop("parameter_search")
+
+	timing.start("train")
+	# TODO: can adjust this to handle categorical data better
+	var_type = "c" * X_train.shape[1]
+	defaults = EstimatorSettings(efficient=True)
+	kr = KernelReg(endog=y_train, exog=X_train, var_type=var_type, bw=kernel_bw, defaults=defaults)
+	kernel_bw = kr.bw
+	if save_params:
+		os.makedirs(outpath, exist_ok=True)
+		with open(f"{outpath}/kernel_bw.pkl", "wb") as f:
+			pickle.dump(kernel_bw, f)
+	if verbose:
+		print(f"--> optimal bandwidth = {kernel_bw}")
+	timing.stop("train")
+
+	return predict_kernel(ds, timing, kr, verbose)
 
 
 def predict_gwr(
