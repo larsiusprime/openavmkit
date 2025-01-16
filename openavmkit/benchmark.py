@@ -281,9 +281,9 @@ def _run_one_model(
 	elif model_name == "garbage_normal":
 		results = run_garbage(ds, normal=True, sales_chase=sales_chase, verbose=verbose)
 	elif model_name == "mean":
-		results = run_average(ds, type="mean", sales_chase=sales_chase, verbose=verbose)
+		results = run_average(ds, average_type="mean", sales_chase=sales_chase, verbose=verbose)
 	elif model_name == "median":
-		results = run_average(ds, type="median", sales_chase=sales_chase, verbose=verbose)
+		results = run_average(ds, average_type="median", sales_chase=sales_chase, verbose=verbose)
 	elif model_name == "naive_sqft":
 		results = run_naive_sqft(ds, sales_chase=sales_chase, verbose=verbose)
 	elif model_name == "local_naive_sqft":

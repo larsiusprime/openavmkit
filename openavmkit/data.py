@@ -27,7 +27,12 @@ def enrich_time(df: pd.DataFrame) -> pd.DataFrame:
 	return df
 
 
-def simulate_removed_buildings(df: pd.DataFrame, idx_vacant: Series, settings: dict):
+def simulate_removed_buildings(df: pd.DataFrame, settings: dict, idx_vacant: Series = None):
+
+	if idx_vacant is None:
+		# do the whole thing:
+		idx_vacant = df.index
+
 	fields_impr = get_fields_impr(settings, df)
 
 	# Step 3: fill unknown values for categorical improvements:
@@ -93,7 +98,7 @@ def get_sales(df_in: pd.DataFrame, settings: dict, vacant_only: bool = False) ->
 			raise ValueError(f"The 'vacant_sale' column must be a boolean type (found: {vacant_sale_dtype})")
 		# check for vacant sales:
 		idx_vacant_sale = df["vacant_sale"].eq(True)
-		df = simulate_removed_buildings(df, idx_vacant_sale, settings)
+		df = simulate_removed_buildings(df, settings, idx_vacant_sale)
 
 		# if a property was NOT vacant at time of sale, but is vacant now, then the sale is invalid, because we don't
 		# know e.g. what the square footage was at the time of sale
