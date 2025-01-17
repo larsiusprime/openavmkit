@@ -27,12 +27,29 @@ from xgboost import XGBRegressor
 
 from openavmkit.data import get_sales, simulate_removed_buildings
 from openavmkit.ratio_study import RatioStudy
+from openavmkit.utilities.modeling import GarbageModel, AverageModel, NaiveSqftModel, LocalSqftModel, AssessorModel, \
+	GWRModel
 from openavmkit.utilities.data import clean_column_names
 from openavmkit.utilities.stats import quick_median_chd
 from openavmkit.utilities.tuning import tune_lightgbm, tune_xgboost, tune_catboost
 from openavmkit.utilities.timing import TimingData
 
-PredictionModel = Union[RegressionResults, XGBRegressor, Booster, CatBoostRegressor, GWR, KernelReg, str, None]
+PredictionModel = Union[
+	RegressionResults,
+	XGBRegressor,
+	Booster,
+	CatBoostRegressor,
+	GWR,
+	KernelReg,
+	GarbageModel,
+	AverageModel,
+	NaiveSqftModel,
+	LocalSqftModel,
+	AssessorModel,
+	GWRModel,
+	str,
+	None
+]
 
 class PredictionResults:
 	ind_var: str
@@ -576,22 +593,25 @@ def run_mra(
 
 def predict_assessor(
 		ds: DataSplit,
+		assr_model: AssessorModel,
 		timing: TimingData,
 		verbose: bool = False
 ):
+	field = assr_model.field
+
 	# predict on test set:
 	timing.start("predict_test")
-	y_pred_test = ds.X_test["assr_market_value"].to_numpy()
+	y_pred_test = ds.X_test[field].to_numpy()
 	timing.stop("predict_test")
 
 	# predict on the sales set:
 	timing.start("predict_sales")
-	y_pred_sales = ds.X_sales["assr_market_value"].to_numpy()
+	y_pred_sales = ds.X_sales[field].to_numpy()
 	timing.stop("predict_sales")
 
 	# predict on the full set:
 	timing.start("predict_full")
-	y_pred_univ = ds.X_univ["assr_market_value"].to_numpy()
+	y_pred_univ = ds.X_univ[field].to_numpy()
 	timing.stop("predict_full")
 
 	timing.stop("total")
@@ -601,7 +621,7 @@ def predict_assessor(
 		"prediction",
 		"he_id",
 		"assessor",
-		None,
+		assr_model,
 		y_pred_test,
 		y_pred_sales,
 		y_pred_univ,
@@ -630,13 +650,14 @@ def run_assessor(
 	timing.start("train")
 	timing.stop("train")
 
-	return predict_assessor(ds, timing, verbose)
+	assr_model = AssessorModel("assr_market_value")
+	return predict_assessor(ds, assr_model, timing, verbose)
 
 
 def predict_kernel(
 		ds: DataSplit,
-		timing: TimingData,
 		kr: KernelReg,
+		timing: TimingData,
 		verbose: bool = False
 ):
 
@@ -761,19 +782,22 @@ def run_kernel(
 		print(f"--> optimal bandwidth = {kernel_bw}")
 	timing.stop("train")
 
-	return predict_kernel(ds, timing, kr, verbose)
+	return predict_kernel(ds, kr, timing, verbose)
 
 
 def predict_gwr(
 		ds: DataSplit,
+		gwr_model: GWRModel,
 		timing: TimingData,
-		gwr: GWR,
-		gwr_bw: float,
-		coords_train: list[tuple[float, float]],
-		X_train: np.ndarray,
-		y_train: np.ndarray,
 		verbose: bool
 ):
+
+	gwr = gwr_model.gwr
+	gwr_bw = gwr_model.gwr_bw
+	coords_train = gwr_model.coords_train
+	X_train = gwr_model.X_train
+	y_train = gwr_model.y_train
+
 	X_test = ds.X_test.values
 	X_test = X_test.astype(np.float64)
 
@@ -834,7 +858,7 @@ def predict_gwr(
 		"prediction",
 		"he_id",
 		"gwr",
-		gwr,
+		gwr_model,
 		y_pred_test,
 		y_pred_sales,
 		y_pred_univ,
@@ -843,7 +867,6 @@ def predict_gwr(
 	timing.stop("total")
 
 	return results
-
 
 
 def run_gwr(
@@ -921,7 +944,9 @@ def run_gwr(
 	gwr = gwr_fit.model
 	timing.stop("train")
 
-	return predict_gwr(ds, timing, gwr, gwr_bw, coords_train, X_train, y_train, verbose)
+	gwr_model = GWRModel(coords_train, X_train, y_train, gwr_bw, gwr)
+
+	return predict_gwr(ds, gwr_model, timing, verbose)
 
 
 def predict_xgboost(
@@ -1176,14 +1201,16 @@ def run_catboost(
 
 def predict_garbage(
 		ds: DataSplit,
-		normal: bool,
+		garbage_model: GarbageModel,
 		timing: TimingData,
-		min_value: float,
-		max_value: float,
-		sales_chase: float,
 		verbose: bool = False
 ):
 	timing.start("predict_test")
+	normal = garbage_model.normal
+	min_value = garbage_model.min_value
+	max_value = garbage_model.max_value
+	sales_chase = garbage_model.sales_chase
+
 	if normal:
 		y_pred_test = np.random.normal(loc=ds.y_train.mean(), scale=ds.y_train.std(), size=len(ds.X_test))
 	else:
@@ -1225,7 +1252,7 @@ def predict_garbage(
 		"prediction",
 		"he_id",
 		name,
-		None,
+		garbage_model,
 		y_pred_test,
 		y_pred_sales,
 		y_pred_univ,
@@ -1234,7 +1261,6 @@ def predict_garbage(
 	)
 
 	return results
-
 
 
 def run_garbage(
@@ -1268,17 +1294,21 @@ def run_garbage(
 	max_value = ds.y_train.max()
 	timing.stop("train")
 
-	return predict_garbage(ds, normal, timing, min_value, max_value, sales_chase, verbose)
+	garbage_model = GarbageModel(min_value, max_value, sales_chase, normal)
+
+	return predict_garbage(ds, garbage_model, timing, verbose)
 
 
 def predict_average(
 		ds: DataSplit,
+		average_model: AverageModel,
 		timing: TimingData,
-		type: str,
-		sales_chase: float,
 		verbose: bool = False
 ):
 	timing.start("predict_test")
+	type = average_model.type
+	sales_chase = average_model.sales_chase
+
 	if type == "median":
 		# get a series of equal length to ds.X_test filled with the mean of the training set
 		y_pred_test = np.full(len(ds.X_test), ds.y_train.median())
@@ -1321,7 +1351,7 @@ def predict_average(
 		"prediction",
 		"he_id",
 		name,
-		None,
+		average_model,
 		y_pred_test,
 		y_pred_sales,
 		y_pred_univ,
@@ -1361,18 +1391,22 @@ def run_average(
 	timing.start("train")
 	timing.stop("train")
 
-	return predict_average(ds, timing, average_type, sales_chase, verbose)
+	average_model = AverageModel(average_type, sales_chase)
+	return predict_average(ds, average_model, timing, verbose)
 
 
 def predict_naive_sqft(
 		ds: DataSplit,
+		sqft_model: NaiveSqftModel,
 		timing: TimingData,
-		ind_per_built_sqft: float,
-		ind_per_land_sqft: float,
-		sales_chase: float,
 		verbose: bool = False
 ):
 	timing.start("predict_test")
+
+	ind_per_built_sqft = sqft_model.ind_per_built_sqft
+	ind_per_land_sqft = sqft_model.ind_per_land_sqft
+	sales_chase = sqft_model.sales_chase
+
 	X_test = ds.X_test
 	X_test_improved = X_test[X_test["bldg_area_finished_sqft"].gt(0)]
 	X_test_vacant = X_test[X_test["bldg_area_finished_sqft"].eq(0)]
@@ -1424,7 +1458,7 @@ def predict_naive_sqft(
 		"prediction",
 		"he_id",
 		name,
-		None,
+		sqft_model,
 		y_pred_test,
 		y_pred_sales,
 		y_pred_univ,
@@ -1480,20 +1514,48 @@ def run_naive_sqft(
 
 	timing.stop("train")
 
-	return predict_naive_sqft(ds, timing, ind_per_built_sqft, ind_per_land_sqft, sales_chase, verbose)
+	sqft_model = NaiveSqftModel(ind_per_built_sqft, ind_per_land_sqft, sales_chase)
+
+	return predict_naive_sqft(ds, sqft_model, timing, verbose)
 
 
 def predict_local_sqft(
 		ds: DataSplit,
-		df_impr: pd.DataFrame,
-		df_land: pd.DataFrame,
+		sqft_model: LocalSqftModel,
 		timing: TimingData,
-		overall_per_impr_sqft: float,
-		overall_per_land_sqft: float,
-		sales_chase: float = 0.0,
 		verbose: bool = False
 ):
 	timing.start("predict_test")
+
+	loc_map = sqft_model.loc_map
+	location_fields = sqft_model.location_fields
+	overall_per_impr_sqft = sqft_model.overall_per_impr_sqft
+	overall_per_land_sqft = sqft_model.overall_per_land_sqft
+	sales_chase = sqft_model.sales_chase
+
+	# intent is to create a primary-keyed dataframe that we can fill with the appropriate local $/sqft value
+	# we will merge this in to the main dataframes, then mult. local size by local $/sqft value to predict
+	df_land = ds.df_universe[["key"] + location_fields].copy()
+	df_impr = ds.df_universe[["key"] + location_fields].copy()
+
+	# start with zero
+	df_land["per_land_sqft"] = 0
+	df_impr["per_impr_sqft"] = 0
+
+	# go from most specific to the least specific location (first to last)
+	for location_field in location_fields:
+		df_sqft_impr, df_sqft_land = loc_map[location_field]
+		df_impr = df_impr.merge(df_sqft_impr[[location_field, f"{location_field}_per_impr_sqft"]], on=location_field, how="left")
+		df_land = df_land.merge(df_sqft_land[[location_field, f"{location_field}_per_land_sqft"]], on=location_field, how="left")
+
+		df_impr.loc[df_impr["per_impr_sqft"].eq(0), "per_impr_sqft"] = df_impr[f"{location_field}_per_impr_sqft"]
+		df_land.loc[df_land["per_land_sqft"].eq(0), "per_land_sqft"] = df_land[f"{location_field}_per_land_sqft"]
+
+	# any remaining zeroes get filled with the locality-wide median value
+	df_impr.loc[df_impr["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
+	df_land.loc[df_land["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
+
+
 	X_test = ds.X_test
 
 	pd.set_option('display.max_columns', None)
@@ -1587,7 +1649,7 @@ def predict_local_sqft(
 		"prediction",
 		"he_id",
 		name,
-		None,
+		sqft_model,
 		y_pred_test,
 		y_pred_sales,
 		y_pred_univ,
@@ -1692,44 +1754,19 @@ def run_local_sqft(
 
 		loc_map[location_field] = (df_sqft_impr, df_sqft_land)
 
-	# intent is to create a primary-keyed dataframe that we can fill with the appropriate local $/sqft value
-	# we will merge this in to the main dataframes, then mult. local size by local $/sqft value to predict
-	df_land = ds.df_universe[["key"] + location_fields].copy()
-	df_impr = ds.df_universe[["key"] + location_fields].copy()
-
-	# start with zero
-	df_land["per_land_sqft"] = 0
-	df_impr["per_impr_sqft"] = 0
-
-	# go from most specific to the least specific location (first to last)
-	for location_field in location_fields:
-		df_sqft_impr, df_sqft_land = loc_map[location_field]
-		df_impr = df_impr.merge(df_sqft_impr[[location_field, f"{location_field}_per_impr_sqft"]], on=location_field, how="left")
-		df_land = df_land.merge(df_sqft_land[[location_field, f"{location_field}_per_land_sqft"]], on=location_field, how="left")
-
-		df_impr.loc[df_impr["per_impr_sqft"].eq(0), "per_impr_sqft"] = df_impr[f"{location_field}_per_impr_sqft"]
-		df_land.loc[df_land["per_land_sqft"].eq(0), "per_land_sqft"] = df_land[f"{location_field}_per_land_sqft"]
-
 	# calculate the median overall values
 	overall_per_impr_sqft = (ds.y_train / X_train_improved["bldg_area_finished_sqft"]).median()
 	overall_per_land_sqft = (ds.y_train / X_train_vacant["land_area_sqft"]).median()
-
-	# any remaining zeroes get filled with the locality-wide median value
-	df_impr.loc[df_impr["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
-	df_land.loc[df_land["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
 
 	timing.stop("train")
 	if verbose:
 		print("Tuning Naive Sqft: searching for optimal parameters...")
 		print(f"--> optimal improved $/finished sqft (overall) = {overall_per_impr_sqft:0.2f}")
-		print(f"--> local:")
-		display(df_impr)
-		print("")
 		print(f"--> optimal vacant   $/land     sqft (overall) = {overall_per_land_sqft:0.2f}")
-		print(f"--> local:")
-		display(df_land)
 
-	return predict_local_sqft(ds, df_impr, df_land, timing, overall_per_impr_sqft, overall_per_land_sqft, sales_chase, verbose)
+	sqft_model = LocalSqftModel(loc_map, location_fields, overall_per_impr_sqft, overall_per_land_sqft, sales_chase)
+
+	return predict_local_sqft(ds, sqft_model, timing, verbose)
 
 
 ##### PRIVATE:
