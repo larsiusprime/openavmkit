@@ -2,15 +2,24 @@ import os
 import pickle
 
 import pandas as pd
+import statsmodels.api as sm
+from catboost import CatBoostRegressor
+from lightgbm import Booster
+from statsmodels.nonparametric.kernel_regression import KernelReg
+from statsmodels.regression.linear_model import RegressionResults
+from xgboost import XGBRegressor
 
 from openavmkit.data import get_important_field
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, SingleModelResults, \
 	run_garbage, \
-	run_average, run_naive_sqft, DataSplit, run_kernel, run_local_sqft, run_assessor
+	run_average, run_naive_sqft, DataSplit, run_kernel, run_local_sqft, run_assessor, predict_mra, predict_garbage, \
+	GarbageModel, predict_average, AverageModel, predict_naive_sqft, predict_local_sqft, predict_assessor, predict_kernel, \
+	predict_gwr, predict_xgboost, predict_catboost, predict_lightgbm
 from openavmkit.reports import MarkdownReport, markdown_to_pdf
 from openavmkit.time_adjustment import enrich_time_adjustment
 from openavmkit.utilities.data import div_z_safe, dataframe_to_markdown
 from openavmkit.utilities.format import fancy_format
+from openavmkit.utilities.modeling import NaiveSqftModel, LocalSqftModel, AssessorModel, GWRModel, MRAModel
 from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions, get_valuation_date, \
 	get_modeling_group, apply_dd_to_df_rows
 from openavmkit.utilities.stats import calc_vif_recursive_drop, calc_t_values_recursive_drop, \
@@ -185,6 +194,121 @@ def format_benchmark_df(df: pd.DataFrame):
 	return df.transpose().to_markdown()
 
 
+def _predict_one_model(
+		smr: SingleModelResults,
+		model: str,
+		outpath: str,
+		use_saved_results: bool = False,
+		verbose: bool = False
+) -> SingleModelResults:
+
+	model_name = model
+
+	out_pickle = f"{outpath}/model_{model_name}.pickle"
+	if use_saved_results and os.path.exists(out_pickle):
+		with open(out_pickle, "rb") as file:
+			results = pickle.load(file)
+		return results
+
+	ds = smr.ds
+
+	timing = TimingData()
+
+	results: SingleModelResults | None = None
+
+	if model_name == "garbage":
+		garbage_model: GarbageModel = smr.model
+		results = predict_garbage(ds, garbage_model, timing, verbose)
+	elif model_name == "garbage_normal":
+		garbage_model: GarbageModel = smr.model
+		results = predict_garbage(ds, garbage_model, timing, verbose)
+	elif model_name == "mean":
+		mean_model: AverageModel = smr.model
+		results = predict_average(ds, mean_model, timing, verbose)
+	elif model_name == "median":
+		median_model: AverageModel = smr.model
+		results = predict_average(ds, median_model, timing, verbose)
+	elif model_name == "naive_sqft":
+		sqft_model: NaiveSqftModel = smr.model
+		results = predict_naive_sqft(ds, sqft_model, timing, verbose)
+	elif model_name == "local_naive_sqft":
+		sqft_model: LocalSqftModel = smr.model
+		results = predict_local_sqft(ds, sqft_model, timing, verbose)
+	elif model_name == "local_smart_sqft":
+		sqft_model: LocalSqftModel = smr.model
+		results = predict_local_sqft(ds, sqft_model, timing, verbose)
+	elif model_name == "assessor":
+		assr_model: AssessorModel = smr.model
+		results = predict_assessor(ds, assr_model, timing, verbose)
+	elif model_name == "mra":
+		# MRA is a special case where we have to call run_ instead of predict_, because there's delicate state mangling.
+		# We pass the pretrained `model` object to run_mra() to get it to skip training and move straight to prediction
+		model: MRAModel = smr.model
+		results = run_mra(ds, model.intercept, verbose, model)
+	elif model_name == "kernel":
+		kernel_reg: KernelReg = smr.model
+		results = predict_kernel(ds, kernel_reg, timing, verbose)
+	elif model_name == "gwr":
+		gwr_model: GWRModel = smr.model
+		results = predict_gwr(ds, gwr_model, timing, verbose)
+	elif model_name == "xgboost":
+		xgb_regressor: XGBRegressor = smr.model
+		results = predict_xgboost(ds, xgb_regressor, timing, verbose)
+	elif model_name == "lightgbm":
+		lightgbm_regressor: Booster = smr.model
+		results = predict_lightgbm(ds, lightgbm_regressor, timing, verbose)
+	elif model_name == "catboost":
+		catboost_regressor: CatBoostRegressor = smr.model
+		results = predict_catboost(ds, catboost_regressor, timing, verbose)
+
+	# write out the results:
+	write_model_results(results, outpath)
+
+	with open(out_pickle, "wb") as file:
+		pickle.dump(results, file)
+
+	return results
+
+
+def _get_data_split_for(
+		name: str,
+		location_field: str | None,
+		dep_vars: list[str],
+		df: pd.DataFrame,
+		settings: dict,
+		ind_var: str,
+		ind_var_test: str,
+		fields_cat: list[str],
+		interactions: dict,
+		test_train_frac: float,
+		random_seed: int,
+		vacant_only: bool,
+		hedonic: bool
+):
+	if name == "local_naive_sqft":
+		_dep_vars = [location_field, "bldg_area_finished_sqft", "land_area_sqft"]
+	elif name == "local_smart_sqft":
+		_dep_vars = ["ss_id", location_field, "bldg_area_finished_sqft", "land_area_sqft"]
+	elif name == "assessor":
+		_dep_vars = ["assr_market_value"]
+	else:
+		_dep_vars = dep_vars
+
+	return DataSplit(
+		df,
+		settings,
+		ind_var,
+		ind_var_test,
+		_dep_vars,
+		fields_cat,
+		interactions,
+		test_train_frac,
+		random_seed,
+		vacant_only=vacant_only,
+		hedonic=hedonic
+	)
+
+
 def _run_one_model(
 		df: pd.DataFrame,
 		vacant_only: bool,
@@ -199,7 +323,8 @@ def _run_one_model(
 		save_params: bool,
 		use_saved_params: bool,
 		use_saved_results: bool,
-		verbose: bool = False
+		verbose: bool = False,
+		hedonic: bool = False
 ) -> SingleModelResults:
 
 	model_name = model
@@ -247,34 +372,23 @@ def _run_one_model(
 
 	location_field = get_important_field(settings, "loc_neighborhood", df)
 
-	def _get_data_split_for(name: str):
-		if name == "local_naive_sqft":
-			_dep_vars = [location_field, "bldg_area_finished_sqft", "land_area_sqft"]
-		elif name == "local_smart_sqft":
-			_dep_vars = ["ss_id", location_field, "bldg_area_finished_sqft", "land_area_sqft"]
-		elif name == "assessor":
-			_dep_vars = ["assr_market_value"]
-		else:
-			_dep_vars = dep_vars
-
-		return DataSplit(
-			df,
-			settings,
-			ind_var,
-			ind_var_test,
-			_dep_vars,
-			fields_cat,
-			interactions,
-			test_train_frac,
-			random_seed,
-			vacant_only=vacant_only
-		)
-
-	ds = _get_data_split_for(model_name)
+	ds = _get_data_split_for(
+		model_name,
+		location_field,
+		dep_vars,
+		df,
+		settings,
+		ind_var,
+		ind_var_test,
+		fields_cat,
+		interactions,
+		test_train_frac,
+		random_seed,
+		vacant_only,
+		hedonic
+	)
 
 	intercept = entry.get("intercept", True)
-
-	results = None
 
 	if model_name == "garbage":
 		results = run_garbage(ds, normal=False, sales_chase=sales_chase, verbose=verbose)
@@ -304,6 +418,8 @@ def _run_one_model(
 		results = run_lightgbm(ds, outpath, save_params, use_saved_params, verbose=verbose)
 	elif model_name == "catboost":
 		results = run_catboost(ds, outpath, save_params, use_saved_params, verbose=verbose)
+	else:
+		raise ValueError(f"Model {model_name} not found!")
 
 	# write out the results:
 	write_model_results(results, outpath)
@@ -1126,7 +1242,57 @@ def _run_models(
 	# Calculate final results, including ensemble
 	all_results.add_model("ensemble", ensemble_results)
 
-	print(f"BENCHMARK vacant_only={vacant_only}")
+	if vacant_only:
+		print(f"VACANT BENCHMARK")
+	else:
+		print(f"MAIN BENCHMARK")
 	print(all_results.benchmark.print())
+
+	if not vacant_only:
+		hedonic_results = {}
+		# Run hedonic models
+		outpath = f"out/models/hedonic"
+		if not os.path.exists(outpath):
+			os.makedirs(outpath)
+
+		location_field = get_important_field(settings, "loc_neighborhood", df)
+
+		# Re-run the models one by one and stash the results
+		for model in models_to_run:
+
+			smr = all_results.model_results[model]
+			ds = _get_data_split_for(
+				model,
+				location_field,
+				smr.dep_vars,
+				df,
+				settings,
+				ind_var,
+				ind_var_test,
+				fields_cat,
+				smr.ds.interactions.copy(),
+				smr.ds.test_train_frac,
+				smr.ds.random_seed,
+				vacant_only=False,
+				hedonic=True
+			)
+			smr.ds = ds
+
+			results = _predict_one_model(
+				smr=smr,
+				model=model,
+				outpath=outpath,
+				use_saved_results=use_saved_results,
+				verbose=verbose
+			)
+			if results is not None:
+				hedonic_results[model] = results
+
+		all_hedonic_results = MultiModelResults(
+			model_results=hedonic_results,
+			benchmark=_calc_benchmark(hedonic_results)
+		)
+		print(f"HEDONIC BENCHMARK")
+		print(all_hedonic_results.benchmark.print())
 
 	return all_results

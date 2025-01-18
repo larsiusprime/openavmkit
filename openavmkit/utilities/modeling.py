@@ -1,5 +1,6 @@
 import numpy as np
 from mgwr.gwr import GWR
+from statsmodels.regression.linear_model import RegressionResults
 
 
 class GarbageModel:
@@ -77,17 +78,23 @@ class GWRModel:
   X_train: np.ndarray
   y_train: np.ndarray
   gwr_bw: float
-  gwr: GWR
 
   def __init__(self,
       coords_train: list[tuple[float, float]],
       X_train: np.ndarray,
       y_train: np.ndarray,
-      gwr_bw: float,
-      gwr: GWR
+      gwr_bw: float
   ):
     self.coords_train = coords_train
     self.X_train = X_train
     self.y_train = y_train
     self.gwr_bw = gwr_bw
-    self.gwr = gwr
+
+
+class MRAModel:
+  fitted_model: RegressionResults
+  intercept: bool
+
+  def __init__(self, fitted_model: RegressionResults, intercept: bool):
+    self.fitted_model = fitted_model
+    self.intercept = intercept

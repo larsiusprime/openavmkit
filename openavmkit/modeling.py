@@ -28,14 +28,14 @@ from xgboost import XGBRegressor
 from openavmkit.data import get_sales, simulate_removed_buildings
 from openavmkit.ratio_study import RatioStudy
 from openavmkit.utilities.modeling import GarbageModel, AverageModel, NaiveSqftModel, LocalSqftModel, AssessorModel, \
-	GWRModel
+	GWRModel, MRAModel
 from openavmkit.utilities.data import clean_column_names
 from openavmkit.utilities.stats import quick_median_chd
 from openavmkit.utilities.tuning import tune_lightgbm, tune_xgboost, tune_catboost
 from openavmkit.utilities.timing import TimingData
 
 PredictionModel = Union[
-	RegressionResults,
+	MRAModel,
 	XGBRegressor,
 	Booster,
 	CatBoostRegressor,
@@ -131,6 +131,7 @@ class DataSplit:
 	interactions: dict
 	one_hot_descendants: dict
 	days_field: str
+	settings: dict
 
 	def __init__(self,
 			df: pd.DataFrame | None,
@@ -148,14 +149,15 @@ class DataSplit:
 			init: bool = True
 	):
 		if init:
+			self.settings = settings.copy()
 			self.df_universe = df.copy()
 			self.df_sales = get_sales(df, settings, vacant_only).reset_index(drop=True)
 
 			if hedonic:
+				# transform df_universe & df_sales such that all improved characteristics are removed
 				self.df_universe = simulate_removed_buildings(self.df_universe, settings)
 				self.df_sales = simulate_removed_buildings(self.df_sales, settings)
-				# transform df_universe & df_sales such that all improved characteristics are removed
-				pass
+				# we also need to limit the sales set, but we can't do that AFTER we've split
 
 			# Pre-sort dataframes so that rolling origin cross-validation can assume oldest observations first:
 			if days_field in self.df_universe:
@@ -200,6 +202,7 @@ class DataSplit:
 			init=False
 		)
 		# manually copy every field:
+		ds.settings = self.settings.copy()
 		ds.df_sales = self.df_sales.copy()
 		ds.df_universe = self.df_universe.copy()
 		ds.df_train = self.df_train.copy()
@@ -319,6 +322,13 @@ class DataSplit:
 		self.df_train.sort_values(by=self.days_field, ascending=False, inplace=True)
 		self.df_test.sort_values(by=self.days_field, ascending=False, inplace=True)
 
+		if self.hedonic:
+			# if it's a hedonic model, we're predicting land value, and are thus testing against vacant land only:
+			# we have to do this here, AFTER the split, to ensure that the selected rows are from the same subsets
+			self.df_train = get_sales(self.df_train, self.settings, self.vacant_only).reset_index(drop=True)
+			self.df_test = get_sales(self.df_test, self.settings, self.vacant_only).reset_index(drop=True)
+			self.df_sales = get_sales(self.df_sales, self.settings, self.vacant_only).reset_index(drop=True)
+
 		_df_univ = self.df_universe.copy()
 		_df_sales = self.df_sales.copy()
 		_df_train = self.df_train.copy()
@@ -368,6 +378,7 @@ class DataSplit:
 		self.y_test = _df_test[self.ind_var_test]
 
 class SingleModelResults:
+	ds: DataSplit
 	df_universe: pd.DataFrame
 	df_sales: pd.DataFrame
 	df_test: pd.DataFrame
@@ -395,6 +406,8 @@ class SingleModelResults:
 			timing: TimingData,
 			verbose: bool = False
 	):
+		self.ds = ds
+
 		df_univ = ds.df_universe.copy()
 		df_sales = ds.df_sales.copy()
 		df_test = ds.df_test.copy()
@@ -521,10 +534,12 @@ def model_utility_score(
 
 def predict_mra(
 		ds: DataSplit,
-		fitted_model: RegressionResults,
+		model: MRAModel,
 		timing: TimingData,
 		verbose: bool = False
 ):
+	fitted_model: RegressionResults = model.fitted_model
+
 	# predict on test set:
 	timing.start("predict_test")
 	y_pred_test = fitted_model.predict(ds.X_test).to_numpy()
@@ -547,7 +562,7 @@ def predict_mra(
 		"prediction",
 		"he_id",
 		"mra",
-		fitted_model,
+		model,
 		y_pred_test,
 		y_pred_sales,
 		y_pred_univ,
@@ -561,7 +576,8 @@ def predict_mra(
 def run_mra(
 		ds: DataSplit,
 		intercept: bool = True,
-		verbose: bool = False
+		verbose: bool = False,
+		model: MRAModel | None = None
 ):
 		timing = TimingData()
 
@@ -584,11 +600,13 @@ def run_mra(
 		ds.y_train = ds.y_train.astype(float)
 
 		timing.start("train")
-		linear_model = sm.OLS(ds.y_train, ds.X_train)
-		fitted_model = linear_model.fit()
+		if model is None:
+			linear_model = sm.OLS(ds.y_train, ds.X_train)
+			fitted_model = linear_model.fit()
+			model = MRAModel(fitted_model, intercept)
 		timing.stop("train")
 
-		return predict_mra(ds, fitted_model, timing, verbose)
+		return predict_mra(ds, model, timing, verbose)
 
 
 def predict_assessor(
@@ -791,8 +809,12 @@ def predict_gwr(
 		timing: TimingData,
 		verbose: bool
 ):
+	timing.start("train")
+	# You have to re-train GWR before each prediction, so we move training to the predict function
+	gwr = GWR(gwr_model.coords_train, gwr_model.y_train, gwr_model.X_train, gwr_model.gwr_bw)
+	gwr.fit()
+	timing.stop("train")
 
-	gwr = gwr_model.gwr
 	gwr_bw = gwr_model.gwr_bw
 	coords_train = gwr_model.coords_train
 	X_train = gwr_model.X_train
@@ -938,13 +960,7 @@ def run_gwr(
 
 	X_train = np.asarray(X_train, dtype=np.float64)
 
-	timing.start("train")
-	gwr = GWR(coords_train, y_train, X_train, gwr_bw)
-	gwr_fit = gwr.fit()
-	gwr = gwr_fit.model
-	timing.stop("train")
-
-	gwr_model = GWRModel(coords_train, X_train, y_train, gwr_bw, gwr)
+	gwr_model = GWRModel(coords_train, X_train, y_train, gwr_bw)
 
 	return predict_gwr(ds, gwr_model, timing, verbose)
 
@@ -1584,12 +1600,6 @@ def predict_local_sqft(
 
 	timing.start("predict_sales")
 	X_sales = ds.X_sales
-
-	if verbose:
-		print("df_land/df_impr:")
-		display(df_land)
-		print("")
-		display(df_impr)
 
 	# merge the df_sqft_land/impr values into the X_sales dataframe:
 	X_sales["key"] = ds.df_sales["key"]
