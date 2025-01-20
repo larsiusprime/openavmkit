@@ -132,12 +132,12 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 				chd_results = results.chd
 				tim = results.timing.results
 				data_time["model"].append(key)
-				data_time["total"].append(tim["total"])
-				data_time["param"].append(tim["parameter_search"])
-				data_time["train"].append(tim["train"])
-				data_time["test"].append(tim["predict_test"])
-				data_time["full"].append(tim["predict_full"])
-				data_time["chd"].append(tim["chd"])
+				data_time["total"].append(tim.get("total"))
+				data_time["param"].append(tim.get("parameter_search"))
+				data_time["train"].append(tim.get("train"))
+				data_time["test"].append(tim.get("predict_test"))
+				data_time["full"].append(tim.get("predict_full"))
+				data_time["chd"].append(tim.get("chd"))
 
 			data["chd"].append(chd_results)
 
@@ -213,6 +213,7 @@ def _predict_one_model(
 	ds = smr.ds
 
 	timing = TimingData()
+	timing.start("total")
 
 	results: SingleModelResults | None = None
 
@@ -484,7 +485,8 @@ def optimize_ensemble(
 		ind_var_test: str,
 		all_results: MultiModelResults,
 		settings: dict,
-		verbose: bool = False
+		verbose: bool = False,
+		hedonic: bool = False
 ):
 	timing = TimingData()
 	timing.start("total")
@@ -504,7 +506,8 @@ def optimize_ensemble(
 		{},
 		test_train_frac,
 		random_seed,
-		vacant_only=vacant_only
+		vacant_only=vacant_only,
+		hedonic=hedonic
 	)
 
 	vacant_status = "vacant" if vacant_only else "main"
@@ -584,8 +587,6 @@ def optimize_ensemble(
 				if model_results.utility > worst_score:
 					worst_score = model_results.utility
 					worst_model = key
-					if verbose:
-						print(f"--> kicking score {worst_score:5.0f}, model = {worst_model}")
 
 		if worst_model is not None and len(ensemble_list) > 1:
 			ensemble_list.remove(worst_model)
@@ -1037,8 +1038,6 @@ def get_variable_recommendations(
 		if cv_score < best_score:
 			best_score = cv_score
 			best_variables = curr_variables.copy()
-			if verbose:
-				print(f"--> BEST SO FAR!")
 		worst_idx = df_results["weighted_score"].idxmin()
 		worst_score = df_results.loc[worst_idx, "weighted_score"]
 		worst_variable = df_results.loc[worst_idx, "variable"]
@@ -1046,9 +1045,7 @@ def get_variable_recommendations(
 		# remove the variable from the dataframe:
 		df_results = df_results[df_results["variable"].ne(worst_variable)]
 		if verbose:
-			print(f"{len(curr_variables)} variables: {curr_variables}")
-			print(f"--> score: {cv_score:,.0f}")
-			print(f"-->  drop: {worst_variable}, score {worst_score}...")
+			print(f"--> score: {cv_score:,.0f}  {len(curr_variables)} variables: {curr_variables}")
 
 	# make a table from the list of best variables:
 	df_best = pd.DataFrame(best_variables, columns=["Variable"])
@@ -1137,6 +1134,99 @@ def run_models(
 ):
 		for vacant_only in [False, True]:
 			_run_models(df, settings, vacant_only, save_params, use_saved_params, use_saved_results, verbose)
+
+def _run_hedonic_models(
+		settings: dict,
+		vacant_only: bool,
+		models_to_run: list[str],
+		all_results: MultiModelResults,
+		df: pd.DataFrame,
+		ind_var: str,
+		ind_var_test: str,
+		fields_cat: list[str],
+		use_saved_results: bool = True,
+		verbose: bool = False
+):
+	hedonic_results = {}
+	# Run hedonic models
+	outpath = f"out/models/hedonic"
+	if not os.path.exists(outpath):
+		os.makedirs(outpath)
+
+	location_field = get_important_field(settings, "loc_neighborhood", df)
+
+	# Re-run the models one by one and stash the results
+	for model in models_to_run:
+
+
+		smr = all_results.model_results[model]
+		ds = _get_data_split_for(
+			model,
+			location_field,
+			smr.dep_vars,
+			df,
+			settings,
+			ind_var,
+			ind_var_test,
+			fields_cat,
+			smr.ds.interactions.copy(),
+			smr.ds.test_train_frac,
+			smr.ds.random_seed,
+			vacant_only=False,
+			hedonic=True
+		)
+
+		# TODO: there is a bug here because the number of rows in df_test winds up different across models (224 vs 227)
+
+		# We call this here because we are re-running prediction without first calling run(), which would call this
+		ds.split()
+
+		smr.ds = ds
+
+		results = _predict_one_model(
+			smr=smr,
+			model=model,
+			outpath=outpath,
+			use_saved_results=use_saved_results,
+			verbose=verbose
+		)
+		if results is not None:
+			hedonic_results[model] = results
+
+	all_hedonic_results = MultiModelResults(
+		model_results=hedonic_results,
+		benchmark=_calc_benchmark(hedonic_results)
+	)
+
+	best_ensemble = optimize_ensemble(
+		df=df,
+		vacant_only=vacant_only,
+		ind_var=ind_var,
+		ind_var_test=ind_var_test,
+		all_results=all_hedonic_results,
+		settings=settings,
+		verbose=verbose,
+		hedonic=True
+	)
+
+	# Run the ensemble model
+	ensemble_results = run_ensemble(
+		df=df,
+		vacant_only=vacant_only,
+		ind_var=ind_var,
+		ind_var_test=ind_var_test,
+		outpath=outpath,
+		ensemble_list=best_ensemble,
+		all_results=all_results,
+		settings=settings,
+		verbose=verbose
+	)
+
+	# Calculate final results, including ensemble
+	print("HEDONIC BENCHMARK")
+	all_hedonic_results.add_model("ensemble", ensemble_results)
+
+	print(all_hedonic_results.benchmark.print())
 
 
 def _run_models(
@@ -1242,6 +1332,7 @@ def _run_models(
 	# Calculate final results, including ensemble
 	all_results.add_model("ensemble", ensemble_results)
 
+	print("")
 	if vacant_only:
 		print(f"VACANT BENCHMARK")
 	else:
@@ -1249,50 +1340,17 @@ def _run_models(
 	print(all_results.benchmark.print())
 
 	if not vacant_only:
-		hedonic_results = {}
-		# Run hedonic models
-		outpath = f"out/models/hedonic"
-		if not os.path.exists(outpath):
-			os.makedirs(outpath)
-
-		location_field = get_important_field(settings, "loc_neighborhood", df)
-
-		# Re-run the models one by one and stash the results
-		for model in models_to_run:
-
-			smr = all_results.model_results[model]
-			ds = _get_data_split_for(
-				model,
-				location_field,
-				smr.dep_vars,
-				df,
-				settings,
-				ind_var,
-				ind_var_test,
-				fields_cat,
-				smr.ds.interactions.copy(),
-				smr.ds.test_train_frac,
-				smr.ds.random_seed,
-				vacant_only=False,
-				hedonic=True
-			)
-			smr.ds = ds
-
-			results = _predict_one_model(
-				smr=smr,
-				model=model,
-				outpath=outpath,
-				use_saved_results=use_saved_results,
-				verbose=verbose
-			)
-			if results is not None:
-				hedonic_results[model] = results
-
-		all_hedonic_results = MultiModelResults(
-			model_results=hedonic_results,
-			benchmark=_calc_benchmark(hedonic_results)
+		_run_hedonic_models(
+			settings,
+			vacant_only,
+			models_to_run,
+			all_results,
+			df,
+			ind_var,
+			ind_var_test,
+			fields_cat,
+			use_saved_results,
+			verbose
 		)
-		print(f"HEDONIC BENCHMARK")
-		print(all_hedonic_results.benchmark.print())
 
 	return all_results

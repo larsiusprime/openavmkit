@@ -52,15 +52,6 @@ PredictionModel = Union[
 ]
 
 class PredictionResults:
-	ind_var: str
-	dep_vars: list[str]
-	y: pd.Series
-	y_pred: np.ndarray
-	mse: float
-	rmse: float
-	r2: float
-	adj_r2: float
-	ratio_study: RatioStudy
 
 	def __init__(self,
 			ind_var: str,
@@ -109,29 +100,8 @@ class PredictionResults:
 		self.ratio_study = RatioStudy(y_pred_clean, y_clean)
 
 class DataSplit:
-	df_sales: pd.DataFrame
-	df_universe: pd.DataFrame
-	df_train: pd.DataFrame
-	df_test: pd.DataFrame
-	X_univ: pd.DataFrame
-	X_sales: pd.DataFrame
-	y_sales: pd.Series
-	X_train: pd.DataFrame
-	y_train: pd.Series
-	X_test: pd.DataFrame
-	y_test: pd.Series
-	test_train_frac: float
-	random_seed: int
-	vacant_only: bool
-	hedonic: bool
-	ind_var: str
-	ind_var_test: str
-	dep_vars: list[str]
-	categorical_vars: list[str]
-	interactions: dict
-	one_hot_descendants: dict
-	days_field: str
-	settings: dict
+
+	counter: int = 0
 
 	def __init__(self,
 			df: pd.DataFrame | None,
@@ -150,8 +120,11 @@ class DataSplit:
 	):
 		if init:
 			self.settings = settings.copy()
+
 			self.df_universe = df.copy()
 			self.df_sales = get_sales(df, settings, vacant_only).reset_index(drop=True)
+
+			self._df_sales = self.df_sales.copy()
 
 			if hedonic:
 				# transform df_universe & df_sales such that all improved characteristics are removed
@@ -205,6 +178,7 @@ class DataSplit:
 		ds.settings = self.settings.copy()
 		ds.df_sales = self.df_sales.copy()
 		ds.df_universe = self.df_universe.copy()
+		ds._df_sales = self._df_sales.copy()
 		ds.df_train = self.df_train.copy()
 		ds.df_test = self.df_test.copy()
 		ds.X_univ = self.X_univ.copy()
@@ -312,8 +286,8 @@ class DataSplit:
 	def split(self):
 		# separate df into train & test:
 		np.random.seed(self.random_seed)
-		self.df_train = self.df_sales.sample(frac=self.test_train_frac)
-		self.df_test = self.df_sales.drop(self.df_train.index)
+		self.df_train = self._df_sales.sample(frac=self.test_train_frac)
+		self.df_test = self._df_sales.drop(self.df_train.index)
 
 		self.df_train = self.df_train.reset_index(drop=True)
 		self.df_test = self.df_test.reset_index(drop=True)
@@ -325,9 +299,21 @@ class DataSplit:
 		if self.hedonic:
 			# if it's a hedonic model, we're predicting land value, and are thus testing against vacant land only:
 			# we have to do this here, AFTER the split, to ensure that the selected rows are from the same subsets
-			self.df_train = get_sales(self.df_train, self.settings, self.vacant_only).reset_index(drop=True)
-			self.df_test = get_sales(self.df_test, self.settings, self.vacant_only).reset_index(drop=True)
-			self.df_sales = get_sales(self.df_sales, self.settings, self.vacant_only).reset_index(drop=True)
+
+			# get the sales that are actually vacant, from the original set of sales
+			_df_sales = get_sales(self._df_sales, self.settings, True).reset_index(drop=True)
+
+			# now, select only those records from the modified base sales set that are also in the above set,
+			# but use the rows from the modified base sales set
+			_df_sales = self.df_sales[self.df_sales["key"].isin(_df_sales["key"])].reset_index(drop=True)
+
+			# use these as our sales
+			self.df_sales = _df_sales
+
+			# set df_test/train to only those rows that are also in sales:
+			# we don't need to use get_sales() because they've already been transformed to vacant
+			self.df_test = self.df_test[self.df_test["key"].isin(self.df_sales["key"])].reset_index(drop=True)
+			self.df_train = self.df_train[self.df_train["key"].isin(self.df_sales["key"])].reset_index(drop=True)
 
 		_df_univ = self.df_universe.copy()
 		_df_sales = self.df_sales.copy()
@@ -376,6 +362,7 @@ class DataSplit:
 		dep_vars = [col for col in self.dep_vars if col in _df_test.columns]
 		self.X_test = _df_test[dep_vars]
 		self.y_test = _df_test[self.ind_var_test]
+
 
 class SingleModelResults:
 	ds: DataSplit
