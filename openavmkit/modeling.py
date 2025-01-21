@@ -365,21 +365,6 @@ class DataSplit:
 
 
 class SingleModelResults:
-	ds: DataSplit
-	df_universe: pd.DataFrame
-	df_sales: pd.DataFrame
-	df_test: pd.DataFrame
-	type: str
-	ind_var: str
-	ind_var_test: str
-	dep_vars: list[str]
-	model: PredictionModel
-	pred_test: PredictionResults
-	pred_sales: PredictionResults
-	pred_univ: np.ndarray
-	chd: float
-	utility: float
-	timing: TimingData
 
 	def __init__(self,
 			ds: DataSplit,
@@ -603,6 +588,8 @@ def predict_assessor(
 		verbose: bool = False
 ):
 	field = assr_model.field
+	if ds.hedonic:
+		field = ds.dep_vars[0]
 
 	# predict on test set:
 	timing.start("predict_test")
@@ -655,7 +642,7 @@ def run_assessor(
 	timing.start("train")
 	timing.stop("train")
 
-	assr_model = AssessorModel("assr_market_value")
+	assr_model = AssessorModel(ds.dep_vars[0])
 	return predict_assessor(ds, assr_model, timing, verbose)
 
 
@@ -1548,20 +1535,21 @@ def predict_local_sqft(
 	# go from most specific to the least specific location (first to last)
 	for location_field in location_fields:
 		df_sqft_impr, df_sqft_land = loc_map[location_field]
+
 		df_impr = df_impr.merge(df_sqft_impr[[location_field, f"{location_field}_per_impr_sqft"]], on=location_field, how="left")
 		df_land = df_land.merge(df_sqft_land[[location_field, f"{location_field}_per_land_sqft"]], on=location_field, how="left")
 
 		df_impr.loc[df_impr["per_impr_sqft"].eq(0), "per_impr_sqft"] = df_impr[f"{location_field}_per_impr_sqft"]
 		df_land.loc[df_land["per_land_sqft"].eq(0), "per_land_sqft"] = df_land[f"{location_field}_per_land_sqft"]
 
+		df_sqft_land.to_csv(f"debug_local_sqft_{len(location_fields)}_{location_field}_sqft_land.csv", index=False)
+		df_land.to_csv(f"debug_local_sqft_{len(location_fields)}_{location_field}_land.csv", index=False)
+
 	# any remaining zeroes get filled with the locality-wide median value
 	df_impr.loc[df_impr["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
 	df_land.loc[df_land["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
 
-
 	X_test = ds.X_test
-
-	pd.set_option('display.max_columns', None)
 
 	df_impr = df_impr[["key", "per_impr_sqft"]]
 	df_land = df_land[["key", "per_land_sqft"]]

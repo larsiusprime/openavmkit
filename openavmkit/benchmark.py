@@ -2,14 +2,12 @@ import os
 import pickle
 
 import pandas as pd
-import statsmodels.api as sm
 from catboost import CatBoostRegressor
 from lightgbm import Booster
 from statsmodels.nonparametric.kernel_regression import KernelReg
-from statsmodels.regression.linear_model import RegressionResults
 from xgboost import XGBRegressor
 
-from openavmkit.data import get_important_field
+from openavmkit.data import get_important_field, get_locations
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, SingleModelResults, \
 	run_garbage, \
 	run_average, run_naive_sqft, DataSplit, run_kernel, run_local_sqft, run_assessor, predict_mra, predict_garbage, \
@@ -273,7 +271,7 @@ def _predict_one_model(
 
 def _get_data_split_for(
 		name: str,
-		location_field: str | None,
+		location_fields: list[str] | None,
 		dep_vars: list[str],
 		df: pd.DataFrame,
 		settings: dict,
@@ -287,11 +285,14 @@ def _get_data_split_for(
 		hedonic: bool
 ):
 	if name == "local_naive_sqft":
-		_dep_vars = [location_field, "bldg_area_finished_sqft", "land_area_sqft"]
+		_dep_vars = location_fields + ["bldg_area_finished_sqft", "land_area_sqft"]
 	elif name == "local_smart_sqft":
-		_dep_vars = ["ss_id", location_field, "bldg_area_finished_sqft", "land_area_sqft"]
+		_dep_vars = ["ss_id"] + location_fields + ["bldg_area_finished_sqft", "land_area_sqft"]
 	elif name == "assessor":
-		_dep_vars = ["assr_market_value"]
+		if hedonic:
+			_dep_vars = ["assr_land_value"]
+		else:
+			_dep_vars = ["assr_market_value"]
 	else:
 		_dep_vars = dep_vars
 
@@ -371,11 +372,15 @@ def _run_one_model(
 	test_train_frac = instructions.get("test_train_frac", 0.8)
 	random_seed = instructions.get("random_seed", 1337)
 
-	location_field = get_important_field(settings, "loc_neighborhood", df)
+	location_fields = get_locations(settings, df)
+
+	location_field_neighborhood = get_important_field(settings, "loc_neighborhood", df)
+	location_field_market_area = get_important_field(settings, "loc_market_area", df)
+	location_fields = [location_field_neighborhood, location_field_market_area]
 
 	ds = _get_data_split_for(
 		model_name,
-		location_field,
+		[location_field_neighborhood, location_field_market_area],
 		dep_vars,
 		df,
 		settings,
@@ -402,9 +407,9 @@ def _run_one_model(
 	elif model_name == "naive_sqft":
 		results = run_naive_sqft(ds, sales_chase=sales_chase, verbose=verbose)
 	elif model_name == "local_naive_sqft":
-		results = run_local_sqft(ds, location_fields=[location_field], sales_chase=sales_chase, verbose=verbose)
+		results = run_local_sqft(ds, location_fields=location_fields, sales_chase=sales_chase, verbose=verbose)
 	elif model_name == "local_smart_sqft":
-		results = run_local_sqft(ds, location_fields=["ss_id", location_field], sales_chase=sales_chase, verbose=verbose)
+		results = run_local_sqft(ds, location_fields=["ss_id"] + location_fields, sales_chase=sales_chase, verbose=verbose)
 	elif model_name == "assessor":
 		results = run_assessor(ds, verbose=verbose)
 	elif model_name == "mra":
@@ -432,7 +437,7 @@ def _run_one_model(
 
 
 def _assemble_model_results(results: SingleModelResults):
-	fields = ["key", "prediction", "assr_market_value", "sale_price", "sale_price_time_adj", "sale_date"]
+	fields = ["key", "prediction", "assr_market_value", "assr_market_land_value", "sale_price", "sale_price_time_adj", "sale_date"]
 	fields = [field for field in fields if field in results.df_sales.columns]
 
 	dfs = {
@@ -1153,16 +1158,17 @@ def _run_hedonic_models(
 	if not os.path.exists(outpath):
 		os.makedirs(outpath)
 
-	location_field = get_important_field(settings, "loc_neighborhood", df)
+	location_field_neighborhood = get_important_field(settings, "loc_neighborhood", df)
+	location_field_market_area = get_important_field(settings, "loc_market_area", df)
+	location_fields = [location_field_neighborhood, location_field_market_area]
 
 	# Re-run the models one by one and stash the results
 	for model in models_to_run:
 
-
 		smr = all_results.model_results[model]
 		ds = _get_data_split_for(
 			model,
-			location_field,
+			location_fields,
 			smr.dep_vars,
 			df,
 			settings,
@@ -1221,6 +1227,10 @@ def _run_hedonic_models(
 		settings=settings,
 		verbose=verbose
 	)
+
+	out_pickle = f"{outpath}/model_ensemble.pickle"
+	with open(out_pickle, "wb") as file:
+		pickle.dump(ensemble_results, file)
 
 	# Calculate final results, including ensemble
 	print("HEDONIC BENCHMARK")
@@ -1328,6 +1338,10 @@ def _run_models(
 		settings=settings,
 		verbose=verbose
 	)
+
+	out_pickle = f"{outpath}/model_ensemble.pickle"
+	with open(out_pickle, "wb") as file:
+		pickle.dump(ensemble_results, file)
 
 	# Calculate final results, including ensemble
 	all_results.add_model("ensemble", ensemble_results)
