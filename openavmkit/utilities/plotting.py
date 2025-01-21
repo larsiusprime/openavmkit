@@ -1,8 +1,8 @@
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 
-
-def plot_histogram_df(df: pd.DataFrame, fields: str, xlabel: str = "", ylabel: str = "", title: str = "", bins = 500, xlim=None, ylim=None, out_file: str = None):
+def plot_histogram_df(df: pd.DataFrame, fields: str, xlabel: str = "", ylabel: str = "", title: str = "", bins = 500, x_lim=None, out_file: str = None):
   entries = []
   for field in fields:
     data = df[field]
@@ -11,11 +11,12 @@ def plot_histogram_df(df: pd.DataFrame, fields: str, xlabel: str = "", ylabel: s
       "label": field,
       "alpha": 0.25
     })
-  plot_histogram_mult(entries, xlabel, ylabel, title, bins, xlim, ylim, out_file)
+  plot_histogram_mult(entries, xlabel, ylabel, title, bins, x_lim, out_file)
 
-
-def plot_histogram_mult(entries: list[dict],  xlabel:str = "", ylabel: str = "", title: str = "", bins=500, xlim=None, ylim=None, out_file: str = None):
+def plot_histogram_mult(entries: list[dict],  xlabel:str = "", ylabel: str = "", title: str = "", bins=500, x_lim=None, out_file: str = None):
   plt.close('all')
+  ylim_min = 0
+  ylim_max = 0
   for entry in entries:
     data = entry["data"]
     if bins is not None:
@@ -25,26 +26,26 @@ def plot_histogram_mult(entries: list[dict],  xlabel:str = "", ylabel: str = "",
     label = entry["label"]
     alpha = entry.get("alpha", 0.25)
     data = data[~data.isna()]
-    plt.hist(data, bins=_bins, label=label, alpha=alpha)
+    counts, _, _ = plt.hist(data, bins=_bins, label=label, alpha=alpha)
+    _ylim_max = np.percentile(counts, 95)
+    if(_ylim_max > ylim_max):
+      ylim_max = _ylim_max
   plt.xlabel(xlabel)
   plt.ylabel(ylabel)
   plt.title(title)
   plt.legend()
-  if xlim is not None:
-    plt.xlim(xlim[0], xlim[1])
-  if ylim is not None:
-    plt.ylim(ylim[0], ylim[1])
+  if x_lim is not None:
+    plt.xlim(x_lim[0], x_lim[1])
+  plt.ylim(ylim_min, ylim_max)
   if out_file is not None:
     plt.savefig(out_file)
   plt.show()
 
-
-def highest_middle_quantile_count(series: pd.Series, num_quantiles):
+def highest_middle_quantile_count(series: pd.Series, min_value: float, max_value: float, num_quantiles:int):
   series = series[~series.isna()]
+  series = series[series.ge(min_value) & series.le(max_value)]
   if num_quantiles < 3:
     raise ValueError("Number of quantiles must be at least 3")
   quantiles = pd.qcut(series, q=num_quantiles, duplicates="drop")
-  quantile_counts = quantiles.value_counts().sort_index()
-  i_low = 1
-  i_high = 1
-  return quantile_counts.quantile(0.95) * 2
+  quantile_counts = quantiles.value_counts()
+  return quantile_counts.max()
