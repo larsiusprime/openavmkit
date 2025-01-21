@@ -9,18 +9,28 @@ from typing import List, Optional, Tuple
 from PIL import Image, ImageDraw
 
 from openavmkit.utilities.geometry import get_crs
+from openavmkit.utilities.stats import calc_mse
 
 
 ############################
 # Power Law + COD
 ############################
 
+
 def power_law(size: float, a: float, b: float) -> float:
-  """
-  Price = a * (size ** -b)
-  We'll treat 'size' as a 1D array, return predicted price array.
-  """
   return a * (size ** -b)
+
+
+def power_law_np(sizes: np.ndarray, a: float, b: float) -> np.ndarray:
+  return a * (sizes ** -b)
+
+
+def linear_fit(x: float, slope: float, b: float):
+  return x * slope + b
+
+
+def linear_fit_np(x: np.ndarray, slope: float, intercept: float) -> np.ndarray:
+  return x * slope + intercept
 
 
 def compute_cod(predicted: np.ndarray, actual: np.ndarray) -> float:
@@ -42,10 +52,10 @@ def compute_cod(predicted: np.ndarray, actual: np.ndarray) -> float:
 
 
 ############################
-# QuadTree Node
+# KDTree Node
 ############################
 
-class QuadTreeNode:
+class KDTreeNode:
   def __init__(
       self,
       min_x: float, max_x: float,
@@ -55,7 +65,7 @@ class QuadTreeNode:
   ):
     indent_arrow = "--" * depth
     indent_arrow += ">"
-    print(f"{indent_arrow}New QuadTreeNode ({min_x}, {max_x}, {min_y}, {max_y}) @ depth {depth} with len {len(data_indices)}")
+    print(f"{indent_arrow}New KDTreeNode ({min_x}, {max_x}, {min_y}, {max_y}) @ depth {depth} with len {len(data_indices)}")
 
     self.min_x = min_x
     self.max_x = max_x
@@ -66,15 +76,19 @@ class QuadTreeNode:
     self.depth = depth
 
     # Fitted parameters
+    self.equation: Optional[str] = None
     self.a: Optional[float] = None
     self.b: Optional[float] = None
+    self.slope: Optional[float] = None
+    self.intercept: Optional[float] = None
+    self.mse: Optional[float] = float('nan')
 
     # We'll store a centroid for blending
     self.center_x: Optional[float] = None
     self.center_y: Optional[float] = None
 
     # Children
-    self.children: List['QuadTreeNode'] = []
+    self.children: List['KDTreeNode'] = []
 
   def is_leaf(self) -> bool:
     return len(self.children) == 0
@@ -113,6 +127,8 @@ class QuadTreeNode:
           amount = density
       else:
         amount = 0
+    if value == "mse":
+      amount = self.mse
     for child in self.children:
       if child is not None:
         child_value = child._get_value(value, is_max)
@@ -128,7 +144,7 @@ class QuadTreeNode:
 # Fitting & COD for a Node
 ############################
 
-def fit_power_law_node(df: pd.DataFrame, node: QuadTreeNode, ind_var: str, size_var: str):
+def fit_power_law_node(df: pd.DataFrame, node: KDTreeNode, ind_var: str, size_var: str):
   """
   Fit power law Price ~ a * (size^(-b)) using only the data in node.data_indices.
   Update node.a, node.b in-place.
@@ -145,8 +161,8 @@ def fit_power_law_node(df: pd.DataFrame, node: QuadTreeNode, ind_var: str, size_
   # initial guesses: a ~ median of prices, b ~ 0.5
   p0 = [np.median(prices), 0.5]
 
-  # TODO: check on the "too many values to unpack" error
   try:
+    # Fit power law first
     popt, pcov = curve_fit(
       power_law,
       sizes,
@@ -155,47 +171,64 @@ def fit_power_law_node(df: pd.DataFrame, node: QuadTreeNode, ind_var: str, size_
       bounds=(lower_bounds, upper_bounds),
       maxfev=2000
     )
-    node.a, node.b = popt
+    a, b = popt
+    power_law_mse = calc_mse(power_law_np(sizes, a, b), prices)
+    node.a = a
+    node.b = b
+
+    # Fit linear as well and compare
+    p0 = [0.5, np.median(prices)]
+
+    popt, pcov = curve_fit(
+      linear_fit,
+      sizes,
+      prices,
+      p0=p0,
+      maxfev=2000
+    )
+    a, b = popt
+    linear_fit_mse = calc_mse(linear_fit_np(sizes, a, b), prices)
+    node.slope = a
+    node.intercept = b
+
+    if power_law_mse < linear_fit_mse:
+      node.equation = "power_law"
+      node.mse = power_law_mse
+    else:
+      node.equation = "linear"
+      node.mse = linear_fit_mse
+
+    indent_arrow = "--" * node.depth + ">"
+    print(f"{indent_arrow}Fitted a={node.a:.2f}, b={node.b:.2f}, MSE={node.mse:.2f}")
   except RuntimeError:
     # fallback if curve_fit fails
     node.a = np.median(prices)
     node.b = 0.5
-
-
-def compute_node_cod(df: pd.DataFrame, node: QuadTreeNode, size_var: str, ind_var: str) -> float:
-  """
-  Using node's fitted (a, b), compute COD for the data in node.
-  """
-  if node.a is None or node.b is None:
-    return 999999.0
-
-  idx = node.data_indices
-  sizes = df[size_var].values[idx]
-  actual = df[ind_var].values[idx]
-  predicted = power_law(sizes, node.a, node.b)
-
-  return compute_cod(predicted, actual)
+    node.mse = float('inf')
 
 
 ############################
 # Splitting a Node
 ############################
 
-def split_node(node: QuadTreeNode, df: gpd.GeoDataFrame, min_children: int) -> List[QuadTreeNode]:
+def split_node(node: KDTreeNode, df: gpd.GeoDataFrame, split_vertical:int, min_children: int) -> List[KDTreeNode]:
   """
-  Split node's bounding box into 4 quadrants.
-  Return list of up to 4 child QuadTreeNodes with data assigned.
+  Split node's bounding box into 2 quadrants, either vertically or horizontal
+  Return list of up 2 child KDTreeNode's with data assigned.
   """
   mid_x = 0.5 * (node.min_x + node.max_x)
   mid_y = 0.5 * (node.min_y + node.max_y)
 
-  # We'll define boxes: SW, SE, NW, NE
-  boxes = [
-    (node.min_x, mid_x,      node.min_y, mid_y),       # SW
-    (mid_x,      node.max_x, node.min_y, mid_y),       # SE
-    (node.min_x, mid_x,      mid_y,      node.max_y),  # NW
-    (mid_x,      node.max_x, mid_y,      node.max_y),  # NE
-  ]
+  if split_vertical:
+    boxes = [
+      (node.min_x, node.max_x, node.min_y, mid_y),  # Bottom
+      (node.min_x, node.max_x, mid_y, node.max_y)   # Top
+    ]
+  else:
+    boxes = [
+      (node.min_x, mid_x, node.min_y, node.max_y),  # Left
+      (mid_x, node.max_x, node.min_y, node.max_y)   # Right
+    ]
 
   child_nodes = []
 
@@ -211,7 +244,7 @@ def split_node(node: QuadTreeNode, df: gpd.GeoDataFrame, min_children: int) -> L
     child_idx = node.data_indices[mask]
     if len(child_idx) == 0:
       continue  # skip empty child
-    child = QuadTreeNode(min_x, max_x, min_y, max_y, child_idx, node.depth + 1)
+    child = KDTreeNode(min_x, max_x, min_y, max_y, child_idx, node.depth + 1)
     if len(child.data_indices) < min_children:
       return []  # skip split if any child is too small
     child_nodes.append(child)
@@ -220,53 +253,81 @@ def split_node(node: QuadTreeNode, df: gpd.GeoDataFrame, min_children: int) -> L
 
 
 ############################
-# Building the Quadtree
+# Building the KDTree
 ############################
 
-def build_quadtree(
+def build_kdtree(
     df: gpd.GeoDataFrame,
-    root_node: QuadTreeNode,
+    root_node: KDTreeNode,
     ind_var: str,
     size_var: str,
-    cod_threshold: float,
     min_samples: int,
     max_depth: int
 ):
   """
-  Recursively fit local power law and split if COD > cod_threshold.
+  Recursively fit local power law
   """
   # 1. Fit local power-law
   fit_power_law_node(df, root_node, ind_var, size_var)
 
-  # 2. Compute COD
-  cod_value = compute_node_cod(df, root_node, ind_var, size_var)
-
-  # 3. Check split conditions
+  # 2. Check split conditions
   if (
-      cod_value > cod_threshold and
       len(root_node.data_indices) > min_samples and
       root_node.depth < max_depth
   ):
-    # Attempt to split
-    children = split_node(root_node, df, min_samples)
-    if len(children) == 1:
-      # If only 1 child actually had data, no real split
-      return
-    elif len(children) == 0:
-      return
-    else:
-      root_node.children = children
+    # 3. Attempt to split
+    vertical_children = None
+    horizontal_children = None
+
+    depth = root_node.depth
+    indent_arrow = "--" * depth + ">"
+    print(f"{indent_arrow}Splitting node with {len(root_node.data_indices)} data points")
+
+    for split_vertical in [True, False]:
+      print(f"{indent_arrow} --> Splitting {'vertically' if split_vertical else 'horizontally'}")
+      children = split_node(root_node, df, split_vertical, min_samples)
+      print(f"{indent_arrow} --> Got {len(children)} children")
+      if len(children) == 1:
+        # If only 1 child actually had data, no real split
+        continue
+      elif len(children) == 0:
+        continue
+
       for child in children:
-        build_quadtree(df, child, ind_var, size_var, cod_threshold, min_samples, max_depth)
+        fit_power_law_node(df, child, ind_var, size_var)
+
+      if split_vertical:
+        vertical_children = children
+      else:
+        horizontal_children = children
+
+    if vertical_children is not None and horizontal_children is not None:
+      vertical_mse = sum([child.mse for child in vertical_children])
+      horizontal_mse = sum([child.mse for child in horizontal_children])
+      print(f"{indent_arrow} --> Vertical MSE: {vertical_mse:.2f}, Horizontal MSE: {horizontal_mse:.2f}")
+      if vertical_mse <= horizontal_mse:
+        best_children = vertical_children
+      else:
+        best_children = horizontal_children
+    elif vertical_children is not None:
+      best_children = vertical_children
+    elif horizontal_children is not None:
+      best_children = horizontal_children
+    else:
+      return
+
+    root_node.children = best_children
+    for child in best_children:
+      build_kdtree(df, child, ind_var, size_var, min_samples, max_depth)
 
 
 ############################
 # Leaf Gathering & Centroids (for blending)
 ############################
 
-def gather_leaves(node: QuadTreeNode) -> List[QuadTreeNode]:
+def gather_leaves(node: KDTreeNode) -> List[KDTreeNode]:
   """
-  Recursively collect all leaf nodes in the quadtree.
+  Recursively collect all leaf nodes in the kdtree.
   """
   if node.is_leaf():
     return [node]
@@ -277,7 +338,7 @@ def gather_leaves(node: QuadTreeNode) -> List[QuadTreeNode]:
     return leaves
 
 
-def compute_leaf_centroid(df: pd.DataFrame, node: QuadTreeNode) -> Tuple[float, float]:
+def compute_leaf_centroid(df: pd.DataFrame, node: KDTreeNode) -> Tuple[float, float]:
   """
   Compute (center_x, center_y) as the mean of x/y among the node's data points.
   """
@@ -289,7 +350,7 @@ def compute_leaf_centroid(df: pd.DataFrame, node: QuadTreeNode) -> Tuple[float, 
   return c_x, c_y
 
 
-def assign_leaf_centroids(df: pd.DataFrame, root_node: QuadTreeNode) -> List[QuadTreeNode]:
+def assign_leaf_centroids(df: pd.DataFrame, root_node: KDTreeNode) -> List[KDTreeNode]:
   """
   Traverse all leaves, compute centroids, store in node.center_x / node.center_y.
   Return the list of leaves for convenience.
@@ -306,7 +367,7 @@ def assign_leaf_centroids(df: pd.DataFrame, root_node: QuadTreeNode) -> List[Qua
 # Building a KD-Tree of Leaves for Fast Blending
 ############################
 
-def build_leaf_kdtree(leaves: List[QuadTreeNode]) -> KDTree:
+def build_leaf_kdtree(leaves: List[KDTreeNode]) -> KDTree:
   """
   Build a sklearn KDTree from the leaf centroids for fast nearest-neighbor lookups.
   Return the KDTree and optionally the centroids array for reference.
@@ -321,28 +382,26 @@ def build_leaf_kdtree(leaves: List[QuadTreeNode]) -> KDTree:
   return tree, coords
 
 
-
-
-def visualize_quadtree(root: QuadTreeNode, max_pixels_wide: int, max_pixels_tall: int):
+def visualize_kdtree(root: KDTreeNode, max_pixels_wide: int, max_pixels_tall: int):
   # Normalize dimensions to maintain aspect ratio
   width = root.max_x - root.min_x
   height = root.max_y - root.min_y
   aspect_ratio = width / height
 
-  max_a = np.log(root.get_max_value("a"))
-  min_a = np.log(root.get_min_value("a"))
-  max_b = np.log(root.get_max_value("b"))
-  min_b = np.log(root.get_min_value("b"))
-  max_density = root.get_max_value("density")
-  min_density = root.get_min_value("density")
+  # max_a = np.log(root.get_max_value("a"))
+  # min_a = np.log(root.get_min_value("a"))
+  # max_b = np.log(root.get_max_value("b"))
+  # min_b = np.log(root.get_min_value("b"))
+  max_e = np.log(root.get_max_value("mse"))
+  min_e = np.log(root.get_min_value("mse"))
 
-  print(f"max_a: {max_a}, min_a: {min_a}, max_b: {max_b}, min_b: {min_b}, max_density: {max_density}, min_density: {min_density}")
+  eq = root.equation
 
-  range_a = max_a - min_a
-  range_b = max_b - min_b
-  range_density = max_density - min_density
+  # range_a = max_a - min_a
+  # range_b = max_b - min_b
+  range_e = max_e - min_e
 
-  print(f"range_a: {range_a}, range_b: {range_b}, range_samples: {range_density}")
+  #print(f"range_a: {range_a}, range_b: {range_b}, range_e: {range_e}")
 
   if max_pixels_wide / max_pixels_tall > aspect_ratio:
     canvas_width = int(max_pixels_tall * aspect_ratio)
@@ -365,25 +424,33 @@ def visualize_quadtree(root: QuadTreeNode, max_pixels_wide: int, max_pixels_tall
   image = Image.new("RGB", (canvas_width, canvas_height), "white")
   draw = ImageDraw.Draw(image)
 
-  def calculate_color(_child: QuadTreeNode):
+  def calculate_color(_child: KDTreeNode):
 
     if len(_child.data_indices) == 0:
       return 255, 255, 255
 
-    a = (np.log(_child.a) - min_a) / range_a
-    b = (np.log(_child.b) - min_b) / range_b
-    c = (_child.get_density() - min_density) / range_density
+    # a = (np.log(_child.a) - min_a) / range_a
+    # b = (np.log(_child.b) - min_b) / range_b
+    c = (np.log(_child.mse) - min_e) / range_e
+
     if np.isnan(c):
       c = 0.0
 
-    red = int(a * 255)
-    blue = int(b * 255)
-    green = int(c * 255)
+    # red = int(a * 255)
+    # blue = int(b * 255)
+    red = int(c * 255)
+    green = 0
+    blue = 0
 
-    return red, green, blue
+    if _child.equation == "power_law":
+      blue = 255
+    else:
+      blue = 0
+
+    return red, 0, blue
 
 
-  # Recursive function to draw the quadtree
+  # Recursive function to draw the kdtree
   def draw_node(node, base_color):
     # Normalize and draw the current node's bounding box
     x0 = normalize_x(node.min_x)
@@ -398,12 +465,14 @@ def visualize_quadtree(root: QuadTreeNode, max_pixels_wide: int, max_pixels_tall
       center_x = (x0 + x1) // 2
       center_y = (y0 + y1) // 2
 
-      txt_a = (np.log(node.a) - min_a) / range_a
-      txt_b = (np.log(node.b) - min_b) / range_b
-      txt_d = (node.get_density() - min_density) / range_density
+      #txt_a = (np.log(node.a) - min_a) / range_a
+      #txt_b = (np.log(node.b) - min_b) / range_b
+      txt_eq = "P" if node.equation == "power_law" else "L"
+      txt_e = np.sqrt(node.mse)/100
+      #(np.log(node.mse) - min_e) / range_e
 
-      #text = f"a={np.log(node.a):.2f}\nb={np.log(node.b):.2f}\nd={np.log(node.get_density()):.2f}"
-      text = f"a={txt_a:.2f}\nb={txt_b:.2f}\nd={txt_d:.2f}"
+      #text = f"a={txt_a:.2f}\nb={txt_b:.2f}\ne={txt_e:.2f}"
+      text = f"{txt_eq}\ne={txt_e:,.0f}"
       draw.text((center_x, center_y), text, fill="white", anchor="mm", stroke_width=1, stroke_fill=(0,0,0))
 
     # Recurse into children with adjusted colors
@@ -433,14 +502,14 @@ def visualize_quadtree(root: QuadTreeNode, max_pixels_wide: int, max_pixels_tall
 # Prediction with or without blending
 ############################
 
-def quadtree_predict(
+def kdtree_predict(
     df: pd.DataFrame,
-    root_node: QuadTreeNode,
+    root_node: KDTreeNode,
     lat: float,
     lon: float,
     size: float,
     blending: bool = False,
-    leaves: Optional[List[QuadTreeNode]] = None,
+    leaves: Optional[List[KDTreeNode]] = None,
     leaf_tree: Optional[KDTree] = None,
     k: int = 3
 ) -> float:
@@ -448,7 +517,7 @@ def quadtree_predict(
   Predict price at (lat, lon) for lot 'size'.
 
   If blending=False:
-    - We descend the quadtree to find the single leaf that contains (lat, lon) and use (a, b).
+    - We descend the kdtree to find the single leaf that contains (lat, lon) and use (a, b).
 
   If blending=True:
     - We assume we have a list of all leaves (`leaves`) plus a KDTree (`leaf_tree`).
@@ -457,7 +526,7 @@ def quadtree_predict(
   """
 
   if not blending:
-    # "No-blend" approach: descend the quadtree to find the leaf
+    # "No-blend" approach: descend the kdtree to find the leaf
     node = root_node
     while not node.is_leaf():
       found_child = None
@@ -551,9 +620,9 @@ def run_spatial_tree(
   min_x, max_x = df.bounds['minx'].min(), df.bounds['maxx'].max()
 
   all_indices = np.arange(len(df))
-  root_node = QuadTreeNode(min_x, max_x, min_y, max_y, all_indices, depth=0)
+  root_node = KDTreeNode(min_x, max_x, min_y, max_y, all_indices, depth=0)
 
-  build_quadtree(df, root_node, ind_var, size_var, cod_threshold, min_samples, max_depth)
+  build_kdtree(df, root_node, ind_var, size_var, cod_threshold, min_samples, max_depth)
 
   # 3) Make predictions
   # Try some test location near middle
@@ -561,7 +630,7 @@ def run_spatial_tree(
   test_size = 5000.0
 
   # Without blending
-  price_no_blend = quadtree_predict(
+  price_no_blend = kdtree_predict(
     df, root_node, test_lat, test_lon, test_size,
     blending=False
   )
@@ -573,7 +642,7 @@ def run_spatial_tree(
   # leaf_tree, leaf_centroids = build_leaf_kdtree(leaves)
   #
   # # With blending
-  # price_blend = quadtree_predict(
+  # price_blend = kdtree_predict(
   #   df, root_node, test_lat, test_lon, test_size,
   #   blending=True,
   #   leaves=leaves,       # list of leaf nodes

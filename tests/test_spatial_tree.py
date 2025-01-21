@@ -8,7 +8,7 @@ from shapely import wkb
 
 from openavmkit.checkpoint import read_checkpoint
 from openavmkit.data import get_vacant_sales
-from openavmkit.models.spatial_tree import QuadTreeNode, build_quadtree, quadtree_predict, visualize_quadtree
+from openavmkit.models.spatial_tree import KDTreeNode, build_kdtree, visualize_kdtree
 from openavmkit.utilities.geometry import get_crs
 from openavmkit.utilities.settings import load_settings
 
@@ -33,7 +33,7 @@ def test_spatial_tree():
   print(f"CRS -->: {crs_equal_distance}")
 
   df = df.to_crs(crs_equal_distance)
-  df = get_vacant_sales(df, settings)
+  #df = get_vacant_sales(df, settings)
   ind_var = "sale_price_time_adj"
   size_var = "land_area_sqft"
 
@@ -54,15 +54,14 @@ def test_spatial_tree():
   print(f"min_x: {min_x}, max_x: {max_x}, min_y: {min_y}, max_y: {max_y}")
 
   all_indices = np.arange(len(df))
-  root_node = QuadTreeNode(min_x, max_x, min_y, max_y, all_indices, depth=0)
+  root_node = KDTreeNode(min_x, max_x, min_y, max_y, all_indices, depth=0)
 
   print(f"Root Node: {root_node}")
 
-  cod_threshold = 20
-  min_samples = 5
+  min_samples = 100
   max_depth = 6
 
-  build_quadtree(df, root_node, ind_var, size_var, cod_threshold, min_samples, max_depth)
+  build_kdtree(df, root_node, ind_var, size_var, min_samples, max_depth)
 
-  visualize_quadtree(root_node, 800, 800)
+  visualize_kdtree(root_node, 1000, 1000)
   print("DONE")
