@@ -21,7 +21,8 @@ from openavmkit.utilities.modeling import NaiveSqftModel, LocalSqftModel, Assess
 from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions, get_valuation_date, \
 	get_modeling_group, apply_dd_to_df_rows
 from openavmkit.utilities.stats import calc_vif_recursive_drop, calc_t_values_recursive_drop, \
-	calc_p_values_recursive_drop, calc_elastic_net_regularization, calc_correlations, calc_r2, calc_cross_validation_score
+	calc_p_values_recursive_drop, calc_elastic_net_regularization, calc_correlations, calc_r2, \
+	calc_cross_validation_score, calc_cod
 from openavmkit.utilities.timing import TimingData
 
 
@@ -196,6 +197,7 @@ def _predict_one_model(
 		smr: SingleModelResults,
 		model: str,
 		outpath: str,
+		settings: dict,
 		use_saved_results: bool = False,
 		verbose: bool = False
 ) -> SingleModelResults:
@@ -261,7 +263,7 @@ def _predict_one_model(
 		results = predict_catboost(ds, catboost_regressor, timing, verbose)
 
 	# write out the results:
-	write_model_results(results, outpath)
+	write_model_results(results, outpath, settings)
 
 	with open(out_pickle, "wb") as file:
 		pickle.dump(results, file)
@@ -374,13 +376,9 @@ def _run_one_model(
 
 	location_fields = get_locations(settings, df)
 
-	location_field_neighborhood = get_important_field(settings, "loc_neighborhood", df)
-	location_field_market_area = get_important_field(settings, "loc_market_area", df)
-	location_fields = [location_field_neighborhood, location_field_market_area]
-
 	ds = _get_data_split_for(
 		model_name,
-		[location_field_neighborhood, location_field_market_area],
+		location_fields,
 		dep_vars,
 		df,
 		settings,
@@ -428,7 +426,7 @@ def _run_one_model(
 		raise ValueError(f"Model {model_name} not found!")
 
 	# write out the results:
-	write_model_results(results, outpath)
+	write_model_results(results, outpath, settings)
 
 	with open(out_pickle, "wb") as file:
 		pickle.dump(results, file)
@@ -436,8 +434,10 @@ def _run_one_model(
 	return results
 
 
-def _assemble_model_results(results: SingleModelResults):
-	fields = ["key", "prediction", "assr_market_value", "assr_market_land_value", "sale_price", "sale_price_time_adj", "sale_date"]
+def _assemble_model_results(results: SingleModelResults, settings: dict):
+	locations = get_locations(settings)
+
+	fields = ["key", "geometry", "prediction", "assr_market_value", "assr_market_land_value", "sale_price", "sale_price_time_adj", "sale_date"] + locations
 	fields = [field for field in fields if field in results.df_sales.columns]
 
 	dfs = {
@@ -448,13 +448,26 @@ def _assemble_model_results(results: SingleModelResults):
 
 	for key in dfs:
 		df = dfs[key]
-		df["prediction_ratio"] = div_z_safe(df, "prediction", "sale_price")
-		df["assr_ratio"] = div_z_safe(df, "assr_market_value", "sale_price")
+		df["prediction_ratio"] = div_z_safe(df, "prediction", "sale_price_time_adj")
+		df["assr_ratio"] = div_z_safe(df, "assr_market_value", "sale_price_time_adj")
+		for location in locations:
+			if location in df:
+				df[f"prediction_cod_{location}"] = None
+				df[f"assr_cod_{location}"] = None
+				location_values = df[location].unique()
+				for value in location_values:
+					predictions = df.loc[df[location].eq(value), "prediction_ratio"].values
+					predictions = predictions[~pd.isna(predictions)]
+					df.loc[df[location].eq(value), f"prediction_cod_{location}"] = calc_cod(predictions)
+
+					assr_predictions = df.loc[df[location].eq(value), "assr_ratio"].values
+					assr_predictions = assr_predictions[~pd.isna(assr_predictions)]
+					df.loc[df[location].eq(value), f"assr_cod_{location}"] = calc_cod(assr_predictions)
 	return dfs
 
 
-def write_model_results(results: SingleModelResults, outpath: str):
-	dfs = _assemble_model_results(results)
+def write_model_results(results: SingleModelResults, outpath: str, settings: dict):
+	dfs = _assemble_model_results(results, settings)
 	path = f"{outpath}/{results.type}"
 	if "*" in path:
 		path = path.replace("*", "_star")
@@ -468,10 +481,11 @@ def write_model_results(results: SingleModelResults, outpath: str):
 def write_ensemble_model_results(
 		results: SingleModelResults,
 		outpath: str,
+		settings: dict,
 		dfs: dict[str, pd.DataFrame],
 		ensemble_list: list[str]
 ):
-	dfs_basic = _assemble_model_results(results)
+	dfs_basic = _assemble_model_results(results, settings)
 	path = f"{outpath}/{results.type}"
 	os.makedirs(path, exist_ok=True)
 	for key in dfs_basic:
@@ -600,9 +614,11 @@ def optimize_ensemble(
 		print(f"Best score = {best_score:5.0}, ensemble = {best_list}")
 	return best_list
 
+
 def run_ensemble(
 		df: pd.DataFrame,
 		vacant_only: bool,
+		hedonic: bool,
 		ind_var: str,
 		ind_var_test: str,
 		outpath: str,
@@ -631,8 +647,10 @@ def run_ensemble(
 		{},
 		test_train_frac,
 		random_seed,
-		vacant_only=vacant_only
+		vacant_only=vacant_only,
+		hedonic=hedonic
 	)
+	ds.split()
 
 	df_test = ds.df_test
 	df_sales = ds.df_sales
@@ -647,13 +665,24 @@ def run_ensemble(
 
 	timing.start("parameter_search")
 	timing.stop("parameter_search")
-
 	timing.start("train")
+
 	for m_key in ensemble_list:
 		m_results = all_results.model_results[m_key]
-		df_test_ensemble[m_key] = m_results.pred_test.y_pred
-		df_sales_ensemble[m_key] = m_results.pred_sales.y_pred
-		df_univ_ensemble[m_key] = m_results.pred_univ
+
+		_df_test = m_results.df_test[["key"]]
+		_df_test.loc[:, m_key] = m_results.pred_test.y_pred
+
+		_df_sales = m_results.df_sales[["key"]]
+		_df_sales.loc[:, m_key] = m_results.pred_sales.y_pred
+
+		_df_univ = m_results.df_universe[["key"]]
+		_df_univ.loc[:, m_key] = m_results.pred_univ
+
+		df_test_ensemble = df_test_ensemble.merge(_df_test, on="key", how="left")
+		df_sales_ensemble = df_sales_ensemble.merge(_df_sales, on="key", how="left")
+		df_univ_ensemble = df_univ_ensemble.merge(_df_univ, on="key", how="left")
+
 	timing.stop("train")
 
 	timing.start("predict_test")
@@ -687,7 +716,7 @@ def run_ensemble(
 		"universe": df_univ_ensemble,
 		"test": df_test_ensemble
 	}
-	write_ensemble_model_results(results, outpath, dfs, ensemble_list)
+	write_ensemble_model_results(results, outpath, settings, dfs, ensemble_list)
 	return results
 
 
@@ -1193,6 +1222,7 @@ def _run_hedonic_models(
 			smr=smr,
 			model=model,
 			outpath=outpath,
+			settings=settings,
 			use_saved_results=use_saved_results,
 			verbose=verbose
 		)
@@ -1219,6 +1249,7 @@ def _run_hedonic_models(
 	ensemble_results = run_ensemble(
 		df=df,
 		vacant_only=vacant_only,
+		hedonic=True,
 		ind_var=ind_var,
 		ind_var_test=ind_var_test,
 		outpath=outpath,
@@ -1330,6 +1361,7 @@ def _run_models(
 	ensemble_results = run_ensemble(
 		df=df,
 		vacant_only=vacant_only,
+		hedonic=False,
 		ind_var=ind_var,
 		ind_var_test=ind_var_test,
 		outpath=outpath,

@@ -1625,7 +1625,11 @@ def predict_local_sqft(
 		y_pred_sales = ds.y_sales * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_sales))
 		y_pred_univ = _sales_chase_univ(df, ind_var, y_pred_univ) * np.random.choice([1-sales_chase, 1+sales_chase], len(y_pred_univ))
 
-	name = "local_sqft"
+	if "ss_id" in location_fields:
+		name = "local_smart_sqft"
+	else:
+		name = "local_naive_sqft"
+
 	if sales_chase:
 		name += "*"
 
