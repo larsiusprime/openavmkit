@@ -243,3 +243,14 @@ def apply_dd_to_df_rows(
 				one_hot_rename_map[descendant] = dd.get(ancestor, {}).get(dd_field, ancestor) + " = " + descendant[len(ancestor)+1:]
 		df[column] = df[column].map(lambda x: one_hot_rename_map.get(x, x))
 	return df
+
+
+def get_model_group_ids(settings: dict, df: pd.DataFrame = None):
+	modeling = settings.get("modeling", {})
+	model_groups = modeling.get("modeling_groups", {})
+	if df is not None:
+		model_groups_in_df = df["model_group"].unique()
+		model_group_ids = [key for key in model_groups if key in model_groups_in_df]
+	else:
+		model_group_ids = [key for key in model_groups]
+	return model_group_ids

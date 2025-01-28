@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 
 def clean_column_names(df: pd.DataFrame):
@@ -13,11 +14,11 @@ def clean_column_names(df: pd.DataFrame):
 	return df
 
 
-def div_field_z_safe(numerator: pd.Series, denominator: pd.Series):
+def div_field_z_safe(numerator: pd.Series|np.ndarray, denominator: pd.Series|np.ndarray):
 	# perform a divide-by-zero-safe division of the two series, replacing divide by zero values with NaN:
 
 	# get the index of all rows where the denominator is zero:
-	idx_denominator_zero = denominator.eq(0)
+	idx_denominator_zero = (denominator == 0)
 
 	# get the series of the numerator and denominator for all rows where the denominator is not zero:
 	series_numerator = numerator[~idx_denominator_zero]

@@ -164,6 +164,50 @@ def tune_catboost(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False
     return study.best_params
 
 
+def tune_krig(X_Train, y_train, verbose=False):
+    """
+    Tune the hyperparameters for a Kriging model using Optuna.
+    :param X_Train: pd.DataFrame of independent variables
+    :param y_train: pd.Series of dependent variables
+    :param verbose: bool, whether to enable verbose output
+    :return: dict: the best hyperparameters found by Optuna
+    """
+    def objective(trial):
+        # Suggest variogram model
+        variogram = trial.suggest_categorical("variogram", ["linear", "power", "gaussian", "spherical", "exponential"])
+
+        # Suggest grid size
+        grid_size_str = trial.suggest_categorical("grid_size", ["coarse", "medium", "fine"])
+
+        # Use these hyperparameters to run regression kriging
+        try:
+            # Simulate the process with a sample DataSplit (mock `run_krig` logic here)
+            krig_results = run_krig(ds, variogram, grid_size_str, verbose=False)
+
+            # Evaluate using RMSE on validation data (mock example)
+            y_pred = krig_results.y_pred_test
+            y_true = ds.y_test
+
+            # Calculate RMSE
+            rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+            return rmse
+        except Exception as e:
+            # Penalize failure cases
+            if verbose:
+                print(f"Trial failed with error: {e}")
+            return float("inf")
+
+    # Create and optimize the study
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=50, show_progress_bar=verbose)  # Adjust n_trials as needed
+
+    # Return the best parameters
+    if verbose:
+        print(f"Best hyperparameters: {study.best_params}")
+    return study.best_params
+
+
+
 #### PRIVATE:
 
 
@@ -261,7 +305,6 @@ def _catboost_rolling_origin_cv(X, y, params, n_splits=5, random_state=42, verbo
         mae_scores.append(mean_absolute_error(y_val, y_pred))
 
     return np.mean(mae_scores)
-
 
 
 def _lightgbm_rolling_origin_cv(X, y, params, n_splits=5, random_state=42):

@@ -121,7 +121,7 @@ def get_sales(df_in: pd.DataFrame, settings: dict, vacant_only: bool = False) ->
 
 def boolify_series(series: pd.Series):
 	if series.dtype in ["object", "string", "str"]:
-		series = series.str.lower().str.strip()
+		series = series.astype(str).str.lower().str.strip()
 		series = series.replace(["true", "t", "1"], 1)
 		series = series.replace(["false", "f", "0"], 0)
 	series = series.fillna(0)
