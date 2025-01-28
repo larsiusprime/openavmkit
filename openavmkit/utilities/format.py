@@ -3,6 +3,15 @@ import pandas as pd
 
 
 def fancy_format(num):
+  if not isinstance(num, (int, float, np.number)):
+    # if NoneType:
+    if num is None:
+      return "N/A"
+    return str(num) + "-->?(type=" + str(type(num)) + ")"
+
+  if np.isinf(num):
+    return "∞" if num > 0 else "-∞"
+
   if np.isinf(num):
     if num > 0:
       return " ∞"
@@ -12,7 +21,7 @@ def fancy_format(num):
     return "N/A"
   if num == 0:
     return '0.00'
-  if num < 1:
+  if 1 > num > 0:
     return '{:.2f}'.format(num)
   num = float('{:.3g}'.format(num))
   magnitude = 0

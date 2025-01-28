@@ -7,14 +7,19 @@ from IPython.core.display_functions import display
 from joblib import Parallel, delayed
 from typing import Union
 
+
 import numpy as np
 import statsmodels.api as sm
 import pandas as pd
+import geopandas as gpd
 import xgboost
 import lightgbm as lgb
 import catboost
 from catboost import CatBoostRegressor, Pool
 from lightgbm import Booster
+from matplotlib import pyplot as plt, ticker
+from matplotlib.colors import TwoSlopeNorm
+from matplotlib.ticker import FuncFormatter
 from mgwr.gwr import GWR
 from mgwr.gwr import _compute_betas_gwr, Kernel
 
@@ -27,9 +32,11 @@ from xgboost import XGBRegressor
 
 from openavmkit.data import get_sales, simulate_removed_buildings
 from openavmkit.ratio_study import RatioStudy
+from openavmkit.utilities.format import fancy_format
+from openavmkit.utilities.geometry import select_grid_size_from_size_str, scale_coords
 from openavmkit.utilities.modeling import GarbageModel, AverageModel, NaiveSqftModel, LocalSqftModel, AssessorModel, \
 	GWRModel, MRAModel
-from openavmkit.utilities.data import clean_column_names
+from openavmkit.utilities.data import clean_column_names, div_field_z_safe
 from openavmkit.utilities.stats import quick_median_chd
 from openavmkit.utilities.tuning import tune_lightgbm, tune_xgboost, tune_catboost
 from openavmkit.utilities.timing import TimingData
@@ -121,6 +128,7 @@ class DataSplit:
 		if init:
 			self.settings = settings.copy()
 
+      self.df_universe_orig = df.copy()
 			self.df_universe = df.copy()
 			self.df_sales = get_sales(df, settings, vacant_only).reset_index(drop=True)
 
@@ -174,12 +182,13 @@ class DataSplit:
 			"",
 			init=False
 		)
-		# manually copy every field:
-		ds.settings = self.settings.copy()
-		ds.df_sales = self.df_sales.copy()
-		ds.df_universe = self.df_universe.copy()
-		ds._df_sales = self._df_sales.copy()
-		ds.df_train = self.df_train.copy()
+    # manually copy every field:
+    ds.settings = self.settings.copy()
+    ds.df_sales = self.df_sales.copy()
+    ds.df_universe = self.df_universe.copy()
+    ds.df_universe_orig = self.df_universe_orig.copy()
+    ds._df_sales = self._df_sales.copy()
+    ds.df_train = self.df_train.copy()
 		ds.df_test = self.df_test.copy()
 		ds.X_univ = self.X_univ.copy()
 		ds.X_sales = self.X_sales.copy()
@@ -1870,8 +1879,41 @@ def _run_gwr_prediction(
 	return y_pred
 
 
-def _get_params(name:str, slug:str, ds:DataSplit, tune_func, outpath:str, save_params:bool, use_saved_params:bool, verbose:bool):
-	if verbose:
+def _plot_contribution(title: str, values: np.array, x_coords: np.array, y_coords: np.array, gdf: gpd.GeoDataFrame):
+  plt.clf()
+  plt.figure(figsize=(12, 8))
+
+  plt.title(title)
+  vmin = np.quantile(values, 0.05)
+  vmax = np.quantile(values, 0.95)
+
+  vmin = min(0, vmin)
+  vcenter = max(0, vmin)
+  vmax = max(0, vmax)
+
+  if vmax > abs(vmin):
+    vmin = -vmax
+  if abs(vmin) > vmax:
+    vmax = abs(vmin)
+
+  # Define normalization to center zero on white
+  norm = TwoSlopeNorm(vmin=vmin, vcenter=vcenter, vmax=vmax)
+
+  plt.scatter(x_coords, y_coords, c=values, cmap="coolwarm", s=2, norm=norm)
+  cbar = plt.colorbar()
+
+  gdf_slice = gdf[["geometry"]].copy()
+  gdf_slice["values"] = values
+
+  # plot the contributions as polygons using the same color map and vmin/vmax:
+  gdf_slice.plot(column="values", cmap="coolwarm", norm=norm, ax=plt.gca())
+  cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, _: fancy_format(x)))
+  cbar.set_label("Value ($)", fontsize=12)
+  plt.show()
+
+
+def _get_params(name:str, slug:str, ds:DataSplit, tune_func, outpath:str, save_params:bool, use_saved_params:bool, verbose:bool, **kwargs):
+  if verbose:
 		print(f"Tuning {name}: searching for optimal parameters...")
 
 	params = None
@@ -1881,7 +1923,7 @@ def _get_params(name:str, slug:str, ds:DataSplit, tune_func, outpath:str, save_p
 			if verbose:
 				print(f"--> using saved parameters: {params}")
 	if params is None:
-		params = tune_func(ds.X_train, ds.y_train, verbose=verbose)
+    params = tune_func(ds.X_train, ds.y_train, verbose=verbose, **kwargs)
 		if verbose:
 			print(f"--> optimal parameters = {params}")
 		if save_params:

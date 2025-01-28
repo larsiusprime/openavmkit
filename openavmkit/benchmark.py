@@ -2,6 +2,7 @@ import os
 import pickle
 
 import pandas as pd
+from IPython.core.display_functions import display
 from catboost import CatBoostRegressor
 from lightgbm import Booster
 from statsmodels.nonparametric.kernel_regression import KernelReg
@@ -10,9 +11,9 @@ from xgboost import XGBRegressor
 from openavmkit.data import get_important_field, get_locations
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, SingleModelResults, \
 	run_garbage, \
-	run_average, run_naive_sqft, DataSplit, run_kernel, run_local_sqft, run_assessor, predict_mra, predict_garbage, \
+	run_average, run_naive_sqft, DataSplit, run_kernel, run_local_sqft, run_assessor, predict_garbage, \
 	GarbageModel, predict_average, AverageModel, predict_naive_sqft, predict_local_sqft, predict_assessor, predict_kernel, \
-	predict_gwr, predict_xgboost, predict_catboost, predict_lightgbm
+	predict_gwr, predict_xgboost, predict_catboost, predict_lightgbm, run_krig
 from openavmkit.reports import MarkdownReport, markdown_to_pdf
 from openavmkit.time_adjustment import enrich_time_adjustment
 from openavmkit.utilities.data import div_z_safe, dataframe_to_markdown
@@ -314,6 +315,7 @@ def _get_data_split_for(
 
 
 def _run_one_model(
+		df_orig: pd.DataFrame,
 		df: pd.DataFrame,
 		vacant_only: bool,
 		model: str,
@@ -505,7 +507,8 @@ def optimize_ensemble(
 		all_results: MultiModelResults,
 		settings: dict,
 		verbose: bool = False,
-		hedonic: bool = False
+		hedonic: bool = False,
+		ensemble_list: list[str] = None
 ):
 	timing = TimingData()
 	timing.start("total")
@@ -514,6 +517,11 @@ def optimize_ensemble(
 	instructions = settings.get("modeling", {}).get("instructions", {})
 	test_train_frac = instructions.get("test_train_frac", 0.8)
 	random_seed = instructions.get("random_seed", 1337)
+
+	if df is None:
+		# get first key from all_results.model_results:
+		first_key = list(all_results.model_results.keys())[0]
+		df = all_results.model_results[first_key].ds.df_universe_orig
 
 	ds = DataSplit(
 		df,
@@ -534,7 +542,10 @@ def optimize_ensemble(
 	df_test = ds.df_test
 	df_univ = ds.df_universe
 	instructions = settings.get("modeling", {}).get("instructions", {})
-	ensemble_list = instructions.get(vacant_status, {}).get("ensemble", [])
+
+	if ensemble_list is None:
+		ensemble_list = instructions.get(vacant_status, {}).get("ensemble", [])
+
 	if len(ensemble_list) == 0:
 		ensemble_list = [key for key in all_results.model_results.keys()]
 
@@ -670,13 +681,13 @@ def run_ensemble(
 	for m_key in ensemble_list:
 		m_results = all_results.model_results[m_key]
 
-		_df_test = m_results.df_test[["key"]]
+		_df_test = m_results.df_test[["key"]].copy()
 		_df_test.loc[:, m_key] = m_results.pred_test.y_pred
 
-		_df_sales = m_results.df_sales[["key"]]
+		_df_sales = m_results.df_sales[["key"]].copy()
 		_df_sales.loc[:, m_key] = m_results.pred_sales.y_pred
 
-		_df_univ = m_results.df_universe[["key"]]
+		_df_univ = m_results.df_universe[["key"]].copy()
 		_df_univ.loc[:, m_key] = m_results.pred_univ
 
 		df_test_ensemble = df_test_ensemble.merge(_df_test, on="key", how="left")
@@ -1164,13 +1175,33 @@ def run_models(
 		save_params: bool = True,
 		use_saved_params: bool = True,
 		use_saved_results: bool = True,
-		verbose: bool = False
+		verbose: bool = False,
+		run_main: bool = True,
+		run_vacant: bool = True
 ):
+	s = settings
+	s_model = s.get("modeling", {})
+	s_inst = s_model.get("instructions", {})
+	model_groups = s_inst.get("model_groups", [])
+	if len(model_groups) == 0:
+		model_groups = df["model_group"].unique()
+		model_groups = [mg for mg in model_groups if not pd.isna(mg)]
+
+	for model_group in model_groups:
+		if verbose:
+			print(f"*** Running models for model_group: {model_group} ***")
 		for vacant_only in [False, True]:
-			_run_models(df, settings, vacant_only, save_params, use_saved_params, use_saved_results, verbose)
+			if vacant_only:
+				if not run_vacant:
+					continue
+			else:
+				if not run_main:
+					continue
+			_run_models(df, model_group, settings, vacant_only, save_params, use_saved_params, use_saved_results, verbose)
 
 def _run_hedonic_models(
 		settings: dict,
+		model_group: str,
 		vacant_only: bool,
 		models_to_run: list[str],
 		all_results: MultiModelResults,
@@ -1183,7 +1214,7 @@ def _run_hedonic_models(
 ):
 	hedonic_results = {}
 	# Run hedonic models
-	outpath = f"out/models/hedonic"
+	outpath = f"out/models/{model_group}/hedonic"
 	if not os.path.exists(outpath):
 		os.makedirs(outpath)
 
@@ -1271,7 +1302,8 @@ def _run_hedonic_models(
 
 
 def _run_models(
-		df: pd.DataFrame,
+		df_in: pd.DataFrame,
+		model_group: str,
 		settings: dict,
 		vacant_only: bool = False,
 		save_params: bool = True,
@@ -1279,6 +1311,8 @@ def _run_models(
 		use_saved_results: bool = True,
 		verbose: bool = False
 ):
+
+	df = df_in[df_in["model_group"] == model_group].copy()
 
 	s = settings
 	s_model = s.get("modeling", {})
@@ -1298,7 +1332,7 @@ def _run_models(
 		raise ValueError("Could not find equity cluster ID's in the dataframe (he_id)")
 
 	model_results = {}
-	outpath = f"out/models/{vacant_status}"
+	outpath = f"out/models/{model_group}/{vacant_status}"
 	if not os.path.exists(outpath):
 		os.makedirs(outpath)
 
@@ -1323,6 +1357,7 @@ def _run_models(
 	# Run the models one by one and stash the results
 	for model in models_to_run:
 		results = _run_one_model(
+			df_orig=df_in,
 			df=df,
 			vacant_only=vacant_only,
 			model=model,
@@ -1388,6 +1423,7 @@ def _run_models(
 	if not vacant_only:
 		_run_hedonic_models(
 			settings,
+			model_group,
 			vacant_only,
 			models_to_run,
 			all_results,
