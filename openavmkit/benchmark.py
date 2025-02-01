@@ -753,24 +753,24 @@ def _optimize_ensemble_iteration(
 	df_test_ensemble = df_test[["key"]].copy()
 	df_univ_ensemble = df_univ[["key"]].copy()
 	if len(ensemble_list) == 0:
-			ensemble_list = [key for key in all_results.model_results.keys()]
-		timing.stop("setup")
+		ensemble_list = [key for key in all_results.model_results.keys()]
+	timing.stop("setup")
 
-		timing.start("parameter_search")
-		timing.stop("parameter_search")
+	timing.start("parameter_search")
+	timing.stop("parameter_search")
 
-		timing.start("train")
-		for m_key in ensemble_list:
-			m_results = all_results.model_results[m_key]
-			df_test_ensemble[m_key] = m_results.pred_test.y_pred
-			df_univ_ensemble[m_key] = m_results.pred_univ
-		timing.stop("train")
+	timing.start("train")
+	for m_key in ensemble_list:
+		m_results = all_results.model_results[m_key]
+		df_test_ensemble[m_key] = m_results.pred_test.y_pred
+		df_univ_ensemble[m_key] = m_results.pred_univ
+	timing.stop("train")
 
-		timing.start("predict_test")
-		y_pred_test_ensemble = df_test_ensemble[ensemble_list].median(axis=1)
-		timing.stop("predict_test")
+	timing.start("predict_test")
+	y_pred_test_ensemble = df_test_ensemble[ensemble_list].median(axis=1)
+	timing.stop("predict_test")
 
-		timing.start("predict_sales")
+	timing.start("predict_sales")
 	timing.stop("predict_sales")
 
 	timing.start("predict_univ")
@@ -780,38 +780,38 @@ def _optimize_ensemble_iteration(
 	results = SingleModelResults(
 		ds,
 		"prediction",
-			"he_id",
-			"ensemble",
-			model="ensemble",
-			y_pred_test=y_pred_test_ensemble.to_numpy(),
-			y_pred_sales=None,
-			y_pred_univ=y_pred_univ_ensemble.to_numpy(),
-			timing=timing,
-			verbose=verbose
-		)
-		timing.stop("total")
+		"he_id",
+		"ensemble",
+		model="ensemble",
+		y_pred_test=y_pred_test_ensemble.to_numpy(),
+		y_pred_sales=None,
+		y_pred_univ=y_pred_univ_ensemble.to_numpy(),
+		timing=timing,
+		verbose=verbose
+	)
+	timing.stop("total")
 
-		score = results.utility
+	score = results.utility
 
-		if verbose:
-			print(f"score = {score:5.0f}, best = {best_score:5.0f}, ensemble = {ensemble_list}...")
+	if verbose:
+		print(f"score = {score:5.0f}, best = {best_score:5.0f}, ensemble = {ensemble_list}...")
 
-		if score < best_score and len(ensemble_list) >= 3:
-			best_score = score
-			best_list = ensemble_list.copy()
+	if score < best_score and len(ensemble_list) >= 3:
+		best_score = score
+		best_list = ensemble_list.copy()
 
-		# identify the WORST individual model:
-		worst_model = None
-		worst_score = float('-inf')
-		for key in ensemble_list:
-			if key in all_results.model_results:
-				model_results = all_results.model_results[key]
+	# identify the WORST individual model:
+	worst_model = None
+	worst_score = float('-inf')
+	for key in ensemble_list:
+		if key in all_results.model_results:
+			model_results = all_results.model_results[key]
 
-				if model_results.utility > worst_score:
-					worst_score = model_results.utility
-					worst_model = key
+			if model_results.utility > worst_score:
+				worst_score = model_results.utility
+				worst_model = key
 
-		if worst_model is not None and len(ensemble_list) > 1:
+	if worst_model is not None and len(ensemble_list) > 1:
 		ensemble_list.remove(worst_model)
 
 	return best_score, best_list
@@ -1378,7 +1378,7 @@ def run_models(
 	model_groups = s_inst.get("model_groups", [])
 	if len(model_groups) == 0:
 		model_groups = df["model_group"].unique()
-		model_groups = [mg for mg in model_groups if not pd.isna(mg)]
+		model_groups = [mg for mg in model_groups if not pd.isna(mg) and str(mg) != "<NA>"]
 
 	for model_group in model_groups:
 		if verbose:
