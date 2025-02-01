@@ -1,6 +1,7 @@
 import os
 import pickle
 
+import numpy as np
 import pandas as pd
 from IPython.core.display_functions import display
 from catboost import CatBoostRegressor
@@ -286,7 +287,8 @@ def _get_data_split_for(
 		test_keys: list[str],
 		train_keys: list[str],
 		vacant_only: bool,
-		hedonic: bool
+		hedonic: bool,
+		df_multiverse: pd.DataFrame | None = None
 ):
 	if name == "local_naive_sqft":
 		_dep_vars = location_fields + ["bldg_area_finished_sqft", "land_area_sqft"]
@@ -312,12 +314,13 @@ def _get_data_split_for(
 		test_keys,
 		train_keys,
 		vacant_only=vacant_only,
-		hedonic=hedonic
+		hedonic=hedonic,
+		df_multiverse=df_multiverse
 	)
 
 
 def _run_one_model(
-		df_orig: pd.DataFrame,
+		df_multiverse: pd.DataFrame,
 		df: pd.DataFrame,
 		vacant_only: bool,
 		model_group: str,
@@ -393,7 +396,8 @@ def _run_one_model(
 		test_keys,
 		train_keys,
 		vacant_only,
-		hedonic
+		hedonic,
+		df_multiverse
 	)
 
 	intercept = entry.get("intercept", True)
@@ -450,6 +454,9 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
 		"test": results.df_test[fields].copy()
 	}
 
+	if results.df_multiverse is not None:
+		dfs["multiverse"] = results.df_multiverse[fields].copy()
+
 	for key in dfs:
 		df = dfs[key]
 		df["prediction_ratio"] = div_z_safe(df, "prediction", "sale_price_time_adj")
@@ -501,8 +508,8 @@ def write_ensemble_model_results(
 		df.to_csv(f"{path}/pred_ensemble_{key}.csv", index=False)
 
 
-def optimize_ensemble(
-		df: pd.DataFrame,
+def optimize_ensemble_allocation(
+		df: pd.DataFrame | None,
 		model_group: str,
 		vacant_only: bool,
 		ind_var: str,
@@ -517,13 +524,10 @@ def optimize_ensemble(
 	timing.start("total")
 	timing.start("setup")
 
-	instructions = settings.get("modeling", {}).get("instructions", {})
-	test_train_frac = instructions.get("test_train_frac", 0.8)
-	random_seed = instructions.get("random_seed", 1337)
-
 	if df is None:
 		# get first key from all_results.model_results:
 		first_key = list(all_results.model_results.keys())[0]
+		# get the universe dataframe from the first model:
 		df = all_results.model_results[first_key].ds.df_universe_orig
 
 	test_keys, train_keys = read_split_keys(model_group)
@@ -563,9 +567,192 @@ def optimize_ensemble(
 	best_score = float('inf')
 
 	while len(ensemble_list) > 1:
-		df_test_ensemble = df_test[["key"]].copy()
-		df_univ_ensemble = df_univ[["key"]].copy()
-		if len(ensemble_list) == 0:
+		best_score, best_list = _optimize_ensemble_allocation_iteration(
+			df_test,
+			df_univ,
+			timing,
+			all_results,
+			ds,
+			best_score,
+			best_list,
+			ensemble_list,
+			verbose
+		)
+
+	if verbose:
+		print(f"Best score = {best_score:8.0f}, ensemble = {best_list}")
+	return best_list
+
+
+def _optimize_ensemble_allocation_iteration(
+		df_test: pd.DataFrame,
+		df_univ: pd.DataFrame,
+		timing: TimingData,
+		all_results: MultiModelResults,
+		ds: DataSplit,
+		best_score: float,
+		best_list: list[str],
+		ensemble_list: list[str],
+		verbose: bool = False
+):
+	df_test_ensemble = df_test[["key"]].copy()
+	df_univ_ensemble = df_univ[["key"]].copy()
+	if len(ensemble_list) == 0:
+		ensemble_list = [key for key in all_results.model_results.keys()]
+	timing.stop("setup")
+
+	timing.start("parameter_search")
+	timing.stop("parameter_search")
+
+	timing.start("train")
+	for m_key in ensemble_list:
+		m_results = all_results.model_results[m_key]
+		df_test_ensemble[m_key] = m_results.pred_test.y_pred
+		df_univ_ensemble[m_key] = m_results.pred_univ
+	timing.stop("train")
+
+	timing.start("predict_test")
+	y_pred_test_ensemble = df_test_ensemble[ensemble_list].median(axis=1)
+	timing.stop("predict_test")
+
+	timing.start("predict_sales")
+	timing.stop("predict_sales")
+
+	timing.start("predict_univ")
+	y_pred_univ_ensemble = df_univ_ensemble[ensemble_list].median(axis=1)
+	timing.stop("predict_univ")
+
+	results = SingleModelResults(
+		ds,
+		"prediction",
+		"he_id",
+		"ensemble",
+		model="ensemble",
+		y_pred_test=y_pred_test_ensemble.to_numpy(),
+		y_pred_sales=None,
+		y_pred_univ=y_pred_univ_ensemble.to_numpy(),
+		timing=timing,
+		verbose=verbose
+	)
+	score = results.utility
+
+	timing.stop("total")
+
+	if verbose:
+		print(f"score = {score:5.0f}, best = {best_score:5.0f}, ensemble = {ensemble_list}...")
+
+	if score < best_score and len(ensemble_list) >= 3:
+		best_score = score
+		best_list = ensemble_list.copy()
+
+	# identify the WORST individual model:
+	worst_model = None
+	worst_score = float('-inf')
+	for key in ensemble_list:
+		if key in all_results.model_results:
+			model_results = all_results.model_results[key]
+			model_score = model_results.utility
+
+			if model_score > worst_score:
+				worst_score = model_score
+				worst_model = key
+
+	if worst_model is not None and len(ensemble_list) > 1:
+		ensemble_list.remove(worst_model)
+
+	return best_score, best_list
+
+
+def optimize_ensemble(
+		df: pd.DataFrame | None,
+		model_group: str,
+		vacant_only: bool,
+		ind_var: str,
+		ind_var_test: str,
+		all_results: MultiModelResults,
+		settings: dict,
+		verbose: bool = False,
+		hedonic: bool = False,
+		ensemble_list: list[str] = None
+):
+	timing = TimingData()
+	timing.start("total")
+	timing.start("setup")
+
+	if df is None:
+		# get first key from all_results.model_results:
+		first_key = list(all_results.model_results.keys())[0]
+		# get the universe dataframe from the first model:
+		df = all_results.model_results[first_key].ds.df_universe_orig
+
+	test_keys, train_keys = read_split_keys(model_group)
+
+	ds = DataSplit(
+		df,
+		model_group,
+		settings,
+		ind_var,
+		ind_var_test,
+		[],
+		[],
+		{},
+		test_keys,
+		train_keys,
+		vacant_only=vacant_only,
+		hedonic=hedonic
+	)
+
+	vacant_status = "vacant" if vacant_only else "main"
+
+	df_test = ds.df_test
+	df_univ = ds.df_universe
+	instructions = settings.get("modeling", {}).get("instructions", {})
+
+	if ensemble_list is None:
+		ensemble_list = instructions.get(vacant_status, {}).get("ensemble", [])
+
+	if len(ensemble_list) == 0:
+		ensemble_list = [key for key in all_results.model_results.keys()]
+
+	# Never use an assessor's model in an ensemble!
+	if "assessor" in ensemble_list:
+		ensemble_list.remove("assessor")
+
+	best_list = []
+	best_score = float('inf')
+
+	while len(ensemble_list) > 1:
+		best_score, best_list = _optimize_ensemble_iteration(
+			df_test,
+			df_univ,
+			timing,
+			all_results,
+			ds,
+			best_score,
+			best_list,
+			ensemble_list,
+			verbose
+		)
+
+	if verbose:
+		print(f"Best score = {best_score:8.0f}, ensemble = {best_list}")
+	return best_list
+
+
+def _optimize_ensemble_iteration(
+		df_test: pd.DataFrame,
+		df_univ: pd.DataFrame,
+		timing: TimingData,
+		all_results: MultiModelResults,
+		ds: DataSplit,
+		best_score: float,
+		best_list: list[str],
+		ensemble_list: list[str],
+		verbose: bool = False
+):
+	df_test_ensemble = df_test[["key"]].copy()
+	df_univ_ensemble = df_univ[["key"]].copy()
+	if len(ensemble_list) == 0:
 			ensemble_list = [key for key in all_results.model_results.keys()]
 		timing.stop("setup")
 
@@ -625,11 +812,9 @@ def optimize_ensemble(
 					worst_model = key
 
 		if worst_model is not None and len(ensemble_list) > 1:
-			ensemble_list.remove(worst_model)
+		ensemble_list.remove(worst_model)
 
-	if verbose:
-		print(f"Best score = {best_score:5.0}, ensemble = {best_list}")
-	return best_list
+	return best_score, best_list
 
 
 def run_ensemble(
@@ -1289,6 +1474,7 @@ def _run_hedonic_models(
 	# Run the ensemble model
 	ensemble_results = run_ensemble(
 		df=df,
+		model_group=model_group,
 		vacant_only=vacant_only,
 		hedonic=True,
 		ind_var=ind_var,
@@ -1367,7 +1553,7 @@ def _run_models(
 	# Run the models one by one and stash the results
 	for model in models_to_run:
 		results = _run_one_model(
-			df_orig=df_in,
+			df_multiverse=df_in,
 			df=df,
 			vacant_only=vacant_only,
 			model_group=model_group,
@@ -1407,6 +1593,7 @@ def _run_models(
 	# Run the ensemble model
 	ensemble_results = run_ensemble(
 		df=df,
+		model_group=model_group,
 		vacant_only=vacant_only,
 		hedonic=False,
 		ind_var=ind_var,
