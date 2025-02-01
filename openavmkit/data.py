@@ -1,16 +1,18 @@
+import os
+import numpy as np
 import pandas as pd
 import geopandas as gpd
 from pandas import Series
 
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
-	get_fields_numeric
+	get_fields_numeric, get_model_group_ids
 
 
 def enrich_time(df: pd.DataFrame) -> pd.DataFrame:
 	if "sale_date" not in df:
 		raise ValueError("The dataframe does not contain a 'sale_date' column.")
 	# ensure "sale_date" is a datetime object:
-	df["sale_date"] = pd.to_datetime(df["sale_date"])
+	df["sale_date"] = pd.to_datetime(df["sale_date"], format="%Y-%m-%d", errors="coerce")
 	# create a "sale_year" column if it does not exist:
 	if "sale_year" not in df:
 		df["sale_year"] = df["sale_date"].dt.year
