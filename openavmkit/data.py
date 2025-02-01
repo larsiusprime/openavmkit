@@ -86,7 +86,6 @@ def  get_vacant(df_in: pd.DataFrame, settings: dict, invert:bool = False) -> pd.
 
 
 def get_sales(df_in: pd.DataFrame, settings: dict, vacant_only: bool = False) -> pd.DataFrame:
-
 	df = df_in.copy()
 	valid_sale_dtype = df["valid_sale"].dtype
 	if valid_sale_dtype != bool:
@@ -204,8 +203,6 @@ def load_data(settings: dict) -> pd.DataFrame:
 				continue
 			ext = filename.split(".")[-1]
 
-			df: pd.DataFrame = None
-
 			if ext == "parquet":
 				try:
 					df = gpd.read_parquet(filename)
@@ -251,3 +248,80 @@ def merge_list_of_dfs(dfs: list[pd.DataFrame], settings: dict) -> pd.DataFrame:
 		return merged
 
 
+def write_canonical_splits(
+		df_sales_in: pd.DataFrame,
+		settings: dict
+):
+	df_sales = get_sales(df_sales_in, settings)
+	model_groups = get_model_group_ids(settings, df_sales)
+	instructions = settings.get("modeling", {}).get("instructions", {})
+	test_train_frac = instructions.get("test_train_frac", 0.8)
+	random_seed = instructions.get("random_seed", 1337)
+	for model_group in model_groups:
+		_write_canonical_split(model_group, df_sales, settings, test_train_frac, random_seed)
+
+
+def _perform_canonical_split(
+		model_group: str,
+		df_sales_in: pd.DataFrame,
+		settings: dict,
+		test_train_fraction: float = 0.8,
+		random_seed: int = 1337
+):
+	# Select only the relevant model group
+	df = df_sales_in[df_sales_in["model_group"].eq(model_group)].copy()
+
+	# Divide universe & sales into vacant & improved
+	df_v = get_vacant_sales(df, settings)
+	df_i = df.drop(df_v.index)
+
+	# Do the split for vacant & improved property separately
+	np.random.seed(random_seed)
+	df_v_train = df_v.sample(frac=test_train_fraction)
+	df_v_test = df_v.drop(df_v_train.index)
+
+	df_i_train = df_i.sample(frac=test_train_fraction)
+	df_i_test = df_i.drop(df_i_train.index)
+
+	# Then piece them back together
+	df_test = pd.concat([df_v_test, df_i_test]).reset_index(drop=True)
+	df_train = pd.concat([df_v_train, df_i_train]).reset_index(drop=True)
+
+	# Now the vacant test set is always guaranteed to be a perfect subset of the vacant + improved test set
+	return df_test, df_train
+
+
+def _write_canonical_split(
+		model_group: str,
+		df_sales_in: pd.DataFrame,
+		settings: dict,
+		test_train_fraction: float = 0.8,
+		random_seed: int = 1337
+):
+
+	df_test, df_train = _perform_canonical_split(
+		model_group,
+		df_sales_in,
+		settings,
+		test_train_fraction,
+		random_seed
+	)
+
+	outpath = f"out/models/{model_group}/_data"
+	os.makedirs(outpath, exist_ok=True)
+
+	df_train[["key"]].to_csv(f"{outpath}/train_keys.csv", index=False)
+	df_test[["key"]].to_csv(f"{outpath}/test_keys.csv", index=False)
+
+
+def read_split_keys(
+		model_group: str
+):
+	path = f"out/models/{model_group}/_data"
+	train_path = f"{path}/train_keys.csv"
+	test_path = f"{path}/test_keys.csv"
+	if not os.path.exists(train_path) or not os.path.exists(test_path):
+		raise ValueError("No split keys found.")
+	train_keys = pd.read_csv(train_path)["key"].astype(str).values
+	test_keys = pd.read_csv(test_path)["key"].astype(str).values
+	return test_keys, train_keys
