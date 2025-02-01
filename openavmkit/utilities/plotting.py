@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 
+
 def plot_histogram_df(df: pd.DataFrame, fields: list[str], xlabel: str = "", ylabel: str = "", title: str = "", bins = 500, x_lim=None, out_file: str = None):
   entries = []
   for field in fields:
@@ -18,7 +19,10 @@ def plot_histogram_mult(entries: list[dict],  xlabel:str = "", ylabel: str = "",
   ylim_min = 0
   ylim_max = 0
   for entry in entries:
-    data = entry["data"]
+    data = entry["data"].copy()
+    if x_lim is not None:
+      data[data.lt(x_lim[0])] = x_lim[0]
+      data[data.gt(x_lim[1])] = x_lim[1]
     if bins is not None:
       _bins = bins
     else:

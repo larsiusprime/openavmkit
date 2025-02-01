@@ -8,7 +8,7 @@ from lightgbm import Booster
 from statsmodels.nonparametric.kernel_regression import KernelReg
 from xgboost import XGBRegressor
 
-from openavmkit.data import get_important_field, get_locations
+from openavmkit.data import get_important_field, get_locations, read_split_keys
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, SingleModelResults, \
 	run_garbage, \
 	run_average, run_naive_sqft, DataSplit, run_kernel, run_local_sqft, run_assessor, predict_garbage, \
@@ -136,7 +136,7 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 				data_time["param"].append(tim.get("parameter_search"))
 				data_time["train"].append(tim.get("train"))
 				data_time["test"].append(tim.get("predict_test"))
-				data_time["full"].append(tim.get("predict_full"))
+				data_time["full"].append(tim.get("predict_univ"))
 				data_time["chd"].append(tim.get("chd"))
 
 			data["chd"].append(chd_results)
@@ -274,6 +274,7 @@ def _predict_one_model(
 
 def _get_data_split_for(
 		name: str,
+		model_group: str,
 		location_fields: list[str] | None,
 		dep_vars: list[str],
 		df: pd.DataFrame,
@@ -282,8 +283,8 @@ def _get_data_split_for(
 		ind_var_test: str,
 		fields_cat: list[str],
 		interactions: dict,
-		test_train_frac: float,
-		random_seed: int,
+		test_keys: list[str],
+		train_keys: list[str],
 		vacant_only: bool,
 		hedonic: bool
 ):
@@ -301,14 +302,15 @@ def _get_data_split_for(
 
 	return DataSplit(
 		df,
+		model_group,
 		settings,
 		ind_var,
 		ind_var_test,
 		_dep_vars,
 		fields_cat,
 		interactions,
-		test_train_frac,
-		random_seed,
+		test_keys,
+		train_keys,
 		vacant_only=vacant_only,
 		hedonic=hedonic
 	)
@@ -318,6 +320,7 @@ def _run_one_model(
 		df_orig: pd.DataFrame,
 		df: pd.DataFrame,
 		vacant_only: bool,
+		model_group: str,
 		model: str,
 		model_entries: dict,
 		settings: dict,
@@ -372,14 +375,13 @@ def _run_one_model(
 
 	interactions = get_variable_interactions(entry, settings, df)
 
-	instructions = settings.get("modeling", {}).get("instructions", {})
-	test_train_frac = instructions.get("test_train_frac", 0.8)
-	random_seed = instructions.get("random_seed", 1337)
-
 	location_fields = get_locations(settings, df)
+
+	test_keys, train_keys = read_split_keys(model_group)
 
 	ds = _get_data_split_for(
 		model_name,
+		model_group,
 		location_fields,
 		dep_vars,
 		df,
@@ -388,8 +390,8 @@ def _run_one_model(
 		ind_var_test,
 		fields_cat,
 		interactions,
-		test_train_frac,
-		random_seed,
+		test_keys,
+		train_keys,
 		vacant_only,
 		hedonic
 	)
@@ -501,6 +503,7 @@ def write_ensemble_model_results(
 
 def optimize_ensemble(
 		df: pd.DataFrame,
+		model_group: str,
 		vacant_only: bool,
 		ind_var: str,
 		ind_var_test: str,
@@ -523,16 +526,19 @@ def optimize_ensemble(
 		first_key = list(all_results.model_results.keys())[0]
 		df = all_results.model_results[first_key].ds.df_universe_orig
 
+	test_keys, train_keys = read_split_keys(model_group)
+
 	ds = DataSplit(
 		df,
+		model_group,
 		settings,
 		ind_var,
 		ind_var_test,
 		[],
 		[],
 		{},
-		test_train_frac,
-		random_seed,
+		test_keys,
+		train_keys,
 		vacant_only=vacant_only,
 		hedonic=hedonic
 	)
@@ -578,15 +584,15 @@ def optimize_ensemble(
 		timing.stop("predict_test")
 
 		timing.start("predict_sales")
-		timing.stop("predict_sales")
+	timing.stop("predict_sales")
 
-		timing.start("predict_full")
-		y_pred_univ_ensemble = df_univ_ensemble[ensemble_list].median(axis=1)
-		timing.stop("predict_full")
+	timing.start("predict_univ")
+	y_pred_univ_ensemble = df_univ_ensemble[ensemble_list].median(axis=1)
+	timing.stop("predict_univ")
 
-		results = SingleModelResults(
-			ds,
-			"prediction",
+	results = SingleModelResults(
+		ds,
+		"prediction",
 			"he_id",
 			"ensemble",
 			model="ensemble",
@@ -628,6 +634,7 @@ def optimize_ensemble(
 
 def run_ensemble(
 		df: pd.DataFrame,
+		model_group: str,
 		vacant_only: bool,
 		hedonic: bool,
 		ind_var: str,
@@ -644,20 +651,19 @@ def run_ensemble(
 
 	timing.start("setup")
 
-	instructions = settings.get("modeling", {}).get("instructions", {})
-	test_train_frac = instructions.get("test_train_frac", 0.8)
-	random_seed = instructions.get("random_seed", 1337)
+	test_keys, train_keys = read_split_keys(model_group)
 
 	ds = DataSplit(
 		df,
+		model_group,
 		settings,
 		ind_var,
 		ind_var_test,
 		[],
 		[],
 		{},
-		test_train_frac,
-		random_seed,
+		test_keys,
+		train_keys,
 		vacant_only=vacant_only,
 		hedonic=hedonic
 	)
@@ -704,9 +710,9 @@ def run_ensemble(
 	y_pred_sales_ensemble = df_sales_ensemble[ensemble_list].median(axis=1)
 	timing.stop("predict_sales")
 
-	timing.start("predict_full")
+	timing.start("predict_univ")
 	y_pred_univ_ensemble = df_univ_ensemble[ensemble_list].median(axis=1)
-	timing.stop("predict_full")
+	timing.stop("predict_univ")
 
 	results = SingleModelResults(
 		ds,
@@ -733,6 +739,7 @@ def run_ensemble(
 
 def _prepare_ds(
 	df: pd.DataFrame,
+	model_group: str,
 	vacant_only: bool,
 	settings: dict
 ):
@@ -752,19 +759,20 @@ def _prepare_ds(
 	instructions = s.get("modeling", {}).get("instructions", {})
 	ind_var = instructions.get("ind_var", "sale_price")
 	ind_var_test = instructions.get("ind_var_test", "sale_price_time_adj")
-	test_train_frac = instructions.get("test_train_frac", 0.8)
-	random_seed = instructions.get("random_seed", 1337)
+
+	test_keys, train_keys = read_split_keys(model_group)
 
 	ds = DataSplit(
 		df,
+		model_group,
 		settings,
 		ind_var,
 		ind_var_test,
 		dep_vars,
 		fields_cat,
 		interactions,
-		test_train_frac,
-		random_seed,
+		test_keys,
+		train_keys,
 		vacant_only
 	)
 	return ds
@@ -1021,7 +1029,7 @@ def get_variable_recommendations(
 		vacant_only: bool,
 		settings: dict,
 		model: str,
-		modeling_group: str,
+		model_group: str,
 		verbose: bool = False
 ):
 	if verbose:
@@ -1030,7 +1038,7 @@ def get_variable_recommendations(
 	report = MarkdownReport("variables")
 
 	df = enrich_time_adjustment(df, settings, verbose=verbose)
-	ds = _prepare_ds(df, vacant_only, settings)
+	ds = _prepare_ds(df, model_group, vacant_only, settings)
 	ds = ds.encode_categoricals_with_one_hot()
 	ds.split()
 
@@ -1109,7 +1117,7 @@ def get_variable_recommendations(
 	report = generate_variable_report(
 		report,
 		settings,
-		modeling_group,
+		model_group,
 		best_variables
 	)
 
@@ -1228,6 +1236,7 @@ def _run_hedonic_models(
 		smr = all_results.model_results[model]
 		ds = _get_data_split_for(
 			model,
+			model_group,
 			location_fields,
 			smr.dep_vars,
 			df,
@@ -1236,8 +1245,8 @@ def _run_hedonic_models(
 			ind_var_test,
 			fields_cat,
 			smr.ds.interactions.copy(),
-			smr.ds.test_train_frac,
-			smr.ds.random_seed,
+			smr.ds.test_keys,
+			smr.ds.train_keys,
 			vacant_only=False,
 			hedonic=True
 		)
@@ -1267,6 +1276,7 @@ def _run_hedonic_models(
 
 	best_ensemble = optimize_ensemble(
 		df=df,
+		model_group=model_group,
 		vacant_only=vacant_only,
 		ind_var=ind_var,
 		ind_var_test=ind_var_test,
@@ -1341,7 +1351,7 @@ def _run_models(
 		vacant_only,
 		settings,
 		"default",
-		"residential_sf",
+		model_group,
 		verbose=True,
 	)
 	best_variables = var_recs["variables"]
@@ -1360,6 +1370,7 @@ def _run_models(
 			df_orig=df_in,
 			df=df,
 			vacant_only=vacant_only,
+			model_group=model_group,
 			model=model,
 			model_entries=model_entries,
 			settings=settings,
@@ -1384,6 +1395,7 @@ def _run_models(
 
 	best_ensemble = optimize_ensemble(
 		df=df,
+		model_group=model_group,
 		vacant_only=vacant_only,
 		ind_var=ind_var,
 		ind_var_test=ind_var_test,

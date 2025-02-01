@@ -112,14 +112,15 @@ class DataSplit:
 
 	def __init__(self,
 			df: pd.DataFrame | None,
+      model_group: str,
 			settings: dict,
 			ind_var: str,
 			ind_var_test: str,
 			dep_vars: list[str],
 			categorical_vars: list[str],
 			interactions: dict,
-			test_train_frac: float = 0.8,
-			random_seed: int = 1337,
+      test_keys: list[str],
+      train_keys: list[str],
 			vacant_only: bool = False,
 			hedonic: bool = False,
 			days_field: str = "sale_age_days",
@@ -132,7 +133,10 @@ class DataSplit:
 			self.df_universe = df.copy()
 			self.df_sales = get_sales(df, settings, vacant_only).reset_index(drop=True)
 
-			self._df_sales = self.df_sales.copy()
+    self._df_sales = self.df_sales.copy()
+
+    self.test_keys = test_keys
+    self.train_keys = train_keys
 
 			if hedonic:
 				# transform df_universe & df_sales such that all improved characteristics are removed
@@ -151,39 +155,40 @@ class DataSplit:
 			else:
 				raise ValueError(f"Field '{days_field}' not found in dataframe.")
 
+    self.model_group = model_group
 			self.ind_var = ind_var
 			self.ind_var_test = ind_var_test
 			self.dep_vars = dep_vars.copy()
 			self.categorical_vars = categorical_vars.copy()
 			self.interactions = interactions.copy()
-			self.one_hot_descendants = {}
-			self.random_seed = random_seed
-			self.vacant_only = vacant_only
-			self.hedonic = hedonic
-			self.days_field = days_field
-			self.test_train_frac = test_train_frac
-			self.split()
+    self.one_hot_descendants = {}
+    self.vacant_only = vacant_only
+    self.hedonic = hedonic
+    self.days_field = days_field
+    self.split()
 
 
 	def copy(self):
 		# Return a deep copy
 		ds = DataSplit(
 			None,
+      "",
 			{},
 			"",
 			"",
 			[],
 			[],
-			{},
-			0,
-			0,
-			False,
+      {},
+      [],
+      [],
+      False,
 			False,
 			"",
 			init=False
 		)
     # manually copy every field:
     ds.settings = self.settings.copy()
+    ds.model_group = self.model_group
     ds.df_sales = self.df_sales.copy()
     ds.df_universe = self.df_universe.copy()
     ds.df_universe_orig = self.df_universe_orig.copy()
@@ -196,11 +201,11 @@ class DataSplit:
 		ds.X_train = self.X_train.copy()
 		ds.y_train = self.y_train.copy()
 		ds.X_test = self.X_test.copy()
-		ds.y_test = self.y_test.copy()
-		ds.test_train_frac = self.test_train_frac
-		ds.random_seed = self.random_seed
-		ds.vacant_only = self.vacant_only
-		ds.hedonic = self.hedonic
+    ds.y_test = self.y_test.copy()
+    ds.test_keys = self.test_keys.copy()
+    ds.train_keys = self.train_keys.copy()
+    ds.vacant_only = self.vacant_only
+    ds.hedonic = self.hedonic
 		ds.ind_var = self.ind_var
 		ds.ind_var_test = self.ind_var_test
 		ds.dep_vars = self.dep_vars.copy()
@@ -276,7 +281,6 @@ class DataSplit:
 					ds.one_hot_descendants[orig_col].append(col)
 					matched.append(col)
 
-
 		# Ensure that only columns found in df_train are in the other dataframes:
 		ds.df_universe = ds.df_universe[ds.df_train.columns]
 		ds.df_sales = ds.df_sales[ds.df_train.columns]
@@ -292,18 +296,23 @@ class DataSplit:
 		return ds
 
 
-	def split(self):
-		# separate df into train & test:
-		np.random.seed(self.random_seed)
-		self.df_train = self._df_sales.sample(frac=self.test_train_frac)
-		self.df_test = self._df_sales.drop(self.df_train.index)
+  def split(self):
 
-		self.df_train = self.df_train.reset_index(drop=True)
-		self.df_test = self.df_test.reset_index(drop=True)
+    test_keys = self.test_keys
+    train_keys = self.train_keys
 
-		# sort again because sampling shuffles order:
-		self.df_train.sort_values(by=self.days_field, ascending=False, inplace=True)
-		self.df_test.sort_values(by=self.days_field, ascending=False, inplace=True)
+    # separate df into train & test:
+
+    # select the rows that are in the test_keys:
+    self.df_test = self._df_sales[self._df_sales["key"].astype(str).isin(test_keys)].reset_index(drop=True)
+    self.df_train = self._df_sales.drop(self.df_test.index)
+
+    self.df_test = self.df_test.reset_index(drop=True)
+    self.df_train = self.df_train.reset_index(drop=True)
+
+    # sort again because sampling shuffles order:
+    self.df_test.sort_values(by=self.days_field, ascending=False, inplace=True)
+    self.df_train.sort_values(by=self.days_field, ascending=False, inplace=True)
 
 		if self.hedonic:
 			# if it's a hedonic model, we're predicting land value, and are thus testing against vacant land only:
@@ -463,23 +472,10 @@ class SingleModelResults:
 		str += f"---->M.Ratio: {self.pred_sales.ratio_study.median_ratio:8.4f}\n"
 		str += f"---->COD    : {self.pred_sales.ratio_study.cod:8.4f}\n"
 		str += f"---->PRD    : {self.pred_sales.ratio_study.prd:8.4f}\n"
-		str += f"---->PRB    : {self.pred_sales.ratio_study.prb:8.4f}\n"
-		str += f"---->CHD    : {self.chd:8.4f}\n"
-
-		str += f"\n"
-		if self.type == "mra":
-			# print the coefficients?
-			pass
-		elif self.type == "gwr":
-			# print the coefficients?
-			pass
-		elif self.type == "xgboost":
-			# print the feature importance?
-			pass
-		elif self.type == "lightgbm":
-			# print the feature importance?
-			pass
-		return str
+    str += f"---->PRB    : {self.pred_sales.ratio_study.prb:8.4f}\n"
+    str += f"---->CHD    : {self.chd:8.4f}\n"
+    str += f"\n"
+    return str
 
 
 def model_utility_score(
@@ -488,8 +484,10 @@ def model_utility_score(
 	# We want to minimize:
 	# 1. error
 	# 2. the difference between the median ratio and 1
-	# 3. the COD
-	# 4. the CHD
+  # 3. the COD
+  # 4. the CHD
+
+  # LOWER IS BETTER
 
 	weight_dist_ratio = 1000.00
 	weight_cod = 1.00
@@ -529,14 +527,14 @@ def predict_mra(
 	# predict on the sales set:
 	timing.start("predict_sales")
 	y_pred_sales = fitted_model.predict(ds.X_sales).to_numpy()
-	timing.stop("predict_sales")
+  timing.stop("predict_sales")
 
-	# predict on the full set:
-	timing.start("predict_full")
-	y_pred_univ = fitted_model.predict(ds.X_univ).to_numpy()
-	timing.stop("predict_full")
+  # predict on the full set:
+  timing.start("predict_univ")
+  y_pred_univ = fitted_model.predict(ds.X_univ).to_numpy()
+  timing.stop("predict_univ")
 
-	timing.stop("total")
+  timing.stop("total")
 
 	results = SingleModelResults(
 		ds,
@@ -610,12 +608,12 @@ def predict_assessor(
 	y_pred_sales = ds.X_sales[field].to_numpy()
 	timing.stop("predict_sales")
 
-	# predict on the full set:
-	timing.start("predict_full")
-	y_pred_univ = ds.X_univ[field].to_numpy()
-	timing.stop("predict_full")
+  # predict on the full set:
+  timing.start("predict_univ")
+  y_pred_univ = ds.X_univ[field].to_numpy()
+  timing.stop("predict_univ")
 
-	timing.stop("total")
+  timing.stop("total")
 
 	results = SingleModelResults(
 		ds,
@@ -700,13 +698,13 @@ def predict_kernel(
 	y_pred_sales, _ = kr.fit(X_sales, verbose=verbose)
 	timing.stop("predict_sales")
 
-	if verbose:
-		print(f"--> predicting on full set...")
-	timing.start("predict_full")
-	y_pred_univ, _ = kr.fit(X_univ, verbose=verbose)
-	timing.stop("predict_full")
+  if verbose:
+    print(f"--> predicting on full set...")
+  timing.start("predict_univ")
+  y_pred_univ, _ = kr.fit(X_univ, verbose=verbose)
+  timing.stop("predict_univ")
 
-	timing.stop("total")
+  timing.stop("total")
 
 	results = SingleModelResults(
 		ds,
@@ -845,7 +843,7 @@ def predict_gwr(
 	).flatten()
 	timing.stop("predict_sales")
 
-	timing.start("predict_full")
+  timing.start("predict_univ")
 	if verbose:
 		print("GWR: predicting full set...")
 	y_pred_univ = _run_gwr_prediction(
@@ -856,7 +854,7 @@ def predict_gwr(
 		gwr_bw,
 		y_train
 	).flatten()
-	timing.stop("predict_full")
+  timing.stop("predict_univ")
 
 	results = SingleModelResults(
 		ds,
@@ -924,19 +922,19 @@ def run_gwr(
 		print("Tuning GWR: searching for optimal bandwidth...")
 
 	if use_saved_params:
-		if os.path.exists(f"{outpath}/gwr_bw.json"):
-			gwr_bw = json.load(open(f"{outpath}/gwr_bw.json", "r"))
-			if verbose:
-				print(f"--> using saved bandwidth: {gwr_bw:0.2f}")
+    if os.path.exists(f"{outpath}/gwr_bw.json"):
+      gwr_bw = json.load(open(f"{outpath}/{model_name}_bw.json", "r"))
+      if verbose:
+        print(f"--> using saved bandwidth: {gwr_bw:0.2f}")
 
-	if gwr_bw < 0:
-		gwr_selector = Sel_BW(coords_train, y_train, X_train)
-		gwr_bw = gwr_selector.search()
+  if gwr_bw < 0:
+    gwr_selector = Sel_BW(coords_train, y_train, X_train)
+    gwr_bw = gwr_selector.search()
 
-		if save_params:
-			os.makedirs(outpath, exist_ok=True)
-			json.dump(gwr_bw, open(f"{outpath}/gwr_bw.json", "w"))
-		if verbose:
+    if save_params:
+      os.makedirs(outpath, exist_ok=True)
+      json.dump(gwr_bw, open(f"{outpath}/{model_name}_bw.json", "w"))
+    if verbose:
 			print(f"--> optimal bandwidth = {gwr_bw:0.2f}")
 
 	timing.stop("parameter_search")
@@ -962,11 +960,11 @@ def predict_xgboost(
 	y_pred_sales = xgboost_model.predict(ds.X_sales)
 	timing.stop("predict_sales")
 
-	timing.start("predict_full")
-	y_pred_univ = xgboost_model.predict(ds.X_univ)
-	timing.stop("predict_full")
+  timing.start("predict_univ")
+  y_pred_univ = xgboost_model.predict(ds.X_univ)
+  timing.stop("predict_univ")
 
-	timing.stop("total")
+  timing.stop("total")
 
 	results = SingleModelResults(
 		ds,
@@ -1037,14 +1035,14 @@ def predict_lightgbm(
 	timing.stop("predict_test")
 
 	timing.start("predict_sales")
-	y_pred_sales = gbm.predict(ds.X_sales, num_iteration=gbm.best_iteration)
-	timing.stop("predict_sales")
+  y_pred_sales = gbm.predict(ds.X_sales, num_iteration=gbm.best_iteration)
+  timing.stop("predict_sales")
 
-	timing.start("predict_full")
-	y_pred_univ = gbm.predict(ds.X_univ, num_iterations=gbm.best_iteration)
-	timing.stop("predict_full")
+  timing.start("predict_univ")
+  y_pred_univ = gbm.predict(ds.X_univ, num_iterations=gbm.best_iteration)
+  timing.stop("predict_univ")
 
-	timing.stop("total")
+  timing.stop("total")
 
 	results = SingleModelResults(
 		ds,
@@ -1136,11 +1134,11 @@ def predict_catboost(
 	y_pred_sales = catboost_model.predict(sales_pool)
 	timing.stop("predict_sales")
 
-	timing.start("predict_full")
-	y_pred_univ = catboost_model.predict(univ_pool)
-	timing.stop("predict_full")
+  timing.start("predict_univ")
+  y_pred_univ = catboost_model.predict(univ_pool)
+  timing.stop("predict_univ")
 
-	timing.stop("total")
+  timing.stop("total")
 
 	results = SingleModelResults(
 		ds,
@@ -1223,12 +1221,12 @@ def predict_garbage(
 		y_pred_sales = np.random.uniform(min_value, max_value, len(ds.X_sales))
 	timing.stop("predict_sales")
 
-	timing.start("predict_full")
-	if normal:
-		y_pred_univ = np.random.normal(loc=ds.y_train.mean(), scale=ds.y_train.std(), size=len(ds.X_univ))
-	else:
-		y_pred_univ = np.random.uniform(min_value, max_value, len(ds.X_univ))
-	timing.stop("predict_full")
+  timing.start("predict_univ")
+  if normal:
+    y_pred_univ = np.random.normal(loc=ds.y_train.mean(), scale=ds.y_train.std(), size=len(ds.X_univ))
+  else:
+    y_pred_univ = np.random.uniform(min_value, max_value, len(ds.X_univ))
+  timing.stop("predict_univ")
 
 	timing.stop("total")
 
@@ -1317,21 +1315,21 @@ def predict_average(
 
 	timing.start("predict_sales")
 	if type == "median":
-		y_pred_sales = np.full(len(ds.X_sales), ds.y_train.median())
-	else:
-		y_pred_sales = np.full(len(ds.X_sales), ds.y_train.mean())
-	timing.stop("predict_sales")
+    y_pred_sales = np.full(len(ds.X_sales), ds.y_train.median())
+  else:
+    y_pred_sales = np.full(len(ds.X_sales), ds.y_train.mean())
+  timing.stop("predict_sales")
 
-	timing.start("predict_full")
-	if type == "median":
-		y_pred_univ = np.full(len(ds.X_univ), ds.y_train.median())
-	else:
-		y_pred_univ = np.full(len(ds.X_univ), ds.y_train.mean())
-	timing.stop("predict_full")
+  timing.start("predict_univ")
+  if type == "median":
+    y_pred_univ = np.full(len(ds.X_univ), ds.y_train.median())
+  else:
+    y_pred_univ = np.full(len(ds.X_univ), ds.y_train.mean())
+  timing.stop("predict_univ")
 
-	timing.stop("total")
+  timing.stop("total")
 
-	df = ds.df_universe
+  df = ds.df_universe
 	ind_var = ds.ind_var
 
 	if sales_chase:
@@ -1423,22 +1421,22 @@ def predict_naive_sqft(
 	X_sales["prediction_impr"] = X_sales_improved["bldg_area_finished_sqft"] * ind_per_built_sqft
 	X_sales["prediction_vacant"] = X_sales_vacant["land_area_sqft"] * ind_per_land_sqft
 	X_sales["prediction"] = np.where(X_sales["bldg_area_finished_sqft"].gt(0), X_sales["prediction_impr"], X_sales["prediction_vacant"])
-	y_pred_sales = X_sales["prediction"].to_numpy()
-	X_sales.drop(columns=["prediction_impr", "prediction_vacant", "prediction"], inplace=True)
-	timing.stop("predict_sales")
+  y_pred_sales = X_sales["prediction"].to_numpy()
+  X_sales.drop(columns=["prediction_impr", "prediction_vacant", "prediction"], inplace=True)
+  timing.stop("predict_sales")
 
-	timing.start("predict_full")
-	X_univ = ds.X_univ
-	X_univ_improved = X_univ[X_univ["bldg_area_finished_sqft"].gt(0)]
-	X_univ_vacant = X_univ[X_univ["bldg_area_finished_sqft"].eq(0)]
-	X_univ["prediction_impr"] = X_univ_improved["bldg_area_finished_sqft"] * ind_per_built_sqft
-	X_univ["prediction_vacant"] = X_univ_vacant["land_area_sqft"] * ind_per_land_sqft
-	X_univ["prediction"] = np.where(X_univ["bldg_area_finished_sqft"].gt(0), X_univ["prediction_impr"], X_univ["prediction_vacant"])
-	y_pred_univ = X_univ["prediction"].to_numpy()
-	X_univ.drop(columns=["prediction_impr", "prediction_vacant", "prediction"], inplace=True)
-	timing.stop("predict_full")
+  timing.start("predict_univ")
+  X_univ = ds.X_univ
+  X_univ_improved = X_univ[X_univ["bldg_area_finished_sqft"].gt(0)]
+  X_univ_vacant = X_univ[X_univ["bldg_area_finished_sqft"].eq(0)]
+  X_univ["prediction_impr"] = X_univ_improved["bldg_area_finished_sqft"] * ind_per_built_sqft
+  X_univ["prediction_vacant"] = X_univ_vacant["land_area_sqft"] * ind_per_land_sqft
+  X_univ["prediction"] = np.where(X_univ["bldg_area_finished_sqft"].gt(0), X_univ["prediction_impr"], X_univ["prediction_vacant"])
+  y_pred_univ = X_univ["prediction"].to_numpy()
+  X_univ.drop(columns=["prediction_impr", "prediction_vacant", "prediction"], inplace=True)
+  timing.stop("predict_univ")
 
-	timing.stop("total")
+  timing.stop("total")
 
 	df = ds.df_universe
 	ind_var = ds.ind_var
@@ -1600,31 +1598,31 @@ def predict_local_sqft(
 	X_sales["prediction"] = np.where(X_sales["bldg_area_finished_sqft"].gt(0), X_sales["prediction_impr"], X_sales["prediction_land"])
 	y_pred_sales = X_sales["prediction"].to_numpy()
 	X_sales.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_sqft"], inplace=True)
-	timing.stop("predict_sales")
+  timing.stop("predict_sales")
 
-	timing.start("predict_full")
-	X_univ = ds.X_univ
+  timing.start("predict_univ")
+  X_univ = ds.X_univ
 
-	# merge the df_sqft_land/impr values into the X_univ dataframe:
-	X_univ["key"] = ds.df_universe["key"]
-	X_univ = X_univ.merge(df_land, on="key", how="left")
-	X_univ = X_univ.merge(df_impr, on="key", how="left")
-	X_univ.loc[X_univ["per_impr_sqft"].isna() | X_univ["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
-	X_univ.loc[X_univ["per_land_sqft"].isna() | X_univ["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
-	X_univ = X_univ.drop(columns=["key"])
+  # merge the df_sqft_land/impr values into the X_univ dataframe:
+  X_univ["key"] = ds.df_universe["key"]
+  X_univ = X_univ.merge(df_land, on="key", how="left")
+  X_univ = X_univ.merge(df_impr, on="key", how="left")
+  X_univ.loc[X_univ["per_impr_sqft"].isna() | X_univ["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
+  X_univ.loc[X_univ["per_land_sqft"].isna() | X_univ["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
+  X_univ = X_univ.drop(columns=["key"])
 
-	X_univ_improved = X_univ[X_univ["bldg_area_finished_sqft"].gt(0)]
-	X_univ_vacant = X_univ[X_univ["bldg_area_finished_sqft"].eq(0)]
-	X_univ["prediction_impr"] = X_univ_improved["bldg_area_finished_sqft"] * X_univ_improved["per_impr_sqft"]
-	X_univ["prediction_land"] = X_univ_vacant["land_area_sqft"] * X_univ_vacant["per_land_sqft"]
-	X_univ.loc[X_univ["prediction_impr"].isna() | X_univ["prediction_impr"].eq(0)] = overall_per_impr_sqft
-	X_univ.loc[X_univ["prediction_land"].isna() | X_univ["prediction_land"].eq(0)] = overall_per_land_sqft
-	X_univ["prediction"] = np.where(X_univ["bldg_area_finished_sqft"].gt(0), X_univ["prediction_impr"], X_univ["prediction_land"])
-	y_pred_univ = X_univ["prediction"].to_numpy()
-	X_univ.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_sqft"], inplace=True)
-	timing.stop("predict_full")
+  X_univ_improved = X_univ[X_univ["bldg_area_finished_sqft"].gt(0)]
+  X_univ_vacant = X_univ[X_univ["bldg_area_finished_sqft"].eq(0)]
+  X_univ["prediction_impr"] = X_univ_improved["bldg_area_finished_sqft"] * X_univ_improved["per_impr_sqft"]
+  X_univ["prediction_land"] = X_univ_vacant["land_area_sqft"] * X_univ_vacant["per_land_sqft"]
+  X_univ.loc[X_univ["prediction_impr"].isna() | X_univ["prediction_impr"].eq(0)] = overall_per_impr_sqft
+  X_univ.loc[X_univ["prediction_land"].isna() | X_univ["prediction_land"].eq(0)] = overall_per_land_sqft
+  X_univ["prediction"] = np.where(X_univ["bldg_area_finished_sqft"].gt(0), X_univ["prediction_impr"], X_univ["prediction_land"])
+  y_pred_univ = X_univ["prediction"].to_numpy()
+  X_univ.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_sqft"], inplace=True)
+  timing.stop("predict_univ")
 
-	timing.stop("total")
+  timing.stop("total")
 
 	df = ds.df_universe
 	ind_var = ds.ind_var
@@ -1929,4 +1927,47 @@ def _get_params(name:str, slug:str, ds:DataSplit, tune_func, outpath:str, save_p
 		if save_params:
 			os.makedirs(outpath, exist_ok=True)
 			json.dump(params, open(f"{outpath}/{slug}_params.json", "w"))
-	return params
+  return params
+
+
+def plot_value_surface(title: str, values: np.array, x_coords: np.array, y_coords: np.array, gdf: gpd.GeoDataFrame, center_on_zero: bool = True):
+  plt.clf()
+  plt.figure(figsize=(12, 8))
+
+  plt.title(title)
+  vmin = np.quantile(values, 0.05)
+  vmax = np.quantile(values, 0.95)
+
+  norm = None
+  if center_on_zero:
+    vmin = min(0, vmin)
+    vcenter = max(0, vmin)
+    vmax = max(0, vmax)
+
+    if vmax > abs(vmin):
+      vmin = -vmax
+    if abs(vmin) > vmax:
+      vmax = abs(vmin)
+    # Define normalization to center zero on white
+    norm = TwoSlopeNorm(vmin=vmin, vcenter=vcenter, vmax=vmax)
+  else:
+    # Define normalization to start at zero, center on the median value and cap at 95th percentile
+    vmin = min(0, vmin)
+    vcenter = max(0, np.quantile(values, 0.50))
+    vmax = max(0, vmax)
+    norm = TwoSlopeNorm(vmin=vmin, vcenter=vcenter, vmax=vmax)
+
+
+  #plt.scatter(x_coords, y_coords, c=values, cmap="coolwarm", s=2, norm=norm)
+
+  gdf_slice = gdf[["geometry"]].copy()
+  gdf_slice["values"] = values
+
+  # plot the contributions as polygons using the same color map and vmin/vmax:
+  ax = gdf_slice.plot(column="values", cmap="coolwarm", norm=norm, ax=plt.gca())
+  mappable = ax.collections[0]
+
+  cbar = plt.colorbar(mappable, ax=ax)
+  cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, _: fancy_format(x)))
+  cbar.set_label("Value ($)", fontsize=12)
+  plt.show()
