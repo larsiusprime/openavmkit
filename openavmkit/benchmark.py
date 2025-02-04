@@ -1,9 +1,7 @@
 import os
 import pickle
 
-import numpy as np
 import pandas as pd
-from IPython.core.display_functions import display
 from catboost import CatBoostRegressor
 from lightgbm import Booster
 from statsmodels.nonparametric.kernel_regression import KernelReg
@@ -14,7 +12,7 @@ from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run
 	run_garbage, \
 	run_average, run_naive_sqft, DataSplit, run_kernel, run_local_sqft, run_assessor, predict_garbage, \
 	GarbageModel, predict_average, AverageModel, predict_naive_sqft, predict_local_sqft, predict_assessor, predict_kernel, \
-	predict_gwr, predict_xgboost, predict_catboost, predict_lightgbm, run_krig
+	predict_gwr, predict_xgboost, predict_catboost, predict_lightgbm
 from openavmkit.reports import MarkdownReport, markdown_to_pdf
 from openavmkit.time_adjustment import enrich_time_adjustment
 from openavmkit.utilities.data import div_z_safe, dataframe_to_markdown
@@ -46,7 +44,7 @@ class BenchmarkResults:
 		result += "Test set:\n"
 		result += format_benchmark_df(self.df_stats_test)
 		result += "\n\n"
-		result += "Full set:\n"
+		result += "Universe set:\n"
 		result += format_benchmark_df(self.df_stats_full)
 		result += "\n\n"
 		return result
@@ -82,7 +80,7 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 		"param": [],
 		"train": [],
 		"test": [],
-		"full": [],
+		"univ": [],
 		"chd": [],
 	}
 
@@ -104,14 +102,15 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 		"chd":[]
 	}
 	for key in model_results:
-		for kind in ["test", "full"]:
+		for kind in ["test", "univ"]:
 			results = model_results[key]
 			if kind == "test":
 				pred_results = results.pred_test
 				subset = "Test set"
 			else:
 				pred_results = results.pred_sales
-				subset = "Full set"
+				subset = "Universe set"
+
 			data["model"].append(key)
 			data["subset"].append(subset)
 			data["utility_score"].append(results.utility)
@@ -129,7 +128,7 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 
 			chd_results = None
 
-			if kind == "full":
+			if kind == "univ":
 				chd_results = results.chd
 				tim = results.timing.results
 				data_time["model"].append(key)
@@ -137,7 +136,7 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 				data_time["param"].append(tim.get("parameter_search"))
 				data_time["train"].append(tim.get("train"))
 				data_time["test"].append(tim.get("predict_test"))
-				data_time["full"].append(tim.get("predict_univ"))
+				data_time["univ"].append(tim.get("predict_univ"))
 				data_time["chd"].append(tim.get("chd"))
 
 			data["chd"].append(chd_results)
@@ -145,7 +144,7 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 	df = pd.DataFrame(data)
 
 	df_test = df[df["subset"].eq("Test set")].drop(columns=["subset"])
-	df_full = df[df["subset"].eq("Full set")].drop(columns=["subset"])
+	df_full = df[df["subset"].eq("Universe set")].drop(columns=["subset"])
 	df_time = pd.DataFrame(data_time)
 
 	# set index to the model column:
@@ -180,7 +179,8 @@ def format_benchmark_df(df: pd.DataFrame):
 		"param": fancy_format,
 		"train": fancy_format,
 		"test": fancy_format,
-		"full": fancy_format,
+		"univ": fancy_format,
+		"multi": fancy_format,
 		"chd": fancy_format
 	}
 
@@ -828,7 +828,8 @@ def run_ensemble(
 		ensemble_list: list[str],
 		all_results: MultiModelResults,
 		settings: dict,
-		verbose: bool = False
+		verbose: bool = False,
+		df_multiverse: pd.DataFrame = None
 ):
 	timing = TimingData()
 
@@ -850,17 +851,25 @@ def run_ensemble(
 		test_keys,
 		train_keys,
 		vacant_only=vacant_only,
-		hedonic=hedonic
+		hedonic=hedonic,
+		df_multiverse=df_multiverse
 	)
 	ds.split()
 
 	df_test = ds.df_test
 	df_sales = ds.df_sales
 	df_univ = ds.df_universe
+	df_multi = ds.df_multiverse
 
 	df_test_ensemble = df_test[["key"]].copy()
 	df_sales_ensemble = df_sales[["key"]].copy()
 	df_univ_ensemble = df_univ[["key"]].copy()
+
+	if df_multi is not None:
+		df_multi_ensemble = ds.df_multiverse[["key"]].copy()
+	else:
+		df_multi_ensemble = None
+
 	if len(ensemble_list) == 0:
 		ensemble_list = [key for key in all_results.model_results.keys()]
 	timing.stop("setup")
@@ -885,6 +894,10 @@ def run_ensemble(
 		df_sales_ensemble = df_sales_ensemble.merge(_df_sales, on="key", how="left")
 		df_univ_ensemble = df_univ_ensemble.merge(_df_univ, on="key", how="left")
 
+		if df_multi is not None:
+			_df_multi = m_results.df_multiverse[["key"]].copy()
+			_df_multi.loc[:, m_key] = m_results.pred_multi
+			df_multi_ensemble = df_multi_ensemble.merge(_df_multi, on="key", how="left")
 	timing.stop("train")
 
 	timing.start("predict_test")
@@ -899,6 +912,13 @@ def run_ensemble(
 	y_pred_univ_ensemble = df_univ_ensemble[ensemble_list].median(axis=1)
 	timing.stop("predict_univ")
 
+	timing.start("predict_multi")
+	if df_multi is not None:
+		y_pred_multi_ensemble = df_multi_ensemble[ensemble_list].median(axis=1)
+	else:
+		y_pred_multi_ensemble = None
+	timing.stop("predict_multi")
+
 	results = SingleModelResults(
 		ds,
 		"prediction",
@@ -909,15 +929,20 @@ def run_ensemble(
 		y_pred_sales=y_pred_sales_ensemble.to_numpy(),
 		y_pred_univ=y_pred_univ_ensemble.to_numpy(),
 		timing=timing,
-		verbose=verbose
+		verbose=verbose,
+		y_pred_multi=y_pred_multi_ensemble.to_numpy() if y_pred_multi_ensemble is not None else None
 	)
 	timing.stop("total")
 
 	dfs = {
 		"sales": df_sales_ensemble,
 		"universe": df_univ_ensemble,
-		"test": df_test_ensemble
+		"test": df_test_ensemble,
 	}
+
+	if df_multi_ensemble is not None:
+		dfs["multiverse"] = df_multi_ensemble
+
 	write_ensemble_model_results(results, outpath, settings, dfs, ensemble_list)
 	return results
 
@@ -1403,7 +1428,8 @@ def _run_hedonic_models(
 		ind_var_test: str,
 		fields_cat: list[str],
 		use_saved_results: bool = True,
-		verbose: bool = False
+		verbose: bool = False,
+		df_multiverse: pd.DataFrame = None
 ):
 	hedonic_results = {}
 	# Run hedonic models
@@ -1433,7 +1459,8 @@ def _run_hedonic_models(
 			smr.ds.test_keys,
 			smr.ds.train_keys,
 			vacant_only=False,
-			hedonic=True
+			hedonic=True,
+			df_multiverse=df_multiverse
 		)
 
 		# TODO: there is a bug here because the number of rows in df_test winds up different across models (224 vs 227)
@@ -1483,7 +1510,8 @@ def _run_hedonic_models(
 		ensemble_list=best_ensemble,
 		all_results=all_results,
 		settings=settings,
-		verbose=verbose
+		verbose=verbose,
+		df_multiverse=df_multiverse
 	)
 
 	out_pickle = f"{outpath}/model_ensemble.pickle"
@@ -1602,7 +1630,8 @@ def _run_models(
 		ensemble_list=best_ensemble,
 		all_results=all_results,
 		settings=settings,
-		verbose=verbose
+		verbose=verbose,
+		df_multiverse=df_in
 	)
 
 	out_pickle = f"{outpath}/model_ensemble.pickle"
@@ -1631,7 +1660,8 @@ def _run_models(
 			ind_var_test,
 			fields_cat,
 			use_saved_results,
-			verbose
+			verbose,
+			df_multiverse=df_in
 		)
 
 	return all_results
