@@ -1,8 +1,10 @@
+import os
 import warnings
 
 import numpy as np
 import pandas as pd
 from IPython.core.display_functions import display
+from pandas import read_pickle
 
 import openavmkit.utilities.stats as stats
 from openavmkit.data import get_vacant_sales, boolify_column_in_df, get_important_field
@@ -10,7 +12,7 @@ from openavmkit.reports import start_report, finish_report
 from openavmkit.utilities.data import dataframe_to_markdown
 from openavmkit.utilities.format import fancy_format
 from openavmkit.utilities.settings import get_fields_categorical, get_data_dictionary, get_fields_land, get_fields_impr, \
-	get_fields_impr_as_list, get_valuation_date
+	get_fields_impr_as_list, get_valuation_date, get_model_group_ids
 
 
 class RatioStudy:
@@ -121,7 +123,34 @@ class RatioStudyBootstrapped(RatioStudy):
 			self.prb_ci_high = high
 
 
-def run_and_write_ratio_study_breakdowns(settings: dict, df_sales: pd.DataFrame, model_group: str, path: str, confidence_interval=0.95, iterations=10000):
+def run_and_write_ratio_study_breakdowns(
+		settings: dict
+):
+	model_groups = get_model_group_ids(settings)
+	for model_group in model_groups:
+		print(f"Generating report for {model_group}")
+		path = f"out/models/{model_group}/main/model_ensemble.pickle"
+		if os.path.exists(path):
+			os.makedirs(f"out/models/{model_group}", exist_ok=True)
+			ensemble_results = read_pickle(path)
+			df_sales = ensemble_results.df_sales
+			_run_and_write_ratio_study_breakdowns(
+				settings,
+				df_sales,
+				model_group,
+				f"out/models/{model_group}"
+			)
+
+
+
+def _run_and_write_ratio_study_breakdowns(
+		settings: dict,
+		df_sales: pd.DataFrame,
+		model_group: str,
+		path: str,
+		confidence_interval=0.95,
+		iterations=1000
+):
 	breakdowns = _run_ratio_study_breakdowns(settings, df_sales, confidence_interval, iterations)
 	_write_ratio_study_report(breakdowns, settings, model_group, path)
 

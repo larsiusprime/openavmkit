@@ -29,3 +29,4 @@ pyproj~=3.6.1
 gpd~=1.1.1
 rasterio~=1.4.3
 PyKrige~=1.7.2
+scikit-image~=0.25.1
