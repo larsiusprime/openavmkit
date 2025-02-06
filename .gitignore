@@ -11,3 +11,5 @@ notebooks/out/
 .ipynb_checkpoints/
 
 testing.ipynb
+
+notebooks/cache/

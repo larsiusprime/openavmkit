@@ -2185,7 +2185,6 @@ def plot_value_surface(
   vmax = np.quantile(values, 0.95)
 
   norm = None
-  if center_on_zero:
 
   if norm == "two_slope":
     vmin = min(0, vmin)

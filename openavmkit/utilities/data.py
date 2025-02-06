@@ -140,3 +140,17 @@ def combine_dfs(df1:pd.DataFrame, df2:pd.DataFrame, df2_stomps=False, index="key
 		df.index = index_orig
 
 		return df
+
+
+def add_sqft_fields(df_in: pd.DataFrame):
+	df = df_in.copy()
+	land_sqft = ["model_market_value", "model_land_value", "assr_market_value", "assr_land_value"]
+	impr_sqft = ["model_market_value", "model_impr_value", "assr_market_value", "assr_impr_value"]
+	for field in land_sqft:
+		if field in df:
+			df[field + "_land_sqft"] = div_field_z_safe(df[field], df["land_area_sqft"])
+	for field in impr_sqft:
+		if field in df:
+			df[field + "_impr_sqft"] = div_field_z_safe(df[field], df["bldg_area_finished_sqft"])
+	return df
+
