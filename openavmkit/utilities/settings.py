@@ -41,6 +41,110 @@ def load_settings(settings_file: str = "settings.json"):
 	return settings
 
 
+def process_settings(settings: dict):
+	s = settings.copy()
+
+	# Step 1: remove any and all keys that are prefixed with the string "__":
+	s = remove_comments_from_settings(s)
+
+	# Step 2: do variable replacement:
+
+
+	return s
+
+
+def remove_comments_from_settings(s: dict):
+	comment_token = "__"
+	keys_to_remove = []
+	for key in s:
+		entry = s[key]
+		if key.startswith(comment_token):
+			keys_to_remove.append(key)
+		elif isinstance(entry, dict):
+			s[key] = remove_comments_from_settings(entry)
+	for k in keys_to_remove:
+		del s[k]
+	return s
+
+
+def replace_variables(settings: dict):
+
+	result = settings.copy()
+	failsafe = 999
+	changes = 1
+
+	while changes > 0 and failsafe > 0:
+		result, changes = _replace_variables(result, settings)
+		failsafe -= 1
+
+	return result
+
+
+
+def _replace_variables(node: dict | list | str,  settings: dict, var_token: str = "$$"):
+	# For each key-value pair, search for values that are strings prefixed with $$, and replace them accordingly
+
+	changes = 0
+	replacement = node
+
+	if isinstance(node, str):
+		# Case 1 -- node is string
+		str_value = str(node)
+		if str_value.startswith(var_token):
+			var_name = str_value[len(var_token):]
+			var_value = lookup_variable_in_settings(settings, var_name)
+			replacement = var_value
+			changes += 1
+
+	elif isinstance(node, dict):
+		# Case 2 -- node is a dict
+		_replacements = {}
+		for key in node:
+			entry = node[key]
+			replacement, _changes = _replace_variables(entry, settings, var_token)
+			if _changes > 0:
+				_replacements[key] = replacement
+				changes += _changes
+		if changes > 0:
+			for key in _replacements:
+				node[key] = _replacements[key]
+		replacement = node
+
+	elif isinstance(node, list):
+		# Case 3 -- node is a list. Go through each entry in the list.
+		_replacements = {}
+		for i, entry in enumerate(node):
+			replacement, _changes = _replace_variables(entry, settings, var_token)
+			if _changes > 0:
+				_replacements[i] = replacement
+				changes += _changes
+		if changes > 0:
+			for i in _replacements:
+				node[i] = _replacements[i]
+		replacement = node
+
+	return replacement, changes
+
+
+def lookup_variable_in_settings(s: dict, var_name: str, path: list[str] = None):
+	if path is None:
+		# no path is provided, but the variable name exists:
+		# split it by periods, if it has any
+		path = var_name.split(".")
+
+	if path is not None and len(path) > 0:
+		first_bit = path[0]
+		if first_bit in s:
+			if len(path) == 1:
+				# this is the last bit of the path
+				return s[first_bit]
+			else:
+				return lookup_variable_in_settings(s[first_bit], "", path[1:])
+
+	return None
+
+
+
 def load_data_dictionary_template():
 	with open("../data_dictionary.json", "r") as f:
 		data_dictionary = json.load(f)
