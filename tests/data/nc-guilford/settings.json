@@ -21,9 +21,12 @@
 		"metadata": {
 			"valuation_date": "2025-01-01",
 			"use_sales_from": 2020,
-			"test_sales_from": 2024
+			"test_sales_from": 2024,
+			"modeler": "Center for Land Economics",
+			"modeler_nick": "CLE"
 		},
 		"instructions": {
+			"__run": ["mra", "median", "naive_sqft", "local_naive_sqft", "local_smart_sqft"],
 			"run": [
 				"assessor", "mra", "gwr", "lightgbm", "catboost", "xgboost", "local_naive_sqft", "local_smart_sqft"
 			],
@@ -42,8 +45,6 @@
 					"bldg_condition_num",
 					"bldg_age_years",
 					"dist_to_cbd",
-					"latitude",
-					"longitude",
 					"rectangularity_num",
 					"slope_mean",
 					"elevation_mean",
@@ -51,8 +52,7 @@
 					"dist_to_colleges",
 					"dist_to_greenspace",
 					"dist_to_airport",
-					"sale_age_days",
-					"bldg_style"
+					"sale_age_days"
 				]
 			},
 			"gwr": {

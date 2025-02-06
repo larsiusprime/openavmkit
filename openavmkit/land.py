@@ -45,24 +45,56 @@ def run_land_analysis(
 
 
 def finalize_land_values(
+    df_in: pd.DataFrame,
     settings: dict,
+    generate_boundaries: bool,
     verbose: bool = False
-):
+) -> pd.DataFrame:
   model_group_ids = get_model_group_ids(settings)
+  df_all_values : pd.DataFrame | None = None
   for model_group in model_group_ids:
+    df_values = df_in[df_in["model_group"].eq(model_group)].copy()
     outpath = f"out/models/{model_group}/_cache/land_analysis.pickle"
     if os.path.exists(outpath):
       df_finalize = pd.read_pickle(outpath)
-      _finalize_land_values(
+      df_finalize = _finalize_land_values(
+        df_in,
         df_finalize,
         model_group,
+        settings,
+        generate_boundaries,
         verbose
       )
+      df_values = df_values.merge(df_finalize[[
+        "key",
+        "model_market_value",
+        "model_impr_value",
+        "model_land_value"
+      ]], on="key", how="left")
+      df_values = add_sqft_fields(df_values)
+      if df_all_values is None:
+        df_all_values = df_values
+      else:
+        df_all_values = pd.concat([df_all_values, df_values], ignore_index=True)
+  df_all_values.reset_index(inplace=True, drop=True)
+  new_fields = [field for field in df_all_values.columns.values if field != "key"]
+  df_return = df_in.copy()
+  df_return = df_return[[col for col in df_return if col not in new_fields]]
+  df_return = df_return.merge(df_all_values, on="key", how="left")
+
+  os.makedirs(f"out/models/", exist_ok=True)
+  gdf = gpd.GeoDataFrame(df_return, geometry="geometry")
+  gdf.to_parquet(f"out/models/predictions.parquet")
+
+  return gdf
 
 
 def _finalize_land_values(
+    df_orig: pd.DataFrame,
     df_in: pd.DataFrame,
     model_group: str,
+    settings: dict,
+    generate_boundaries: bool = False,
     verbose: bool = False
 ):
   df = df_in.copy()
@@ -76,7 +108,42 @@ def _finalize_land_values(
 
   df["model_land_value_land_sqft"] = div_field_z_safe(df["model_land_value"], df["land_area_sqft"])
 
+  # Save the results
+  outpath = f"out/models/{model_group}/_cache/land_analysis_final.pickle"
+
+
+  # STEP 5: Find variables correlated with land value
+
+  df_subset = df_orig[df_orig["model_group"].eq(model_group)]
+  df_sales = get_sales(df_subset, settings)
+  df_sales = df_sales.merge(df[["key", "model_market_value", "model_land_value", "model_land_value_land_sqft"]], on="key", how="left")
+  df_sales["model_market_value_impr_sqft"] = div_field_z_safe(df_sales["model_market_value"], df_sales["bldg_area_finished_sqft"])
+  df_sales["model_market_value_land_sqft"] = div_field_z_safe(df_sales["model_market_value"], df_sales["land_area_sqft"])
+
+  dep_vars = settings.get("modeling", {}).get("models", {}).get("main", {}).get("default", {}).get("dep_vars", [])
+  dep_vars = dep_vars + ["assr_market_value", "assr_land_value", "model_market_value", "model_market_value_land_sqft", "model_market_value_impr_sqft"]
+
+  print("LAND VALUE")
+  X_corr = df_sales[["model_land_value"] + dep_vars]
+  corrs = calc_correlations(X_corr)
+  print("INITIAL")
+  display(corrs["initial"])
+  print("")
+  print("FINAL)")
+  display(corrs["final"])
+  print("")
+  print("LAND VALUE PER SQFT")
+  X_corr = df_sales[["model_land_value_land_sqft"] + dep_vars]
+  corrs = calc_correlations(X_corr)
+  print("INITIAL")
+  display(corrs["initial"])
+  print("")
+  print("FINAL)")
+  display(corrs["final"])
+
+
   # Super tiny slivers of land will have insane $/sqft values
+  df["model_market_value_land_sqft"] = div_field_z_safe(df["model_market_value"], df["land_area_sqft"])
   df_not_tiny = df[df["land_area_sqft"].gt(5000)]
 
   plot_value_surface(
@@ -87,19 +154,29 @@ def _finalize_land_values(
     norm="log"
   )
 
+  plot_value_surface(
+    "Market value per land sqft",
+    df_not_tiny["model_market_value_land_sqft"],
+    gdf=df,
+    cmap="viridis",
+    norm="log"
+  )
+
   outpath = f"out/models/{model_group}/_images/"
   os.makedirs(outpath, exist_ok=True)
   value_field = "model_land_value_land_sqft"
-  generate_raster(
-    df_not_tiny,
-    outpath,
-    value_field,
-    plot=True
-  )
 
-  # If necessary, apply a mild gaussian blur the final land values
+  if generate_boundaries:
+    generate_raster(
+      df_not_tiny,
+      outpath,
+      value_field,
+      plot=True
+    )
 
-  #
+  return df
+
+
 
 def save_raster(
     filepath: str,
@@ -222,7 +299,7 @@ def generate_raster(
     convex_hull = gdf.union_all().convex_hull
     print(f"Convex Hull: {type(convex_hull)}")
 
-    find_boundaries(
+    find_areas_from_negative_space(
       raster,
       path,
       convex_hull,
@@ -237,6 +314,41 @@ def generate_raster(
       pixel_height,
       nodata_value
     )
+
+    find_areas_from_negative_space(
+      raster,
+      path,
+      convex_hull,
+      gdf.crs,
+      n_rows,
+      n_cols,
+      minx,
+      miny,
+      maxx,
+      maxy,
+      pixel_width,
+      pixel_height,
+      nodata_value,
+      sigma = 1.0,
+      threshold = 0.25,
+      prefix="small_"
+    )
+
+    # find_areas_from_energy_gradient(
+    #   raster,
+    #   path,
+    #   convex_hull,
+    #   gdf.crs,
+    #   n_rows,
+    #   n_cols,
+    #   minx,
+    #   miny,
+    #   maxx,
+    #   maxy,
+    #   pixel_width,
+    #   pixel_height,
+    #   nodata_value
+    # )
 
 
 def remove_isolated_islands(mask, min_area=200, min_major_axis=40):
@@ -455,7 +567,7 @@ def shatter_polygon_with_lines(line_segments, convex_hull):
   return flattened_polygons
 
 
-def find_boundaries(
+def find_areas_from_negative_space(
     raster: np.ndarray,
     path: str,
     convex_hull,
@@ -473,7 +585,8 @@ def find_boundaries(
     threshold: float = 0.5, # Threshold on blurred mask (0-1),
     min_size: int = 50,
     island_min_area: int = 200, # Minimum area for a region to be kept (tunable)
-    island_min_major: float = 40  # Minimum major axis length for a region to be kept (tunable)
+    island_min_major: float = 40,  # Minimum major axis length for a region to be kept (tunable)
+    prefix: str = ""
 ):
 
   # --- Step 1: Create and Blur the Road Mask ---
@@ -499,12 +612,12 @@ def find_boundaries(
   skeleton : np.ndarray = skeletonize(big_road_mask_filtered)
 
   # Write out each layer:
-  save_raster(f"{path}road_mask.tiff", n_rows, n_cols, road_mask, nodata_value, crs, minx, miny, maxx, maxy)
-  save_raster(f"{path}blurred_mask.tiff", n_rows, n_cols, blurred_mask, nodata_value, crs, minx, miny, maxx, maxy)
-  save_raster(f"{path}big_road_mask.tiff", n_rows, n_cols, big_road_mask.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
-  save_raster(f"{path}big_road_mask_clean.tiff", n_rows, n_cols, big_road_mask_clean.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
-  save_raster(f"{path}big_road_mask_filtered.tiff", n_rows, n_cols, big_road_mask_filtered.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
-  save_raster(f"{path}skeleton.tiff", n_rows, n_cols, skeleton.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
+  save_raster(f"{path}{prefix}road_mask.tiff", n_rows, n_cols, road_mask, nodata_value, crs, minx, miny, maxx, maxy)
+  save_raster(f"{path}{prefix}blurred_mask.tiff", n_rows, n_cols, blurred_mask, nodata_value, crs, minx, miny, maxx, maxy)
+  save_raster(f"{path}{prefix}big_road_mask.tiff", n_rows, n_cols, big_road_mask.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
+  save_raster(f"{path}{prefix}big_road_mask_clean.tiff", n_rows, n_cols, big_road_mask_clean.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
+  save_raster(f"{path}{prefix}big_road_mask_filtered.tiff", n_rows, n_cols, big_road_mask_filtered.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
+  save_raster(f"{path}{prefix}skeleton.tiff", n_rows, n_cols, skeleton.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
 
   segments = extract_line_segments_from_skeleton(skeleton, minx, maxy, pixel_width, pixel_height)
 
@@ -515,96 +628,106 @@ def find_boundaries(
   # write out the segments as a geodataframe parquet:
   gdf = gpd.GeoDataFrame(geometry=[LineString(seg) for seg in segments])
   gdf.crs = crs
-  gdf.to_parquet(f"{path}road_segments.parquet")
+  gdf.to_parquet(f"{path}{prefix}road_segments.parquet")
 
   polygons = shatter_polygon_with_lines(segments, convex_hull)
 
   # write out the polygons as a geodataframe parquet:
   gdf_poly = gpd.GeoDataFrame(geometry=polygons)
   gdf_poly.crs = crs
-  gdf_poly.to_parquet(f"{path}road_polygons.parquet")
+  gdf_poly.to_parquet(f"{path}{prefix}road_polygons.parquet")
 
-  # --- Step 4: Plot the Results ---
-  fig, ax = plt.subplots(figsize=(10, 10))
+  print("DONE")
 
-  # Plot the original raster (for context)
-  im = ax.imshow(raster, cmap="viridis", extent=(minx, maxx, miny, maxy), origin="upper")
-  ax.set_title("Big Road Centerlines (Skeletons)")
-  ax.set_xlabel("X coordinate")
-  ax.set_ylabel("Y coordinate")
-  fig.colorbar(im, ax=ax, label="Value")
-
-  # Overlay the skeleton: plot skeleton pixels as red dots.
-  skel_rows, skel_cols = np.where(skeleton)
-  xs = minx + skel_cols * pixel_width
-  ys = maxy - skel_rows * pixel_height
-  ax.scatter(xs, ys, color="red", s=3, label="Road Skeleton")
-
-  # Overlay the line segments: plot each segment as a line.
-  for segment in segments:
-    xs, ys = zip(*segment)
-    ax.plot(xs, ys, linewidth=2, color="blue")
-
-  # Overlay the polygons: plot each polygon as an outlined shape with no fill.
-  for polygon in polygons:
-    xs, ys = zip(*polygon.exterior.coords)
-    ax.plot(xs, ys, linewidth=1, color="white")
-
-  ax.legend()
-  plt.show()
+  # # --- Step 4: Plot the Results ---
+  # fig, ax = plt.subplots(figsize=(10, 10))
   #
-  # #################################################################
-  # # Step 2: Fill Nodata Values and Extract Energy Boundaries
-  # #################################################################
-  # # --- 2a. Fill in nodata pixels with local average ---
-  # # Create a mask of valid (non-nodata) pixels
-  # valid_mask = (raster != nodata_value).astype(float)
+  # # Plot the original raster (for context)
+  # im = ax.imshow(raster, cmap="viridis", extent=(minx, maxx, miny, maxy), origin="upper")
+  # ax.set_title("Big Road Centerlines (Skeletons)")
+  # ax.set_xlabel("X coordinate")
+  # ax.set_ylabel("Y coordinate")
+  # fig.colorbar(im, ax=ax, label="Value")
   #
-  # # Create a copy of the raster as float; set nodata pixels to 0 for the purpose of filtering
-  # raster_temp = np.copy(raster).astype(float)
-  # raster_temp[raster == nodata_value] = 0.0
+  # # Overlay the skeleton: plot skeleton pixels as red dots.
+  # skel_rows, skel_cols = np.where(skeleton)
+  # xs = minx + skel_cols * pixel_width
+  # ys = maxy - skel_rows * pixel_height
+  # ax.scatter(xs, ys, color="red", s=3, label="Road Skeleton")
   #
-  # # Use a simple uniform (3x3) kernel to compute the local sum and count of valid pixels.
-  # kernel = np.ones((3, 3))
-  # sum_valid = convolve(valid_mask, kernel, mode="constant", cval=0.0)
-  # sum_values = convolve(raster_temp, kernel, mode="constant", cval=0.0)
+  # # Overlay the line segments: plot each segment as a line.
+  # for segment in segments:
+  #   xs, ys = zip(*segment)
+  #   ax.plot(xs, ys, linewidth=2, color="blue")
   #
-  # # Compute the local average where there are valid pixels; avoid division by zero.
-  # local_avg = np.where(sum_valid > 0, sum_values / sum_valid, 0)
+  # # Overlay the polygons: plot each polygon as an outlined shape with no fill.
+  # for polygon in polygons:
+  #   xs, ys = zip(*polygon.exterior.coords)
+  #   ax.plot(xs, ys, linewidth=1, color="white")
   #
-  # # For each nodata pixel, replace its value with the local average.
-  # raster_filled = np.where(raster == nodata_value, local_avg, raster)
-  #
-  # # --- 2b. Compute the Energy Function on the Filled Raster ---
-  # # Apply Sobel filters to get horizontal and vertical gradients
-  # grad_x = sobel(raster_filled, axis=1)  # gradient along columns
-  # grad_y = sobel(raster_filled, axis=0)  # gradient along rows
-  #
-  # # Energy is the magnitude of the gradient vector
-  # energy = np.hypot(grad_x, grad_y)
-  #
-  # # Optionally, you may use a threshold to capture only the high-energy areas.
-  # # Here, we choose the 95th percentile as the threshold.
-  # energy_threshold = np.percentile(energy, 95)
-  # print(f"Step 2: Energy threshold: {energy_threshold:.2f}")
-  #
-  # # Extract contours from the energy map at the threshold level.
-  # energy_contours = measure.find_contours(energy, energy_threshold)
-  # print(f"Step 2: Found {len(energy_contours)} energy contours")
-  #
-  # # Plot Step 2 results
-  # fig2, ax2 = plt.subplots(figsize=(10, 10))
-  # im2 = ax2.imshow(raster_filled, cmap="viridis", extent=(minx, maxx, miny, maxy), origin="upper")
-  # ax2.set_title("Step 2: Energy Boundaries on Filled Raster")
-  # ax2.set_xlabel("X coordinate")
-  # ax2.set_ylabel("Y coordinate")
-  # fig2.colorbar(im2, ax=ax2, label="Value")
-  #
-  # for contour in energy_contours:
-  #   xs, ys = pixel_to_coords(contour)
-  #   ax2.plot(xs, ys, linewidth=1, color="red")
-  #
+  # ax.legend()
   # plt.show()
+
+
+def find_areas_from_energy_gradient(
+  raster: np.ndarray,
+  path: str,
+  convex_hull,
+  crs: str,
+  n_rows: int,
+  n_cols: int,
+  minx: float,
+  miny: float,
+  maxx: float,
+  maxy: float,
+  pixel_width: float,
+  pixel_height: float,
+  nodata_value: float,
+  sigma: float = 2.0,    # Standard deviation for Gaussian kernel
+  low_threshold=0.1,
+  high_threshold=0.3
+):
+
+  # 1. Smooth the raster to create a "heightmap" with reduced noise.
+  smoothed = gaussian_filter(raster, sigma=sigma)
+
+  # (Optional: You could apply a morphological erosion here if needed, e.g. using skimage.morphology.erosion.)
+
+  # 2. Use the Canny edge detector to detect edges in the smoothed image.
+  #    This will highlight where the value changes sharply.
+  edges = canny(smoothed, low_threshold=low_threshold, high_threshold=high_threshold)
+
+  # 3. Skeletonize the binary edge image to thin the detected boundaries to one pixel wide.
+  skeleton = skeletonize(edges)
+
+  # 4. Extract contours (continuous curves) from the skeleton.
+  #    find_contours returns a list of (row, col) coordinates for each detected curve.
+  boundaries = find_contours(skeleton, level=0.5)
+
+  # (Optional: If you want to convert pixel coordinates to spatial coordinates,
+  #  you can apply your affine transform here.)
+  save_raster(f"{path}_smoothed.tiff", n_rows, n_cols, smoothed, nodata_value, crs, minx, miny, maxx, maxy)
+  save_raster(f"{path}_edges.tiff", n_rows, n_cols, edges.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
+  save_raster(f"{path}_skeleton.tiff", n_rows, n_cols, skeleton.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
+
+  fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+  ax = axes.ravel()
+  ax[0].imshow(smoothed, cmap='viridis')
+  ax[0].set_title("Filled")
+  ax[1].imshow(smoothed, cmap='viridis')
+  ax[1].set_title("Smoothed")
+  ax[2].imshow(edges, cmap='gray')
+  ax[2].set_title("Canny Edges")
+  ax[3].imshow(skeleton, cmap='gray')
+  for boundary in boundaries:
+    ax[3].plot(boundary[:, 1], boundary[:, 0], linewidth=2, color='red')
+  ax[3].set_title("Skeleton & Boundaries")
+  for a in ax:
+    a.axis('off')
+  plt.tight_layout()
+  plt.show()
+
+  return boundaries
 
 
 def _run_land_analysis(
@@ -816,3 +939,9 @@ def _run_land_analysis(
   outpath = f"out/models/{model_group}/_cache/land_analysis.pickle"
   os.makedirs(os.path.dirname(outpath), exist_ok=True)
   df_finalize.to_pickle(outpath)
+
+  df_finalize = add_sqft_fields(df_finalize)
+  gdf = GeoDataFrame(df_finalize, geometry="geometry", crs=df_in.crs)
+  gdf.to_parquet(f"out/models/{model_group}/_cache/land_analysis.parquet")
+
+

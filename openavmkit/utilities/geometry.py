@@ -1,4 +1,5 @@
 import geopandas as gpd
+import pandas as pd
 from pyproj import CRS
 
 
@@ -150,4 +151,38 @@ def scale_coords(x_in, y_in, x_max: float, y_max: float, x_min: float, y_min: fl
   x_out = (x_in - x_min) / x_range
   y_out = (y_in - y_min) / y_range
   return x_out, y_out
+
+
+def stamp_geo_field_onto_df(df_in: gpd.GeoDataFrame, gdf: gpd.GeoDataFrame, field: str):
+  df = df_in.copy()
+
+  # Compute centroids
+  df["centroid"] = df.geometry.centroid
+
+  # Perform spatial join using 'intersects'
+  df = df.set_geometry("centroid")
+  joined = df.sjoin(gdf[[field, "geometry"]], predicate="intersects", how="left")
+
+  # If multiple matches, keep only the one with the smallest polygon area
+  if not joined.empty:
+    # Merge to get polygon areas
+    joined = joined.merge(gdf[[field, "geometry"]], left_on=field, right_on=field)
+    joined["area"] = joined.geometry_y.area  # Area of intersected polygons
+
+    # Keep only smallest area polygon per original row
+    joined = joined.loc[joined.groupby(df.index)["area"].idxmin()]
+
+    # Drop temporary columns
+    joined = joined.drop(columns=["centroid", "geometry_y", "area", "index_right"])
+
+    # Restore original geometry
+    joined = joined.set_geometry(df_in.geometry.name)
+  else:
+    # No matches, so just drop the temporary centroid column
+    df = df.drop(columns=["centroid"])
+    return df  # Return original dataframe with field unmodified (all NaN)
+
+  return joined
+
+
 
