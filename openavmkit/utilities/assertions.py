@@ -2,15 +2,34 @@ import numpy as np
 
 
 def objects_are_equal(a, b, epsilon:float = 1e-6):
-	# ensure that the two objects contain the same information:
-	if isinstance(a, dict) and isinstance(b, dict):
+	a_str = isinstance(a, str)
+	b_str = isinstance(b, str)
+
+	if a_str and b_str:
+		return a == b
+
+	a_dict = isinstance(a, dict)
+	b_dict = isinstance(b, dict)
+
+	if a_dict and b_dict:
 		return dicts_are_equal(a, b)
-	elif isinstance(a, list) and isinstance(b, list):
+
+	a_list = isinstance(a, list)
+	b_list = isinstance(b, list)
+
+	if a_list and b_list:
 		return lists_are_equal(a, b)
 	else:
-		if isinstance(a, (int, float)) or isinstance(b, (int, float)) or np.isreal(a) or np.isreal(b):
+		a_other = a_str or a_dict or a_list
+		b_other = b_str or b_dict or b_list
+
+		a_is_num = (not a_other) and (isinstance(a, (int, float)) or np.isreal(a))
+		b_is_num = (not b_other) and (isinstance(b, (int, float)) or np.isreal(b))
+
+		if a_is_num and b_is_num:
 			# compare floats with epsilon:
 			return abs(a - b) < epsilon
+
 		# ensure types are the same:
 		if type(a) != type(b):
 			return False
@@ -44,4 +63,6 @@ def dicts_are_equal(a: dict, b: dict):
 			return False
 		entry_a = a[key]
 		entry_b = b[key]
-		return objects_are_equal(entry_a, entry_b)
+		if not objects_are_equal(entry_a, entry_b):
+			return False
+	return True

@@ -957,7 +957,7 @@ def _prepare_ds(
 	s_model = s.get("modeling", {})
 	vacant_status = "vacant" if vacant_only else "main"
 	model_entries = s_model.get("models", {}).get(vacant_status, {})
-	entry: dict | None = model_entries.get("model", model_entries.get("default"))
+	entry: dict | None = model_entries.get("model", model_entries.get("default", {}))
 
 	dep_vars : list | None = entry.get("dep_vars", None)
 	if dep_vars is None:
