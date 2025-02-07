@@ -332,3 +332,43 @@ def test_replace_variables_in_settings():
 
 	assert objects_are_equal(replaced, expected), f"Expected VS Result:\n{expected}\n{replaced}"
 	assert not objects_are_equal(data, replaced), f"Unexpected VS Result:\n{data}\n{replaced}"
+
+
+def test_recursive_replace_variables_in_settings():
+
+	data = {
+		"a": "$$b",
+		"b": "$$c",
+		"c": "$$d",
+		"d": "$$e",
+		"e": "hello",
+		"a_deep": "$$b_deep.c.d.e",
+		"b_deep": {
+			"c": {
+				"d": {
+					"e": "$$a"
+				}
+			}
+		}
+	}
+
+	expected = {
+		"a": "hello",
+		"b": "hello",
+		"c": "hello",
+		"d": "hello",
+		"e": "hello",
+		"a_deep": "hello",
+		"b_deep": {
+			"c": {
+				"d": {
+					"e": "hello"
+				}
+			}
+		}
+	}
+
+	replaced = replace_variables(data)
+
+	assert objects_are_equal(replaced, expected), f"Expected VS Result:\n{expected}\n{replaced}"
+	assert not objects_are_equal(data, replaced), f"Unexpected VS Result:\n{data}\n{replaced}"

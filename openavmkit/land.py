@@ -19,20 +19,25 @@ import geopandas as gpd
 from IPython.core.display_functions import display
 from geopandas import GeoDataFrame
 from rasterio.transform import from_origin
-from scipy.ndimage import gaussian_filter, morphology
-from skimage.measure import label, regionprops
+from scipy.ndimage import gaussian_filter, morphology, convolve, sobel
+from skimage.feature import canny
+from skimage.measure import label, regionprops, find_contours
 
 from openavmkit.benchmark import MultiModelResults, _calc_benchmark, run_ensemble, \
   optimize_ensemble_allocation
+from openavmkit.data import get_sales
 from openavmkit.modeling import SingleModelResults, plot_value_surface
 from openavmkit.quality_control import check_land_values
-from openavmkit.utilities.data import div_field_z_safe
-from openavmkit.utilities.geometry import select_grid_size_from_size_str, get_crs
+from openavmkit.utilities.data import div_field_z_safe, add_sqft_fields
+from openavmkit.utilities.geometry import select_grid_size_from_size_str, get_crs, stamp_geo_field_onto_df
 from openavmkit.utilities.plotting import plot_histogram_df
 from openavmkit.utilities.settings import get_model_group_ids
 
 from skimage import measure
 from skimage.morphology import skeletonize, remove_small_objects
+
+from openavmkit.utilities.stats import calc_correlations
+
 
 def run_land_analysis(
     df_in: pd.DataFrame,

@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 
 
 def objects_are_equal(a, b, epsilon:float = 1e-6):
@@ -65,4 +66,45 @@ def dicts_are_equal(a: dict, b: dict):
 		entry_b = b[key]
 		if not objects_are_equal(entry_a, entry_b):
 			return False
+	return True
+
+
+def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame):
+	# ensure that the two dataframes contain the same information:
+	if not a.columns.equals(b.columns):
+		return False
+	if not a.index.equals(b.index):
+		return False
+	for col in a.columns:
+		if not series_are_equal(a[col], b[col]):
+			return False
+	return True
+
+
+def series_are_equal(a: pd.Series, b: pd.Series):
+
+	# deal with 32-bit vs 64-bit type nonsense:
+
+	a_type = a.dtype
+	b_type = b.dtype
+
+	a_is_float = "float" in str(a_type).lower()
+	b_is_float = "float" in str(b_type).lower()
+
+	a_is_int = "int" in str(a_type).lower()
+	b_is_int = "int" in str(b_type).lower()
+
+	if a_is_float and b_is_float:
+		# compare floats with epsilon:
+		result = a.subtract(b).abs().max() < 1e-6
+		return result
+
+	if a_is_int and b_is_int:
+		# compare integers directly:
+		result = a.subtract(b).abs().max() == 0
+		return result
+
+	# ensure that the two series contain the same information:
+	if not a.equals(b):
+		return False
 	return True
