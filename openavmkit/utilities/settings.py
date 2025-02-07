@@ -227,6 +227,15 @@ def _get_fields(s: dict, type: str, df: pd.DataFrame = None):
 	}
 
 
+def get_fields_date(s: dict, df: pd.DataFrame):
+	# TODO: add to this as necessary
+	all_date_fields = [
+		"sale_date"
+	]
+	date_fields = [field for field in all_date_fields if field in df]
+	return date_fields
+
+
 def get_fields_boolean(s: dict, df: pd.DataFrame = None, types: list[str] = None):
 	if types is None:
 		types = ["land", "impr", "other"]

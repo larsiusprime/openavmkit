@@ -69,7 +69,11 @@ def dicts_are_equal(a: dict, b: dict):
 	return True
 
 
-def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame):
+def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None):
+	if primary_key is not None:
+		a = a.sort_values(by=primary_key)
+		b = b.sort_values(by=primary_key)
+
 	# ensure that the two dataframes contain the same information:
 	if not a.columns.equals(b.columns):
 		return False

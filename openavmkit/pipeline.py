@@ -24,22 +24,16 @@ def set_locality(nbs, locality: str):
       base_path = nbs.base_path
       if locality != nbs.locality:
          nbs = NotebookState(locality, base_path)
-      print(f"old nbs base path = {nbs.base_path}")
    if base_path is None:
-      print("new nbs")
       nbs = NotebookState(locality, None)
 
-   print(f"base path = {nbs.base_path}")
-   print(f"locality  = {locality}")
-
    if base_path is not None:
-      print(f"--> change to {nbs.base_path}")
       os.chdir(nbs.base_path)
 
-   print(f"--> change to data/{locality}")
    os.chdir(f"data/{locality}")
 
-   print(f"nbs base path = {nbs.base_path}")
+   print(f"locality = {locality}")
+   print(f"base path = {nbs.base_path}")
    return nbs
 
 

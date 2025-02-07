@@ -1,7 +1,7 @@
 import pandas as pd
 from IPython.core.display_functions import display
 
-from openavmkit.calculations import perform_calculations
+from openavmkit.calculations import perform_calculations, crawl_calc_dict_for_fields
 from openavmkit.utilities.assertions import dfs_are_equal
 
 
@@ -123,3 +123,62 @@ def test_calculations_txt():
   df_results = perform_calculations(df, calc)
 
   assert dfs_are_equal(df_results, df_expected)
+
+
+def test_crawl_calc_list_for_fields():
+  #crawl_calc_dict_for_fields
+  calc = {
+    "a+b" : ["+", "a", "b"],
+    "a-b" : ["-", "a", "b"],
+    "a*b" : ["*", "a", "b"],
+    "a/b" : ["/", "a", "b"],
+    "a/0b": ["/0", "a", "b"],
+    "asint(a)": ["asint", "a"],
+    "asfloat(a)": ["asfloat", "a"],
+    "asstr(a)": ["asstr", "a"],
+    "floor(a)": ["floor", "a"],
+    "ceil(a)": ["ceil", "a"],
+    "round(a)": ["round", "a"],
+    "round_nearest(a)": ["round_nearest", "a", 5],
+    "abs": ["abs", "a"],
+    "num->txt": ["map", "quality_num", {"1": "f", "2": "d", "3": "c", "4": "b", "5": "a"}],
+    "txt->num": ["map", "quality_txt", {"f":   1,   "d": 2,   "c": 3,   "b": 4,   "a": 5}],
+    "quality_desc": [
+      "join", ["values", "quality_num", "quality_txt"], "str: - "
+    ],
+    "condition_round": ["//", ["round_nearest", "condition_num", 20], 20],
+    "condition_map": ["map",
+                      ["//", ["round_nearest", "condition_num", 20], 20],
+                      {
+                        "0": "f",
+                        "1": "d",
+                        "2": "c",
+                        "3": "b",
+                        "4": "a",
+                        "5": "a"
+                      }
+                      ],
+    "condition_join": [
+      "join",
+      [
+        "values",
+        ["//", ["round_nearest", "condition_num", 20], 20],
+        ["map",
+         ["//", ["round_nearest", "condition_num", 20], 20],
+         {
+           "0": "f",
+           "1": "d",
+           "2": "c",
+           "3": "b",
+           "4": "a",
+           "5": "a"
+         }
+         ]
+      ],
+      "str: - "
+    ],
+  }
+  results = crawl_calc_dict_for_fields(calc)
+  results.sort()
+  expected = ['a', 'b', 'condition_num', 'quality_num', 'quality_txt']
+  assert results == expected

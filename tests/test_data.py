@@ -2,8 +2,9 @@ import numpy as np
 import pandas as pd
 from IPython.core.display_functions import display
 
-from openavmkit.data import _perform_canonical_split
+from openavmkit.data import _perform_canonical_split, handle_duplicated_rows
 from openavmkit.modeling import DataSplit
+from openavmkit.utilities.assertions import dfs_are_equal
 from openavmkit.utilities.data import div_z_safe
 
 
@@ -216,4 +217,57 @@ def test_split_keys():
 	assert a_is_superset_of_b(ds.df_test, ds_v.df_test) == False
 	assert a_is_subset_of_b(ds_h.df_test, ds.df_test) == False
 	assert a_is_superset_of_b(ds.df_test, ds_h.df_test) == False
+
+
+def test_duplicates():
+	data = {
+		"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "0", "0", "1", "2"],
+		"sale_price": [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 100, 100, 200, 300],
+	}
+	df = pd.DataFrame(data=data)
+
+	dupes = {
+		"subset": "key",
+		"sort_by": ["key", "asc"],
+		"drop": True
+	}
+
+	data_expected = {
+		"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
+		"sale_price": [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100],
+	}
+	df_expected = pd.DataFrame(data=data_expected)
+	df_results = handle_duplicated_rows(df, dupes)
+	df_results = df_results.sort_values(by="key").reset_index(drop=True)
+	df_expected = df_expected.sort_values(by="key").reset_index(drop=True)
+
+
+	assert dfs_are_equal(df_results, df_expected, primary_key="key")
+
+	data = {
+		"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "0", "0", "1", "2"],
+		"sale_price": [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 100, 100, 200, 300],
+		"sale_year": [1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 1992, 1996, 1993, 1999],
+	}
+	df = pd.DataFrame(data=data)
+
+	dupes = {
+		"subset": "key",
+		"sort_by": [["key", "asc"], ["sale_year", "desc"]],
+		"drop": True
+	}
+
+	data_expected = {
+		"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
+		"sale_price": [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100],
+		"sale_year": [1996, 1993, 1999, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000],
+	}
+
+	df_expected = pd.DataFrame(data=data_expected)
+	df_results = handle_duplicated_rows(df, dupes)
+
+	df_results = df_results.sort_values(by="key").reset_index(drop=True)
+	df_expected = df_expected.sort_values(by="key").reset_index(drop=True)
+
+	assert dfs_are_equal(df_results, df_expected, primary_key="key")
 
