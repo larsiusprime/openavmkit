@@ -1,14 +1,100 @@
 import os
+import warnings
+
 import numpy as np
 import pandas as pd
 import geopandas as gpd
 from pandas import Series
 
+from openavmkit.calculations import crawl_calc_dict_for_fields
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
-	get_fields_numeric, get_model_group_ids
+	get_fields_numeric, get_model_group_ids, get_fields_date
 
 
-def enrich_time(df: pd.DataFrame) -> pd.DataFrame:
+def enrich_time(df: pd.DataFrame, time_formats: dict) -> pd.DataFrame:
+	for key in time_formats:
+		time_format = time_formats[key]
+		if key in df:
+			df[key] = pd.to_datetime(df[key], format=time_format, errors="coerce")
+
+	for prefix in ["sale_"]:
+		df = _enrich_time_field(df, prefix, add_year_month=True, add_year_quarter=True)
+
+	return df
+
+
+def _enrich_time_field(
+		df: pd.DataFrame,
+		prefix: str,
+		add_year_month: bool = True,
+		add_year_quarter: bool = True
+) -> pd.DataFrame:
+
+	if f"{prefix}_date" not in df:
+		# Check if we have _year, _month, and _day:
+		if f"{prefix}_year" in df and f"{prefix}_month" in df and f"{prefix}_day" in df:
+			date_str_series = (
+					df[f"{prefix}_year"].astype(str).str.pad(4,fillchar="0") + "-" +
+					df[f"{prefix}_month"].astype(str).str.pad(2,fillchar="0") + "-" +
+					df[f"{prefix}_day"].astype(str).str.pad(2,fillchar="0")
+			)
+			df[f"{prefix}_date"] = pd.to_datetime(date_str_series, format="%Y-%m-%d", errors="coerce")
+		else:
+			raise ValueError(f"The dataframe does not contain a '{prefix}_date' column.")
+
+	# ensure f"{prefix}_date" is a datetime object:
+	df[f"{prefix}_date"] = pd.to_datetime(df[f"{prefix}_date"], format="%Y-%m-%d", errors="coerce")
+
+	# create a f"{prefix}_year" column if it does not exist:
+	if f"{prefix}_year" not in df:
+		df[f"{prefix}_year"] = df[f"{prefix}_date"].dt.year
+	if f"{prefix}_month" not in df:
+		df[f"{prefix}_month"] = df[f"{prefix}_date"].dt.month
+	if f"{prefix}_quarter" not in df:
+		df[f"{prefix}_quarter"] = df[f"{prefix}_date"].dt.quarter
+
+	if add_year_month:
+		if f"{prefix}_year_month" not in df:
+			# format sale date in the form of "YYYY-MM"
+			df[f"{prefix}_year_month"] = df[f"{prefix}_date"].dt.to_period("M").astype("str")
+
+	if add_year_quarter:
+		if f"{prefix}_year_quarter" not in df:
+			# format sale date in the form of "YYYY-QX"
+			df[f"{prefix}_year_quarter"] = df[f"{prefix}_date"].dt.to_period("Q").astype("str")
+
+	checks = ["_year", "_month", "_day", "_year_month", "_year_quarter"]
+	for check in checks:
+		# Verify that the derived field a) exists and b) matches the value in the date field:
+		if f"{prefix}{check}" in df:
+			if f"{prefix}_date" in df:
+				if check in ["_year", "_month", "_day"]:
+					date_value = None
+					if check == "_year":
+						date_value = df[f"{prefix}_date"].dt.year.astype("Int64")
+					elif check == "_month":
+						date_value = df[f"{prefix}_date"].dt.month.astype("Int64")
+					elif check == "_day":
+						date_value = df[f"{prefix}_date"].dt.day.astype("Int64")
+					if not df[f"{prefix}{check}"].astype("Int64").equals(date_value):
+						# Count how many fields differ:
+						n_diff = df[f"{prefix}{check}"].astype("Int64").ne(date_value).sum()
+						raise ValueError(f"Derived field '{prefix}{check}' does not match the date field '{prefix}_date' in {n_diff} rows.")
+				elif check in ["_year_month", "_year_quarter"]:
+					date_value = None
+					if check == "_year_month":
+						date_value = df[f"{prefix}_date"].dt.to_period("M").astype("str")
+					elif check == "_year_quarter":
+						date_value = df[f"{prefix}_date"].dt.to_period("Q").astype("str")
+					if not df[f"{prefix}{check}"].equals(date_value):
+						# Count how many fields differ:
+						n_diff = df[f"{prefix}{check}"].ne(date_value).sum()
+						raise ValueError(f"Derived field '{prefix}{check}' does not match the date field '{prefix}_date' in {n_diff} rows.")
+
+	return df
+
+
+def old_enrich_time(df: pd.DataFrame) -> pd.DataFrame:
 	if "sale_date" not in df:
 		raise ValueError("The dataframe does not contain a 'sale_date' column.")
 	# ensure "sale_date" is a datetime object:
@@ -183,8 +269,150 @@ def get_dtypes_from_settings(settings: dict):
 	return dtypes
 
 
+def load_dataframes(settings: dict) -> dict[str : pd.DataFrame]:
+	"""
+  Load the data from the settings.
+  """
+	s_data = settings.get("data", {})
+	s_load = s_data.get("load", {})
+	dataframes = {}
 
-def load_data(settings: dict) -> pd.DataFrame:
+	# TODO: should we even make it optional to include_booleans? Or at least make it false by default?
+	fields_cat = get_fields_categorical(settings, include_boolean=False)
+	fields_bool = get_fields_boolean(settings)
+	fields_num = get_fields_numeric(settings, include_boolean=False)
+
+	for key in s_load:
+		entry = s_load[key]
+		df = load_dataframe(entry, settings, fields_cat, fields_bool, fields_num)
+		if df is not None:
+			dataframes[key] = dataframes
+
+	return dataframes
+
+
+
+def load_dataframe(entry: dict, settings: dict, fields_cat: list = None, fields_bool: list = None, fields_num: list = None) -> pd.DataFrame | None:
+	filename = entry.get("filename", None)
+	if filename is None:
+		return None
+	ext = str(filename).split(".")[-1]
+
+	e_load = entry.get("load", {})
+
+	rename_map = {}
+	dtype_map = {}
+	extra_map = {}
+	cols_to_load = []
+	for rename_key in e_load:
+		original = e_load[rename_key]
+		original_key = None
+		if isinstance(original, list):
+			if len(original) > 0:
+				original_key = original[0]
+				cols_to_load = [original_key]
+				rename_map[original_key] = rename_key
+			if len(original) > 1:
+				dtype_map[original_key] = original[1]
+			if len(original) > 2:
+				extra_map[rename_key] = original[2]
+
+	# Get a list of every field that is either renamed or used in a calculation:
+	fields_in_calc = crawl_calc_dict_for_fields(entry.get("calc", {}))
+	cols_to_load += fields_in_calc
+	# These are the columns we will actually load:
+	cols_to_load = list(set(cols_to_load))
+
+	# Read the actual file:
+	if ext == "parquet":
+		if dtype_map:
+			warnings.warn("dtypes are ignored when loading parquet files.")
+		try:
+			df = gpd.read_parquet(filename, columns=cols_to_load)
+		except ValueError as e:
+			df = pd.read_parquet(filename, columns=cols_to_load)
+	elif ext == "csv":
+		df = pd.read_csv(filename, usecols=cols_to_load, dtype=dtype_map)
+	else:
+		raise ValueError(f"Unsupported file extension: {ext}")
+
+	# Perform renames:
+	df = df.rename(columns=rename_map)
+
+	# Fix up the types appropriately
+	if fields_cat is None:
+		fields_cat = get_fields_categorical(settings, include_boolean=False)
+	if fields_bool is None:
+		fields_bool = get_fields_boolean(settings)
+	if fields_num is None:
+		fields_num = get_fields_numeric(settings, include_boolean=False)
+
+	for col in df.columns:
+		if col in fields_cat:
+			df[col] = df[col].astype("string")
+		elif col in fields_bool:
+			df[col] = boolify_series(df[col])
+		elif col in fields_num:
+			df[col] = df[col].astype("Float64")
+
+	# Fix up all the dates
+	date_fields = get_fields_date(settings, df)
+	time_format_map = {}
+	for xkey in extra_map:
+		if xkey in date_fields:
+			# The third parameter specifies a date, if it's a date field
+			time_format_map[xkey] = extra_map[xkey]
+
+	# Ensure that all date fields have a time format specified:
+	for dkey in date_fields:
+		if dkey not in time_format_map:
+			raise ValueError(f"Date field '{dkey}' does not have a time format specified.")
+
+	# Enrich the time fields (e.g. add year, month, quarter, etc., and ensure all sub-fields match the date field)
+	df = enrich_time(df, time_format_map)
+
+	# Handle duplicated rows
+	dupes = entry.get("dupes", {})
+	df = handle_duplicated_rows(df, dupes)
+
+	return df
+
+
+def handle_duplicated_rows(df_in: pd.DataFrame, dupes: dict) -> pd.DataFrame:
+
+	subset = dupes.get("subset", "key")
+
+	# Count duplicates:
+	num_dupes = df_in.duplicated(subset=subset).sum()
+
+	if num_dupes > 0:
+		sort_by = dupes.get("sort_by", ["key", "asc"])
+		if not isinstance(sort_by, list):
+			raise ValueError("sort_by must be a list of string pairs of the form [<field_name>, <asc|desc>]")
+		if len(sort_by) == 2:
+			if isinstance(sort_by[0], str) and isinstance(sort_by[1], str):
+				sort_by = [sort_by]
+		else:
+			for entry in sort_by:
+				if not isinstance(entry, list):
+					raise ValueError(f"sort_by must be a list of string pairs of the form [<field_name>, <asc|desc>], but found a non-list entry: {entry}")
+				elif len(entry) != 2:
+					raise ValueError(f"sort_by must be a list of string pairs of the form [<field_name>, <asc|desc], but found an entry with {len(entry)} members: {entry}")
+				elif not isinstance(entry[0], str) or not isinstance(entry[1], str):
+					raise ValueError(f"sort_by must be a list of string pairs of the form [<field_name>, <asc|desc], but found an entry with non-string members: {entry}")
+
+		df = df_in.copy()
+		bys = [x[0] for x in sort_by]
+		ascendings = [x[1] == "asc" for x in sort_by]
+		df = df.sort_values(by=bys, ascending=ascendings)
+		df = df.drop_duplicates(subset=subset, keep="first")
+
+		return df.reset_index(drop=True)
+
+	return df_in
+
+
+def old_load_data(settings: dict) -> pd.DataFrame:
 		"""
 		Load the data from the settings.
 		"""

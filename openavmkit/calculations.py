@@ -3,6 +3,27 @@ import pandas as pd
 from openavmkit.utilities.data import div_field_z_safe
 
 
+def crawl_calc_dict_for_fields(calc_dict: dict):
+  fields = []
+  for field in calc_dict:
+    calc_list = calc_dict[field]
+    fields += _crawl_calc_list_for_fields(calc_list)
+  return list(set(fields))
+
+
+def _crawl_calc_list_for_fields(calc_list: list):
+  fields = []
+  if len(calc_list) > 1:
+    sub_list = calc_list[1:]
+    for entry in sub_list:
+      if isinstance(entry, list):
+        fields += _crawl_calc_list_for_fields(entry)
+      elif isinstance(entry, str):
+        if not entry.startswith("str:"):
+          fields.append(entry)
+  return list(set(fields))
+
+
 def _calc_resolve(df: pd.DataFrame, value, i:int=0):
   if isinstance(value, str):
     # If it's a string, two possibilities:
