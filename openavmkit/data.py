@@ -3,12 +3,22 @@ import warnings
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import geopandas as gpd
+from IPython.core.display_functions import display
 from pandas import Series
+from typing import TypedDict, Literal
 
-from openavmkit.calculations import crawl_calc_dict_for_fields
+from openavmkit.calculations import crawl_calc_dict_for_fields, perform_calculations
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
 	get_fields_numeric, get_model_group_ids, get_fields_date
+
+
+class SalesUniversePair(TypedDict):
+	sales: pd.DataFrame
+	universe: pd.DataFrame
+
+SUPKey = Literal["sales", "universe"]
 
 
 def enrich_time(df: pd.DataFrame, time_formats: dict) -> pd.DataFrame:
@@ -269,6 +279,245 @@ def get_dtypes_from_settings(settings: dict):
 	return dtypes
 
 
+def load_and_process_data(settings: dict):
+
+	dataframes = load_dataframes(settings)
+	results = process_data(dataframes, settings)
+
+	return results
+
+
+def process_data(dataframes: dict[str : pd.DataFrame], settings: dict) -> SalesUniversePair:
+	"""
+	Process the data from the settings.
+	"""
+	s_data = settings.get("data", {})
+	s_process = s_data.get("process", {})
+	s_merge = s_process.get("merge", {})
+
+	merge_univ : list | None = s_merge.get("universe", None)
+	merge_sales : list | None = s_merge.get("sales", None)
+
+	if merge_univ is None:
+		raise ValueError(f"No \"universe\" merge instructions found. data.process.merge must have exactly two keys: \"universe\", and \"sales\"")
+	if merge_sales is None:
+		raise ValueError(f"No \"sales\" merge instructions found. data.process.merge must have exactly two keys: \"universe\", and \"sales\"")
+
+	df_univ = merge_dict_of_dfs(dataframes, merge_univ)
+	df_sales = merge_dict_of_dfs(dataframes, merge_sales)
+
+	result : SalesUniversePair = {
+		"universe": df_univ,
+		"sales": df_sales
+	}
+
+	return result
+
+
+def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str : pd.DataFrame]) -> SalesUniversePair:
+	supkeys : list[SUPKey] = ["universe", "sales"]
+	for key in supkeys:
+		df = sup[key]
+		s_enrich_local : dict | None = s_enrich.get(key, None)
+		if s_enrich_local is not None:
+			sup[key] = _enrich_df(df, s_enrich_local, dataframes)
+	return sup
+
+
+
+def _enrich_df(df_in: pd.DataFrame, s_enrich_this: dict, dataframes) -> pd.DataFrame:
+
+	df = df_in.copy()
+
+	s_geom = s_enrich_this.get("geometry", {})
+	s_dist = s_enrich_this.get("distances", {})
+	s_ref = s_enrich_this.get("ref_tables", {})
+	s_calc = s_enrich_this.get("calculations", {})
+
+	# geometry
+	df = perform_spatial_joins(df, s_geom, dataframes)
+
+	# distances
+	df = perform_distance_calculations(df, s_dist, dataframes)
+
+	# ref tables
+	df = perform_ref_tables(df, s_ref, dataframes)
+
+	# calculations
+	df = perform_calculations(df, s_calc)
+
+	return df
+
+
+def perform_spatial_joins(df_in: pd.DataFrame, s_geom: list, dataframes: dict[str: pd.DataFrame]) -> pd.DataFrame:
+
+	#  For geometry, provide a list of strings and/or objects, these represent spatial joins.
+	#  Strings are interpreted as the IDs of loaded shapefiles. Objects must have these keys: 'id', and 'predicate',
+	#  where 'predicate' is the name of the spatial join function to use."
+
+	df = df_in.copy()
+
+	if not isinstance(s_geom, list):
+		s_geom = [s_geom]
+
+	# First, get our parcel geometry, look for a dataframe called "geo_parcels":
+	if "geo_parcels" not in dataframes:
+		raise ValueError("No 'geo_parcels' dataframe found in the dataframes. This layer is required, and it must contain parcel geometry.")
+
+	gdf_parcels : gpd.GeoDataFrame = dataframes["geo_parcels"]
+
+	gdf_merged = gdf_parcels.copy()
+
+	for geom in s_geom:
+		if isinstance(geom, str):
+			entry = {
+				"id": str(geom),
+				"predicate": "contains_centroid"
+			}
+		elif isinstance(geom, dict):
+			entry = geom
+		else:
+			raise ValueError(f"Invalid geometry entry: {geom}")
+		_id = entry.get("id")
+		predicate = entry.get("predicate", "contains_centroid")
+		if _id is None:
+			raise ValueError("No 'id' found in geometry entry.")
+
+		gdf = dataframes[_id]
+		fields_to_tag = entry.get("fields", None)
+		if fields_to_tag is None:
+			fields_to_tag = [field for field in gdf.columns if field != "geometry"]
+		else:
+			for field in fields_to_tag:
+				if field not in gdf:
+					raise ValueError(f"Field to tag '{field}' not found in geometry dataframe '{_id}'.")
+		print("BASE")
+		display(gdf_merged)
+		print("GDF")
+		display(gdf)
+		gdf_merged = _perform_spatial_join(gdf_merged, gdf, predicate, fields_to_tag)
+		print("GDF MERGED")
+		display(gdf_merged)
+
+	try_keys = ["key", "key2", "key3"]
+	success = False
+	for key in try_keys:
+		if key in gdf_merged and key in df:
+			gdf_merged = gdf_merged.merge(df, on=key, how="left")
+			success = True
+			break
+	if not success:
+		raise ValueError(f"Could not find a common key between geo_parcels and base dataframe. Tried keys: {try_keys}")
+
+	return gdf_merged
+
+
+def _perform_spatial_join_contains_centroid(gdf: gpd.GeoDataFrame, gdf_overlay: gpd.GeoDataFrame):
+	# Compute centroids of each parcel
+	gdf["geometry_centroid"] = gdf.geometry.centroid
+
+	# Use within first
+	gdf = gpd.sjoin(
+		gdf.set_geometry("geometry_centroid"),
+		gdf_overlay,
+		how="left",
+		predicate="within"
+	)
+
+	# remove extra columns like "index_right":
+	gdf = gdf.drop(columns=["index_right"], errors="ignore")
+
+	return gdf
+
+
+def _perform_spatial_join(gdf_in: gpd.GeoDataFrame, gdf_overlay: gpd.GeoDataFrame, predicate: str, fields_to_tag: list[str]):
+	gdf = gdf_in.copy()
+
+	# Ensure both GeoDataFrames have the same CRS
+	gdf_overlay = gdf_overlay.to_crs(gdf.crs)
+
+	if "__overlay_id__" in gdf_overlay:
+		raise ValueError("The overlay GeoDataFrame already contains a '__overlay_id__' column. This column is used internally by the spatial join function, and must not be present in the overlay GeoDataFrame.")
+
+	# assign each overlay polygon a unique ID:
+	gdf_overlay["__overlay_id__"] = range(len(gdf_overlay))
+
+	# TODO: add more predicates as needed
+	if predicate == "contains_centroid":
+		gdf = _perform_spatial_join_contains_centroid(gdf, gdf_overlay)
+	else:
+		raise ValueError(f"Invalid spatial join predicate: {predicate}")
+
+	# gdf is now properly tagged with "__overlay_id__"
+
+	# Merge in the fields we want:
+	gdf = gdf.drop(columns=fields_to_tag, errors="ignore")
+	gdf = gdf.merge(gdf_overlay[["__overlay_id__"] + fields_to_tag], on="__overlay_id__", how="left")
+
+	# clean up:
+	gdf.set_geometry("geometry", inplace=True)
+	gdf = gdf.drop(columns=["geometry_centroid", "__overlay_id__"], errors="ignore")
+	return gdf
+
+
+def perform_distance_calculations(df_in: pd.DataFrame, s_dist: dict, dataframes: dict[str: pd.DataFrame]) -> pd.DataFrame:
+	# TODO
+	warnings.warn("perform_distance_calculations() not implemented yet")
+	return df_in
+
+
+def perform_ref_tables(df_in: pd.DataFrame, s_ref: list | dict, dataframes: dict[str: pd.DataFrame]) -> pd.DataFrame:
+	df = df_in.copy()
+	if not isinstance(s_ref, list):
+		s_ref = [s_ref]
+
+	for ref in s_ref:
+
+		_id = ref.get("id", None)
+		key_ref_table = ref.get("key_ref_table", None)
+		key_target = ref.get("key_target", None)
+		add_fields = ref.get("add_fields", None)
+		if _id is None:
+			raise ValueError("No 'id' found in ref table.")
+		if key_ref_table is None:
+			raise ValueError("No 'key_ref_table' found in ref table.")
+		if key_target is None:
+			raise ValueError("No 'key_target' found in ref table.")
+		if add_fields is None:
+			raise ValueError("No 'add_fields' found in ref table.")
+		if not isinstance(add_fields, list):
+			raise ValueError("The 'add_fields' field must be a list of strings.")
+		if len(add_fields) == 0:
+			raise ValueError("The 'add_fields' field must contain at least one string.")
+
+		if _id not in dataframes:
+			raise ValueError(f"Ref table '{_id}' not found in dataframes.")
+
+		df_ref = dataframes[_id]
+		if key_ref_table not in df_ref:
+			raise ValueError(f"Key field '{key_ref_table}' not found in ref table '{_id}'.")
+
+		if key_target not in df:
+			raise ValueError(f"Target field '{key_target}' not found in base dataframe")
+
+		for field in add_fields:
+			if field not in df_ref:
+				raise ValueError(f"Field '{field}' not found in ref table '{_id}'.")
+			if field in df_in:
+				raise ValueError(f"Field '{field}' already exists in base dataframe.")
+
+		df_ref = df_ref[[key_ref_table] + add_fields]
+
+		if key_ref_table == key_target:
+			df = df.merge(df_ref, on=key_target, how="left")
+		else:
+			df = df.merge(df_ref, left_on=key_target, right_on=key_ref_table, how="left")
+			df = df.drop(columns=[key_ref_table])
+
+	return df
+
+
+
 def load_dataframes(settings: dict) -> dict[str : pd.DataFrame]:
 	"""
   Load the data from the settings.
@@ -288,15 +537,22 @@ def load_dataframes(settings: dict) -> dict[str : pd.DataFrame]:
 		if df is not None:
 			dataframes[key] = dataframes
 
+	if "geo_parcels" not in dataframes:
+		raise ValueError("No 'geo_parcels' dataframe found in the dataframes. This layer is required, and it must contain parcel geometry.")
+	if "geometry" not in dataframes["geo_parcels"].columns:
+		raise ValueError("The 'geo_parcels' dataframe does not contain a 'geometry' column. This layer must contain parcel geometry.")
+
 	return dataframes
 
 
 
 def load_dataframe(entry: dict, settings: dict, fields_cat: list = None, fields_bool: list = None, fields_num: list = None) -> pd.DataFrame | None:
-	filename = entry.get("filename", None)
-	if filename is None:
+	filename = entry.get("filename", "")
+	if filename == "":
 		return None
 	ext = str(filename).split(".")[-1]
+
+	column_names = snoop_column_names(filename)
 
 	e_load = entry.get("load", {})
 
@@ -322,6 +578,10 @@ def load_dataframe(entry: dict, settings: dict, fields_cat: list = None, fields_
 	cols_to_load += fields_in_calc
 	# These are the columns we will actually load:
 	cols_to_load = list(set(cols_to_load))
+
+	# Always load "geometry" column if it exists:
+	if "geometry" in column_names and "geometry" not in cols_to_load:
+		cols_to_load.append("geometry")
 
 	# Read the actual file:
 	if ext == "parquet":
@@ -378,6 +638,16 @@ def load_dataframe(entry: dict, settings: dict, fields_cat: list = None, fields_
 	return df
 
 
+def snoop_column_names(filename: str) -> list[str]:
+	ext = str(filename).split(".")[-1]
+	if ext == "parquet":
+		parquet_file = pq.ParquetFile(filename)
+		return parquet_file.schema.names
+	elif ext == "csv":
+		return pd.read_csv(filename, nrows=0).columns.tolist()
+	raise ValueError(f"Unsupported file extension: {ext}")
+
+
 def handle_duplicated_rows(df_in: pd.DataFrame, dupes: dict) -> pd.DataFrame:
 
 	subset = dupes.get("subset", "key")
@@ -412,70 +682,42 @@ def handle_duplicated_rows(df_in: pd.DataFrame, dupes: dict) -> pd.DataFrame:
 	return df_in
 
 
-def old_load_data(settings: dict) -> pd.DataFrame:
-		"""
-		Load the data from the settings.
-		"""
-		s_data = settings.get("data", {})
-		s_load = s_data.get("load", {})
-		dataframes = []
+def merge_dict_of_dfs(dataframes: dict[str : pd.DataFrame], merge_list: list) -> pd.DataFrame:
+	merges = []
+	for entry in merge_list:
+		df_id = None
+		how = "left"
+		on = "key"
+		if isinstance(entry, str):
+			if entry not in dataframes:
+				raise ValueError(f"Merge key '{entry}' not found in dataframes.")
+			df_id = entry
+		elif isinstance(entry, dict):
+			df_id = entry.get("id", None)
+			how = entry.get("how", how)
+			on = entry.get("on", on)
+		if df_id is None:
+			raise ValueError("Merge entry must be either a string or a dictionary with an 'id' key.")
+		if df_id not in dataframes:
+			raise ValueError(f"Merge key '{df_id}' not found in dataframes.")
+		merges.append({
+			"df": dataframes[df_id],
+			"how": how,
+			"on": on
+		})
 
-		dtype_map = get_dtypes_from_settings(settings)
+	df_merged: pd.DataFrame | None = None
 
-		fields_cat = get_fields_categorical(settings, include_boolean=False)
-		fields_bool = get_fields_boolean(settings)
-		fields_num = get_fields_numeric(settings, include_boolean=False)
+	for merge in merges:
+		df = merge.get("df", None)
+		how = merge.get("how", "left")
+		on = merge.get("on", "key")
+		if df_merged is None:
+			df_merged = df
+		else:
+			df_merged = pd.merge(df_merged, df, how=how, on=on)
 
-		for key in s_load:
-			entry = s_load[key]
-			filename = entry.get("filename", None)
-			if filename is None:
-				continue
-			ext = filename.split(".")[-1]
-
-			if ext == "parquet":
-				try:
-					df = gpd.read_parquet(filename)
-				except ValueError as e:
-					df = pd.read_parquet(filename)
-			elif ext == "csv":
-				df = pd.read_csv(filename, dtype=dtype_map)
-			else:
-				raise ValueError(f"Unsupported file extension: {ext}")
-
-			# Fix up the types appropriately
-			for col in df.columns:
-				if col in fields_cat:
-					df[col] = df[col].astype("string")
-				elif col in fields_bool:
-					df[col] = boolify_series(df[col])
-				elif col in fields_num:
-					df[col] = df[col].astype("Float64")
-
-			dataframes.append(df)
-
-		df = merge_list_of_dfs(dataframes, settings)
-
-		return df
-
-
-def merge_list_of_dfs(dfs: list[pd.DataFrame], settings: dict) -> pd.DataFrame:
-		"""
-		Merge the dataframes.
-		"""
-		s_data = settings.get("data", {})
-		s_merge = s_data.get("merge", {})
-		merged = None
-		for key in s_merge:
-			entry = s_merge[key]
-			how = entry.get("how", "left")
-			on = entry.get("on", "key")
-			for df in dfs:
-				if merged is None:
-					merged = df
-				else:
-					merged = pd.merge(merged, df, how=how, on=on)
-		return merged
+	return df_merged
 
 
 def write_canonical_splits(

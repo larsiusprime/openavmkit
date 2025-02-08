@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from IPython.core.display_functions import display
 
-from openavmkit.data import _perform_canonical_split, handle_duplicated_rows
+from openavmkit.data import _perform_canonical_split, handle_duplicated_rows, perform_ref_tables
 from openavmkit.modeling import DataSplit
 from openavmkit.utilities.assertions import dfs_are_equal
 from openavmkit.utilities.data import div_z_safe
@@ -270,4 +270,81 @@ def test_duplicates():
 	df_expected = df_expected.sort_values(by="key").reset_index(drop=True)
 
 	assert dfs_are_equal(df_results, df_expected, primary_key="key")
+
+
+def test_ref_table():
+	print("")
+
+	data = {
+		"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"],
+		"zoning": ["R1", "R1", "R2", "R2", "R3", "C1", "C1", "C2", "C2", "R1", "M1", "M2", "M3", "M1"]
+	}
+	df = pd.DataFrame(data=data)
+
+	data_ref_table = {
+		"zoning_id": ["R1", "R2", "R3", "C1", "C2", "M1", "M2", "M3"],
+		"zoning_density": [1, 2, 3, 1, 2, 1, 2, 3],
+		"zoning_code": ["residential", "residential", "residential", "commercial", "commercial", "mixed-use", "mixed-use", "mixed-use"],
+		"zoning_class": ["R", "R", "R", "C", "C", "M", "M", "M"],
+		"zoning_resi_allowed": [True, True, True, False, False, True, True, True],
+		"zoning_comm_allowed": [False, False, False, True, True, True, True, True],
+		"zoning_mixed_use": [False, False, False, False, False, True, True, True]
+	}
+	df_ref_table = pd.DataFrame(data=data_ref_table)
+
+	ref_table = {
+		"id": "ref_zoning",
+		"key_ref_table": "zoning_id",
+		"key_target": "zoning",
+		"add_fields": ["zoning_density", "zoning_code", "zoning_class", "zoning_resi_allowed", "zoning_comm_allowed", "zoning_mixed_use"]
+	}
+
+	dataframes = {
+		"ref_zoning": df_ref_table
+	}
+
+	data_expected = {
+		"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"],
+		"zoning": ["R1", "R1", "R2", "R2", "R3", "C1", "C1", "C2", "C2", "R1", "M1", "M2", "M3", "M1"],
+		"zoning_density": [1, 1, 2, 2, 3, 1, 1, 2, 2, 1, 1, 2, 3, 1],
+		"zoning_code": ["residential", "residential", "residential", "residential", "residential", "commercial", "commercial", "commercial", "commercial", "residential", "mixed-use", "mixed-use", "mixed-use", "mixed-use"],
+		"zoning_class": ["R", "R", "R", "R", "R", "C", "C", "C", "C", "R", "M", "M", "M", "M"],
+		"zoning_resi_allowed": [True, True, True, True, True, False, False, False, False, True, True, True, True, True],
+		"zoning_comm_allowed": [False, False, False, False, False, True, True, True, True, False, True, True, True, True],
+		"zoning_mixed_use": [False, False, False, False, False, False, False, False, False, False, True, True, True, True]
+	}
+	df_expected = pd.DataFrame(data=data_expected)
+	df_results = perform_ref_tables(df, ref_table, dataframes)
+
+	# Test the case where the keys are different
+	assert dfs_are_equal(df_expected, df_results, primary_key="key")
+
+	# Test the case where we do it in two lookups
+	ref_tables = [
+		{
+			"id": "ref_zoning",
+			"key_ref_table": "zoning_id",
+			"key_target": "zoning",
+			"add_fields": ["zoning_density", "zoning_code", "zoning_class"]
+		},
+		{
+			"id": "ref_zoning",
+			"key_ref_table": "zoning_id",
+			"key_target": "zoning",
+			"add_fields": ["zoning_resi_allowed", "zoning_comm_allowed", "zoning_mixed_use"]
+		},
+	]
+
+	df_results = perform_ref_tables(df, ref_tables, dataframes)
+
+	assert dfs_are_equal(df_expected, df_results, primary_key="key")
+
+	# Test the case where the keys are identical
+	dataframes["ref_zoning"] = dataframes["ref_zoning"].rename(columns={"zoning_id": "zoning"})
+	ref_table["key_ref_table"] = "zoning"
+
+	df_results = perform_ref_tables(df, ref_table, dataframes)
+
+	assert dfs_are_equal(df_expected, df_results, primary_key="key")
+
 

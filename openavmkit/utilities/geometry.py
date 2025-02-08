@@ -1,6 +1,13 @@
+import math
+
 import geopandas as gpd
+import geopy
 import pandas as pd
+import shapely
+from geopy import Point
+from geopy.distance import distance
 from pyproj import CRS
+from shapely import Polygon
 
 
 def get_crs(gdf, projection_type):
@@ -185,4 +192,82 @@ def stamp_geo_field_onto_df(df_in: gpd.GeoDataFrame, gdf: gpd.GeoDataFrame, fiel
   return joined
 
 
+def offset_coordinate_miles(lat, lon, lat_miles, lon_miles) -> (float, float):
+  lat_km = lat_miles * 1.60934
+  lon_km = lon_miles * 1.60934
+  return offset_coordinate_km(lat, lon, lat_km, lon_km)
 
+
+def offset_coordinate_km(lat, lon, lat_km, lon_km):
+  """Offsets a coordinate by lat_km km north and lon_km km east."""
+  start = Point(lat, lon)  # ✅ Correct (lat, lon) ordering
+
+  # Move latitude (North/South) - No need for scaling
+  new_lat = distance(kilometers=abs(lat_km)).destination(start, bearing=0 if lat_km >= 0 else 180).latitude
+
+  # Scale longitude movement by cos(latitude)
+  lon_adjusted_km = lon_km / abs(math.cos(math.radians(lat)))
+
+  # Move longitude (East/West) with proper scaling
+  new_lon = distance(kilometers=abs(lon_adjusted_km)).destination(start, bearing=90 if lon_km >= 0 else 270).longitude
+
+  return new_lat, new_lon
+
+
+def create_geo_circle(lat, lon, crs, radius_km, num_points=100):
+  """
+  Creates a GeoDataFrame containing a circle centered at the specified latitude and longitude.
+  :param lat: The latitude of the center of the circle.
+  :param lon: The longitude of the center of the circle.
+  :param crs: The CRS of the circle.
+  :param radius_km: The radius of the circle in kilometers.
+  :param num_points: The number of points to use to approximate the circle.
+  :return: A GeoDataFrame containing the circle.
+  """
+  # Create a list of points around the circle
+  points = []
+  for i in range(num_points):
+    angle = 2 * 3.14159 * i / num_points
+    x = radius_km * math.cos(angle)
+    y = radius_km * math.sin(angle)
+    pt_lat, pt_lon = offset_coordinate_km(lat, lon, x, y)
+    points.append(shapely.Point(pt_lon, pt_lat))
+
+  points.append(points[0])
+  polygon = shapely.Polygon(points)
+
+  # Create a GeoDataFrame from the points
+  gdf = gpd.GeoDataFrame(geometry=[polygon], crs=crs)
+  return gdf
+
+
+
+def create_geo_rect(lat, lon, crs, width_km, height_km):
+  """
+  Creates a GeoDataFrame containing a rectangle centered at the specified latitude and longitude.
+  :param lat: The latitude of the center of the rectangle.
+  :param lon: The longitude of the center of the rectangle.
+  :param crs: The CRS of the rectangle.
+  :param width_km: The width of the rectangle in kilometers.
+  :param height_km: The height of the rectangle in kilometers.
+  :return: A GeoDataFrame containing the rectangle.
+  """
+  # Calculate the four corners of the rectangle
+  nw_lat, nw_lon = offset_coordinate_km(lat, lon, height_km / 2, -width_km / 2)  # NW
+  ne_lat, ne_lon = offset_coordinate_km(lat, lon, height_km / 2, width_km / 2)   # NE
+  se_lat, se_lon = offset_coordinate_km(lat, lon, -height_km / 2, width_km / 2)  # SE
+  sw_lat, sw_lon = offset_coordinate_km(lat, lon, -height_km / 2, -width_km / 2) # SW
+
+  # Order: NW → NE → SE → SW → NW (to close polygon)
+  polygon_coords = [(nw_lon, nw_lat), (ne_lon, ne_lat), (se_lon, se_lat), (sw_lon, sw_lat), (nw_lon, nw_lat)]
+
+  for coord in polygon_coords:
+    print(coord)
+
+  # Create a Polygon
+  polygon = Polygon(polygon_coords)
+
+  # Create a GeoDataFrame
+  gdf = gpd.GeoDataFrame(geometry=[polygon], crs=crs)
+
+  return gdf
