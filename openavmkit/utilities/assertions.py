@@ -76,11 +76,16 @@ def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None):
 
 	# ensure that the two dataframes contain the same information:
 	if not a.columns.equals(b.columns):
+		print(f"Columns do not match: A={a.columns}, B={b.columns}")
 		return False
 	if not a.index.equals(b.index):
+		print("Indices do not match")
 		return False
 	for col in a.columns:
 		if not series_are_equal(a[col], b[col]):
+			print(f"Column {col} does not match, look:")
+			print(a[col])
+			print(b[col])
 			return False
 	return True
 
