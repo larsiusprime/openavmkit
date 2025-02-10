@@ -237,3 +237,95 @@ def test_boolean_filters():
     expected = data[op]
     assert(lists_are_equal(expected, results))
 
+
+def test_filter_complex():
+  data = {
+    "bldg_area_finished_sqft": [
+      0, 0, 0, 0, 0,
+      1000, 1500, 2000, 2000,
+      2000, 3000, 4000, 5000, 5000
+    ],
+    "bldg_type": [
+      None, None, None, None, None,
+      "TOWNHOUSE", "TOWNHOME", "TOWNHOME", "HOUSE",
+      "SINGLEFAMILY", "SINGLEFAMILY", "SF", "SF", "SF"
+    ],
+    "neighborhood": [
+      "RIVER OAKS TOWNHOUSES", "GREEN HILLS -- TOWNHOUSES", "RIVER OAKS [SINGLEFAMILY]", "SF: GREEN HILLS", "GREEN HILLS SF",
+      "RIVER OAKS", "RIVER OAKS (TOWNHOMES)", "RIVER OAKS", "GREEN HILLS (TOWNHOUSES)",
+      "GREEN HILLS", "RIVER OAKS (SINGLEFAMILY)", "GREEN HILLS (SINGLEFAMILY)", "RIVER OAKS", "GREEN HILLS",
+    ],
+    "land_class": [
+      "VACANT", "VACANT", "VACANT", "VACANT", "VACANT",
+      "TOWNHOUSE", "TOWNHOUSE", "TOWNHOUSE", "TOWNHOUSE",
+      "SINGLEFAMILY", "SINGLEFAMILY", "SINGLEFAMILY", "SINGLEFAMILY", "SINGLEFAMILY"
+    ],
+    "ground_truth": [
+      "0_vacant_th", "1_vacant_th", "2_vacant_sf", "3_vacant_sf", "4_vacant_sf",
+      "5_improved_th", "6_improved_th", "7_improved_th", "8_improved_th",
+      "9_improved_sf", "10_improved_sf", "11_improved_sf", "12_improved_sf", "13_improved_sf"
+    ]
+  }
+  df = pd.DataFrame(data=data)
+
+  filter_is_improved = [">", "bldg_area_finished_sqft", 0]
+  filter_is_vacant = ["==", "bldg_area_finished_sqft", 0]
+  filter_th_building = ["isin", "bldg_type", ["TOWNHOUSE", "TOWNHOME"]]
+  filter_th_neighborhood = ["contains", "neighborhood", ["TOWNHOMES", "TOWNHOUSES"]]
+  filter_th_land_class = ["isin", "land_class", ["TOWNHOUSE"]]
+
+  filter_sf_building = ["==", "bldg_type", "SINGLEFAMILY"]
+  filter_sf_neighborhood = ["contains", "neighborhood", ["SINGLEFAMILY", "SF"]]
+  filter_sf_land_class = ["isin", "land_class", ["SINGLEFAMILY"]]
+
+  filter_improved_th = ["and",
+    filter_is_improved,
+    ["or",
+      filter_th_building,
+      filter_th_neighborhood,
+      filter_th_land_class
+    ]
+  ]
+
+  results = select_filter(df, filter_improved_th)["ground_truth"]
+  expected = ["5_improved_th", "6_improved_th", "7_improved_th", "8_improved_th"]
+  assert(lists_are_equal(expected, results.tolist()))
+
+  filter_vacant_th = ["and",
+    filter_is_vacant,
+    ["or",
+      filter_th_neighborhood,
+      filter_th_land_class
+    ]
+  ]
+
+  results = select_filter(df, filter_vacant_th)["ground_truth"]
+  expected = ["0_vacant_th", "1_vacant_th"]
+  assert(lists_are_equal(expected, results.tolist()))
+
+  filter_improved_sf = ["and",
+    filter_is_improved,
+    ["or",
+      filter_sf_building,
+      filter_sf_neighborhood,
+      filter_sf_land_class
+    ]
+  ]
+
+  results = select_filter(df, filter_improved_sf)["ground_truth"]
+  expected = ["9_improved_sf", "10_improved_sf", "11_improved_sf", "12_improved_sf", "13_improved_sf"]
+  assert(lists_are_equal(expected, results.tolist()))
+
+  filter_vacant_sf = ["and",
+    filter_is_vacant,
+    ["or",
+      filter_sf_neighborhood,
+      filter_sf_land_class
+    ]
+  ]
+
+  results = select_filter(df, filter_vacant_sf)["ground_truth"]
+  expected = ["2_vacant_sf", "3_vacant_sf", "4_vacant_sf"]
+  assert(lists_are_equal(expected, results.tolist()))
+
+
