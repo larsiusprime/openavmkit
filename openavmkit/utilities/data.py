@@ -1,3 +1,6 @@
+import os
+import pickle
+
 import numpy as np
 import pandas as pd
 
@@ -154,3 +157,14 @@ def add_sqft_fields(df_in: pd.DataFrame):
 			df[field + "_impr_sqft"] = div_field_z_safe(df[field], df["bldg_area_finished_sqft"])
 	return df
 
+
+def cache(path : str, logic : callable):
+	outpath = path
+	if os.path.exists(outpath):
+		with open(outpath, "rb") as f:
+			return pickle.load(f)
+	result = logic()
+	os.makedirs(os.path.dirname(outpath), exist_ok=True)
+	with open(outpath, "wb") as f:
+		pickle.dump(result, f)
+	return result
