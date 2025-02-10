@@ -10,8 +10,9 @@ from pandas import Series
 from typing import TypedDict, Literal
 
 from openavmkit.calculations import crawl_calc_dict_for_fields, perform_calculations
+from openavmkit.utilities.geometry import get_crs
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
-	get_fields_numeric, get_model_group_ids, get_fields_date
+	get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit
 
 
 class SalesUniversePair(TypedDict):
@@ -311,45 +312,48 @@ def process_data(dataframes: dict[str : pd.DataFrame], settings: dict) -> SalesU
 		"sales": df_sales
 	}
 
+	enrich_data(result, s_process.get("enrich", {}), dataframes, settings)
+
+
 	return result
 
 
-def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str : pd.DataFrame]) -> SalesUniversePair:
+def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str : pd.DataFrame], settings: dict) -> SalesUniversePair:
 	supkeys : list[SUPKey] = ["universe", "sales"]
 	for key in supkeys:
 		df = sup[key]
 		s_enrich_local : dict | None = s_enrich.get(key, None)
 		if s_enrich_local is not None:
-			sup[key] = _enrich_df(df, s_enrich_local, dataframes)
+			sup[key] = _enrich_df(df, s_enrich_local, dataframes, settings)
 	return sup
 
 
 
-def _enrich_df(df_in: pd.DataFrame, s_enrich_this: dict, dataframes) -> pd.DataFrame:
+def _enrich_df(df_in: pd.DataFrame, s_enrich_this: dict, dataframes: dict[str: pd.DataFrame], settings: dict) -> gpd.GeoDataFrame:
 
 	df = df_in.copy()
 
-	s_geom = s_enrich_this.get("geometry", {})
+	s_geom = s_enrich_this.get("geometry", [])
 	s_dist = s_enrich_this.get("distances", {})
 	s_ref = s_enrich_this.get("ref_tables", {})
 	s_calc = s_enrich_this.get("calculations", {})
 
 	# geometry
-	df = perform_spatial_joins(df, s_geom, dataframes)
+	gdf : gpd.GeoDataFrame = perform_spatial_joins(df, s_geom, dataframes)
 
 	# distances
-	df = perform_distance_calculations(df, s_dist, dataframes)
+	gdf = perform_distance_calculations(gdf, s_dist, dataframes, get_long_distance_unit(settings))
 
 	# ref tables
-	df = perform_ref_tables(df, s_ref, dataframes)
+	gdf = perform_ref_tables(gdf, s_ref, dataframes)
 
 	# calculations
-	df = perform_calculations(df, s_calc)
+	gdf = perform_calculations(gdf, s_calc)
 
-	return df
+	return gdf
 
 
-def perform_spatial_joins(df_in: pd.DataFrame, s_geom: list, dataframes: dict[str: pd.DataFrame]) -> pd.DataFrame:
+def perform_spatial_joins(df_in: pd.DataFrame, s_geom: list, dataframes: dict[str: pd.DataFrame]) -> gpd.GeoDataFrame:
 
 	#  For geometry, provide a list of strings and/or objects, these represent spatial joins.
 	#  Strings are interpreted as the IDs of loaded shapefiles. Objects must have these keys: 'id', and 'predicate',
@@ -391,13 +395,7 @@ def perform_spatial_joins(df_in: pd.DataFrame, s_geom: list, dataframes: dict[st
 			for field in fields_to_tag:
 				if field not in gdf:
 					raise ValueError(f"Field to tag '{field}' not found in geometry dataframe '{_id}'.")
-		print("BASE")
-		display(gdf_merged)
-		print("GDF")
-		display(gdf)
 		gdf_merged = _perform_spatial_join(gdf_merged, gdf, predicate, fields_to_tag)
-		print("GDF MERGED")
-		display(gdf_merged)
 
 	try_keys = ["key", "key2", "key3"]
 	success = False
@@ -460,13 +458,61 @@ def _perform_spatial_join(gdf_in: gpd.GeoDataFrame, gdf_overlay: gpd.GeoDataFram
 	return gdf
 
 
-def perform_distance_calculations(df_in: pd.DataFrame, s_dist: dict, dataframes: dict[str: pd.DataFrame]) -> pd.DataFrame:
-	# TODO
-	warnings.warn("perform_distance_calculations() not implemented yet")
-	return df_in
+def _perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDataFrame, id: str, unit: str = "km") -> pd.DataFrame:
+	unit_factors = {"m": 1, "km": 0.001, "mi": 0.000621371, "ft": 3.28084}
+	if unit not in unit_factors:
+		raise ValueError(f"Unsupported unit '{unit}'")
+
+	# Convert to equal-distance CRS for accurate distance calculations
+	crs = get_crs(df_in, "equal_distance")
+	df_projected = df_in.to_crs(crs).copy()
+	gdf_projected = gdf_in.to_crs(crs).copy()
+
+	# Perform nearest neighbor spatial join but keep only the key and distance column
+	nearest = gpd.sjoin_nearest(df_projected, gdf_projected, how="left", distance_col=f"dist_to_{id}")[["key", f"dist_to_{id}"]]
+
+	# Convert distance to the desired unit
+	nearest[f"dist_to_{id}"] *= unit_factors[unit]
+
+	# Merge results back into the original df_in (which is still in its original CRS)
+	df_out = df_in.merge(nearest, on="key", how="left")
+
+	return df_out
 
 
-def perform_ref_tables(df_in: pd.DataFrame, s_ref: list | dict, dataframes: dict[str: pd.DataFrame]) -> pd.DataFrame:
+def perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, dataframes: dict[str: pd.DataFrame], unit: str = "km") -> gpd.GeoDataFrame:
+	# For distances, provide a list of strings and/or objects. Strings are interpreted as the IDs of loaded shapefiles.
+	# Objects must have an 'id' key, and optionally a 'field' key. If a 'field' key is provided, distances will be
+	# calculated for each row in the shapefile corresponding to a unique value for that field.
+
+	df = df_in.copy()
+
+	for entry in s_dist:
+		if isinstance(entry, str):
+			entry = {
+				"id": str(entry)
+			}
+		elif not isinstance(entry, dict):
+			raise ValueError(f"Invalid distance entry: {entry}")
+		id = entry.get("id")
+		if id is None:
+			raise ValueError("No 'id' found in distance entry.")
+		if id not in dataframes:
+			raise ValueError(f"Distance table '{id}' not found in dataframes.")
+		gdf = dataframes[id]
+		field = entry.get("field", None)
+		if field is None:
+			df = _perform_distance_calculations(df, gdf, id, unit)
+		else:
+			uniques = gdf[field].unique()
+			for unique in uniques:
+				gdf_subset = gdf[gdf[field].eq(unique)]
+				df = _perform_distance_calculations(df, gdf_subset, f"{id}_{unique}", unit)
+
+	return df
+
+
+def perform_ref_tables(df_in: pd.DataFrame | gpd.GeoDataFrame, s_ref: list | dict, dataframes: dict[str: pd.DataFrame]) -> pd.DataFrame | gpd.GeoDataFrame:
 	df = df_in.copy()
 	if not isinstance(s_ref, list):
 		s_ref = [s_ref]

@@ -367,3 +367,35 @@ def get_model_group_ids(settings: dict, df: pd.DataFrame = None):
 	else:
 		model_group_ids = [key for key in model_groups]
 	return model_group_ids
+
+
+def get_small_area_unit(settings: dict):
+	base_units = settings.get("locality", {}).get("units", "imperial")
+	if base_units == "imperial":
+		return "sqft"
+	elif base_units == "metric":
+		return "sqm"
+
+
+def get_large_area_unit(settings: dict):
+	base_units = settings.get("locality", {}).get("units", "imperial")
+	if base_units == "imperial":
+		return "acre"
+	elif base_units == "metric":
+		return "ha" #hectare
+
+
+def get_short_distance_unit(settings: dict):
+	base_units = settings.get("locality", {}).get("units", "imperial")
+	if base_units == "imperial":
+		return "ft"
+	elif base_units == "metric":
+		return "m"
+
+
+def get_long_distance_unit(settings: dict):
+	base_units = settings.get("locality", {}).get("units", "imperial")
+	if base_units == "imperial":
+		return "mile"
+	elif base_units == "metric":
+		return "km"

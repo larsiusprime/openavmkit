@@ -1,8 +1,6 @@
 import math
 
 import geopandas as gpd
-import geopy
-import pandas as pd
 import shapely
 from geopy import Point
 from geopy.distance import distance
@@ -33,13 +31,13 @@ def get_crs(gdf, projection_type):
     return CRS.from_epsg(4326)
 
   elif projection_type == 'equal_area':
-    # Return an equal-area projection centered on the centroid
+    # Return an equal-area projection centered on the centroid, ensuring meters
     return CRS.from_proj4(
-      f"+proj=aea +lat_1={lat-5} +lat_2={lat+5} +lat_0={lat} +lon_0={lon}"
+      f"+proj=aea +lat_1={lat-5} +lat_2={lat+5} +lat_0={lat} +lon_0={lon} +datum=WGS84 +units=m"
     )
 
   elif projection_type == 'equal_distance':
-    # Return an Azimuthal Equidistant projection centered on the centroid
+    # Return an Azimuthal Equidistant projection centered on the centroid (meters)
     return CRS.from_proj4(
       f"+proj=aeqd +lat_0={lat} +lon_0={lon} +datum=WGS84 +units=m"
     )
