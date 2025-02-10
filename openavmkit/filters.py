@@ -68,7 +68,10 @@ def resolve_filter(df: pd.DataFrame, f: list) -> pd.Series:
     if operator == "!=": return df[field].ne(value)
     if operator == "isin": return df[field].isin(value)
     if operator == "notin": return ~df[field].isin(value)
-    if operator == "contains": return df[field].str.contains(value)
+    if operator == "contains":
+      selection = df[field].str.contains(value[0])
+      for v in value[1:]: selection |= df[field].str.contains(v)
+      return selection
 
   raise ValueError(f"Unknown operator {operator}")
 
