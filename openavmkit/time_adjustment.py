@@ -1,13 +1,11 @@
 import calendar
-import os
 from datetime import timedelta, datetime
 
 import numpy as np
 import pandas as pd
 
-from openavmkit.checkpoint import read_checkpoint, write_checkpoint
 from openavmkit.data import get_sales
-from openavmkit.utilities.data import div_z_safe, do_per_model_group
+from openavmkit.utilities.data import div_z_safe
 
 
 def _generate_days(start_date: datetime, end_date: datetime):
@@ -250,7 +248,7 @@ def _determine_time_resolution(df_per, sale_field, min_sale_count, period: str =
   return period
 
 
-def calculate_time_adjustment(df_sales_in: pd.DataFrame, settings: str, period: str = "M", verbose: bool = False):
+def calculate_time_adjustment(df_sales_in: pd.DataFrame, settings: dict, period: str = "M", verbose: bool = False):
 
   if verbose:
     print("Calculating time adjustment...")

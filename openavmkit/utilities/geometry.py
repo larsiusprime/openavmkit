@@ -6,7 +6,7 @@ import shapely
 from geopy import Point
 from geopy.distance import distance
 from pyproj import CRS
-from shapely import Polygon, MultiPolygon, GEOSException
+from shapely import Polygon, MultiPolygon
 
 
 def get_crs(gdf, projection_type):
@@ -89,7 +89,7 @@ def get_bounds_in_meters(gdf: gpd.GeoDataFrame) -> (float, float):
   width = bounds[2] - bounds[0]
   height = bounds[3] - bounds[1]
 
-  return (width, height)
+  return width, height
 
 
 def get_bounds_in_feet(gdf: gpd.GeoDataFrame) -> (float, float):

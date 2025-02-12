@@ -1,6 +1,3 @@
-#SUPKey = Literal["sales", "universe"]
-from typing import Literal, Any, TypeAlias
-
 import pandas as pd
 
 

@@ -3,7 +3,6 @@ import os
 import pickle
 
 import polars as pl
-from IPython.core.display_functions import display
 from joblib import Parallel, delayed
 from typing import Union
 
@@ -35,7 +34,7 @@ from openavmkit.ratio_study import RatioStudy
 from openavmkit.utilities.format import fancy_format
 from openavmkit.utilities.modeling import GarbageModel, AverageModel, NaiveSqftModel, LocalSqftModel, AssessorModel, \
   GWRModel, MRAModel
-from openavmkit.utilities.data import clean_column_names, div_field_z_safe
+from openavmkit.utilities.data import clean_column_names
 from openavmkit.utilities.stats import quick_median_chd
 from openavmkit.tuning import tune_lightgbm, tune_xgboost, tune_catboost
 from openavmkit.utilities.timing import TimingData

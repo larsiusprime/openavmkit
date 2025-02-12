@@ -8,10 +8,9 @@ import networkx as nx
 import numpy as np
 import rasterio
 from scipy.spatial import cKDTree
-from shapely import Polygon, MultiPolygon, MultiLineString
+from shapely import MultiLineString
 from shapely.geometry import LineString
-from shapely.ops import unary_union, polygonize, split, snap
-from skimage import measure
+from shapely.ops import unary_union, polygonize
 from matplotlib import pyplot as plt
 from matplotlib.colors import Normalize
 from numpy import ma
@@ -22,7 +21,7 @@ import geopandas as gpd
 from IPython.core.display_functions import display
 from geopandas import GeoDataFrame
 from rasterio.transform import from_origin
-from scipy.ndimage import gaussian_filter, morphology, convolve, sobel
+from scipy.ndimage import gaussian_filter
 from skimage.feature import canny
 from skimage.measure import label, regionprops, find_contours
 
@@ -32,7 +31,7 @@ from openavmkit.data import get_sales
 from openavmkit.modeling import SingleModelResults, plot_value_surface
 from openavmkit.quality_control import check_land_values
 from openavmkit.utilities.data import div_field_z_safe, add_sqft_fields
-from openavmkit.utilities.geometry import select_grid_size_from_size_str, get_crs, stamp_geo_field_onto_df
+from openavmkit.utilities.geometry import select_grid_size_from_size_str, get_crs
 from openavmkit.utilities.plotting import plot_histogram_df
 from openavmkit.utilities.settings import get_model_group_ids
 

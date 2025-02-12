@@ -141,9 +141,6 @@ class SalesScrutinyStudy:
       df = self.df_improved
       path = f"{path}/sales_scrutiny/improved"
 
-    idx_flagged = df[df["flagged"].eq(True)].index
-    idx_bimodal = df[df["bimodal"].eq(True)].index
-
     df = _prettify(df, self.settings)
 
     df = df.sort_values(by="CHD", ascending=False)
@@ -429,9 +426,6 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
 
   idx_price_sqft_low = df["key"].isin(df_fl[idx_price_sqft_low]["key"].values)
   idx_price_sqft_high = df["key"].isin(df_fl[idx_price_sqft_high]["key"].values)
-
-  idx_price_sqft_not_low = df_fl["med_dist_stdevs"].ge(-1.0)
-  idx_price_sqft_not_high = df_fl["med_dist_stdevs"].le(1.0)
 
   # Check for the five anomalies:
 
