@@ -9,6 +9,7 @@ tests/data/
 notebooks/data/
 notebooks/out/
 .ipynb_checkpoints/
+.venv/*
 
 testing.ipynb
 
