@@ -5,12 +5,11 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import geopandas as gpd
-from IPython.core.display_functions import display
 from pandas import Series
 from typing import TypedDict, Literal
 
 from openavmkit.calculations import crawl_calc_dict_for_fields, perform_calculations
-from openavmkit.utilities.geometry import get_crs
+from openavmkit.utilities.geometry import get_crs, clean_geometry
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
 	get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit
 
@@ -28,8 +27,14 @@ def enrich_time(df: pd.DataFrame, time_formats: dict) -> pd.DataFrame:
 		if key in df:
 			df[key] = pd.to_datetime(df[key], format=time_format, errors="coerce")
 
-	for prefix in ["sale_"]:
-		df = _enrich_time_field(df, prefix, add_year_month=True, add_year_quarter=True)
+	for prefix in ["sale"]:
+		do_enrich = False
+		for col in df.columns.values:
+			if f"{prefix}_" in col:
+				do_enrich = True
+				break
+		if do_enrich:
+			df = _enrich_time_field(df, prefix, add_year_month=True, add_year_quarter=True)
 
 	return df
 
@@ -244,8 +249,6 @@ def get_locations(settings: dict, df: pd.DataFrame = None) -> list[str]:
 def get_important_fields(settings: dict, df: pd.DataFrame = None) -> list[str]:
 	imp = settings.get("field_classification", {}).get("important", {})
 	fields = imp.get("fields", {})
-	print(f"get important fields imp = {imp}")
-	print(f"fields = {fields}")
 	list_fields = []
 	if df is not None:
 		for field in fields:
@@ -280,21 +283,14 @@ def get_dtypes_from_settings(settings: dict):
 	return dtypes
 
 
-def load_and_process_data(settings: dict):
-
-	dataframes = load_dataframes(settings)
-	results = process_data(dataframes, settings)
-
-	return results
-
-
-def process_data(dataframes: dict[str : pd.DataFrame], settings: dict) -> SalesUniversePair:
+def process_data(dataframes: dict[str : pd.DataFrame], settings: dict, verbose: bool = False) -> SalesUniversePair:
 	"""
 	Process the data from the settings.
 	"""
 	s_data = settings.get("data", {})
 	s_process = s_data.get("process", {})
 	s_merge = s_process.get("merge", {})
+	s_reconcile = s_process.get("reconcile", {})
 
 	merge_univ : list | None = s_merge.get("universe", None)
 	merge_sales : list | None = s_merge.get("sales", None)
@@ -304,62 +300,162 @@ def process_data(dataframes: dict[str : pd.DataFrame], settings: dict) -> SalesU
 	if merge_sales is None:
 		raise ValueError(f"No \"sales\" merge instructions found. data.process.merge must have exactly two keys: \"universe\", and \"sales\"")
 
-	df_univ = merge_dict_of_dfs(dataframes, merge_univ)
-	df_sales = merge_dict_of_dfs(dataframes, merge_sales)
+	df_univ = merge_dict_of_dfs(dataframes, merge_univ, settings)
+	df_sales = merge_dict_of_dfs(dataframes, merge_sales, settings)
 
 	result : SalesUniversePair = {
 		"universe": df_univ,
 		"sales": df_sales
 	}
 
-	enrich_data(result, s_process.get("enrich", {}), dataframes, settings)
-
+	enrich_data(result, s_process.get("enrich", {}), dataframes, settings, verbose=verbose)
 
 	return result
 
 
-def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str : pd.DataFrame], settings: dict) -> SalesUniversePair:
+def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str : pd.DataFrame], settings: dict, verbose: bool = False) -> SalesUniversePair:
 	supkeys : list[SUPKey] = ["universe", "sales"]
-	for key in supkeys:
-		df = sup[key]
-		s_enrich_local : dict | None = s_enrich.get(key, None)
+
+	# Add the "both" entries to both "universe" and "sales" and delete the "both" entry afterward.
+	if "both" in s_enrich:
+		s_enrich2 = s_enrich.copy()
+		s_both = s_enrich.get("both")
+		for key in s_both:
+			for supkey in supkeys:
+				sup_entry = s_enrich.get(supkey, {})
+				if key in sup_entry:
+					# Check if the key already exists on "sales" or "universe"
+					raise ValueError(f"Cannot enrich '{key}' twice -- found in both \"both\" and \"{supkey}\". Please remove one.")
+				entry = s_both[key]
+
+				# add the entry from "both" to both the "sales" & "universe" entry
+				sup_entry2 = s_enrich2.get(supkey, {})
+				sup_entry2[key] = entry
+				s_enrich2[supkey] = sup_entry2
+
+		del s_enrich2["both"] # remove the now-redundant "both" key
+		s_enrich = s_enrich2
+
+	for supkey in supkeys:
+		if verbose:
+			print(f"Enriching {supkey}...")
+		df = sup[supkey]
+		s_enrich_local : dict | None = s_enrich.get(supkey, None)
 		if s_enrich_local is not None:
-			sup[key] = _enrich_df(df, s_enrich_local, dataframes, settings)
+
+			df = _enrich_df_geometry(
+				df,
+				s_enrich_local,
+				dataframes,
+				settings,
+				verbose=verbose
+			)
+
+			df = _enrich_df_basic(
+				df,
+				s_enrich_local,
+				dataframes,
+				verbose=verbose
+			)
+
+			sup[supkey] = df
+
 	return sup
 
 
+def _enrich_df_basic(
+		df_in: pd.DataFrame,
+		s_enrich_this: dict,
+		dataframes: dict[str: pd.DataFrame],
+		verbose: bool = False
+) -> pd.DataFrame:
 
-def _enrich_df(df_in: pd.DataFrame, s_enrich_this: dict, dataframes: dict[str: pd.DataFrame], settings: dict) -> gpd.GeoDataFrame:
+	df = df_in.copy()
+
+	s_ref = s_enrich_this.get("ref_tables", [])
+	s_calc = s_enrich_this.get("calc", {})
+
+	# reference tables:
+	df = perform_ref_tables(df, s_ref, dataframes, verbose=verbose)
+
+	# calculations:
+	df = perform_calculations(df, s_calc)
+
+	return df
+
+
+def _finesse_columns(
+		df_in: pd.DataFrame | gpd.GeoDataFrame,
+		suffix_left: str,
+		suffix_right: str
+):
+	df = df_in.copy()
+	cols_to_finesse = []
+	for col in df.columns.values:
+		if col.endswith(suffix_left):
+			base_col = col[:-len(suffix_left)]
+			if base_col not in cols_to_finesse:
+				cols_to_finesse.append(base_col)
+	for col in cols_to_finesse:
+		col_spatial = f"{col}{suffix_left}"
+		col_data = f"{col}{suffix_right}"
+		if col_spatial in df and col_data in df:
+			df[col] = df[col_spatial].combine_first(df[col_data])
+			df = df.drop(columns=[col_spatial, col_data], errors="ignore")
+	return df
+
+
+def _enrich_df_geometry(
+		df_in: pd.DataFrame,
+		s_enrich_this: dict,
+		dataframes: dict[str: pd.DataFrame],
+		settings: dict,
+		verbose: bool = False
+) -> gpd.GeoDataFrame:
 
 	df = df_in.copy()
 
 	s_geom = s_enrich_this.get("geometry", [])
 	s_dist = s_enrich_this.get("distances", {})
-	s_ref = s_enrich_this.get("ref_tables", {})
-	s_calc = s_enrich_this.get("calculations", {})
+
+	gdf : gpd.GeoDataFrame
 
 	# geometry
-	gdf : gpd.GeoDataFrame = perform_spatial_joins(df, s_geom, dataframes)
+	gdf = perform_spatial_joins(s_geom, dataframes, verbose=verbose)
 
 	# distances
-	gdf = perform_distance_calculations(gdf, s_dist, dataframes, get_long_distance_unit(settings))
+	gdf = perform_distance_calculations(gdf, s_dist, dataframes, get_long_distance_unit(settings), verbose=verbose)
 
-	# ref tables
-	gdf = perform_ref_tables(gdf, s_ref, dataframes)
+	# Merge everything together:
+	try_keys = ["key", "key2", "key3"]
+	success = False
+	gdf_merged: gpd.GeoDataFrame | None = None
+	for key in try_keys:
+		if key in gdf and key in df:
+			if verbose:
+				print(f"Using \"{key}\" to merge shapefiles onto df")
 
-	# calculations
-	gdf = perform_calculations(gdf, s_calc)
+			n_dupes_gdf = gdf.duplicated(subset=key).sum()
+			n_dupes_df = df.duplicated(subset=key).sum()
+			if n_dupes_gdf > 0 or n_dupes_df > 0:
+				raise ValueError(f"Found {n_dupes_gdf} duplicate keys in the geo_parcels dataframe, and {n_dupes_df} duplicate keys in the base dataframe. Cannot perform spatial join. De-duplicate your dataframes and try again.")
 
-	return gdf
+			gdf_merged = gdf.merge(df, on=key, how="left", suffixes=("_spatial", "_data"))
+			gdf_merged = _finesse_columns(gdf_merged, "_spatial", "_data")
+
+			success = True
+			break
+	if not success:
+		raise ValueError(f"Could not find a common key between geo_parcels and base dataframe. Tried keys: {try_keys}")
+
+	return gdf_merged
 
 
-def perform_spatial_joins(df_in: pd.DataFrame, s_geom: list, dataframes: dict[str: pd.DataFrame]) -> gpd.GeoDataFrame:
+def perform_spatial_joins(s_geom: list, dataframes: dict[str: pd.DataFrame], verbose: bool = False) -> gpd.GeoDataFrame:
 
 	#  For geometry, provide a list of strings and/or objects, these represent spatial joins.
 	#  Strings are interpreted as the IDs of loaded shapefiles. Objects must have these keys: 'id', and 'predicate',
 	#  where 'predicate' is the name of the spatial join function to use."
-
-	df = df_in.copy()
 
 	if not isinstance(s_geom, list):
 		s_geom = [s_geom]
@@ -371,6 +467,9 @@ def perform_spatial_joins(df_in: pd.DataFrame, s_geom: list, dataframes: dict[st
 	gdf_parcels : gpd.GeoDataFrame = dataframes["geo_parcels"]
 
 	gdf_merged = gdf_parcels.copy()
+
+	if verbose:
+		print(f"Performing spatial joins...")
 
 	for geom in s_geom:
 		if isinstance(geom, str):
@@ -384,10 +483,18 @@ def perform_spatial_joins(df_in: pd.DataFrame, s_geom: list, dataframes: dict[st
 			raise ValueError(f"Invalid geometry entry: {geom}")
 		_id = entry.get("id")
 		predicate = entry.get("predicate", "contains_centroid")
+
 		if _id is None:
 			raise ValueError("No 'id' found in geometry entry.")
 
+		if verbose:
+			if predicate != "contains_centroid":
+				print(f"--> {_id} @ {predicate}")
+			else:
+				print(f"--> {_id}")
+
 		gdf = dataframes[_id]
+
 		fields_to_tag = entry.get("fields", None)
 		if fields_to_tag is None:
 			fields_to_tag = [field for field in gdf.columns if field != "geometry"]
@@ -395,17 +502,8 @@ def perform_spatial_joins(df_in: pd.DataFrame, s_geom: list, dataframes: dict[st
 			for field in fields_to_tag:
 				if field not in gdf:
 					raise ValueError(f"Field to tag '{field}' not found in geometry dataframe '{_id}'.")
-		gdf_merged = _perform_spatial_join(gdf_merged, gdf, predicate, fields_to_tag)
 
-	try_keys = ["key", "key2", "key3"]
-	success = False
-	for key in try_keys:
-		if key in gdf_merged and key in df:
-			gdf_merged = gdf_merged.merge(df, on=key, how="left")
-			success = True
-			break
-	if not success:
-		raise ValueError(f"Could not find a common key between geo_parcels and base dataframe. Tried keys: {try_keys}")
+		gdf_merged = _perform_spatial_join(gdf_merged, gdf, predicate, fields_to_tag)
 
 	return gdf_merged
 
@@ -459,7 +557,8 @@ def _perform_spatial_join(gdf_in: gpd.GeoDataFrame, gdf_overlay: gpd.GeoDataFram
 
 
 def _perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDataFrame, id: str, unit: str = "km") -> pd.DataFrame:
-	unit_factors = {"m": 1, "km": 0.001, "mi": 0.000621371, "ft": 3.28084}
+
+	unit_factors = {"m": 1, "km": 0.001, "mile": 0.000621371, "ft": 3.28084}
 	if unit not in unit_factors:
 		raise ValueError(f"Unsupported unit '{unit}'")
 
@@ -474,18 +573,33 @@ def _perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDataF
 	# Convert distance to the desired unit
 	nearest[f"dist_to_{id}"] *= unit_factors[unit]
 
+	# count duplicated rows:
+	n_duplicates_nearest = nearest.duplicated(subset="key").sum()
+	n_duplicates_df = df_in.duplicated(subset="key").sum()
+
+	if n_duplicates_df > 0:
+		raise ValueError(f"Found {n_duplicates_nearest} duplicate keys in the base dataframe, cannot perform distance calculations. Please de-duplicate your dataframes and try again.")
+
+	if n_duplicates_nearest > 0:
+		# de-duplicate nearest:
+		nearest = nearest.sort_values(by=["key", f"dist_to_{id}"], ascending=[True, True])
+		nearest = nearest.drop_duplicates(subset="key")
+
 	# Merge results back into the original df_in (which is still in its original CRS)
 	df_out = df_in.merge(nearest, on="key", how="left")
 
 	return df_out
 
 
-def perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, dataframes: dict[str: pd.DataFrame], unit: str = "km") -> gpd.GeoDataFrame:
+def perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, dataframes: dict[str: pd.DataFrame], unit: str = "km", verbose: bool = False) -> gpd.GeoDataFrame:
 	# For distances, provide a list of strings and/or objects. Strings are interpreted as the IDs of loaded shapefiles.
 	# Objects must have an 'id' key, and optionally a 'field' key. If a 'field' key is provided, distances will be
 	# calculated for each row in the shapefile corresponding to a unique value for that field.
 
 	df = df_in.copy()
+
+	if verbose:
+		print(f"Performing distance calculations...")
 
 	for entry in s_dist:
 		if isinstance(entry, str):
@@ -501,6 +615,8 @@ def perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, datafra
 			raise ValueError(f"Distance table '{id}' not found in dataframes.")
 		gdf = dataframes[id]
 		field = entry.get("field", None)
+		if verbose:
+			print(f"--> {id}")
 		if field is None:
 			df = _perform_distance_calculations(df, gdf, id, unit)
 		else:
@@ -512,17 +628,21 @@ def perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, datafra
 	return df
 
 
-def perform_ref_tables(df_in: pd.DataFrame | gpd.GeoDataFrame, s_ref: list | dict, dataframes: dict[str: pd.DataFrame]) -> pd.DataFrame | gpd.GeoDataFrame:
+def perform_ref_tables(df_in: pd.DataFrame | gpd.GeoDataFrame, s_ref: list | dict, dataframes: dict[str: pd.DataFrame], verbose: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
 	df = df_in.copy()
 	if not isinstance(s_ref, list):
 		s_ref = [s_ref]
 
-	for ref in s_ref:
+	if verbose:
+		print(f"Performing reference table joins...")
 
+	for ref in s_ref:
 		_id = ref.get("id", None)
 		key_ref_table = ref.get("key_ref_table", None)
 		key_target = ref.get("key_target", None)
 		add_fields = ref.get("add_fields", None)
+		if verbose:
+			print(f"--> {_id}")
 		if _id is None:
 			raise ValueError("No 'id' found in ref table.")
 		if key_ref_table is None:
@@ -544,6 +664,8 @@ def perform_ref_tables(df_in: pd.DataFrame | gpd.GeoDataFrame, s_ref: list | dic
 			raise ValueError(f"Key field '{key_ref_table}' not found in ref table '{_id}'.")
 
 		if key_target not in df:
+			print(f"Target field '{key_target}' not found in base dataframe")
+			print(f"base df columns = {df.columns.values}")
 			raise ValueError(f"Target field '{key_target}' not found in base dataframe")
 
 		for field in add_fields:
@@ -563,37 +685,26 @@ def perform_ref_tables(df_in: pd.DataFrame | gpd.GeoDataFrame, s_ref: list | dic
 	return df
 
 
-
-def load_dataframes(settings: dict) -> dict[str : pd.DataFrame]:
-	"""
-  Load the data from the settings.
-  """
-	s_data = settings.get("data", {})
-	s_load = s_data.get("load", {})
-	dataframes = {}
-
-	# TODO: should we even make it optional to include_booleans? Or at least make it false by default?
-	fields_cat = get_fields_categorical(settings, include_boolean=False)
-	fields_bool = get_fields_boolean(settings)
-	fields_num = get_fields_numeric(settings, include_boolean=False)
-
+def get_calc_cols(settings: dict) -> list[str]:
+	s_load = settings.get("data", {}).get("load", {})
+	cols_to_load = []
 	for key in s_load:
 		entry = s_load[key]
-		df = load_dataframe(entry, settings, fields_cat, fields_bool, fields_num)
-		if df is not None:
-			dataframes[key] = dataframes
-
-	if "geo_parcels" not in dataframes:
-		raise ValueError("No 'geo_parcels' dataframe found in the dataframes. This layer is required, and it must contain parcel geometry.")
-	if "geometry" not in dataframes["geo_parcels"].columns:
-		raise ValueError("The 'geo_parcels' dataframe does not contain a 'geometry' column. This layer must contain parcel geometry.")
-
-	return dataframes
+		cols = _get_calc_cols(entry)
+		cols_to_load += cols
+	cols_to_load = list(set(cols_to_load))
+	return cols_to_load
 
 
+def _get_calc_cols(df_entry: dict) -> list[str]:
+	e_calc = df_entry.get("calc", {})
+	fields_in_calc = crawl_calc_dict_for_fields(e_calc)
+	return fields_in_calc
 
-def load_dataframe(entry: dict, settings: dict, fields_cat: list = None, fields_bool: list = None, fields_num: list = None) -> pd.DataFrame | None:
+
+def load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_cat: list = None, fields_bool: list = None, fields_num: list = None) -> pd.DataFrame | None:
 	filename = entry.get("filename", "")
+	filename = f"in/{filename}"
 	if filename == "":
 		return None
 	ext = str(filename).split(".")[-1]
@@ -601,33 +712,47 @@ def load_dataframe(entry: dict, settings: dict, fields_cat: list = None, fields_
 	column_names = snoop_column_names(filename)
 
 	e_load = entry.get("load", {})
+	e_calc = entry.get("calc", {})
+
+	if verbose:
+		print(f"Loading \"{filename}\"...")
 
 	rename_map = {}
 	dtype_map = {}
 	extra_map = {}
 	cols_to_load = []
+
 	for rename_key in e_load:
 		original = e_load[rename_key]
 		original_key = None
 		if isinstance(original, list):
 			if len(original) > 0:
 				original_key = original[0]
-				cols_to_load = [original_key]
+				cols_to_load += [original_key]
 				rename_map[original_key] = rename_key
 			if len(original) > 1:
 				dtype_map[original_key] = original[1]
+				if original[1] == "datetime":
+					dtype_map[original_key] = "str"
 			if len(original) > 2:
 				extra_map[rename_key] = original[2]
+		elif isinstance(original, str):
+			cols_to_load += [original]
+			rename_map[original] = rename_key
 
 	# Get a list of every field that is either renamed or used in a calculation:
 	fields_in_calc = crawl_calc_dict_for_fields(entry.get("calc", {}))
+
 	cols_to_load += fields_in_calc
+
 	# These are the columns we will actually load:
 	cols_to_load = list(set(cols_to_load))
 
+	is_geometry = False
 	# Always load "geometry" column if it exists:
 	if "geometry" in column_names and "geometry" not in cols_to_load:
 		cols_to_load.append("geometry")
+		is_geometry = True
 
 	# Read the actual file:
 	if ext == "parquet":
@@ -641,6 +766,9 @@ def load_dataframe(entry: dict, settings: dict, fields_cat: list = None, fields_
 		df = pd.read_csv(filename, usecols=cols_to_load, dtype=dtype_map)
 	else:
 		raise ValueError(f"Unsupported file extension: {ext}")
+
+	# Perform calculations:
+	df = perform_calculations(df, e_calc)
 
 	# Perform renames:
 	df = df.rename(columns=rename_map)
@@ -678,8 +806,45 @@ def load_dataframe(entry: dict, settings: dict, fields_cat: list = None, fields_
 	df = enrich_time(df, time_format_map)
 
 	# Handle duplicated rows
-	dupes = entry.get("dupes", {})
+	dupes = entry.get("dupes", None)
+	dupes_was_none = dupes is None
+	if dupes is None:
+		if is_geometry:
+			dupes = "auto"
+		else:
+			dupes = {}
+
+	if dupes == "auto":
+		if is_geometry:
+			# For geometry columns, default to the first column, whatever it is
+			cols = [col for col in df.columns.values if col != "geometry"]
+			col = cols[0]
+			dupes = {
+				"subset": [col],
+				"sort_by": [col, "asc"],
+				"drop": True
+			}
+			if dupes_was_none:
+				warnings.warn(f"'dupes' not found for geo df '{filename}', defaulting to \"{col}\" as de-dedupe key. Set 'dupes:\"auto\" to remove this warning.'")
+		else:
+			# For non-geometry columns, try to find the primary, secondary, or tertiary key
+			keys = ["key", "key2", "key3"]
+			for key in keys:
+				if key in df:
+					dupes = {
+						"subset": [key],
+						"sort_by": [key, "asc"],
+						"drop": True
+					}
+					break
+
 	df = handle_duplicated_rows(df, dupes)
+
+	# Check if it's a geodataframe and if so clean it:
+	if is_geometry:
+		gdf : gpd.GeoDataFrame = gpd.GeoDataFrame(df, geometry="geometry")
+		gdf = clean_geometry(gdf, ensure_polygon=True)
+		df = gdf
 
 	return df
 
@@ -691,12 +856,19 @@ def snoop_column_names(filename: str) -> list[str]:
 		return parquet_file.schema.names
 	elif ext == "csv":
 		return pd.read_csv(filename, nrows=0).columns.tolist()
-	raise ValueError(f"Unsupported file extension: {ext}")
+	raise ValueError(f"Unsupported file extension: \"{ext}\"")
 
 
 def handle_duplicated_rows(df_in: pd.DataFrame, dupes: dict) -> pd.DataFrame:
 
-	subset = dupes.get("subset", "key")
+	subset = dupes.get("subset", ["key"])
+
+	# if any of the specified keys are not in the dataframe, return the dataframe as is
+	for key in subset:
+		if key not in df_in:
+			return df_in
+
+	do_drop = dupes.get("drop", True)
 
 	# Count duplicates:
 	num_dupes = df_in.duplicated(subset=subset).sum()
@@ -721,15 +893,19 @@ def handle_duplicated_rows(df_in: pd.DataFrame, dupes: dict) -> pd.DataFrame:
 		bys = [x[0] for x in sort_by]
 		ascendings = [x[1] == "asc" for x in sort_by]
 		df = df.sort_values(by=bys, ascending=ascendings)
-		df = df.drop_duplicates(subset=subset, keep="first")
+		if do_drop:
+			df = df.drop_duplicates(subset=subset, keep="first")
 
 		return df.reset_index(drop=True)
 
 	return df_in
 
 
-def merge_dict_of_dfs(dataframes: dict[str : pd.DataFrame], merge_list: list) -> pd.DataFrame:
+def merge_dict_of_dfs(dataframes: dict[str : pd.DataFrame], merge_list: list, settings: dict) -> pd.DataFrame:
 	merges = []
+
+	s_reconcile = settings.get("data", {}).get("process", {}).get("reconcile", {})
+
 	for entry in merge_list:
 		df_id = None
 		how = "left"
@@ -747,6 +923,7 @@ def merge_dict_of_dfs(dataframes: dict[str : pd.DataFrame], merge_list: list) ->
 		if df_id not in dataframes:
 			raise ValueError(f"Merge key '{df_id}' not found in dataframes.")
 		merges.append({
+			"id": df_id,
 			"df": dataframes[df_id],
 			"how": how,
 			"on": on
@@ -754,14 +931,89 @@ def merge_dict_of_dfs(dataframes: dict[str : pd.DataFrame], merge_list: list) ->
 
 	df_merged: pd.DataFrame | None = None
 
+	# Get a list of all columns that appear in any of the dataframes
+	all_cols = []
+
+	# Get a list of all columns that appear in more than one dataframe, indexed by base name -> list of suffixed names
+	# This is to automatically detect and (later) resolve conflicts
+	conflicts = {}
 	for merge in merges:
+		df = merge["df"]
+		on = merge["on"]
+		suffixes = {}
+
+		for col in df.columns.values:
+			if col == on:
+				continue
+			if col not in all_cols:
+				all_cols.append(col)
+			else:
+				suffixed = f"{col}_{merge['id']}"
+				suffixes = {col: suffixed}
+				if col not in conflicts:
+					conflicts[col] = []
+				conflicts[col].append(suffixed)
+
+		df = df.rename(columns=suffixes)
+		merge["df"] = df
+
+	for df_id in dataframes:
+		df = dataframes[df_id]
+
+	# Merge everything together into one big fat dataframe
+	for merge in merges:
+		_id = merge["id"]
 		df = merge.get("df", None)
 		how = merge.get("how", "left")
 		on = merge.get("on", "key")
 		if df_merged is None:
 			df_merged = df
 		else:
-			df_merged = pd.merge(df_merged, df, how=how, on=on)
+			df_merged = pd.merge(df_merged, df, how=how, on=on, suffixes=("", f"_{_id}"))
+
+
+	# If we've defined our own reconciliation rules:
+	for base_field in s_reconcile:
+		# Get the list of ids for each field, this specifies the priority order to load them from
+		df_ids = s_reconcile[base_field]
+		if base_field not in all_cols:
+			raise ValueError(f"Reconciliation field '{base_field}' not found in any of the dataframes.")
+		# Generate the child fields
+		child_fields = [f"{base_field}_{df_id}" for df_id in df_ids]
+
+		# If we already have an auto-generated conflict entry for this field, we will merge with it
+		if base_field in conflicts:
+			# Remove any values for ids that the user has specified
+			old_child_fields = conflicts[base_field]
+			old_child_fields = [field for field in old_child_fields if field not in child_fields]
+
+			# Prioritize the user's named ids over the auto-generated ones
+			child_fields = child_fields + old_child_fields
+
+		# Update the entry and pass it on
+		conflicts[base_field] = child_fields
+
+	# Clean up the conflicts
+	for base_field in conflicts:
+		if base_field not in df_merged:
+			warnings.warn(f"Warning: Reconciliation field '{base_field}' not found in merged dataframe.")
+			continue
+		# Get the child fields, representing the desired merge order for the suffixed columns
+		child_fields = conflicts[base_field]
+		if len(child_fields) > 1:
+			# Start with the first child field, then fill in with the next one for whatever is missing, and so on
+			df_merged[base_field] = df_merged[base_field].fillna(df_merged[child_fields[0]])
+			for i in range(1, len(child_fields)):
+				df_merged[base_field] = df_merged[base_field].fillna(df_merged[child_fields[i]])
+			# Drop all child fields
+			df_merged = df_merged.drop(columns=child_fields)
+
+	calc_cols = get_calc_cols(settings)
+
+	for col in df_merged.columns.values:
+		if col in calc_cols:
+			print(f"Warning: Dropping column '{col}' from merged dataframe.")
+			df_merged = df_merged.drop(columns=[col])
 
 	return df_merged
 

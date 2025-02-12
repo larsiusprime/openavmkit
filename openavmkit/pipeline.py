@@ -1,8 +1,10 @@
 import os
 
-import numpy as np
 import pandas as pd
+from IPython.core.display_functions import display
 
+import openavmkit
+from openavmkit.data import load_dataframe, process_data
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_numeric, get_fields_boolean, \
    get_fields_land, get_fields_impr, get_fields_other
 
@@ -155,3 +157,43 @@ def examine_df(df: pd.DataFrame, s: dict):
          non_zero = (~pd.isna(df[u])).sum()
          perc = non_zero / len(df)
          print(get_line(u, df[u].dtype, non_zero, perc, list(df[u].unique())))
+
+
+def load_dataframes(settings: dict, verbose: bool = False) -> dict[str : pd.DataFrame]:
+   """
+   Load the data from the settings.
+   """
+   s_data = settings.get("data", {})
+   s_load = s_data.get("load", {})
+   dataframes = {}
+
+   # TODO: should we even make it optional to include_booleans? Or at least make it false by default?
+   fields_cat = get_fields_categorical(settings, include_boolean=False)
+   fields_bool = get_fields_boolean(settings)
+   fields_num = get_fields_numeric(settings, include_boolean=False)
+
+   for key in s_load:
+      entry = s_load[key]
+      df = load_dataframe(entry, settings, verbose=verbose, fields_cat=fields_cat, fields_bool=fields_bool, fields_num=fields_num)
+      if df is not None:
+         dataframes[key] = df
+
+   if "geo_parcels" not in dataframes:
+      raise ValueError("No 'geo_parcels' dataframe found in the dataframes. This layer is required, and it must contain parcel geometry.")
+
+   if "geometry" not in dataframes["geo_parcels"].columns:
+      raise ValueError("The 'geo_parcels' dataframe does not contain a 'geometry' column. This layer must contain parcel geometry.")
+
+   return dataframes
+
+
+def load_and_process_data(settings: dict):
+
+   dataframes = load_dataframes(settings)
+   results = process_data(dataframes, settings)
+
+   return results
+
+
+def load_settings():
+   return openavmkit.utilities.settings.load_settings()

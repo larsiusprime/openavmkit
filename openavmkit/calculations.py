@@ -1,5 +1,7 @@
 import numpy as np
 import pandas as pd
+
+from openavmkit.filters import resolve_filter
 from openavmkit.utilities.data import div_field_z_safe
 
 
@@ -14,13 +16,12 @@ def crawl_calc_dict_for_fields(calc_dict: dict):
 def _crawl_calc_list_for_fields(calc_list: list):
   fields = []
   if len(calc_list) > 1:
-    sub_list = calc_list[1:]
-    for entry in sub_list:
-      if isinstance(entry, list):
-        fields += _crawl_calc_list_for_fields(entry)
-      elif isinstance(entry, str):
-        if not entry.startswith("str:"):
-          fields.append(entry)
+    entry = calc_list[1]
+    if isinstance(entry, list):
+      fields += _crawl_calc_list_for_fields(entry)
+    elif isinstance(entry, str):
+      if not entry.startswith("str:"):
+        fields.append(entry)
   return list(set(fields))
 
 
@@ -75,8 +76,11 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0):
     # return the selection of field names & calculations
     return df[fields]
 
-  # Unary operations (LHS only)
+  # Filter operations
+  if op == "?":
+    return resolve_filter(df, entry[1])
 
+  # Unary operations (LHS only)
   lhs = None
   if len(entry) > 1:
     lhs = entry[1]
@@ -104,7 +108,11 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0):
     rhs = entry[2]
     rhs, i = _calc_resolve(df, value=rhs, i=i)
 
-  if op == "+":
+  if op == "==":
+    return lhs.eq(rhs)
+  elif op == "!=":
+    return lhs.ne(rhs)
+  elif op == "+":
     return lhs + rhs
   elif op == "-":
     return lhs - rhs
@@ -126,7 +134,6 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0):
   elif op == "join":
     result = lhs.astype(str).apply(lambda x: f"{rhs}".join(x), axis=1)
     return result
-
 
   raise ValueError(f"Unknown operation: {op}")
 

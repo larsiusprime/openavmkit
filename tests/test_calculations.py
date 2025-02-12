@@ -2,6 +2,7 @@ import pandas as pd
 from IPython.core.display_functions import display
 
 from openavmkit.calculations import perform_calculations, crawl_calc_dict_for_fields
+from openavmkit.filters import resolve_filter
 from openavmkit.utilities.assertions import dfs_are_equal
 
 
@@ -118,6 +119,41 @@ def test_calculations_txt():
     "condition_round": [0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 5],
     "condition_map": ["f", "f", "d", "d", "c", "c", "c", "c", "b", "b", "b", "b", "a", "a", "a", "a"],
     "condition_join": ["0 - f", "0 - f", "1 - d", "1 - d", "2 - c", "2 - c", "2 - c", "2 - c", "3 - b", "3 - b", "3 - b", "3 - b", "4 - a", "4 - a", "4 - a", "5 - a"]
+  }
+  df_expected = pd.DataFrame(data=expected)
+  df_results = perform_calculations(df, calc)
+
+  assert dfs_are_equal(df_results, df_expected)
+
+
+def test_calculations_filter():
+  data = {
+    "quality_num": [  1,   2,   3,   4,   5,   2,   3,   4,   4,   4,   4,   5,   4,   3,   2,   1],
+    "quality_txt": ["f", "d", "c", "b", "a", "d", "c", "b", "b", "b", "b", "a", "b", "c", "d", "f"],
+    "condition_num": [3, 7.4, 11, 28, 31, 34, 42, 47.5, 50.12314, 59, 61, 66, 79, 84.56, 89.999, 95.875]
+  }
+  df = pd.DataFrame(data=data)
+  calc = {
+    "txt=a": ["?", ["==", "quality_txt", "str:a"]],
+    "num>3": ["?", [">", "quality_num", 3]],
+    "txt=abc": ["?", ["isin", "quality_txt", ["a","b","c"]]],
+    "con<50": ["?", ["<", "condition_num", 50]],
+    "txt=abc&con<50": ["?",
+      ["and",
+        ["isin", "quality_txt", ["a","b","c"]],
+        ["<", "condition_num", 50]
+      ]
+    ]
+  }
+  expected = {
+    "quality_num": [  1,   2,   3,   4,   5,   2,   3,   4,   4,   4,   4,   5,   4,   3,   2,   1],
+    "quality_txt": ["f", "d", "c", "b", "a", "d", "c", "b", "b", "b", "b", "a", "b", "c", "d", "f"],
+    "condition_num": [3, 7.4, 11, 28, 31, 34, 42, 47.5, 50.12314, 59, 61, 66, 79, 84.56, 89.999, 95.875],
+    "txt=a": [False, False, False, False, True, False, False, False, False, False, False, True, False, False, False, False],
+    "num>3": [False, False, False, True, True, False, False, True, True, True, True, True, True, False, False, False],
+    "txt=abc": [False, False, True, True, True, False, True, True, True, True, True, True, True, True, False, False],
+    "con<50": [True, True, True, True, True, True, True, True, False, False, False, False, False, False, False, False],
+    "txt=abc&con<50": [False, False, True, True, True, False, True, True, False, False, False, False, False, False, False, False]
   }
   df_expected = pd.DataFrame(data=expected)
   df_results = perform_calculations(df, calc)

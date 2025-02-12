@@ -2,9 +2,12 @@ import os
 import pickle
 import warnings
 
+import osmnx as ox
+
 import networkx as nx
 import numpy as np
 import rasterio
+from scipy.spatial import cKDTree
 from shapely import Polygon, MultiPolygon, MultiLineString
 from shapely.geometry import LineString
 from shapely.ops import unary_union, polygonize, split, snap
@@ -112,10 +115,11 @@ def _finalize_land_values(
   df = check_land_values(df, model_group)
 
   df["model_land_value_land_sqft"] = div_field_z_safe(df["model_land_value"], df["land_area_sqft"])
+  df["model_market_value_land_sqft"] = div_field_z_safe(df["model_market_value"], df["land_area_sqft"])
+  df["model_market_value_impr_sqft"] = div_field_z_safe(df["model_market_value"], df["bldg_area_finished_sqft"])
 
   # Save the results
   outpath = f"out/models/{model_group}/_cache/land_analysis_final.pickle"
-
 
   # STEP 5: Find variables correlated with land value
 
@@ -149,6 +153,7 @@ def _finalize_land_values(
 
   # Super tiny slivers of land will have insane $/sqft values
   df["model_market_value_land_sqft"] = div_field_z_safe(df["model_market_value"], df["land_area_sqft"])
+  df["model_market_value_impr_sqft"] = div_field_z_safe(df["model_market_value"], df["bldg_area_finished_sqft"])
   df_not_tiny = df[df["land_area_sqft"].gt(5000)]
 
   plot_value_surface(
@@ -169,7 +174,7 @@ def _finalize_land_values(
 
   outpath = f"out/models/{model_group}/_images/"
   os.makedirs(outpath, exist_ok=True)
-  value_field = "model_land_value_land_sqft"
+  value_field = "model_market_value_impr_sqft"
 
   if generate_boundaries:
     generate_raster(
@@ -258,12 +263,15 @@ def generate_raster(
   # and the raster grid will be created top-down.
   transform = from_origin(minx, maxy, pixel_width, pixel_height)
 
+  # Define a nodata value for the raster
+  nodata_value = -9999
+
+  if gdf[field].isna().any():
+    gdf[field] = gdf[field].fillna(nodata_value)
+
   # Prepare the shapes (geometry, value) pairs.
   # We iterate over the rows of the GeoDataFrame and pair each geometry with its associated value.
   shapes = ((geom, value) for geom, value in zip(gdf.geometry, gdf[field]))
-
-  # Define a nodata value for the raster
-  nodata_value = -9999
 
   # Rasterize the geometries into a numpy array.
   raster = features.rasterize(
@@ -950,3 +958,210 @@ def _run_land_analysis(
   gdf.to_parquet(f"out/models/{model_group}/_cache/land_analysis.parquet")
 
 
+def get_median_value_with_kdtree(row, field, tree, valid_gdf, k=3, counter=[0]):
+
+  counter[0] += 1
+  if counter[0] % 1000 == 0:
+    print(f"Processed {counter[0]} features")
+
+  # Use the centroid of the current feature.
+  centroid = row.geometry.centroid
+  # Query the KDTree for the k nearest neighbors.
+  distances, indices = tree.query([centroid.x, centroid.y], k=k)
+
+  # In case only one neighbor is found (if k==1), ensure indices is iterable.
+  if np.isscalar(indices):
+    indices = [indices]
+
+  # Retrieve the corresponding values.
+  neighbor_values = valid_gdf.iloc[indices][field]
+
+  # Return the median value.
+  return neighbor_values.median()
+
+
+def paint_and_blur_median_value(
+    gdf: gpd.GeoDataFrame,
+    field: str
+):
+  # Assume gdf is your GeoDataFrame with a 'price' column.
+  # Separate features with valid prices.
+  gdf_valid = gdf[~gdf[field].isna()].copy()
+
+  # Compute the centroids of the valid features.
+  # Create an array of (x, y) coordinates for the centroids.
+  valid_coords = np.array([
+    (geom.x, geom.y) for geom in gdf_valid.geometry.centroid
+  ])
+
+  print(f"got {len(valid_coords)} valid coords")
+
+  # Build the KDTree from the valid feature coordinates.
+  tree = cKDTree(valid_coords)
+
+  # Create a mask for rows with missing 'price'.
+  mask_missing = gdf[field].isna()
+  mask_all = mask = pd.Series(True, index=gdf.index)
+
+  print("FINAL THING")
+
+  # Apply the KDTree-based function to fill missing values.
+  gdf.loc[mask_missing, field] = gdf[mask_missing].apply(
+    lambda row: get_median_value_with_kdtree(row, field, tree, gdf_valid, k=3),
+    axis=1
+  )
+
+  print("SECOND VERSE, SAME AS THE FIRST")
+
+  gdf.loc[mask_all, field] = gdf[mask_all].apply(
+    lambda row: get_median_value_with_kdtree(row, field, tree, gdf_valid, k=3),
+    axis=1
+  )
+
+  return gdf
+
+
+def extract_lines(geom):
+  """
+  Given a geometry (LineString, MultiLineString or GeometryCollection),
+  return a list of all LineString components.
+  """
+  lines = []
+  if geom.geom_type == 'LineString':
+    lines.append(geom)
+  elif geom.geom_type == 'MultiLineString':
+    lines.extend(list(geom.geoms))
+  elif geom.geom_type == 'GeometryCollection':
+    for part in geom:
+      lines.extend(extract_lines(part))
+  return lines
+
+
+def get_edge_lengths(polygon):
+  """
+  Compute the lengths of the edges of the polygon’s minimum rotated rectangle.
+  """
+  mrr = polygon.minimum_rotated_rectangle
+  coords = list(mrr.exterior.coords)
+  edge_lengths = []
+  for i in range(len(coords) - 1):
+    p1, p2 = coords[i], coords[i+1]
+    edge_lengths.append(LineString([p1, p2]).length)
+  return edge_lengths
+
+
+def is_polygon_small(poly, min_area, min_width):
+  """
+  Returns True if the polygon is considered too small:
+    - Its area is below min_area, or
+    - Its minimum rotated rectangle has an edge below min_width.
+  """
+  if poly.area < min_area:
+    return True
+  edges = get_edge_lengths(poly)
+  if edges and min(edges) < min_width:
+    return True
+  return False
+
+
+def merge_small_polygons(gdf, min_area, min_width):
+  """
+  Iteratively find polygons that are “too small” and merge them with
+  their largest nearest neighbor.
+  """
+  gdf = gdf.copy().reset_index(drop=True)
+  iteration = 0
+  max_iterations = 1000
+  while iteration < max_iterations:
+    iteration += 1
+    gdf['small'] = gdf.geometry.apply(lambda poly: is_polygon_small(poly, min_area, min_width))
+
+    count_small = gdf['small'].sum()
+    print(f"iteration {iteration}/1000, small = {count_small}")
+
+    if not gdf['small'].any():
+      break  # No small polygons remain
+
+    # Process one small polygon at a time (take the first one)
+    small_idx = gdf[gdf['small']].index[0]
+    small_poly = gdf.loc[small_idx, 'geometry']
+
+    # Look for candidate polygons that touch or intersect the small polygon
+    candidates = gdf.drop(index=small_idx)
+    touching = candidates[candidates.geometry.apply(lambda g: g.touches(small_poly) or g.intersects(small_poly))]
+    if not touching.empty:
+      candidate_idx = touching.geometry.area.idxmax()  # largest area among touching polygons
+    else:
+      # Otherwise, choose the nearest polygon by centroid distance
+      small_centroid = small_poly.centroid
+      candidates = candidates.copy()
+      candidates['dist'] = candidates.geometry.centroid.distance(small_centroid)
+      candidate_idx = candidates['dist'].idxmin()
+
+    # Merge the small polygon with the chosen candidate
+    candidate_poly = gdf.loc[candidate_idx, 'geometry']
+    new_poly = candidate_poly.union(small_poly)
+    gdf.at[candidate_idx, 'geometry'] = new_poly
+
+    # Remove the small polygon from the GeoDataFrame
+    gdf = gdf.drop(index=small_idx).reset_index(drop=True)
+  return gdf.drop(columns='small', errors='ignore')
+
+# --- Main Function ---
+
+def process_county(county_name, min_area_threshold=500, min_width_threshold=10):
+  """
+  Given a county name (e.g., "Guilford County, North Carolina"), this function:
+    1. Retrieves the county boundary polygon.
+    2. Queries highways (with tag highway = motorway/primary/secondary/tertiary/trunk)
+       within the county polygon.
+    3. Creates a network of lines (highways + county boundary), polygonizes it,
+       and clips the result to the county boundary.
+    4. Merges polygons that are “too small” (by area or narrowness) into their largest
+       nearest neighbor.
+
+  Returns a GeoDataFrame of the resulting polygons (in EPSG:3857).
+  """
+  # --- Step 1: Retrieve County Boundary ---
+  print("Retrieving county boundary…")
+  county_gdf = ox.geocode_to_gdf(county_name)
+  if county_gdf.empty:
+    raise ValueError(f"Could not geocode county: {county_name}")
+  county_polygon = county_gdf.geometry.iloc[0]
+
+  # --- Reproject to a metric CRS (EPSG:3857) ---
+  county_gdf = county_gdf.to_crs(epsg=3857)
+  county_polygon = county_gdf.geometry.iloc[0]
+
+  # --- Step 2: Query Highways Using the County Polygon ---
+  tags = {'highway': ['motorway', 'primary', 'secondary', 'tertiary', 'trunk']}
+  print("Querying highways from OSM…")
+  # Use features_from_place since that's available in your version
+  highways = ox.features_from_place(county_name, tags)
+  # Filter to keep only LineString and MultiLineString geometries
+  highways = highways[highways.geometry.type.isin(['LineString', 'MultiLineString'])]
+  highways = highways.to_crs(epsg=3857)
+
+  # --- Step 3: Combine Lines and Polygonize ---
+  print("Extracting lines from highways and county boundary…")
+  all_lines = []
+  # Extract lines from highway geometries
+  for geom in highways.geometry:
+    all_lines.extend(extract_lines(geom))
+  # Also add the county boundary (its exterior) as lines
+  county_boundary_line = county_polygon.boundary
+  all_lines.extend(extract_lines(county_boundary_line))
+
+  print("Polygonizing the line network…")
+  merged_lines = unary_union(all_lines)
+  raw_polygons = list(polygonize(merged_lines))
+  # Clip polygons to the county boundary
+  polygons = [poly.intersection(county_polygon) for poly in raw_polygons if poly.intersects(county_polygon)]
+  polygons = [poly for poly in polygons if poly.is_valid and not poly.is_empty and poly.area > 0]
+  poly_gdf = gpd.GeoDataFrame(geometry=polygons, crs=highways.crs)
+
+  # --- Step 4: Merge Small Polygons ---
+  print("Merging small polygons…")
+  poly_gdf_cleaned = merge_small_polygons(poly_gdf, min_area_threshold, min_width_threshold)
+
+  return poly_gdf_cleaned
