@@ -1,11 +1,12 @@
 import math
+import warnings
 
 import geopandas as gpd
 import shapely
 from geopy import Point
 from geopy.distance import distance
 from pyproj import CRS
-from shapely import Polygon
+from shapely import Polygon, MultiPolygon, GEOSException
 
 
 def get_crs(gdf, projection_type):
@@ -22,9 +23,13 @@ def get_crs(gdf, projection_type):
   # Ensure the GeoDataFrame is in EPSG:4326
   gdf = gdf.to_crs("EPSG:4326")
 
-  # Calculate the centroid of the GeoDataFrame
-  centroid = gdf.union_all().centroid
-  lat, lon = centroid.y, centroid.x
+  # Calculate the centroid of the entire GeoDataFrame
+
+  # supress user warning:
+  warnings.filterwarnings("ignore", category=UserWarning)
+
+  # get centroid:
+  lon, lat = gdf.centroid.x.mean(), gdf.centroid.y.mean()
 
   if projection_type == 'latlon':
     # Return WGS 84 (EPSG:4326)
@@ -267,5 +272,62 @@ def create_geo_rect(lat, lon, crs, width_km, height_km):
 
   # Create a GeoDataFrame
   gdf = gpd.GeoDataFrame(geometry=[polygon], crs=crs)
+
+  return gdf
+
+
+def clean_geometry(gdf, ensure_polygon=True, target_crs=None):
+  """
+    Preprocess a GeoDataFrame by diagnosing and fixing common geometry issues.
+
+    Parameters:
+        gdf (GeoDataFrame): The input GeoDataFrame with geometries.
+        ensure_polygon (bool): If True, removes non-polygon geometries.
+        target_crs (str or int, optional): If specified, ensures the GeoDataFrame is in this CRS.
+
+    Returns:
+        GeoDataFrame: A cleaned and fixed GeoDataFrame.
+    """
+
+  # Drop null geometries
+  warnings.filterwarnings('ignore', 'GeoSeries.notna', UserWarning)
+  gdf = gdf[gdf.geometry.notna()]
+  warnings.filterwarnings('default', 'GeoSeries.notna', UserWarning)
+
+  # Fix invalid geometries using buffer(0)
+  gdf["geometry"] = gdf["geometry"].apply(lambda geom: geom.buffer(0) if not geom.is_valid else geom)
+
+  # Remove empty geometries
+  gdf = gdf[~gdf.is_empty]
+
+  # Ensure all polygons are properly closed (for Polygons and MultiPolygons)
+  def close_polygon(geom):
+    if isinstance(geom, Polygon):
+      if not geom.exterior.is_closed:
+        return Polygon(list(geom.exterior.coords) + [geom.exterior.coords[0]])
+    return geom
+
+  gdf["geometry"] = gdf["geometry"].apply(close_polygon)
+
+  # Remove geometries with fewer than 4 points (invalid for polygons)
+  def valid_polygon(geom):
+    if isinstance(geom, Polygon):
+      return len(geom.exterior.coords) >= 4
+    elif isinstance(geom, MultiPolygon):
+      for poly in list(geom.geoms):
+        if len(poly.exterior.coords) < 4:
+          return False
+      return True
+    return False
+
+  gdf = gdf[gdf.geometry.apply(valid_polygon)]
+
+  # Remove non-polygon geometries if ensure_polygon is True
+  if ensure_polygon:
+    gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])]
+
+  # Ensure the CRS is consistent
+  if target_crs:
+    gdf = gdf.to_crs(target_crs)
 
   return gdf

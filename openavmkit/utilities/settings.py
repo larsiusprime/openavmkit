@@ -38,6 +38,8 @@ def load_settings(settings_file: str = "settings.json"):
 		"data_dictionary": load_data_dictionary_template()
 	}
 	settings = merge_settings(base_dd, settings)
+	settings = remove_comments_from_settings(settings)
+	settings = replace_variables(settings)
 	return settings
 
 
@@ -48,7 +50,7 @@ def process_settings(settings: dict):
 	s = remove_comments_from_settings(s)
 
 	# Step 2: do variable replacement:
-
+	s = replace_variables(s)
 
 	return s
 

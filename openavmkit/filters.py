@@ -60,6 +60,10 @@ def resolve_filter(df: pd.DataFrame, f: list) -> pd.Series:
     field = f[1]
     value = f[2]
 
+    if isinstance(value, str):
+      if value.startswith("str:"):
+        value = value[4:]
+
     if operator == ">": return df[field].gt(value)
     if operator == "<": return df[field].lt(value)
     if operator == ">=": return df[field].ge(value)

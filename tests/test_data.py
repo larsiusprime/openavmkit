@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from IPython.core.display_functions import display
 
-from openavmkit.data import _perform_canonical_split, handle_duplicated_rows, perform_ref_tables
+from openavmkit.data import _perform_canonical_split, handle_duplicated_rows, perform_ref_tables, merge_dict_of_dfs
 from openavmkit.modeling import DataSplit
 from openavmkit.utilities.assertions import dfs_are_equal
 from openavmkit.utilities.data import div_z_safe
@@ -348,3 +348,31 @@ def test_ref_table():
 	assert dfs_are_equal(df_expected, df_results, primary_key="key")
 
 
+def test_merge_conflicts():
+
+	datas = {
+		"a": {
+			"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+			"fruit": ["apple", None, None, None, "elderberry", "fig", "grape", None, None, None],
+		},
+		"b": {
+			"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+			"fruit": [None, "banana", "cherry", "date", None, None, None, None, None, None],
+		},
+		"c": {
+			"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+			"fruit": [None, None, None, None, None, None, None, "honeydew", "kiwi", "lemon"],
+		}
+	}
+
+	dfs = {}
+
+	for data in datas:
+		df = pd.DataFrame(data=datas[data])
+		dfs[data] = df
+
+	merge_dict_of_dfs(
+		dataframes=dfs,
+		merge_list=["a", "b", "c"],
+		s_reconcile={}
+	)
