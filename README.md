@@ -35,3 +35,5 @@ To update the library when installing from GitHub:
 ```bash
 pip install --upgrade git+https://github.com/larsiusprime/openavmkit.git
 ```
+
+
