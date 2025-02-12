@@ -81,7 +81,7 @@ def _enrich_time_field(
 
 	checks = ["_year", "_month", "_day", "_year_month", "_year_quarter"]
 	for check in checks:
-		# Verify that the derived field a) exists and b) matches the value in the date field:
+		# Verify that the derived field a. exists and b. matches the value in the date field:
 		if f"{prefix}{check}" in df:
 			if f"{prefix}_date" in df:
 				if check in ["_year", "_month", "_day"]:
@@ -290,7 +290,6 @@ def process_data(dataframes: dict[str : pd.DataFrame], settings: dict, verbose: 
 	s_data = settings.get("data", {})
 	s_process = s_data.get("process", {})
 	s_merge = s_process.get("merge", {})
-	s_reconcile = s_process.get("reconcile", {})
 
 	merge_univ : list | None = s_merge.get("universe", None)
 	merge_sales : list | None = s_merge.get("sales", None)
@@ -455,7 +454,7 @@ def perform_spatial_joins(s_geom: list, dataframes: dict[str: pd.DataFrame], ver
 
 	#  For geometry, provide a list of strings and/or objects, these represent spatial joins.
 	#  Strings are interpreted as the IDs of loaded shapefiles. Objects must have these keys: 'id', and 'predicate',
-	#  where 'predicate' is the name of the spatial join function to use."
+	#  where 'predicate' is the name of the spatial join function to use.
 
 	if not isinstance(s_geom, list):
 		s_geom = [s_geom]
@@ -556,7 +555,7 @@ def _perform_spatial_join(gdf_in: gpd.GeoDataFrame, gdf_overlay: gpd.GeoDataFram
 	return gdf
 
 
-def _perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDataFrame, id: str, unit: str = "km") -> pd.DataFrame:
+def _perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDataFrame, _id: str, unit: str = "km") -> pd.DataFrame:
 
 	unit_factors = {"m": 1, "km": 0.001, "mile": 0.000621371, "ft": 3.28084}
 	if unit not in unit_factors:
@@ -568,10 +567,10 @@ def _perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDataF
 	gdf_projected = gdf_in.to_crs(crs).copy()
 
 	# Perform nearest neighbor spatial join but keep only the key and distance column
-	nearest = gpd.sjoin_nearest(df_projected, gdf_projected, how="left", distance_col=f"dist_to_{id}")[["key", f"dist_to_{id}"]]
+	nearest = gpd.sjoin_nearest(df_projected, gdf_projected, how="left", distance_col=f"dist_to_{_id}")[["key", f"dist_to_{_id}"]]
 
 	# Convert distance to the desired unit
-	nearest[f"dist_to_{id}"] *= unit_factors[unit]
+	nearest[f"dist_to_{_id}"] *= unit_factors[unit]
 
 	# count duplicated rows:
 	n_duplicates_nearest = nearest.duplicated(subset="key").sum()
@@ -582,7 +581,7 @@ def _perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDataF
 
 	if n_duplicates_nearest > 0:
 		# de-duplicate nearest:
-		nearest = nearest.sort_values(by=["key", f"dist_to_{id}"], ascending=[True, True])
+		nearest = nearest.sort_values(by=["key", f"dist_to_{_id}"], ascending=[True, True])
 		nearest = nearest.drop_duplicates(subset="key")
 
 	# Merge results back into the original df_in (which is still in its original CRS)
@@ -608,22 +607,22 @@ def perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, datafra
 			}
 		elif not isinstance(entry, dict):
 			raise ValueError(f"Invalid distance entry: {entry}")
-		id = entry.get("id")
-		if id is None:
+		_id = entry.get("id")
+		if _id is None:
 			raise ValueError("No 'id' found in distance entry.")
-		if id not in dataframes:
-			raise ValueError(f"Distance table '{id}' not found in dataframes.")
-		gdf = dataframes[id]
+		if _id not in dataframes:
+			raise ValueError(f"Distance table '{_id}' not found in dataframes.")
+		gdf = dataframes[_id]
 		field = entry.get("field", None)
 		if verbose:
-			print(f"--> {id}")
+			print(f"--> {_id}")
 		if field is None:
-			df = _perform_distance_calculations(df, gdf, id, unit)
+			df = _perform_distance_calculations(df, gdf, _id, unit)
 		else:
 			uniques = gdf[field].unique()
 			for unique in uniques:
 				gdf_subset = gdf[gdf[field].eq(unique)]
-				df = _perform_distance_calculations(df, gdf_subset, f"{id}_{unique}", unit)
+				df = _perform_distance_calculations(df, gdf_subset, f"{_id}_{unique}", unit)
 
 	return df
 
@@ -760,7 +759,7 @@ def load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_ca
 			warnings.warn("dtypes are ignored when loading parquet files.")
 		try:
 			df = gpd.read_parquet(filename, columns=cols_to_load)
-		except ValueError as e:
+		except ValueError:
 			df = pd.read_parquet(filename, columns=cols_to_load)
 	elif ext == "csv":
 		df = pd.read_csv(filename, usecols=cols_to_load, dtype=dtype_map)
@@ -957,8 +956,6 @@ def merge_dict_of_dfs(dataframes: dict[str : pd.DataFrame], merge_list: list, se
 		df = df.rename(columns=suffixes)
 		merge["df"] = df
 
-	for df_id in dataframes:
-		df = dataframes[df_id]
 
 	# Merge everything together into one big fat dataframe
 	for merge in merges:

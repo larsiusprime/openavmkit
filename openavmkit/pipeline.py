@@ -1,7 +1,6 @@
 import os
 
 import pandas as pd
-from IPython.core.display_functions import display
 
 import openavmkit
 from openavmkit.data import load_dataframe, process_data
@@ -43,7 +42,7 @@ def examine_df(df: pd.DataFrame, s: dict):
 
    def fill_str(char: str, size: int):
       text = ""
-      for i in range(0, size):
+      for _i in range(0, size):
          text += char
       return text
 
@@ -56,7 +55,7 @@ def examine_df(df: pd.DataFrame, s: dict):
          txt = first_bit + "..." + last_bit
       return f"{txt:{size}}"
 
-   def get_line(column, dtype, count_non_zero, perc, uniques: list | str):
+   def get_line(col, dtype, count_non_zero, p, uniques: list | str):
       dtype = f"{dtype}"
       if type(count_non_zero) != str:
          count_non_zero = f"{count_non_zero:,}"
@@ -67,10 +66,8 @@ def examine_df(df: pd.DataFrame, s: dict):
             uniques = f"{len(uniques):,}"
          else:
             uniques = unique_str
-      else:
-         unique_str = str(uniques)
 
-      return f"{fit_str(column,30)} {dtype:^10} {count_non_zero:>10} {perc:>5.0%} {uniques:>40}"
+      return f"{fit_str(col,30)} {dtype:^10} {count_non_zero:>10} {p:>5.0%} {uniques:>40}"
 
    def print_horz_line(char: str):
       print(fill_str(char,30)+" "+fill_str(char,10)+" "+fill_str(char,10)+" "+fill_str(char, 5)+" "+fill_str(char,40))
@@ -94,7 +91,7 @@ def examine_df(df: pd.DataFrame, s: dict):
    for landimpr in stuff:
       entry = stuff[landimpr]
       name = entry["name"]
-      fields = entry["fields"]
+
       if i != 0:
          print("")
       print_horz_line("=")

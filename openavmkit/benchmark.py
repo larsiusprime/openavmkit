@@ -1302,7 +1302,6 @@ def get_variable_recommendations(
 			best_score = cv_score
 			best_variables = curr_variables.copy()
 		worst_idx = df_results["weighted_score"].idxmin()
-		worst_score = df_results.loc[worst_idx, "weighted_score"]
 		worst_variable = df_results.loc[worst_idx, "variable"]
 		curr_variables.remove(worst_variable)
 		# remove the variable from the dataframe:

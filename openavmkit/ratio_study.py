@@ -3,16 +3,13 @@ import warnings
 
 import numpy as np
 import pandas as pd
-from IPython.core.display_functions import display
 from pandas import read_pickle
 
 import openavmkit.utilities.stats as stats
-from openavmkit.data import get_vacant_sales, boolify_column_in_df, get_important_field
+from openavmkit.data import get_vacant_sales, get_important_field
 from openavmkit.reports import start_report, finish_report
 from openavmkit.utilities.data import dataframe_to_markdown
-from openavmkit.utilities.format import fancy_format
-from openavmkit.utilities.settings import get_fields_categorical, get_data_dictionary, get_fields_land, get_fields_impr, \
-	get_fields_impr_as_list, get_valuation_date, get_model_group_ids
+from openavmkit.utilities.settings import get_fields_categorical, get_data_dictionary, get_fields_impr_as_list, get_valuation_date, get_model_group_ids
 
 
 class RatioStudy:

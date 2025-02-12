@@ -54,7 +54,7 @@ def generate_inflation_curve(
 
 	# We subdivide each year into months, interpolating between the yearly values:
 	# +1 for the beginning value, then one for the end of each month:
-	time_mult_months = np.array([1.0] * (duration_months))
+	time_mult_months = np.array([1.0] * duration_months)
 
 	# We interpolate between the yearly values:
 	# We start at 1.0, then each next value is for the end of that month
@@ -71,7 +71,7 @@ def generate_inflation_curve(
 
 	# We prepare an array for seasonality:
 	# +1 for the beginning value, then one for the end of each month:
-	time_mult_season = np.array([1.0] * (duration_months))
+	time_mult_season = np.array([1.0] * duration_months)
 
 	# We add seasonality amplitude:
 	# - prices peak in May/June
@@ -357,7 +357,7 @@ def generate_basic(
 		include_lowest=True
 	)
 
-	# Derive based on longitude/latitude what (nw,ne,sw,se) quadrant a parcel is in:
+	# Derive based on longitude/latitude what (NW, NE, SW, SE) quadrant a parcel is in:
 	df["quadrant"] = ""
 	df.loc[df["latitude"].ge(latitude_center), "quadrant"] += "s"
 	df.loc[df["latitude"].lt(latitude_center), "quadrant"] += "n"

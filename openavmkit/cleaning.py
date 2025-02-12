@@ -1,7 +1,4 @@
 import pandas as pd
-from IPython.core.display_functions import display
-
-from openavmkit.utilities.data import do_per_model_group
 from openavmkit.utilities.settings import get_valuation_date, get_fields_categorical, get_fields_boolean
 
 

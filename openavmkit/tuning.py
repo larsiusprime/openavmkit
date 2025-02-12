@@ -1,5 +1,3 @@
-import logging
-
 import xgboost as xgb
 import lightgbm as lgb
 import numpy as np
@@ -64,6 +62,7 @@ def tune_lightgbm(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False
         n_trials (int): Number of optimization trials for Optuna. Default is 100.
         n_splits (int): Number of folds for cross-validation. Default is 5.
         random_state (int): Random seed for reproducibility. Default is 42.
+        verbose (bool): Whether to print Optuna progress.
 
     Returns:
         dict: Best hyperparameters found by Optuna.
@@ -161,49 +160,6 @@ def tune_catboost(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False
 
     if verbose:
         print(f"Best trial: {study.best_trial.number} with MAE: {study.best_trial.value:10.0f} and params: {study.best_trial.params}")
-    return study.best_params
-
-
-def tune_krig(X_Train, y_train, verbose=False):
-    """
-    Tune the hyperparameters for a Kriging model using Optuna.
-    :param X_Train: pd.DataFrame of independent variables
-    :param y_train: pd.Series of dependent variables
-    :param verbose: bool, whether to enable verbose output
-    :return: dict: the best hyperparameters found by Optuna
-    """
-    def objective(trial):
-        # Suggest variogram model
-        variogram = trial.suggest_categorical("variogram", ["linear", "power", "gaussian", "spherical", "exponential"])
-
-        # Suggest grid size
-        grid_size_str = trial.suggest_categorical("grid_size", ["coarse", "medium", "fine"])
-
-        # Use these hyperparameters to run regression kriging
-        try:
-            # Simulate the process with a sample DataSplit (mock `run_krig` logic here)
-            krig_results = run_krig(ds, variogram, grid_size_str, verbose=False)
-
-            # Evaluate using RMSE on validation data (mock example)
-            y_pred = krig_results.y_pred_test
-            y_true = ds.y_test
-
-            # Calculate RMSE
-            rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-            return rmse
-        except Exception as e:
-            # Penalize failure cases
-            if verbose:
-                print(f"Trial failed with error: {e}")
-            return float("inf")
-
-    # Create and optimize the study
-    study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=50, show_progress_bar=verbose)  # Adjust n_trials as needed
-
-    # Return the best parameters
-    if verbose:
-        print(f"Best hyperparameters: {study.best_params}")
     return study.best_params
 
 
