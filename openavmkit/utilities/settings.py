@@ -154,10 +154,14 @@ def load_data_dictionary_template():
 
 
 def load_settings_template():
-	# this assumes you've set your root directory already
-	with open("../settings.template.json", "r") as f:
-		settings = json.load(f)
-	return settings
+    # Determine the absolute directory of this module.
+    module_dir = os.path.dirname(os.path.realpath(__file__))
+    # Compute the absolute path to the template file.
+    template_path = os.path.join(module_dir, "..", "settings.template.json")
+
+    with open(template_path, "r") as f:
+        settings = json.load(f)
+    return settings
 
 
 def merge_settings(template: dict, local: dict, indent:str=""):
