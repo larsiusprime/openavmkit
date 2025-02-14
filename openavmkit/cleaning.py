@@ -1,5 +1,8 @@
 import pandas as pd
-from openavmkit.utilities.settings import get_valuation_date, get_fields_categorical, get_fields_boolean
+
+from openavmkit.data import SalesUniversePair
+from openavmkit.utilities.settings import get_valuation_date, get_fields_categorical, get_fields_boolean, \
+	get_grouped_fields_from_data_dictionary, get_data_dictionary
 
 
 def fill_median_impr_field(df, field):
@@ -22,6 +25,30 @@ def fill_median_impr_field(df, field):
 		field
 	] = 0
 	return df
+
+
+def sup_fill_unknown_values(sup: SalesUniversePair, settings: dict):
+	df_sales = sup["sales"].copy()
+	df_univ = sup["universe"].copy()
+
+	# Fill ALL unknown values for the universe
+	df_univ = fill_unknown_values(df_univ, settings)
+
+	# For sales, fill ONLY the unknown values that pertain to sales metadata
+	# df_sales can contain characteristics, but we want to preserve the blanks in those fields
+	dd = get_data_dictionary(settings)
+	sale_fields = get_grouped_fields_from_data_dictionary(dd, "sale")
+	sale_fields = [field for field in sale_fields if field in df_sales]
+
+	df_sales_subset = df_sales[sale_fields].copy()
+	df_sales_subset = fill_unknown_values(df_sales_subset, settings)
+	for col in df_sales_subset:
+		df_sales[col] = df_sales_subset[col]
+
+	sup["sales"] = df_sales
+	sup["universe"] = df_univ
+
+	return sup
 
 
 def fill_unknown_values(df, settings: dict):
@@ -68,7 +95,7 @@ def fill_unknown_values(df, settings: dict):
 	if bool_fields is not None:
 		for field in bool_fields:
 			if field in df:
-			df[field] = df[field].fillna(False).astype(bool)
+				df[field] = df[field].fillna(False).astype(bool)
 
 	return df
 

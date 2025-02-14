@@ -22,6 +22,36 @@ class SalesUniversePair(TypedDict):
 SUPKey = Literal["sales", "universe"]
 
 
+def get_sales_from_sup(sup: SalesUniversePair):
+	df_sales = sup["sales"]
+	df_univ = sup["universe"]
+
+	all_cols = list(set(df_sales.columns.values.tolist() + df_univ.columns.values.tolist()))
+	all_cols = [col for col in all_cols if col != "key"]
+
+	df_merged = df_sales.merge(df_univ, on="key", how="left", suffixes=("__sales", "__univ"))
+
+	cols_to_drop = []
+	for col in all_cols:
+		if col.endswith("__sales"):
+			new_col = col[:-len("__sales")]
+			sales_col = f"{new_col}__sales"
+			univ_col = f"{new_col}__univ"
+			df_merged[new_col] = df_sales[sales_col].combine_first(df_univ[univ_col])
+			cols_to_drop.append(sales_col)
+			cols_to_drop.append(univ_col)
+
+	if "geometry" in df_merged and "geometry" not in df_sales:
+		# convert df_merged to geodataframe:
+		df_merged = gpd.GeoDataFrame(df_merged, geometry="geometry")
+
+	df_merged = df_merged.drop(columns=cols_to_drop, errors="ignore")
+	return df_merged
+
+
+#def sup_enrich_time(sup: SalesUniversePair, )
+
+
 def enrich_time(df: pd.DataFrame, time_formats: dict) -> pd.DataFrame:
 	for key in time_formats:
 		time_format = time_formats[key]
@@ -1095,3 +1125,53 @@ def read_split_keys(
 	train_keys = pd.read_csv(train_path)["key"].astype(str).values
 	test_keys = pd.read_csv(test_path)["key"].astype(str).values
 	return test_keys, train_keys
+
+
+def sup_tag_model_groups(
+		sup: SalesUniversePair,
+		settings: dict,
+		verbose: bool = False
+):
+	df_sales = sup["sales"].copy()
+	df_univ = sup["universe"].copy()
+
+	# We "hydrate" the sales because we want to resolve modeling group separately;
+	# It may be the case that at time of sale e.g. zoning or building information changed in such a way that would have a
+	# meaningful consequence on the modeling group the parcel belongs to. E.g., a former ag parcel that later got rezoned
+	# as a single-family parcel.
+	df_sales_hydrated = get_sales_from_sup(sup)
+
+	mg = settings.get("modeling", {}).get("model_groups", {})
+
+	print(f"Overall")
+	print(f"--> {len(df_univ)} parcels")
+	print(f"--> {len(df_sales)} sales")
+
+	df_univ["model_group"] = None
+	for mg_id in mg:
+		entry = mg[mg_id]
+		name = mg.get("name", mg_id)
+		filter = entry.get("filter", [])
+
+		univ_index = resolve_filter(df_univ, filter)
+		df_univ.loc[univ_index, "model_group"] = mg_id
+
+		sales_index = resolve_filter(df_sales_hydrated, filter)
+		df_sales.loc[sales_index, "model_group"] = mg_id
+
+		if verbose:
+			print(f"{name}")
+			print(f"--> {univ_index.sum()} parcels")
+			print(f"--> {sales_index.sum()} sales")
+			valid_sales_index = df_sales["valid_sale"].eq(True)
+			improved_sales_index = valid_sales_index & ~df_sales["vacant_sale"].eq(True)
+			vacant_sales_index = valid_sales_index & df_sales["vacant_sale"].eq(True)
+			print(f"----> {improved_sales_index.sum()} improved sales")
+			print(f"----> {vacant_sales_index.sum()} vacant sales")
+
+	sup["universe"] = df_univ
+	sup["sales"] = df_sales
+
+	return sup
+
+

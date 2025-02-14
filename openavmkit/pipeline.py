@@ -3,7 +3,7 @@ import os
 import pandas as pd
 
 import openavmkit
-from openavmkit.data import load_dataframe, process_data
+from openavmkit.data import load_dataframe, process_data, SalesUniversePair
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_numeric, get_fields_boolean, \
    get_fields_land, get_fields_impr, get_fields_other
 
@@ -36,6 +36,18 @@ def set_locality(nbs, locality: str):
    print(f"locality = {locality}")
    print(f"base path = {nbs.base_path}")
    return nbs
+
+
+def examine_sup(sup: SalesUniversePair, s: dict):
+   print("")
+   print("EXAMINING SALES...")
+   print("")
+   examine_df(sup["sales"], s)
+
+   print("")
+   print("EXAMINING UNIVERSE...")
+   print("")
+   examine_df(sup["universe"], s)
 
 
 def examine_df(df: pd.DataFrame, s: dict):
