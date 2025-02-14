@@ -4,7 +4,7 @@ import os
 import markdown
 import pdfkit
 
-from openavmkit.utilities.settings import get_modeling_group, get_valuation_date
+from openavmkit.utilities.settings import get_model_group, get_valuation_date
 
 
 class MarkdownReport:
@@ -56,7 +56,7 @@ def start_report(report_name: str, settings: dict, model_group: str):
   val_date = get_valuation_date(settings)
   val_date = val_date.strftime("%Y-%m-%d")
 
-  model_group_obj = get_modeling_group(settings, model_group)
+  model_group_obj = get_model_group(settings, model_group)
   model_group_name = model_group_obj.get("name", model_group)
 
   report.set_var("locality", locality)

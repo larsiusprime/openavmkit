@@ -19,7 +19,7 @@ from openavmkit.utilities.data import div_z_safe, dataframe_to_markdown
 from openavmkit.utilities.format import fancy_format
 from openavmkit.utilities.modeling import NaiveSqftModel, LocalSqftModel, AssessorModel, GWRModel, MRAModel
 from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions, get_valuation_date, \
-	get_modeling_group, apply_dd_to_df_rows
+	get_model_group, apply_dd_to_df_rows
 from openavmkit.utilities.stats import calc_vif_recursive_drop, calc_t_values_recursive_drop, \
 	calc_p_values_recursive_drop, calc_elastic_net_regularization, calc_correlations, calc_r2, \
 	calc_cross_validation_score, calc_cod
@@ -1339,16 +1339,16 @@ def get_variable_recommendations(
 def generate_variable_report(
 		report: MarkdownReport,
 		settings: dict,
-		modeling_group: str,
+		model_group: str,
 		best_variables: list[str]
 ):
 
 	locality = settings.get("locality", {})
 	report.set_var("locality", locality.get("name", "...LOCALITY..."))
 
-	mg = get_modeling_group(settings, modeling_group)
+	mg = get_model_group(settings, model_group)
 	report.set_var("val_date", get_valuation_date(settings).strftime("%Y-%m-%d"))
-	report.set_var("modeling_group", mg.get("name", mg))
+	report.set_var("model_group", mg.get("name", mg))
 
 
 	instructions = settings.get("modeling", {}).get("instructions", {})

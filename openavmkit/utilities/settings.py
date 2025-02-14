@@ -7,12 +7,12 @@ import pandas as pd
 def get_base_dir(s: dict):
 	slug = s.get("locality", {}).get("slug", None)
 	if slug is None:
-		raise ValueError("Could not find settings.locality.slug!")
-	return slug
+    raise ValueError("Could not find settings.locality.slug!")
+  return slug
 
 
-def get_modeling_group(s: dict, key: str):
-	return s.get("modeling", {}).get("modeling_groups", {}).get(key, {})
+def get_model_group(s: dict, key: str):
+  return s.get("modeling", {}).get("model_groups", {}).get(key, {})
 
 
 def get_valuation_date(s: dict):
@@ -361,9 +361,9 @@ def apply_dd_to_df_rows(
 
 
 def get_model_group_ids(settings: dict, df: pd.DataFrame = None):
-	modeling = settings.get("modeling", {})
-	model_groups = modeling.get("modeling_groups", {})
-	if df is not None:
+  modeling = settings.get("modeling", {})
+  model_groups = modeling.get("model_groups", {})
+  if df is not None:
 		model_groups_in_df = df["model_group"].unique()
 		model_group_ids = [key for key in model_groups if key in model_groups_in_df]
 	else:
