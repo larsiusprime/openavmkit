@@ -9,6 +9,7 @@ from pandas import Series
 from typing import TypedDict, Literal
 
 from openavmkit.calculations import crawl_calc_dict_for_fields, perform_calculations
+from openavmkit.filters import resolve_filter
 from openavmkit.utilities.geometry import get_crs, clean_geometry
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
 	get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit
@@ -860,7 +861,10 @@ def snoop_column_names(filename: str) -> list[str]:
 
 def handle_duplicated_rows(df_in: pd.DataFrame, dupes: dict) -> pd.DataFrame:
 
-	subset = dupes.get("subset", ["key"])
+	subset = dupes.get("subset", "key")
+
+	if not isinstance(subset, list):
+		subset = [subset]
 
 	# if any of the specified keys are not in the dataframe, return the dataframe as is
 	for key in subset:
@@ -1009,7 +1013,6 @@ def merge_dict_of_dfs(dataframes: dict[str : pd.DataFrame], merge_list: list, se
 
 	for col in df_merged.columns.values:
 		if col in calc_cols:
-			print(f"Warning: Dropping column '{col}' from merged dataframe.")
 			df_merged = df_merged.drop(columns=[col])
 
 	return df_merged

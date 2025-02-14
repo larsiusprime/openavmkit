@@ -2,7 +2,7 @@ import os
 
 from openavmkit.benchmark import run_models, MultiModelResults
 from openavmkit.cleaning import clean_valid_sales
-from openavmkit.data import load_data, enrich_time
+from openavmkit.data import enrich_time
 from openavmkit.horizontal_equity_study import mark_horizontal_equity_clusters
 from openavmkit.ratio_study import run_and_write_ratio_study_breakdowns
 from openavmkit.sales_scrutiny_study import SalesScrutinyStudy, run_sales_scrutiny

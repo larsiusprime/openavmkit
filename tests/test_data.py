@@ -241,7 +241,6 @@ def test_duplicates():
 	df_results = df_results.sort_values(by="key").reset_index(drop=True)
 	df_expected = df_expected.sort_values(by="key").reset_index(drop=True)
 
-
 	assert dfs_are_equal(df_results, df_expected, primary_key="key")
 
 	data = {
@@ -374,5 +373,5 @@ def test_merge_conflicts():
 	merge_dict_of_dfs(
 		dataframes=dfs,
 		merge_list=["a", "b", "c"],
-		s_reconcile={}
+		settings={}
 	)

@@ -34,7 +34,7 @@ def test_crs_convert():
     if projection_type == 'latlon':
       return "EPSG:4326"
     elif projection_type == 'equal_area':
-      return f"+proj=aea +lat_1={lat-5} +lat_2={lat+5} +lat_0={lat} +lon_0={lon} +type=crs"
+      return f"+proj=aea +lat_1={lat-5} +lat_2={lat+5} +lat_0={lat} +lon_0={lon} +datum=WGS84 +units=m +type=crs"
     elif projection_type == 'equal_distance':
       return f"+proj=aeqd +lat_0={lat} +lon_0={lon} +datum=WGS84 +units=m +type=crs"
     else:
@@ -52,6 +52,12 @@ def test_crs_convert():
       results.append((f"Test Case {idx + 1}", proj_type, expected, actual, expected==actual))
 
   results_df = pd.DataFrame(results, columns=["Test Case", "Projection Type", "Expected CRS", "Actual CRS", "Match"])
+
+  print("")
+  print("===")
+  display(results_df["Expected CRS"].values)
+  print("---")
+  display(results_df["Actual CRS"].values)
 
   # assert that Expected CRS = Actual CRS in all cases
   assert results_df["Expected CRS"].equals(results_df["Actual CRS"])
@@ -182,6 +188,7 @@ def test_spatial_join_contains_centroid():
   df["rgb"] = df["ice_cream"].map(ice_cream_to_hex)
 
   gdf_parcels = gpd.GeoDataFrame(data=geo_data, crs="EPSG:4326")
+  gdf_parcels = gdf_parcels.merge(df, on="key")
 
   nw_quadrant_lat, nw_quadrant_lon = offset_coordinate_km(origin_lat, origin_lon, -2.5, 2.5)
   se_quadrant_lat, se_quadrant_lon = offset_coordinate_km(origin_se_lat, origin_se_lon, 2.5, -2.5)
@@ -209,7 +216,7 @@ def test_spatial_join_contains_centroid():
     "circle"
   ]
 
-  gdf = perform_spatial_joins(df, s_geom, dataframes)
+  gdf = perform_spatial_joins(s_geom, dataframes)
 
   gdf["rgb"] = gdf["color_square"].combine_first(gdf["color_circle"]).combine_first(gdf["rgb"])
 
@@ -242,13 +249,13 @@ def test_spatial_join_contains_centroid():
 
   assert dfs_are_equal(df_expected, df_results)
 
-  # fig, ax = plt.subplots(figsize=(10, 6))
-  # gdf_parcels.plot(color=gdf["rgb"], edgecolor="black", ax=ax)
-  #
-  # gdf_square.plot(ax=ax, color="none", edgecolor="black")
-  #
-  # # plot the circle, connect the lines:
-  # gdf_circle.plot(ax=ax, color="none", edgecolor="black")
-  #
-  # # Create a legend manually
-  # plt.show()
+  fig, ax = plt.subplots(figsize=(10, 6))
+  gdf_parcels.plot(color=gdf["rgb"], edgecolor="black", ax=ax)
+
+  gdf_square.plot(ax=ax, color="none", edgecolor="black")
+
+  # plot the circle, connect the lines:
+  gdf_circle.plot(ax=ax, color="none", edgecolor="black")
+
+  # Create a legend manually
+  plt.show()

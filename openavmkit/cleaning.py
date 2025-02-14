@@ -42,25 +42,32 @@ def fill_unknown_values(df, settings: dict):
 
 	for fill in fills:
 		if fill in impr_fills:
-			df = fill_median_impr_field(df, fill)
+			if fill in df:
+				df = fill_median_impr_field(df, fill)
 
 	# Special handling of age fields:
 	for fill in ["bldg_year_built", "bldg_effective_year_built"]:
-		df = fill_median_impr_field(df, fill)
+		if fill in df:
+			df = fill_median_impr_field(df, fill)
 
 	valuation_date = get_valuation_date(settings)
 	valuation_year = valuation_date.year
 
-	df["bldg_age_years"] = valuation_year - df["bldg_year_built"]
-	df["bldg_effective_age_years"] = valuation_year - df["bldg_effective_year_built"]
+	if "bldg_age_years" in df:
+		df["bldg_age_years"] = valuation_year - df["bldg_year_built"]
+
+	if "bldg_effective_age_years" in df:
+		df["bldg_effective_age_years"] = valuation_year - df["bldg_effective_year_built"]
 
 	if cat_fields is not None:
 		for field in cat_fields:
-			df[field] = df[field].astype("str")
-			df[field] = df[field].fillna("UNKNOWN")
+			if field in df:
+				df[field] = df[field].astype("str")
+				df[field] = df[field].fillna("UNKNOWN")
 
 	if bool_fields is not None:
 		for field in bool_fields:
+			if field in df:
 			df[field] = df[field].fillna(False).astype(bool)
 
 	return df

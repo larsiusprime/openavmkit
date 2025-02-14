@@ -1,7 +1,6 @@
 import pandas as pd
 
-from openavmkit.filters import resolve_filter, validate_filter_list, validate_filter, resolve_filter_list, \
-  select_filter, select_filter_list
+from openavmkit.filters import resolve_filter, validate_filter_list, validate_filter, select_filter
 from openavmkit.utilities.assertions import lists_are_equal
 
 
@@ -55,16 +54,17 @@ def test_filter_logic():
 def test_filter_resolve():
   data = {
     "num": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-    "str": ["a", "b", "c", "abc", "a", "b", "c", "abc", "a", "b"],
+    "text": ["a", "b", "c", "abc", "a", "b", "c", "abc", "a", "b"],
     "bool": [True, False, True, False, True, True, False, True, False, True]
   }
 
   df = pd.DataFrame(data=data)
 
-  filters = [
+  _filter = [
+    "and",
     [">", "num", 2],
     ["<=", "num", 8],
-    ["contains", "str", "a"],
+    ["contains", "text", "str:a"],
     ["!=", "bool", False]
   ]
 
@@ -79,11 +79,12 @@ def test_filter_resolve():
     False, False, False, False, True, False, False, True, False, False
   ]
 
-  for i, f in enumerate(filters):
+  _filters = _filter[1:]
+  for i, f in enumerate(_filters):
     results = resolve_filter(df, f)
     assert(lists_are_equal(expected_individual[i], results.tolist()))
 
-  final_results = resolve_filter_list(df, filters)
+  final_results = resolve_filter(df, _filter)
   assert(lists_are_equal(expected_result, final_results.tolist()))
 
 
@@ -96,7 +97,8 @@ def test_filter_select():
 
   df = pd.DataFrame(data=data)
 
-  filters = [
+  filter = [
+    "and",
     [">", "num", 2],
     ["<=", "num", 8],
     ["contains", "str", "a"],
@@ -112,11 +114,12 @@ def test_filter_select():
 
   expected_result = [4, 7]
 
-  for i, f in enumerate(filters):
+  _filters = filter[1:]
+  for i, f in enumerate(_filters):
     results = select_filter(df, f)
     assert(lists_are_equal(expected_individual[i], results.index.tolist()))
 
-  final_results = select_filter_list(df, filters)
+  final_results = select_filter(df, filter)
   assert(lists_are_equal(expected_result, final_results.index.tolist()))
 
 

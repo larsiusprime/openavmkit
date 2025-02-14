@@ -16,12 +16,13 @@ def crawl_calc_dict_for_fields(calc_dict: dict):
 def _crawl_calc_list_for_fields(calc_list: list):
   fields = []
   if len(calc_list) > 1:
-    entry = calc_list[1]
-    if isinstance(entry, list):
-      fields += _crawl_calc_list_for_fields(entry)
-    elif isinstance(entry, str):
-      if not entry.startswith("str:"):
-        fields.append(entry)
+    entries = calc_list[1:]
+    for entry in entries:
+      if isinstance(entry, list):
+        fields += _crawl_calc_list_for_fields(entry)
+      elif isinstance(entry, str):
+        if not entry.startswith("str:"):
+          fields.append(entry)
   return list(set(fields))
 
 

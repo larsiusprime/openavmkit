@@ -1,22 +1,9 @@
 import pandas as pd
 
 
-def select_filter_list(df: pd.DataFrame, filters: list[list]) -> pd.DataFrame:
-  resolved_index = resolve_filter_list(df, filters)
-  return df.loc[resolved_index]
-
-
 def select_filter(df: pd.DataFrame, f: list) -> pd.DataFrame:
   resolved_index = resolve_filter(df, f)
   return df.loc[resolved_index]
-
-
-def resolve_filter_list(df: pd.DataFrame, filters: list[list]) -> pd.Series:
-  final_index = pd.Series(True, index=df.index)
-  for f in filters:
-    selected_index = resolve_filter(df, f)
-    final_index = selected_index & final_index
-  return final_index
 
 
 def resolve_bool_filter(df: pd.DataFrame, f: list) -> pd.Series:
@@ -50,6 +37,7 @@ def resolve_bool_filter(df: pd.DataFrame, f: list) -> pd.Series:
 
 def resolve_filter(df: pd.DataFrame, f: list) -> pd.Series:
   operator = f[0]
+
   # check if operator is FilterOperatorBool:
   if is_bool_operator(operator):
     return resolve_bool_filter(df, f)

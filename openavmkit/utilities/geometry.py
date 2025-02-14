@@ -264,9 +264,6 @@ def create_geo_rect(lat, lon, crs, width_km, height_km):
   # Order: NW → NE → SE → SW → NW (to close polygon)
   polygon_coords = [(nw_lon, nw_lat), (ne_lon, ne_lat), (se_lon, se_lat), (sw_lon, sw_lat), (nw_lon, nw_lat)]
 
-  for coord in polygon_coords:
-    print(coord)
-
   # Create a Polygon
   polygon = Polygon(polygon_coords)
 

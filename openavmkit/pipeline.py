@@ -92,15 +92,19 @@ def examine_df(df: pd.DataFrame, s: dict):
       entry = stuff[landimpr]
       name = entry["name"]
 
+      fields = entry["fields"]
+      nums = fields["numeric"]
+      bools = fields["boolean"]
+      cats = fields["categorical"]
+
+      if (nums + bools + cats) == 0:
+         continue
+
       if i != 0:
          print("")
       print_horz_line("=")
       print(f"{name:^30}")
       print_horz_line("=")
-      fields = entry["fields"]
-      nums = fields["numeric"]
-      bools = fields["boolean"]
-      cats = fields["categorical"]
 
       nums.sort()
       bools.sort()
