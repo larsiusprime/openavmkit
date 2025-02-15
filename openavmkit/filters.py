@@ -43,20 +43,25 @@ def resolve_filter(df: pd.DataFrame, f: list) -> pd.Series:
     return resolve_bool_filter(df, f)
   else:
     field = f[1]
-    value = f[2]
+    if len(f) == 3:
+      value = f[2]
+    else:
+      value = None
 
     if isinstance(value, str):
       if value.startswith("str:"):
         value = value[4:]
 
-    if operator == ">": return df[field].gt(value)
-    if operator == "<": return df[field].lt(value)
-    if operator == ">=": return df[field].ge(value)
-    if operator == "<=": return df[field].le(value)
-    if operator == "==": return df[field].eq(value)
-    if operator == "!=": return df[field].ne(value)
+    if operator == ">": return df[field].fillna(0).gt(value)
+    if operator == "<": return df[field].fillna(0).lt(value)
+    if operator == ">=": return df[field].fillna(0).ge(value)
+    if operator == "<=": return df[field].fillna(0).le(value)
+    if operator == "==": return df[field].fillna(0).eq(value)
+    if operator == "!=": return df[field].fillna(0).ne(value)
     if operator == "isin": return df[field].isin(value)
     if operator == "notin": return ~df[field].isin(value)
+    if operator == "isempty": return pd.isna(df[field]) | df[field].astype(str).str.strip().eq("")
+    if operator == "iszero": return df[field].eq(0)
     if operator == "contains":
       selection = df[field].str.contains(value[0])
       for v in value[1:]: selection |= df[field].str.contains(v)

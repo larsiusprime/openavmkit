@@ -113,36 +113,47 @@ def do_per_model_group(df_in: pd.DataFrame, func: callable, params: dict) -> pd.
 	return df
 
 
-def combine_dfs(df1:pd.DataFrame, df2:pd.DataFrame, df2_stomps=False, index="key") -> pd.DataFrame:
-		"""
-		Combine the dataframes on a given index column.
-		"""
-		df = df1.copy()
+def combine_dfs(df1: pd.DataFrame, df2: pd.DataFrame, df2_stomps=False, index="key") -> pd.DataFrame:
+	"""
+  Combine the dataframes on a given index column.
 
-		index_orig = df.index
+  If df2_stomps is False, NA values in df1 are filled with values from df2.
+  If df2_stomps is True, values in df1 are overwritten by those in df2 for matching keys.
+  """
+	df = df1.copy()
+	# Save the original index for restoration
+	original_index = df.index.copy()
 
-		df.index = df[index]
-		df2.index = df2[index]
+	# Work on a copy so we don’t modify df2 outside this function.
+	df2 = df2.copy()
 
-		for column in df2:
-			if column == index:
-				continue
-			if column in df:
-				# if the column already exists
-				if df2_stomps:
-					# fill all rows in df that match df2 with values from df2
-					df.loc[df2.index, column] = df2[column]
-				else:
-					# fill NA values in df with values from df2
-					df.loc[pd.isna(df[column]), column] = df2[column]
+	# Set the index to the key column for alignment.
+	df.index = df[index]
+	df2.index = df2[index]
+
+	# Iterate over columns in df2 (skip the key column).
+	for col in df2.columns:
+		if col == index:
+			continue
+		if col in df.columns:
+			# Find the common keys to avoid KeyErrors if df2 has extra keys.
+			common_idx = df.index.intersection(df2.index)
+			if df2_stomps:
+				# Overwrite all values in df for common keys.
+				df.loc[common_idx, col] = df2.loc[common_idx, col]
 			else:
-				# if the column does not exist, then add it
-				df[column] = df2[column]
+				# For common keys, fill only NA values.
+				na_mask = pd.isna(df.loc[common_idx, col])
+				# Only assign where df2 has a value and df is NA.
+				df.loc[common_idx[na_mask], col] = df2.loc[common_idx[na_mask], col]
+		else:
+			# Add the new column, aligning by index.
+			# (Rows in df without a corresponding key in df2 will get NaN.)
+			df[col] = df2[col]
 
-		# reset the index to the original one
-		df.index = index_orig
-
-		return df
+	# Restore the original index.
+	df.index = original_index
+	return df
 
 
 def add_sqft_fields(df_in: pd.DataFrame):

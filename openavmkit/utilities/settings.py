@@ -96,6 +96,8 @@ def _replace_variables(node: dict | list | str,  settings: dict, var_token: str 
       var_name = str_value[len(var_token):]
       var_value = lookup_variable_in_settings(settings, var_name)
       replacement = var_value
+      if replacement is None:
+        raise ValueError(f"Variable {var_name} not found in settings!")
       changes += 1
 
   elif isinstance(node, dict):

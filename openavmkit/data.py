@@ -7,13 +7,16 @@ import pyarrow.parquet as pq
 import geopandas as gpd
 from pandas import Series
 from typing import TypedDict, Literal
+from shapely.geometry import Polygon, MultiPolygon
+from shapely.ops import unary_union
 
 from openavmkit.calculations import crawl_calc_dict_for_fields, perform_calculations
-from openavmkit.filters import resolve_filter
+from openavmkit.filters import resolve_filter, select_filter
+from openavmkit.utilities.data import combine_dfs
 from openavmkit.utilities.geometry import get_crs, clean_geometry
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
 	get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit
-
+from matplotlib import pyplot as plt
 
 class SalesUniversePair(TypedDict):
 	sales: pd.DataFrame
@@ -22,7 +25,7 @@ class SalesUniversePair(TypedDict):
 SUPKey = Literal["sales", "universe"]
 
 
-def get_sales_from_sup(sup: SalesUniversePair):
+def get_sales_from_sup(sup: SalesUniversePair, settings: dict):
 	df_sales = sup["sales"]
 	df_univ = sup["universe"]
 
@@ -46,6 +49,7 @@ def get_sales_from_sup(sup: SalesUniversePair):
 		df_merged = gpd.GeoDataFrame(df_merged, geometry="geometry")
 
 	df_merged = df_merged.drop(columns=cols_to_drop, errors="ignore")
+
 	return df_merged
 
 
@@ -1139,35 +1143,83 @@ def sup_tag_model_groups(
 	# It may be the case that at time of sale e.g. zoning or building information changed in such a way that would have a
 	# meaningful consequence on the modeling group the parcel belongs to. E.g., a former ag parcel that later got rezoned
 	# as a single-family parcel.
-	df_sales_hydrated = get_sales_from_sup(sup)
+	df_sales_hydrated = get_sales_from_sup(sup, settings)
 
 	mg = settings.get("modeling", {}).get("model_groups", {})
 
+	print(f"Len univ before = {len(df_univ)}")
+	print(f"Len sales before = {len(df_sales)} after = {len(df_sales_hydrated)}")
+
 	print(f"Overall")
-	print(f"--> {len(df_univ)} parcels")
-	print(f"--> {len(df_sales)} sales")
+	print(f"--> {len(df_univ):,} parcels")
+	print(f"--> {len(df_sales):,} sales")
 
 	df_univ["model_group"] = None
+	df_sales["model_group"] = None
+	for mg_id in mg:
+
+		# only apply model groups to parcels that don't already have one
+		idx_no_model_group = df_univ["model_group"].isnull()
+
+		entry = mg[mg_id]
+		_filter = entry.get("filter", [])
+
+		univ_index = resolve_filter(df_univ, _filter)
+		df_univ.loc[idx_no_model_group & univ_index, "model_group"] = mg_id
+
+		idx_no_model_group = df_sales["model_group"].isnull()
+		sales_index = resolve_filter(df_sales_hydrated, _filter)
+		df_sales.loc[idx_no_model_group & sales_index, "model_group"] = mg_id
+
+	df_univ.to_parquet("out/look/tag-univ-0.parquet")
+
+	old_model_group = df_univ[["key", "model_group"]]
+
 	for mg_id in mg:
 		entry = mg[mg_id]
-		name = mg.get("name", mg_id)
-		filter = entry.get("filter", [])
+		print(f"Assigning model group {mg_id}...")
+		common_area = entry.get("common_area", False)
+		print("common_area --> ", common_area)
+		if not common_area:
+			continue
+		print(f"Assigning common areas for model group {mg_id}...")
 
-		univ_index = resolve_filter(df_univ, filter)
-		df_univ.loc[univ_index, "model_group"] = mg_id
+		common_area_filters: list | None = None
+		if isinstance(common_area, list):
+			common_area_filters = common_area
 
-		sales_index = resolve_filter(df_sales_hydrated, filter)
-		df_sales.loc[sales_index, "model_group"] = mg_id
+		print(f"common area filters = {common_area_filters}")
+
+		df_univ = assign_modal_model_group_to_common_area(df_univ, mg_id, common_area_filters)
+
+	df_univ.to_parquet("out/look/tag-univ-1.parquet")
+
+	index_changed = ~old_model_group["model_group"].eq(df_univ["model_group"])
+	rows_changed = df_univ[index_changed]
+
+	print(f" --> {len(rows_changed)} parcels had their model group changed.")
+
+	# TODO: fix this
+	# Update sales for any rows that changed due to common area assignment
+	# df_sales = combine_dfs(df_sales, rows_changed, df2_stomps=True, index="key")
+
+	# Print stuff out
+	for mg_id in mg:
+		entry = mg[mg_id]
+		name = entry.get("name", mg_id)
+		_filter = entry.get("filter", [])
+		univ_index = resolve_filter(df_univ, _filter)
+		sales_index = resolve_filter(df_sales_hydrated, _filter)
 
 		if verbose:
+			valid_sales_index = sales_index & df_sales_hydrated["valid_sale"].eq(True)
+			improved_sales_index = sales_index & valid_sales_index & ~df_sales_hydrated["vacant_sale"].eq(True)
+			vacant_sales_index = sales_index & valid_sales_index & df_sales_hydrated["vacant_sale"].eq(True)
 			print(f"{name}")
-			print(f"--> {univ_index.sum()} parcels")
-			print(f"--> {sales_index.sum()} sales")
-			valid_sales_index = df_sales["valid_sale"].eq(True)
-			improved_sales_index = valid_sales_index & ~df_sales["vacant_sale"].eq(True)
-			vacant_sales_index = valid_sales_index & df_sales["vacant_sale"].eq(True)
-			print(f"----> {improved_sales_index.sum()} improved sales")
-			print(f"----> {vacant_sales_index.sum()} vacant sales")
+			print(f"--> {univ_index.sum():,} parcels")
+			print(f"--> {valid_sales_index.sum():,} sales")
+			print(f"----> {improved_sales_index.sum():,} improved sales")
+			print(f"----> {vacant_sales_index.sum():,} vacant sales")
 
 	sup["universe"] = df_univ
 	sup["sales"] = df_sales
@@ -1175,3 +1227,155 @@ def sup_tag_model_groups(
 	return sup
 
 
+
+def identify_parcels_with_holes(df: gpd.GeoDataFrame) -> (gpd.GeoDataFrame, gpd.GeoDataFrame):
+	"""
+	Identify parcels with holes (interior rings)
+
+	Parameters:
+			df (GeoDataFrame): GeoDataFrame with parcel geometries.
+
+	Returns:
+			GeoDataFrame with parcels containing interior rings (holes).
+	"""
+
+	# Identify parcels with holes
+	def has_holes(geom):
+		if geom.is_valid:
+			if geom.geom_type == "Polygon":
+				return len(geom.interiors) > 0
+			elif geom.geom_type == "MultiPolygon":
+				return any(len(p.interiors) > 0 for p in geom.geoms)
+		return False
+
+	# Identify:
+	parcels_with_holes = df[df.geometry.apply(has_holes)]
+
+	# Remove duplicates:
+	parcels_with_holes = parcels_with_holes.drop_duplicates(subset="key")
+
+	return parcels_with_holes
+
+
+def assign_modal_model_group_to_common_area(df_univ_in: gpd.GeoDataFrame, model_group_id: str, common_area_filters: list | None = None) -> gpd.GeoDataFrame:
+	"""
+	Assign the modal model_group of parcels inside an enveloping "COMMON AREA" parcel to the "COMMON AREA" parcel.
+
+	Parameters:
+			df_univ (GeoDataFrame): GeoDataFrame containing the entire set of parcels.
+
+	Returns:
+			GeoDataFrame: Modified GeoDataFrame (df) with updated model_groups for COMMON AREA parcels.
+	"""
+
+	df_univ = df_univ_in.copy()
+
+	# Ensure geometry column is set
+	if df_univ.geometry.name is None:
+		raise ValueError("GeoDataFrame must have a geometry column.")
+
+	# Reduce df_univ to ONLY those parcels that have holes in them:
+	df = identify_parcels_with_holes(df_univ)
+
+	print(f" {len(df)} parcels with holes found.")
+	df.to_parquet("out/look/common_area-0-holes.parquet")
+	df["has_holes"] = True
+
+	if common_area_filters is not None:
+		df_extra = select_filter(df_univ, common_area_filters).copy()
+		df_extra["is_common_area"] = True
+		print(f" {len(df_extra)} extra parcels found.")
+		df = pd.concat([df, df_extra], ignore_index=True)
+		# drop duplicate keys:
+		df = df.drop_duplicates(subset="key")
+
+	print(f" {len(df)} potential COMMON AREA parcels found.")
+	df.to_parquet("out/look/common_area-1-common_area.parquet")
+
+	print(f"Assigning modal model_group to {len(df)}/{len(df_univ_in)} potential parcels...")
+
+	df["modal_tagged"] = None
+
+	# Iterate over COMMON AREA parcels
+	for idx, row in df.iterrows():
+		# Get the envelope of the COMMON AREA parcel
+		common_area_geom = row.geometry
+		common_area_gs = gpd.GeoSeries([common_area_geom], crs=df.crs)
+		common_area_envelope_geom = common_area_geom.envelope
+		common_area_envelope_gs = gpd.GeoSeries([common_area_envelope_geom], crs=df.crs)
+
+		geom = common_area_geom.buffer(0)
+		if geom.geom_type == "Polygon":
+			outer_polygon = Polygon(geom.exterior)
+		elif geom.geom_type == "MultiPolygon":
+			outer_polygons = [Polygon(poly.exterior) for poly in geom.geoms]
+			outer_polygon = unary_union(outer_polygons)
+		else:
+			raise ValueError("Geometry must be a Polygon or MultiPolygon")
+		#outer_polygon_gs = gpd.GeoSeries([outer_polygon], crs=df.crs)
+
+		# Find parcels wholly inside the COMMON AREA envelope
+		inside_parcels = df_univ_in[df_univ_in.geometry.within(common_area_envelope_geom)].copy()
+
+		# buffer 0 on inside parcel geometry
+		inside_parcels["geometry"] = inside_parcels["geometry"].apply(lambda g: g.buffer(0))
+
+		count1 = len(inside_parcels)
+
+		# Exclude the COMMON AREA parcel itself (if it is in df_univ)
+		inside_parcels = inside_parcels[
+			~inside_parcels.geometry.apply(lambda g: g.equals(common_area_geom))
+		]
+		count2 = len(inside_parcels)
+
+		# Optionally use a tiny negative buffer to avoid boundary issues
+
+		# Exclude parcels that are not wholly inside the COMMON AREA parcel (not just the envelope bounding box):
+
+		if isinstance(outer_polygon, np.ndarray):
+			if outer_polygon.size == 1:
+				outer_polygon = outer_polygon[0]
+			else:
+				# If there are multiple elements, combine them into one geometry
+				outer_polygon = unary_union(list(outer_polygon))
+
+			print("outer_polygon type:", type(outer_polygon))
+
+		inside_parcels = inside_parcels[
+			inside_parcels.geometry.centroid.within(outer_polygon)
+		]
+
+		count3 = len(inside_parcels)
+
+		print(f" {idx} --> {count1} parcels inside the envelope, {count2} after excluding the COMMON AREA, {count3} after excluding those not wholly inside the COMMON AREA")
+
+
+		# If it's empty, continue:
+		if inside_parcels.empty:
+			continue
+
+		# Check that at least one of the inside_parcels matches the target model_group_id, otherwise continue:
+		if not inside_parcels["model_group"].eq(model_group_id).any():
+			continue
+
+		# Determine the modal model_group value
+		modal_model_group = inside_parcels["model_group"].value_counts().index[0]
+		if modal_model_group is not None and modal_model_group != "":
+			print(f" {idx} --> modal model group = {modal_model_group} for {len(inside_parcels)} inside parcels")
+			# Apply the modal model_group to the COMMON AREA parcel
+			df.at[idx, "model_group"] = modal_model_group
+			df.at[idx, "modal_tagged"] = True
+		else:
+			print(f" {idx} --> XXX modal model group is {modal_model_group} for {len(inside_parcels)} inside parcels")
+
+	df.to_parquet("out/look/common_area-2-tagged.parquet")
+
+	df_return = df_univ_in.copy()
+
+	# Update and return df_univ
+
+	df_return = combine_dfs(df_return, df[["key", "model_group"]], df2_stomps=True, index="key")
+
+	df_return.to_parquet("out/look/common_area-3-return.parquet")
+
+	return df_return
