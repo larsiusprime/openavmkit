@@ -211,3 +211,26 @@ def load_and_process_data(settings: dict):
 
 def load_settings():
    return openavmkit.utilities.settings.load_settings()
+
+
+def process_sales(sup: SalesUniversePair, settings: dict, verbose: bool = False):
+   # select only valid sales
+   sup["sales"] = clean_valid_sales(sup["sales"], settings)
+
+   # make sure sales field has necessary fields
+   df_sales_hydrated = get_sales_from_sup(sup)
+
+   # enrich with time adjustment, and mark what fields were added
+   old_fields = df_sales_hydrated.columns.values
+   df_sales_hydrated = enrich_time_adjustment(df_sales_hydrated, settings, verbose)
+   new_fields = [col for col in df_sales_hydrated.columns.values if col not in old_fields]
+
+
+   # add the new fields back to the original dataframe
+   # TODO: modify this when we support 'key_sale':
+   key="key"
+   df_sales_new_fields = df_sales_hydrated[[key]+new_fields]
+   sup["sales"] = combine_dfs(sup["sales"], df_sales_new_fields, df2_stomps=True, index=key)
+
+
+   return sup

@@ -403,6 +403,7 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str : p
 				df,
 				s_enrich_local,
 				dataframes,
+				settings,
 				supkey == "sales",
 				verbose=verbose
 			)
@@ -416,6 +417,7 @@ def _enrich_df_basic(
 		df_in: pd.DataFrame,
 		s_enrich_this: dict,
 		dataframes: dict[str: pd.DataFrame],
+		settings: dict,
 		is_sales: bool = False,
 		verbose: bool = False
 ) -> pd.DataFrame:
@@ -432,7 +434,10 @@ def _enrich_df_basic(
 	df = perform_calculations(df, s_calc)
 
 	# enrich year built:
-	df = enrich_year_built(df, dataframes, is_sales)
+	df = enrich_year_built(df, settings, is_sales)
+
+	# enrich vacant:
+	df = _enrich_vacant(df)
 
 	return df
 
@@ -455,6 +460,19 @@ def _finesse_columns(
 		if col_spatial in df and col_data in df:
 			df[col] = df[col_spatial].combine_first(df[col_data])
 			df = df.drop(columns=[col_spatial, col_data], errors="ignore")
+	return df
+
+
+def _enrich_vacant(
+		df_in: pd.DataFrame
+) -> pd.DataFrame:
+	df = df_in.copy()
+
+	df.loc[pd.isna(df["bldg_area_finished_sqft"]), "bldg_area_finished_sqft"] = 0
+	df.loc[df["bldg_area_finished_sqft"].eq(0), "is_vacant"] = True
+
+	# TODO: handle special case of sales, where "vacant_sale" and "is_vacant" don't line up. These should always be consistent.
+
 	return df
 
 
@@ -1162,7 +1180,7 @@ def sup_tag_model_groups(
 	# It may be the case that at time of sale e.g. zoning or building information changed in such a way that would have a
 	# meaningful consequence on the modeling group the parcel belongs to. E.g., a former ag parcel that later got rezoned
 	# as a single-family parcel.
-	df_sales_hydrated = get_sales_from_sup(sup, settings)
+	df_sales_hydrated = get_sales_from_sup(sup)
 
 	mg = settings.get("modeling", {}).get("model_groups", {})
 
@@ -1174,7 +1192,7 @@ def sup_tag_model_groups(
 	print(f"--> {len(df_sales):,} sales")
 
 	df_univ["model_group"] = None
-	df_sales["model_group"] = None
+	df_sales_hydrated["model_group"] = None
 	for mg_id in mg:
 
 		# only apply model groups to parcels that don't already have one
@@ -1186,9 +1204,9 @@ def sup_tag_model_groups(
 		univ_index = resolve_filter(df_univ, _filter)
 		df_univ.loc[idx_no_model_group & univ_index, "model_group"] = mg_id
 
-		idx_no_model_group = df_sales["model_group"].isnull()
+		idx_no_model_group = df_sales_hydrated["model_group"].isnull()
 		sales_index = resolve_filter(df_sales_hydrated, _filter)
-		df_sales.loc[idx_no_model_group & sales_index, "model_group"] = mg_id
+		df_sales_hydrated.loc[idx_no_model_group & sales_index, "model_group"] = mg_id
 
 	df_univ.to_parquet("out/look/tag-univ-0.parquet")
 
