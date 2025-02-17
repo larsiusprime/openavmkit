@@ -26,30 +26,15 @@ class SalesUniversePair(TypedDict):
 SUPKey = Literal["sales", "universe"]
 
 
-def get_sales_from_sup(sup: SalesUniversePair, settings: dict):
+def get_sales_from_sup(sup: SalesUniversePair):
 	df_sales = sup["sales"]
 	df_univ = sup["universe"]
-
-	all_cols = list(set(df_sales.columns.values.tolist() + df_univ.columns.values.tolist()))
-	all_cols = [col for col in all_cols if col != "key"]
-
-	df_merged = df_sales.merge(df_univ, on="key", how="left", suffixes=("__sales", "__univ"))
-
-	cols_to_drop = []
-	for col in all_cols:
-		if col.endswith("__sales"):
-			new_col = col[:-len("__sales")]
-			sales_col = f"{new_col}__sales"
-			univ_col = f"{new_col}__univ"
-			df_merged[new_col] = df_sales[sales_col].combine_first(df_univ[univ_col])
-			cols_to_drop.append(sales_col)
-			cols_to_drop.append(univ_col)
+	df_merged = combine_dfs(df_univ, df_sales, True, index="key")
+	df_merged = df_merged[df_merged["key"].isin(df_sales["key"].values)]
 
 	if "geometry" in df_merged and "geometry" not in df_sales:
 		# convert df_merged to geodataframe:
 		df_merged = gpd.GeoDataFrame(df_merged, geometry="geometry")
-
-	df_merged = df_merged.drop(columns=cols_to_drop, errors="ignore")
 
 	return df_merged
 

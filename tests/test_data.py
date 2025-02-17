@@ -3,7 +3,7 @@ import pandas as pd
 from IPython.core.display_functions import display
 
 from openavmkit.data import _perform_canonical_split, handle_duplicated_rows, perform_ref_tables, merge_dict_of_dfs, \
-	_enrich_year_built, enrich_time
+	_enrich_year_built, enrich_time, SalesUniversePair, get_sales_from_sup
 from openavmkit.modeling import DataSplit
 from openavmkit.utilities.assertions import dfs_are_equal
 from openavmkit.utilities.data import div_z_safe
@@ -447,3 +447,40 @@ def test_enrich_year_built():
 
 	assert dfs_are_equal(df_univ, df_univ_expected, primary_key="key")
 	assert dfs_are_equal(df_sales, df_sales_expected, primary_key="key")
+
+
+def test_get_sales_from_sup():
+	data = {
+		"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
+		"sale_date": [None, None, None, "2021-01-01", None, None, None, None, None, "2022-11-15", None],
+		"valid_sale": [False, False, False, True, False, False, False, False, False, True, False],
+		"sale_price": [None, None, None, 100000, None, None, None, None, None, 200000, None],
+		"bldg_year_built": [1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000],
+		"bldg_quality_txt": ["average", "average", "average", "average", "average", "average", "average", "average", "average", "average", "average"],
+		"land_class": ["R", "R", "R", "R", "R", "R", "R", "R", "R", "R", "R"],
+	}
+
+	df = pd.DataFrame(data=data)
+
+	df_sales = df[df["valid_sale"].eq(True)].copy().reset_index(drop=True)
+	df_sales = df_sales.drop(columns=["land_class"])
+	df_sales["bldg_quality_txt"] = "good"
+
+	df_univ = df.copy()
+
+	sup = SalesUniversePair(sales=df_sales, universe=df_univ)
+
+	df_sales_hydrated = get_sales_from_sup(sup).reset_index(drop=True)
+
+	data_expected = {
+		"key": ["3", "9"],
+		"sale_date": ["2021-01-01", "2022-11-15"],
+		"valid_sale": [True, True],
+		"sale_price": [100000.0, 200000.0],
+		"bldg_year_built": [1993, 1999],
+		"bldg_quality_txt": ["good", "good"],
+		"land_class": ["R", "R"],
+	}
+	df_expected = pd.DataFrame(data=data_expected)
+
+	assert dfs_are_equal(df_sales_hydrated, df_expected, primary_key="key")

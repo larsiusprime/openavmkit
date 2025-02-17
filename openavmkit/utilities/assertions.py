@@ -84,8 +84,11 @@ def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None):
 	for col in a.columns:
 		if not series_are_equal(a[col], b[col]):
 			print(f"Column {col} does not match, look:")
-			print(a[col])
-			print(b[col])
+
+			# print rows that are not equal:
+			print(a[~a[col].eq(b[col])])
+			print(b[~a[col].eq(b[col])])
+
 			return False
 	return True
 

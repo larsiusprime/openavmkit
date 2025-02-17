@@ -87,8 +87,9 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0):
     lhs = entry[1]
     lhs, i = _calc_resolve(df, value=lhs, i=i)
 
+
   if op == "asint":
-    return lhs.astype(int)
+    return np.floor(lhs.astype("Float64")).astype("Int64")
   elif op == "asfloat":
     return lhs.astype(float)
   elif op == "asstr":
@@ -101,6 +102,8 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0):
     return np.round(lhs)
   elif op == "abs":
     return np.abs(lhs)
+  elif op == "strip":
+    return lhs.astype(str).str.strip()
 
   # Binary operations (LHS & RHS)
 
@@ -132,6 +135,18 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0):
   elif op == "map":
     lhs = lhs.astype(str)
     return lhs.map(rhs).fillna(lhs)
+  elif op == "replace":
+    for key in rhs:
+      old = key
+      new = rhs[key]
+      is_regex = rhs.get("regex", False)
+      lhs = lhs.astype(str).str.replace(old, new, regex=is_regex)
+    return lhs
+  elif op == "split_before":
+    return lhs.astype(str).str.split(rhs, expand=False).str[0]
+  elif op == "split_after":
+    parts = lhs.astype(str).str.partition(rhs)
+    return parts[2].mask(parts[1] == "", parts[0])
   elif op == "join":
     result = lhs.astype(str).apply(lambda x: f"{rhs}".join(x), axis=1)
     return result
