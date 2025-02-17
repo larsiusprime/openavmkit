@@ -4,7 +4,7 @@
     <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
       <option name="ignoredPackages">
         <value>
-          <list size="31">
+          <list size="32">
             <item index="0" class="java.lang.String" itemvalue="httpx" />
             <item index="1" class="java.lang.String" itemvalue="referencing" />
             <item index="2" class="java.lang.String" itemvalue="scikit-learn" />
@@ -36,6 +36,7 @@
             <item index="28" class="java.lang.String" itemvalue="typing_extensions" />
             <item index="29" class="java.lang.String" itemvalue="babel" />
             <item index="30" class="java.lang.String" itemvalue="charset-normalizer" />
+            <item index="31" class="java.lang.String" itemvalue="numpy" />
           </list>
         </value>
       </option>

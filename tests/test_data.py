@@ -2,7 +2,8 @@ import numpy as np
 import pandas as pd
 from IPython.core.display_functions import display
 
-from openavmkit.data import _perform_canonical_split, handle_duplicated_rows, perform_ref_tables, merge_dict_of_dfs
+from openavmkit.data import _perform_canonical_split, handle_duplicated_rows, perform_ref_tables, merge_dict_of_dfs, \
+	_enrich_year_built, enrich_time
 from openavmkit.modeling import DataSplit
 from openavmkit.utilities.assertions import dfs_are_equal
 from openavmkit.utilities.data import div_z_safe
@@ -375,3 +376,74 @@ def test_merge_conflicts():
 		merge_list=["a", "b", "c"],
 		settings={}
 	)
+
+
+def test_enrich_year_built():
+	data = {
+		"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
+		"sale_date": [None, None, None, "2021-01-01", None, None, None, None, None, "2022-11-15", None],
+		"valid_sale": [False, False, False, True, False, False, False, False, False, True, False],
+		"sale_price": [None, None, None, 100000, None, None, None, None, None, 200000, None],
+		"bldg_year_built": [1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000]
+	}
+
+	df = pd.DataFrame(data=data)
+
+	df_sales = df[df["valid_sale"].eq(True)].copy().reset_index(drop=True)
+	df_univ = df.copy()
+
+	val_date = pd.to_datetime("2025-01-01")
+
+	expected_univ = {
+		"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
+		"sale_date": [None, None, None, "2021-01-01", None, None, None, None, None, "2022-11-15", None],
+		"valid_sale": [False, False, False, True, False, False, False, False, False, True, False],
+		"sale_price": [None, None, None, 100000, None, None, None, None, None, 200000, None],
+		"bldg_year_built": [1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000],
+		"sale_year": [None, None, None, "2021", None, None, None, None, None, "2022", None],
+		"sale_month": [None, None, None, "1", None, None, None, None, None, "11", None],
+		"sale_quarter": [None, None, None, "1", None, None, None, None, None, "4", None],
+		"sale_year_month": ["NaT", "NaT", "NaT", "2021-01", "NaT", "NaT", "NaT", "NaT", "NaT", "2022-11", "NaT"],
+		"sale_year_quarter": ["NaT", "NaT", "NaT", "2021Q1", "NaT", "NaT", "NaT", "NaT", "NaT", "2022Q4", "NaT"],
+		"bldg_age_years": [35, 34, 33, 32, 31, 30, 29, 28, 27, 26, 25],
+	}
+
+	expected_sales = {
+		"key": ["3", "9"],
+		"sale_date": ["2021-01-01", "2022-11-15"],
+		"valid_sale": [True, True],
+		"sale_price": [100000.0, 200000.0],
+		"bldg_year_built": [1993, 1999],
+		"sale_year": ["2021", "2022"],
+		"sale_month": ["1", "11"],
+		"sale_quarter": ["1", "4"],
+		"sale_year_month": ["2021-01", "2022-11"],
+		"sale_year_quarter": ["2021Q1", "2022Q4"],
+		"bldg_age_years": [28.0, 23.0]
+	}
+
+	time_formats = {"sale_date":"%Y-%m-%d"}
+
+	df_univ = enrich_time(df_univ, time_formats)
+	df_sales = enrich_time(df_sales, time_formats)
+
+	df_univ = _enrich_year_built(df_univ, "bldg_year_built", "bldg_age_years", val_date, False)
+	df_sales = _enrich_year_built(df_sales, "bldg_year_built", "bldg_age_years", val_date, True)
+
+	df_univ_expected = pd.DataFrame(data=expected_univ)
+	df_sales_expected = pd.DataFrame(data=expected_sales)
+
+	for thing in ["sale_year", "sale_month", "sale_quarter"]:
+		df_univ[thing] = df_univ[thing].astype("Int64").astype("string")
+		df_sales[thing] = df_sales[thing].astype("Int64").astype("string")
+		df_univ_expected[thing] = df_univ_expected[thing].astype("Int64").astype("string")
+		df_sales_expected[thing] = df_sales_expected[thing].astype("Int64").astype("string")
+
+	for thing in ["sale_date", "sale_year_month", "sale_year_quarter"]:
+		df_univ[thing] = df_univ[thing].astype("string")
+		df_sales[thing] = df_sales[thing].astype("string")
+		df_univ_expected[thing] = df_univ_expected[thing].astype("string")
+		df_sales_expected[thing] = df_sales_expected[thing].astype("string")
+
+	assert dfs_are_equal(df_univ, df_univ_expected, primary_key="key")
+	assert dfs_are_equal(df_sales, df_sales_expected, primary_key="key")

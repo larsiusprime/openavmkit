@@ -1,5 +1,6 @@
 import os
 import warnings
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -15,7 +16,7 @@ from openavmkit.filters import resolve_filter, select_filter
 from openavmkit.utilities.data import combine_dfs
 from openavmkit.utilities.geometry import get_crs, clean_geometry
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
-	get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit
+	get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit, get_valuation_date
 from matplotlib import pyplot as plt
 
 class SalesUniversePair(TypedDict):
@@ -72,6 +73,34 @@ def enrich_time(df: pd.DataFrame, time_formats: dict) -> pd.DataFrame:
 			df = _enrich_time_field(df, prefix, add_year_month=True, add_year_quarter=True)
 
 	return df
+
+
+def enrich_year_built(df: pd.DataFrame, settings: dict, is_sales: bool = False):
+	val_date = get_valuation_date(settings)
+	for prefix in ["bldg", "bldg_effective"]:
+		col = f"{prefix}_year_built"
+		if col in df:
+			new_col = f"{prefix}_age_years"
+			df = _enrich_year_built(df, col, new_col, val_date, is_sales)
+	return df
+
+
+def _enrich_year_built(
+		df: pd.DataFrame,
+		col: str,
+		new_col: str,
+		val_date: datetime,
+		is_sales: bool = False
+) -> pd.DataFrame:
+
+	if not is_sales:
+		val_year = val_date.year
+		df[new_col] = val_year - df[col]
+	else:
+		df.loc[df["sale_year"].notna(), new_col] = df["sale_year"] - df[col]
+
+	return df
+
 
 
 def _enrich_time_field(
@@ -389,6 +418,7 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str : p
 				df,
 				s_enrich_local,
 				dataframes,
+				supkey == "sales",
 				verbose=verbose
 			)
 
@@ -401,6 +431,7 @@ def _enrich_df_basic(
 		df_in: pd.DataFrame,
 		s_enrich_this: dict,
 		dataframes: dict[str: pd.DataFrame],
+		is_sales: bool = False,
 		verbose: bool = False
 ) -> pd.DataFrame:
 
@@ -414,6 +445,9 @@ def _enrich_df_basic(
 
 	# calculations:
 	df = perform_calculations(df, s_calc)
+
+	# enrich year built:
+	df = enrich_year_built(df, dataframes, is_sales)
 
 	return df
 

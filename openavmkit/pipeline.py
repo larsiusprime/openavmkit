@@ -109,11 +109,12 @@ def examine_df(df: pd.DataFrame, s: dict):
       bools = fields["boolean"]
       cats = fields["categorical"]
 
-      if (nums + bools + cats) == 0:
+      if (len(nums) + len(bools) + len(cats)) == 0:
          continue
 
       if i != 0:
          print("")
+
       print_horz_line("=")
       print(f"{name:^30}")
       print_horz_line("=")
