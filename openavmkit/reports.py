@@ -48,6 +48,8 @@ def markdown_to_pdf(md_text, out_path, css_file=None):
   with open(html_path, "w", encoding="utf-8") as html_file:
     html_file.write(html_text)
   _html_to_pdf(html_text, out_path)
+  # delete the html:
+  os.remove(html_path)
 
 
 def start_report(report_name: str, settings: dict, model_group: str):
@@ -70,6 +72,8 @@ def finish_report(report: MarkdownReport, outpath: str, css_file: str):
     f.write(report_text)
   pdf_path = f"{outpath}.pdf"
   markdown_to_pdf(report_text, pdf_path, css_file=css_file)
+  # remove the markdown:
+  os.remove(f"{outpath}.md")
 
 
 def _markdown_to_html(md_text, css_file_stub=None):

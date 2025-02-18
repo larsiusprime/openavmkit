@@ -3,7 +3,11 @@ import os
 import pandas as pd
 
 import openavmkit
-from openavmkit.data import load_dataframe, process_data, SalesUniversePair
+from openavmkit.cleaning import clean_valid_sales
+from openavmkit.data import load_dataframe, process_data, SalesUniversePair, get_hydrated_sales_from_sup
+from openavmkit.sales_scrutiny_study import run_sales_scrutiny_per_model_group, mark_ss_ids_per_model_group
+from openavmkit.time_adjustment import enrich_time_adjustment
+from openavmkit.utilities.data import combine_dfs
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_numeric, get_fields_boolean, \
    get_fields_land, get_fields_impr, get_fields_other
 
@@ -215,22 +219,38 @@ def load_settings():
 
 def process_sales(sup: SalesUniversePair, settings: dict, verbose: bool = False):
    # select only valid sales
-   sup["sales"] = clean_valid_sales(sup["sales"], settings)
+   df_sales = sup["sales"]
+   df_sales_valid = clean_valid_sales(df_sales, settings)
+
+   # update the SUP sales
+   sup.update_sales(df_sales_valid)
 
    # make sure sales field has necessary fields
-   df_sales_hydrated = get_sales_from_sup(sup)
+   df_sales_hydrated = get_hydrated_sales_from_sup(sup)
 
    # enrich with time adjustment, and mark what fields were added
-   old_fields = df_sales_hydrated.columns.values
+   df_sales_enriched = enrich_time_adjustment(df_sales_hydrated, settings, verbose)
    df_sales_hydrated = enrich_time_adjustment(df_sales_hydrated, settings, verbose)
    new_fields = [col for col in df_sales_hydrated.columns.values if col not in old_fields]
 
-
-   # add the new fields back to the original dataframe
+   # update the SUP sales
+   sup.update_sales(df_sales_enriched)
    # TODO: modify this when we support 'key_sale':
    key="key"
-   df_sales_new_fields = df_sales_hydrated[[key]+new_fields]
-   sup["sales"] = combine_dfs(sup["sales"], df_sales_new_fields, df2_stomps=True, index=key)
 
 
+   return sup
+
+
+def mark_ss_ids_per_model_group_sup(sup: SalesUniversePair, settings: dict, verbose: bool = False):
+   df_sales_hydrated = get_hydrated_sales_from_sup(sup)
+   df_marked = mark_ss_ids_per_model_group(df_sales_hydrated, settings, verbose)
+   sup.update_sales(df_marked)
+   return sup
+
+
+def run_sales_scrutiny_per_model_group_sup(sup: SalesUniversePair, settings: dict, verbose: bool = False) -> SalesUniversePair:
+   df_sales_hydrated = get_hydrated_sales_from_sup(sup)
+   df_scrutinized = run_sales_scrutiny_per_model_group(df_sales_hydrated, settings, verbose)
+   sup.update_sales(df_scrutinized)
    return sup

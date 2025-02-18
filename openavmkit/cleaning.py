@@ -45,8 +45,8 @@ def sup_fill_unknown_values(sup: SalesUniversePair, settings: dict):
 	for col in df_sales_subset:
 		df_sales[col] = df_sales_subset[col]
 
-	sup["sales"] = df_sales
-	sup["universe"] = df_univ
+	sup.set("sales", df_sales)
+	sup.set("universe", df_univ)
 
 	return sup
 

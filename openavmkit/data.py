@@ -1,5 +1,6 @@
 import os
 import warnings
+from dataclasses import dataclass
 from datetime import datetime
 
 import numpy as np
@@ -19,18 +20,54 @@ from openavmkit.utilities.settings import get_fields_categorical, get_fields_imp
 	get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit, get_valuation_date
 from matplotlib import pyplot as plt
 
-class SalesUniversePair(TypedDict):
+@dataclass
+class SalesUniversePair:
 	sales: pd.DataFrame
 	universe: pd.DataFrame
+
+	def __getitem__(self, key):
+		return getattr(self, key)
+
+	def set(self, key, value):
+		if key == "sales":
+			self.sales = value
+		elif key == "universe":
+			self.universe = value
+		else:
+			raise ValueError(f"Invalid key: {key}")
+
+	def update_sales(self, new_sales: pd.DataFrame):
+
+		# This function lets you push updates to "sales" while keeping it as an "overlay" that doesn't contain any redundant information
+
+		# First we note what fields were in sales last time
+		old_fields = self.sales.columns.values
+
+		# We note what sales are in universe but were not in sales
+		univ_fields = [field for field in self.universe.columns.values if field not in old_fields]
+
+		# Note the new fields generated -- these are the fields that are in new_sales but not in old_sales nor in the universe
+		new_fields = [field for field in new_sales.columns.values if field not in old_fields and field not in univ_fields]
+
+		# Create a modified version of df_sales with only two changes:
+		# - reduced to the correct selection of keys
+		# - adds the newly generated fields
+
+		# TODO: add support for "key_sale"
+		return_keys = new_sales["key"].values
+		reconciled = new_sales.copy()
+		reconciled = reconciled[reconciled["key"].isin(return_keys)]
+		reconciled = combine_dfs(reconciled, new_sales[["key"]+new_fields])
+		self.sales = reconciled
+
 
 SUPKey = Literal["sales", "universe"]
 
 
-def get_sales_from_sup(sup: SalesUniversePair):
+def get_hydrated_sales_from_sup(sup: SalesUniversePair):
 	df_sales = sup["sales"]
 	df_univ = sup["universe"]
-	df_merged = combine_dfs(df_univ, df_sales, True, index="key")
-	df_merged = df_merged[df_merged["key"].isin(df_sales["key"].values)]
+	df_merged = combine_dfs(df_sales, df_univ, False, index="key")
 
 	if "geometry" in df_merged and "geometry" not in df_sales:
 		# convert df_merged to geodataframe:
@@ -351,10 +388,7 @@ def process_data(dataframes: dict[str : pd.DataFrame], settings: dict, verbose: 
 	df_univ = merge_dict_of_dfs(dataframes, merge_univ, settings)
 	df_sales = merge_dict_of_dfs(dataframes, merge_sales, settings)
 
-	result : SalesUniversePair = {
-		"universe": df_univ,
-		"sales": df_sales
-	}
+	result : SalesUniversePair = SalesUniversePair(universe=df_univ, sales=df_sales)
 
 	enrich_data(result, s_process.get("enrich", {}), dataframes, settings, verbose=verbose)
 
@@ -408,7 +442,7 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str : p
 				verbose=verbose
 			)
 
-			sup[supkey] = df
+			sup.set(supkey, df)
 
 	return sup
 
@@ -1180,7 +1214,7 @@ def sup_tag_model_groups(
 	# It may be the case that at time of sale e.g. zoning or building information changed in such a way that would have a
 	# meaningful consequence on the modeling group the parcel belongs to. E.g., a former ag parcel that later got rezoned
 	# as a single-family parcel.
-	df_sales_hydrated = get_sales_from_sup(sup)
+	df_sales_hydrated = get_hydrated_sales_from_sup(sup)
 
 	mg = settings.get("modeling", {}).get("model_groups", {})
 
@@ -1258,8 +1292,11 @@ def sup_tag_model_groups(
 			print(f"----> {improved_sales_index.sum():,} improved sales")
 			print(f"----> {vacant_sales_index.sum():,} vacant sales")
 
-	sup["universe"] = df_univ
-	sup["sales"] = df_sales
+	df_univ.loc[df_univ["model_group"].isna(), "model_group"] = "UNKNOWN"
+	#df_sales.loc[df_sales["model_group"].isna(), "model_group"] = "UNKNOWN"
+
+	sup.set("universe", df_univ)
+	sup.set("sales", df_sales)
 
 	return sup
 

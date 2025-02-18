@@ -1570,6 +1570,7 @@ def _run_models(
 	best_variables = var_recs["variables"]
 	var_report = var_recs["report"]
 	var_report_md = var_report.render()
+
 	os.makedirs(f"{outpath}/reports", exist_ok=True)
 	with open(f"{outpath}/reports/variable_report.md", "w", encoding="utf-8") as f:
 		f.write(var_report_md)

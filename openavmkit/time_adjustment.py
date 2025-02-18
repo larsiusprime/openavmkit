@@ -1,6 +1,8 @@
 import calendar
 from datetime import timedelta, datetime
 
+from IPython.core.display_functions import display
+
 import numpy as np
 import pandas as pd
 
@@ -26,6 +28,11 @@ def _generate_days(start_date: datetime, end_date: datetime):
 def _get_expected_periods(df: pd.DataFrame, period: str):
   if "sale_date" not in df:
     raise ValueError("Field 'sale_date' not found in the DataFrame.")
+  else:
+    dtype = df["sale_date"].dtype
+    if dtype != "datetime64[ns]":
+      df["sale_date"] = pd.to_datetime(df["sale_date"])
+
   if period not in ["Y", "Q", "M", "D"]:
     raise ValueError(f"Invalid period '{period}'.")
 
@@ -310,6 +317,19 @@ def apply_time_adjustment(df_sales_in: pd.DataFrame, settings, period: str = "M"
 
   # we merge the time adjustment back into the sales data
   df_time = df_time.rename(columns={"value": "time_adjustment", "period": "sale_date"})
+
+  # ensure both dtypes are datetime:
+  dtype_time = df_time["sale_date"].dtype
+  dtype_sales = df_sales["sale_date"].dtype
+  if dtype_time != "datetime64[ns]":
+    df_time["sale_date"] = pd.to_datetime(df_time["sale_date"])
+  if dtype_sales != "datetime64[ns]":
+    df_sales["sale_date"] = pd.to_datetime(df_sales["sale_date"])
+
+  # now, ensure both are converted to YYYY-MM-DD format:
+  df_time["sale_date"] = df_time["sale_date"].dt.strftime("%Y-%m-%d")
+  df_sales["sale_date"] = df_sales["sale_date"].dt.strftime("%Y-%m-%d")
+
   df_sales = pd.merge(df_sales, df_time, how="left", on="sale_date")
 
   # we multiply the sale price by the time adjustment

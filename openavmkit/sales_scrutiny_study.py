@@ -90,11 +90,17 @@ class SalesScrutinyStudy:
       total_anomalies = 0
       for i in range(1, 6):
         field = f"anomaly_{i}"
-        count_anomaly = len(df[df[field].eq(True)])
+        if field in df:
+          count_anomaly = len(df[df[field].eq(True)])
+        else:
+          count_anomaly = 0
         total_anomalies += count_anomaly
         self.summaries[key].num_flagged_sales_by_type[field] = count_anomaly
 
-      self.summaries[key].num_sales_flagged = len(df[df["flagged"].eq(True)])
+      if "flagged" in df:
+        self.summaries[key].num_sales_flagged = len(df[df["flagged"].eq(True)])
+      else:
+        self.summaries[key].num_sales_flagged = 0
       self.summaries[key].num_sales_total = len(df)
 
       stuff[key] = df
@@ -113,37 +119,46 @@ class SalesScrutinyStudy:
     df_v = self.df_vacant
     df_i = self.df_improved
 
-    # remove flagged sales:
-    keys_flagged = df_v[df_v["flagged"].eq(True)]["key"].tolist()
-    keys_flagged += df_i[df_i["flagged"].eq(True)]["key"].tolist()
+    # TODO: add support for "key_sale"
+
+    keys_flagged = []
+
+    if "flagged" in df_v:
+      # remove flagged sales:
+      keys_flagged = df_v[df_v["flagged"].eq(True)]["key"].tolist()
+
+    if "flagged" in df_i:
+      keys_flagged += df_i[df_i["flagged"].eq(True)]["key"].tolist()
 
     # ensure unique:
     keys_flagged = list(dict.fromkeys(keys_flagged))
 
-    df.loc[df["key"].isin(keys_flagged), "valid_sale"] = False
+    if len(df) > 0:
+      df.loc[df["key"].isin(keys_flagged), "valid_sale"] = False
 
-    # merge ss_id into df:
-    df = combine_dfs(df, df_v[["key", "ss_id"]])
-    df = combine_dfs(df, df_i[["key", "ss_id"]])
+      # merge ss_id into df:
+      df = combine_dfs(df, df_v[["key", "ss_id"]])
+      df = combine_dfs(df, df_i[["key", "ss_id"]])
 
     return df
 
 
   def _write(self, path: str, is_vacant: bool):
-    os.makedirs(f"{path}/sales_scrutiny", exist_ok=True)
+    os.makedirs(f"{path}", exist_ok=True)
 
     root_path = path
 
     if is_vacant:
       df = self.df_vacant
-      path = f"{path}/sales_scrutiny/vacant"
+      path = f"{path}/vacant"
     else:
       df = self.df_improved
-      path = f"{path}/sales_scrutiny/improved"
+      path = f"{path}/improved"
 
     df = _prettify(df, self.settings)
 
-    df = df.sort_values(by="CHD", ascending=False)
+    if "CHD" in df:
+      df = df.sort_values(by="CHD", ascending=False)
 
     df.to_csv(f"{path}.csv", index=False)
 
@@ -211,17 +226,26 @@ class SalesScrutinyStudy:
     for i in range(1, 6):
       field = f"anomaly_{i}"
       count = summary.num_flagged_sales_by_type.get(field, 0)
-      percent = count / num_sales_total
+      if num_sales_total > 0:
+        percent = count / num_sales_total
+        percent = f"{percent:0.2%}"
+      else:
+        percent = "N/A"
       report.set_var(f"num_sales_flagged_type_{i}", f"{count:0,.0f}")
-      report.set_var(f"pct_sales_flagged_type_{i}", f"{percent:0.2%}")
+      report.set_var(f"pct_sales_flagged_type_{i}", percent)
 
-    pct_sales_flagged = num_sales_flagged / num_sales_total
+    if num_sales_total > 0:
+      pct_sales_flagged = num_sales_flagged / num_sales_total
+      pct_sales_flagged = f"{pct_sales_flagged:0.2%}"
+    else:
+      pct_sales_flagged = "N/A"
+
     report.set_var("num_sales_flagged", f"{num_sales_flagged:0,.0f}")
     report.set_var("num_sales_total", f"{num_sales_total:0,.0f}")
-    report.set_var("pct_sales_flagged", f"{pct_sales_flagged:0.2%}")
+    report.set_var("pct_sales_flagged", pct_sales_flagged)
 
     vacant_type = "vacant" if key == "v" else "improved"
-    outpath = f"{path}/reports/sales_scrutiny_{vacant_type}"
+    outpath = f"{path}/sales_scrutiny_{vacant_type}"
 
     finish_report(report, outpath, "sales_scrutiny")
 
@@ -264,6 +288,11 @@ def calc_sales_scrutiny(df_in: pd.DataFrame, sales_field: str):
     df = df_in.copy()
 
     df = _apply_he_stats(df, "ss_id", sales_field)
+
+    if "median" not in df:
+      # If the median is not present, then we can't do anything
+      # This is usually because there's nothing to analyze
+      return df
 
     base_sales_field = _get_base_sales_field(sales_field)
 
@@ -360,10 +389,11 @@ def _apply_he_stats(df: pd.DataFrame, cluster_id: str, sales_field: str):
   else:
     df = df[["key", "ss_id", sales_field]].copy()
 
-  df = df.merge(df_cluster, on="ss_id", how="left")
+  if len(df) > 0:
+    df = df.merge(df_cluster, on="ss_id", how="left")
+    df["relative_ratio"] = div_z_safe(df, sales_field, "median")
+    df["med_dist_stdevs"] = div_field_z_safe(df[sales_field] - df["median"], df["stdev"])
 
-  df["relative_ratio"] = div_z_safe(df, sales_field, "median")
-  df["med_dist_stdevs"] = div_field_z_safe(df[sales_field] - df["median"], df["stdev"])
   return df
 
 
@@ -375,6 +405,13 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
 
   df = df_in.copy()
   df = df[df["ss_id"].isin(flagged_clusters)]
+
+  if len(df) == 0:
+    df["anomalies"] = 0
+    for i in range(1, 6):
+      field = f"anomaly_{i}"
+      df[field] = False
+    return df
 
   # land or sqft? Check sales_field:
   sqft = "land_area_sqft" if "land" in sales_field else "bldg_area_finished_sqft" if "impr" in sales_field else ""
@@ -389,7 +426,7 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
   df_fl = df[df["flagged"].eq(True)]
 
   df_sqft_fl = df_sqft[df_sqft["key"].isin(df_fl["key"].values)]
-  df_price_fl = df_price[df_sqft["key"].isin(df_fl["key"].values)]
+  df_price_fl = df_price[df_price["key"].isin(df_fl["key"].values)]
 
   # Check for the symptoms
 
@@ -471,9 +508,7 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
     df_out[field] = df[field]
     df_out["anomalies"] = df_out["anomalies"] + df[field].fillna(0).astype("Int64")
 
-  df_out.loc[
-    df_out["anomalies"].le(0),
-    "flagged"] = False
+  df_out.loc[df_out["anomalies"].le(0), "flagged"] = False
 
   df_out.drop(columns=["anomalies"], inplace=True)
 
@@ -514,8 +549,7 @@ def mark_sales_scrutiny_clusters(df: pd.DataFrame, settings: dict, verbose: bool
 
   df_sales["ss_id"], fields_used = make_clusters(df_sales, location, fields_categorical, fields_numeric, min_cluster_size=5, verbose=verbose)
 
-  # TODO: we don't return fields_used at the moment
-  return df_sales
+  return df_sales, fields_used
 
 
 def identify_suspicious_characteristics(df: pd.DataFrame, settings: dict, is_vacant: bool = False, verbose: bool = False):
@@ -534,19 +568,31 @@ def identify_suspicious_characteristics(df: pd.DataFrame, settings: dict, is_vac
   # What we are looking for is parcels where the sale_field is in line with the overall area but the sale_field_per is not
 
 
-def _mark_ss_ids(df_in: pd.DataFrame, model_group: str, settings: dict, verbose: bool):
-  df = mark_sales_scrutiny_clusters(df_in, settings, verbose)
-  df["ss_id"] = model_group + "_" + df["ss_id"]
+def _mark_ss_ids(df_in: pd.DataFrame, model_group: str, settings: dict, verbose: bool) -> pd.DataFrame:
+  df, _ = mark_sales_scrutiny_clusters(df_in, settings, verbose)
+  if pd.isna(model_group):
+    model_group = "UNKNOWN"
+  df["ss_id"] = model_group + "_" + df["ss_id"].astype(str)
   return df
 
-def run_sales_scrutiny_per_model_group(df_in: pd.DataFrame, settings: dict, verbose=False):
-  return do_per_model_group(df_in, _mark_ss_ids, {"settings": settings, "verbose": verbose})
+
+def mark_ss_ids_per_model_group(df_in: pd.DataFrame, settings: dict, verbose: bool = False) -> pd.DataFrame:
+  # Mark the sales scrutiny ID's
+  df = do_per_model_group(df_in.copy(), _mark_ss_ids, {"settings": settings, "verbose": verbose})
+  return df
 
 
-def run_sales_scrutiny(df_in: pd.DataFrame, settings: dict, model_group: str, verbose=False):
+def run_sales_scrutiny_per_model_group(df_in: pd.DataFrame, settings: dict, verbose=False) -> pd.DataFrame:
+  # Run sales scrutiny for each model group
+  df = do_per_model_group(df_in.copy(), run_sales_scrutiny, {"settings": settings, "verbose": verbose})
+  return df
+
+
+
+def run_sales_scrutiny(df_in: pd.DataFrame, settings: dict, model_group: str, verbose=False) -> pd.DataFrame:
   # run sales validity:
   ss = SalesScrutinyStudy(df_in, settings, model_group=model_group)
-  ss.write(f"out")
+  ss.write(f"out/sales_scrutiny/{model_group}")
 
   # clean sales data:
   return ss.get_scrutinized(df_in)

@@ -69,20 +69,35 @@ class HorizontalEquityStudy:
 		for cluster in clusters:
 			df_cluster = df[df[field_cluster].eq(cluster)]
 			count = len(df_cluster)
-			chd = stats.calc_cod(df_cluster[field_value].values)
-			min_value = df_cluster[field_value].min()
-			max_value = df_cluster[field_value].max()
-			median_value = df_cluster[field_value].median()
+			if count > 0:
+				chd = stats.calc_cod(df_cluster[field_value].values)
+				min_value = df_cluster[field_value].min()
+				max_value = df_cluster[field_value].max()
+				median_value = df_cluster[field_value].median()
+			else:
+				chd = float('nan')
+				min_value = float('nan')
+				max_value = float('nan')
+				median_value = float('nan')
 			summary = HorizontalEquityClusterSummary(cluster, count, chd, min_value, max_value, median_value)
 			self.cluster_summaries[cluster] = summary
 			chds = np.append(chds, chd)
 
+		if len(chds) > 0:
+			min_chd = np.min(chds)
+			max_chd = np.max(chds)
+			med_chd = float(np.median(chds))
+		else:
+			min_chd = float('nan')
+			max_chd = float('nan')
+			med_chd = float('nan')
+
 		self.summary = HorizontalEquitySummary(
 			len(df),
 			len(clusters),
-			np.min(chds),
-			np.max(chds),
-			float(np.median(chds))
+			min_chd,
+			max_chd,
+			med_chd
 		)
 
 

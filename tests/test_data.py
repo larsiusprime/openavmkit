@@ -3,7 +3,7 @@ import pandas as pd
 from IPython.core.display_functions import display
 
 from openavmkit.data import _perform_canonical_split, handle_duplicated_rows, perform_ref_tables, merge_dict_of_dfs, \
-	_enrich_year_built, enrich_time, SalesUniversePair, get_sales_from_sup
+	_enrich_year_built, enrich_time, SalesUniversePair, get_hydrated_sales_from_sup
 from openavmkit.modeling import DataSplit
 from openavmkit.utilities.assertions import dfs_are_equal
 from openavmkit.utilities.data import div_z_safe
@@ -470,7 +470,7 @@ def test_get_sales_from_sup():
 
 	sup = SalesUniversePair(sales=df_sales, universe=df_univ)
 
-	df_sales_hydrated = get_sales_from_sup(sup).reset_index(drop=True)
+	df_sales_hydrated = get_hydrated_sales_from_sup(sup).reset_index(drop=True)
 
 	data_expected = {
 		"key": ["3", "9"],

@@ -95,6 +95,10 @@ def do_per_model_group(df_in: pd.DataFrame, func: callable, params: dict) -> pd.
 	model_groups = df["model_group"].unique()
 
 	for model_group in model_groups:
+
+		if pd.isna(model_group):
+			continue
+
 		# Copy params locally to avoid side effects
 		params_local = params.copy()
 		params_local["model_group"] = model_group

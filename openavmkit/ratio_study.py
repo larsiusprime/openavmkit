@@ -470,6 +470,6 @@ def _write_ratio_study_report(all_results: dict, settings: dict, model_group: st
 
 		report.set_var("sales_back_to_date", look_back_date_str)
 
-		outpath = f"{path}/reports/ratio_study"
+		outpath = f"{path}/reports/{model_group}/ratio_study"
 
 		finish_report(report, outpath, "ratio_study")
