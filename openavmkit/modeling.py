@@ -140,11 +140,13 @@ class DataSplit:
     self.df_universe = df_universe.copy()
 
     # Set "sales" fields in the universe so that columns match
-    self.df_universe["valid_sale"] = False
-    self.df_universe["vacant_sale"] = False
-    self.df_universe["ss_id"] = None
-    self.df_universe["sale_price"] = None
-    self.df_universe["sale_price_time_adj"] = None
+    set_to_false = ["valid_sale", "vacant_sale", "valid_for_ratio_study", "valid_for_land_ratio_study"]
+    set_to_none = ["ss_id", "sale_price", "sale_price_time_adj"]
+
+    for col in set_to_false:
+      self.df_universe[col] = False
+    for col in set_to_none:
+      self.df_universe[col] = None
 
     # Set sale dates in the universe to match the valuation date
     val_date = get_valuation_date(settings)
@@ -159,13 +161,11 @@ class DataSplit:
       self.df_multiverse_orig = df_multiverse.copy()
       self.df_multiverse = df_multiverse.copy()
 
-
       # Set these fields just like we did for the universe fields
-      self.df_multiverse["valid_sale"] = False
-      self.df_multiverse["vacant_sale"] = False
-      self.df_multiverse["ss_id"] = None
-      self.df_multiverse["sale_price"] = None
-      self.df_multiverse["sale_price_time_adj"] = None
+      for col in set_to_false:
+        self.df_multiverse[col] = False
+      for col in set_to_none:
+        self.df_multiverse[col] = None
 
       self.df_multiverse["sale_date"] = val_date
       self.df_multiverse = _enrich_time_field(self.df_multiverse, "sale")

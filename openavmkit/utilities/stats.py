@@ -57,6 +57,8 @@ def calc_cod(values: np.ndarray) -> float:
 	median_value = np.median(values)
 	abs_delta_values = np.abs(values - median_value)
 	avg_abs_deviation = np.sum(abs_delta_values) / len(values)
+	if median_value == 0:
+		return float('nan')
 	cod = avg_abs_deviation / median_value
 	cod *= 100
 	return cod

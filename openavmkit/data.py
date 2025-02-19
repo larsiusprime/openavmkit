@@ -11,11 +11,12 @@ from pandas import Series
 from typing import TypedDict, Literal
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
+from shapely import LineString
 
 from openavmkit.calculations import crawl_calc_dict_for_fields, perform_calculations
 from openavmkit.filters import resolve_filter, select_filter
-from openavmkit.utilities.data import combine_dfs
-from openavmkit.utilities.geometry import get_crs, clean_geometry
+from openavmkit.utilities.data import combine_dfs, div_field_z_safe
+from openavmkit.utilities.geometry import get_crs, clean_geometry, identify_irregular_parcels, get_exterior_coords
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
 	get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit, get_valuation_date
 from matplotlib import pyplot as plt
@@ -562,7 +563,78 @@ def _enrich_df_geometry(
 	if not success:
 		raise ValueError(f"Could not find a common key between geo_parcels and base dataframe. Tried keys: {try_keys}")
 
+	# basic geometric enrichment
+	gdf_merged = basic_geo_enrichment(gdf_merged, settings, verbose=verbose)
+
 	return gdf_merged
+
+
+def basic_geo_enrichment(gdf: gpd.GeoDataFrame, settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
+
+	if verbose:
+		print(f"Performing basic geometric enrichment...")
+
+	if verbose:
+		print(f"--> adding latitude/longitude...")
+	# Temporarily convert gdf to lat/long coordinates:
+	gdf_latlon = gdf.to_crs(get_crs(gdf, "latlon"))
+	gdf_area = gdf.to_crs(get_crs(gdf, "equal_area"))
+
+	# Get the lat/long coordinates of the centroid of each parcel:
+	gdf["latitude"] = gdf_latlon.geometry.centroid.y
+	gdf["longitude"] = gdf_latlon.geometry.centroid.x
+
+	if verbose:
+		print(f"--> calculate GIS area of each parcel...")
+	# Calculate the GIS area of each parcel:
+	gdf["land_area_gis_sqft"] = gdf_area.geometry.area
+	gdf["land_area_gis_delta_sqft"] = gdf["land_area_gis_sqft"] - gdf["land_area_sqft"]
+	gdf["land_area_gis_delta_percent"] = div_field_z_safe(gdf["land_area_gis_delta_sqft"], gdf["land_area_sqft"])
+
+	if verbose:
+		print(f"--> counting vertices per parcel...")
+	# Calculate the vertices of each parcel:
+	gdf["geom_vertices"] = gdf.geometry.apply(get_exterior_coords)
+
+	gdf = _calc_geom_stuff(gdf, verbose)
+
+	return gdf
+
+
+def _calc_geom_stuff(gdf: gpd.GeoDataFrame, verbose: bool = False) -> gpd.GeoDataFrame:
+	"""Compute aspect ratios of geometries in a GeoDataFrame."""
+
+	if verbose:
+		print(f"--> calculating parcel rectangularity...")
+	# Compute the minimum rotated rectangles for each geometry
+	min_rotated_rects = gdf.geometry.apply(lambda geom: geom.minimum_rotated_rectangle)
+
+	min_rotated_rects_area_delta = np.abs(min_rotated_rects.area - gdf.geometry.area)
+	min_rotated_rects_area_delta_percent = div_field_z_safe(min_rotated_rects_area_delta, gdf.geometry.area)
+
+	gdf["geom_rectangularity_num"] = 1.0 - min_rotated_rects_area_delta_percent
+
+	# Extract coordinates for each rectangle
+	coords = min_rotated_rects.apply(lambda rect: np.array(rect.exterior.coords[:-1]))  # Drop duplicate last point
+
+	if verbose:
+		print(f"--> calculating parcel aspect ratios...")
+
+	# Compute edge lengths efficiently using NumPy
+	edge_lengths = coords.apply(lambda pts: np.sqrt(np.sum(np.diff(pts, axis=0) ** 2, axis=1)))
+
+	# Extract width and height (smallest two edges)
+	dimensions = edge_lengths.apply(lambda lengths: np.sort(lengths)[:2])
+
+	# Compute aspect ratio (width / height)
+	aspect_ratios = dimensions.apply(lambda dims: dims[1] / dims[0] if dims[0] != 0 else float('inf'))
+
+	gdf["geom_aspect_ratio"] = aspect_ratios
+
+	gdf = identify_irregular_parcels(gdf, verbose)
+
+	return gdf
+
 
 
 def perform_spatial_joins(s_geom: list, dataframes: dict[str: pd.DataFrame], verbose: bool = False) -> gpd.GeoDataFrame:

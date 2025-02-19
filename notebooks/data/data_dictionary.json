@@ -65,19 +65,13 @@
 		"type": "number",
 		"groups": ["land"]
 	},
-	"land_area_sqft_unaltered":{
-		"name": "Land area (unaltered) in square feet",
-		"description": "Land area in square feet as given by {jurisdiction}",
-		"type": "number",
-		"groups": ["land"]
-	},
-	"delta_land_area_sqft":{
-		"name": "Delta land area in square feet",
+	"land_area_gis_delta_sqft":{
+		"name": "Land area GIS difference in square feet",
 		"description": "Difference between the land area as given by {jurisdiction} and the land area as automatically calculated by GIS",
 		"type": "number",
 		"groups": ["land"]
 	},
-	"percent_delta_land_area_sqft":{
+	"land_area_gis_delta_percent":{
 		"name": "Percent delta land area",
 		"description": "Percent difference between the land area as given by {jurisdiction} and the land area as automatically calculated by GIS",
 		"type": "percent",
@@ -98,18 +92,6 @@
 	"is_below_buildable_size":{},
 	"min_buildable_size":{},
 	"he_id": {},
-	"rectangularity_num":{
-		"name": "Rectangularity (numeric)",
-		"description": "How rectangular the parcel is, expressed as a numeric value (1.0 is a perfect rectangle)",
-		"type": "number",
-		"groups": ["land"]
-	},
-	"rectangularity_txt":{
-		"name": "Rectangularity (text)",
-		"description": "How rectangular the parcel is, expressed as a text value",
-		"type": "string",
-		"groups": ["land"]
-	},
 	"longitude":{
 		"name": "Longitude",
 		"description": "Longitude",
@@ -122,37 +104,49 @@
 		"type": "number",
 		"groups": ["location"]
 	},
-	"is_triangular":{
-		"name": "Is triangular",
-		"description": "Whether the parcel is triangular in shape",
-		"type": "boolean",
+	"geom_rectangularity_num":{
+		"name": "Rectangularity (numeric)",
+		"description": "How rectangular the parcel is, expressed as a numeric value (1.0 is a perfect rectangle)",
+		"type": "number",
 		"groups": ["land"]
 	},
-	"num_vertices":{
+	"geom_rectangularity_txt":{
+		"name": "Rectangularity (text)",
+		"description": "How rectangular the parcel is, expressed as a text value",
+		"type": "string",
+		"groups": ["land"]
+	},
+	"geom_vertices":{
 		"name": "Number of vertices",
 		"description": "Number of vertices in the parcel's simplified polygon",
 		"type": "number",
 		"groups": ["land"]
 	},
-	"is_complex_geometry":{
-		"name": "Is complex geometry",
-		"description": "Whether the parcel has complex geometry",
-		"type": "boolean",
-		"groups": ["land"]
-	},
-	"aspect_ratio":{
+	"geom_aspect_ratio":{
 		"name": "Aspect ratio",
 		"description": "Aspect ratio of the parcel (width divided by height)",
 		"type": "number",
 		"groups": ["land"]
 	},
-	"is_elongated":{
+	"is_geom_triangular":{
+		"name": "Is triangular",
+		"description": "Whether the parcel is triangular in shape",
+		"type": "boolean",
+		"groups": ["land"]
+	},
+	"is_geom_complex":{
+		"name": "Is complex geometry",
+		"description": "Whether the parcel has complex geometry",
+		"type": "boolean",
+		"groups": ["land"]
+	},
+	"is_geom_elongated":{
 		"name": "Is elongated",
 		"description": "Whether the parcel is elongated",
 		"type": "boolean",
 		"groups": ["land"]
 	},
-	"is_irregular":{
+	"is_geom_irregular":{
 		"name": "Is irregular",
 		"description": "Whether the parcel is irregular in shape",
 		"type": "boolean",

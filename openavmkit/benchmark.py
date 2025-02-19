@@ -367,7 +367,7 @@ def _run_one_model(
 		sales_chase = False
 
 	if verbose:
-		print(f" running model {model}...")
+		print(f" running model {model} on {len(df_sales)} rows...")
 
 	are_dep_vars_default = entry.get("dep_vars", None) is None
 

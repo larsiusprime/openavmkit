@@ -2,11 +2,12 @@ import math
 import warnings
 
 import geopandas as gpd
+import numpy as np
 import shapely
 from geopy import Point
 from geopy.distance import distance
 from pyproj import CRS
-from shapely import Polygon, MultiPolygon
+from shapely import Polygon, MultiPolygon, LineString
 
 
 def get_crs(gdf, projection_type):
@@ -329,69 +330,84 @@ def clean_geometry(gdf, ensure_polygon=True, target_crs=None):
 
   return gdf
 
-# def detect_triangular_lots(geom, compactness_threshold=0.85, angle_tolerance=10, min_aspect=0.5, max_aspect=2.0):
-#   hull = geom.convex_hull
-#   area_ratio = geom.area / hull.area
-#   if area_ratio < compactness_threshold:
-#     return False
-#
-#   # Check approximate triangular shape
-#   coords = list(hull.exterior.coords[:-1])
-#   edges = [LineString([coords[i], coords[(i + 1) % len(coords)]]) for i in range(len(coords))]
-#
-#   # Calculate angles
-#   def edge_angle(edge1, edge2):
-#     vec1 = np.array(edge1.coords[1]) - np.array(edge1.coords[0])
-#     vec2 = np.array(edge2.coords[1]) - np.array(edge2.coords[0])
-#     angle = np.arctan2(np.cross(vec1, vec2), np.dot(vec1, vec2))
-#     return np.degrees(abs(angle))
-#
-#   angles = [edge_angle(edges[i], edges[(i + 1) % len(edges)]) for i in range(len(edges))]
-#   near_180 = sum(abs(180 - angle) < angle_tolerance for angle in angles)
-#   if len(edges) - near_180 > 3:
-#     return False
-#
-#   # Check bounding box aspect ratio
-#   bounds = geom.bounds
-#   width = bounds[2] - bounds[0]
-#   height = bounds[3] - bounds[1]
-#   aspect_ratio = width / height
-#   if not (min_aspect <= aspect_ratio <= max_aspect):
-#     return False
-#
-#   return True
-#
-#
-# def identify_irregular_parcels(gdf, tolerance=10, complex_threshold=12, rectangularity_threshold=0.75, elongation_threshold=5):
-#
-#   old_crs = gdf.crs
-#   if gdf.crs.is_geographic:
-#     gdf = gdf.to_crs("EPSG:3857")
-#   tolerance = 10
-#   gdf["simplified_geometry"] = gdf.geometry.simplify(tolerance, preserve_topology=True)
-#   gdf["is_triangular"] = gdf["simplified_geometry"].apply(detect_triangular_lots)
-#
-#   # Detect complex geometry based on rectangularity and vertex count
-#   gdf["num_vertices"] = gdf["simplified_geometry"].apply(
-#     lambda geom: len(geom.exterior.coords) if geom.type == "Polygon" else 0
-#   )
-#   gdf["is_complex_geometry"] = (gdf["num_vertices"].ge(complex_threshold)) & (gdf["rectangularity"].le(rectangularity_threshold))
-#
-#   # Aspect ratio to detect elongated lots
-#   bounds = np.array(gdf["simplified_geometry"].apply(lambda geom: geom.bounds).to_list())
-#   widths = bounds[:, 2] - bounds[:, 0]
-#   heights = bounds[:, 3] - bounds[:, 1]
-#   gdf["aspect_ratio"] = np.maximum(widths, heights) / np.minimum(widths, heights)
-#   gdf["is_elongated"] = gdf["aspect_ratio"].ge(elongation_threshold)
-#
-#   # Combine criteria for irregular lots
-#   gdf["is_irregular"] = (
-#       gdf["is_complex_geometry"] |
-#       gdf["is_elongated"] |
-#       gdf["is_triangular"]
-#   )
-#
-#   gdf = gdf.drop(columns="simplified_geometry")
-#   gdf = gdf.to_crs(old_crs)
-#
-#   return gdf
+
+def detect_triangular_lots(geom, compactness_threshold=0.85, angle_tolerance=10, min_aspect=0.5, max_aspect=2.0):
+  hull = geom.convex_hull
+  area_ratio = geom.area / hull.area
+  if area_ratio < compactness_threshold:
+    return False
+
+  # Check approximate triangular shape
+  coords = list(hull.exterior.coords[:-1])
+  edges = [LineString([coords[i], coords[(i + 1) % len(coords)]]) for i in range(len(coords))]
+
+  # Calculate angles
+  def edge_angle(edge1, edge2):
+    vec1 = np.array(edge1.coords[1]) - np.array(edge1.coords[0])
+    vec2 = np.array(edge2.coords[1]) - np.array(edge2.coords[0])
+    angle = np.arctan2(np.cross(vec1, vec2), np.dot(vec1, vec2))
+    return np.degrees(abs(angle))
+
+  angles = [edge_angle(edges[i], edges[(i + 1) % len(edges)]) for i in range(len(edges))]
+  near_180 = sum(abs(180 - angle) < angle_tolerance for angle in angles)
+  if len(edges) - near_180 > 3:
+    return False
+
+  # Check bounding box aspect ratio
+  bounds = geom.bounds
+  width = bounds[2] - bounds[0]
+  height = bounds[3] - bounds[1]
+  aspect_ratio = width / height
+  if not (min_aspect <= aspect_ratio <= max_aspect):
+    return False
+
+  return True
+
+
+def get_exterior_coords(geom):
+  if geom.geom_type == "Polygon":
+    return list(geom.exterior.coords)
+  elif geom.geom_type == "MultiPolygon":
+    # Return a list of exterior coordinates for each polygon in the MultiPolygon
+    return [list(poly.exterior.coords) for poly in geom.geoms]
+  else:
+    return None  # or handle other geometry types if necessary
+
+
+def identify_irregular_parcels(gdf, verbose=False, tolerance=10, complex_threshold=12, rectangularity_threshold=0.75, elongation_threshold=5):
+
+  if verbose:
+    print(f"--> identifying irregular parcels...")
+
+  old_crs = gdf.crs
+  if gdf.crs.is_geographic:
+    gdf = gdf.to_crs("EPSG:3857")
+  gdf["simplified_geometry"] = gdf.geometry.simplify(tolerance, preserve_topology=True)
+
+  if verbose:
+    print(f"--> identifying triangular parcels...")
+  gdf["is_geom_triangular"] = gdf["simplified_geometry"].apply(detect_triangular_lots)
+
+  if verbose:
+    print(f"--> identifying complex geometry...")
+  # Detect complex geometry based on rectangularity and vertex count
+  gdf["geom_vertices"] = gdf["simplified_geometry"].apply(
+    lambda geom: len(geom.exterior.coords) if geom.type == "Polygon" else 0
+  )
+  gdf["is_geom_complex"] = (gdf["geom_vertices"].ge(complex_threshold)) & (gdf["geom_rectangularity_num"].le(rectangularity_threshold))
+
+  if verbose:
+    print(f"--> identifying elongated parcels...")
+  gdf["is_geom_elongated"] = gdf["geom_aspect_ratio"].ge(elongation_threshold)
+
+  # Combine criteria for irregular lots
+  gdf["is_geom_irregular"] = (
+      gdf["is_geom_complex"] |
+      gdf["is_geom_elongated"] |
+      gdf["is_geom_triangular"]
+  )
+
+  gdf = gdf.drop(columns="simplified_geometry")
+  gdf = gdf.to_crs(old_crs)
+
+  return gdf
