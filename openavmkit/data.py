@@ -76,10 +76,7 @@ def get_hydrated_sales_from_sup(sup: SalesUniversePair):
 	return df_merged
 
 
-#def sup_enrich_time(sup: SalesUniversePair, )
-
-
-def enrich_time(df: pd.DataFrame, time_formats: dict) -> pd.DataFrame:
+def enrich_time(df: pd.DataFrame, time_formats: dict, settings: dict) -> pd.DataFrame:
 	for key in time_formats:
 		time_format = time_formats[key]
 		if key in df:
@@ -93,7 +90,19 @@ def enrich_time(df: pd.DataFrame, time_formats: dict) -> pd.DataFrame:
 				break
 		if do_enrich:
 			df = _enrich_time_field(df, prefix, add_year_month=True, add_year_quarter=True)
+			if prefix == "sale":
+				df = enrich_sale_age_days(df, settings)
 
+	return df
+
+
+def enrich_sale_age_days(df: pd.DataFrame, settings: dict) -> pd.DataFrame:
+	val_date = get_valuation_date(settings)
+	# create a new field with dtype Int64
+	df["sale_age_days"] = None
+	df["sale_age_days"] = df["sale_age_days"].astype("Int64")
+	sale_date_as_datetime = pd.to_datetime(df["sale_date"], format="%Y-%m-%d", errors="coerce")
+	df.loc[~sale_date_as_datetime.isna(), "sale_age_days"] = (val_date - sale_date_as_datetime).dt.days
 	return df
 
 
@@ -388,11 +397,11 @@ def process_data(dataframes: dict[str : pd.DataFrame], settings: dict, verbose: 
 	df_univ = merge_dict_of_dfs(dataframes, merge_univ, settings)
 	df_sales = merge_dict_of_dfs(dataframes, merge_sales, settings)
 
-	result : SalesUniversePair = SalesUniversePair(universe=df_univ, sales=df_sales)
+	sup : SalesUniversePair = SalesUniversePair(universe=df_univ, sales=df_sales)
 
-	enrich_data(result, s_process.get("enrich", {}), dataframes, settings, verbose=verbose)
+	enrich_data(sup, s_process.get("enrich", {}), dataframes, settings, verbose=verbose)
 
-	return result
+	return sup
 
 
 def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str : pd.DataFrame], settings: dict, verbose: bool = False) -> SalesUniversePair:
@@ -908,7 +917,7 @@ def load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_ca
 			raise ValueError(f"Date field '{dkey}' does not have a time format specified.")
 
 	# Enrich the time fields (e.g. add year, month, quarter, etc., and ensure all sub-fields match the date field)
-	df = enrich_time(df, time_format_map)
+	df = enrich_time(df, time_format_map, settings)
 
 	# Handle duplicated rows
 	dupes = entry.get("dupes", None)

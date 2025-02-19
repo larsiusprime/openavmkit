@@ -29,12 +29,13 @@ from statsmodels.nonparametric.kernel_regression import KernelReg
 from statsmodels.regression.linear_model import RegressionResults
 from xgboost import XGBRegressor
 
-from openavmkit.data import get_sales, simulate_removed_buildings
+from openavmkit.data import get_sales, simulate_removed_buildings, enrich_time, _enrich_time_field, enrich_sale_age_days
 from openavmkit.ratio_study import RatioStudy
 from openavmkit.utilities.format import fancy_format
 from openavmkit.utilities.modeling import GarbageModel, AverageModel, NaiveSqftModel, LocalSqftModel, AssessorModel, \
   GWRModel, MRAModel
 from openavmkit.utilities.data import clean_column_names
+from openavmkit.utilities.settings import get_valuation_date
 from openavmkit.utilities.stats import quick_median_chd
 from openavmkit.tuning import tune_lightgbm, tune_xgboost, tune_catboost
 from openavmkit.utilities.timing import TimingData
@@ -109,7 +110,8 @@ class DataSplit:
   counter: int = 0
 
   def __init__(self,
-      df: pd.DataFrame | None,
+      df_sales: pd.DataFrame | None,
+      df_universe: pd.DataFrame | None,
       model_group: str,
       settings: dict,
       ind_var: str,
@@ -130,9 +132,25 @@ class DataSplit:
 
     self.settings = settings.copy()
 
-    # An *unmodified* copy of the original model group universe, that will remain unmodified
-    self.df_universe_orig = df.copy()
-    self.df_universe = df.copy()
+    # An *unmodified* copy of the original model group universe/sales, that will remain unmodified
+    self.df_universe_orig = df_universe.copy()
+    self.df_sales_orig = df_sales.copy()
+
+    # The working copy of the model group universe, that *will* be modified
+    self.df_universe = df_universe.copy()
+
+    # Set "sales" fields in the universe so that columns match
+    self.df_universe["valid_sale"] = False
+    self.df_universe["vacant_sale"] = False
+    self.df_universe["ss_id"] = None
+    self.df_universe["sale_price"] = None
+    self.df_universe["sale_price_time_adj"] = None
+
+    # Set sale dates in the universe to match the valuation date
+    val_date = get_valuation_date(settings)
+    self.df_universe["sale_date"] = val_date
+    self.df_universe = _enrich_time_field(self.df_universe, "sale")
+    self.df_universe = enrich_sale_age_days(self.df_universe, settings)
 
     # The parcel "multiverse" is a parcel universe that contains *all* model groups, not just the current model group
     self.df_multiverse_orig = None
@@ -141,7 +159,19 @@ class DataSplit:
       self.df_multiverse_orig = df_multiverse.copy()
       self.df_multiverse = df_multiverse.copy()
 
-    self.df_sales = get_sales(df, settings, vacant_only).reset_index(drop=True)
+
+      # Set these fields just like we did for the universe fields
+      self.df_multiverse["valid_sale"] = False
+      self.df_multiverse["vacant_sale"] = False
+      self.df_multiverse["ss_id"] = None
+      self.df_multiverse["sale_price"] = None
+      self.df_multiverse["sale_price_time_adj"] = None
+
+      self.df_multiverse["sale_date"] = val_date
+      self.df_multiverse = _enrich_time_field(self.df_multiverse, "sale")
+      self.df_multiverse = enrich_sale_age_days(self.df_multiverse, settings)
+
+    self.df_sales = get_sales(df_sales, settings, vacant_only).reset_index(drop=True)
 
     self._df_sales = self.df_sales.copy()
 
@@ -158,10 +188,7 @@ class DataSplit:
     # we also need to limit the sales set, but we can't do that AFTER we've split
 
     # Pre-sort dataframes so that rolling origin cross-validation can assume oldest observations first:
-    if days_field in self.df_universe:
-      self.df_universe.sort_values(by=days_field, ascending=False, inplace=True)
-    else:
-      raise ValueError(f"Field '{days_field}' not found in dataframe.")
+    self.df_universe.sort_values(by="key", ascending=False, inplace=True)
 
     if days_field in self.df_sales:
       self.df_sales.sort_values(by=days_field, ascending=False, inplace=True)
@@ -185,6 +212,7 @@ class DataSplit:
     # Return a deep copy
     ds = DataSplit(
       None,
+      None,
       "",
       {},
       "",
@@ -205,6 +233,7 @@ class DataSplit:
     ds.df_sales = self.df_sales.copy()
     ds.df_universe = self.df_universe.copy()
     ds.df_universe_orig = self.df_universe_orig.copy()
+    ds.df_sales_orig = self.df_sales_orig.copy()
     ds._df_sales = self._df_sales.copy()
     ds.df_train = self.df_train.copy()
     ds.df_test = self.df_test.copy()
@@ -306,7 +335,6 @@ class DataSplit:
           ds.one_hot_descendants[orig_col].append(col)
           matched.append(col)
 
-    # Ensure that only columns found in df_train are in the other dataframes:
     ds.df_universe = ds.df_universe[ds.df_train.columns]
     ds.df_sales = ds.df_sales[ds.df_train.columns]
     if ds.df_multiverse is not None:

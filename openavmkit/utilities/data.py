@@ -28,7 +28,7 @@ def div_field_z_safe(numerator: pd.Series|np.ndarray, denominator: pd.Series|np.
 	series_denominator = denominator[~idx_denominator_zero]
 
 	# make a copy of the denominator
-	result = denominator.copy()
+	result = denominator.copy().astype("Float64")
 
 	# replace all values where it is zero with None
 	result[idx_denominator_zero] = None

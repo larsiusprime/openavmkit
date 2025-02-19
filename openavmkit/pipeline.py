@@ -219,25 +219,16 @@ def load_settings():
 
 def process_sales(sup: SalesUniversePair, settings: dict, verbose: bool = False):
    # select only valid sales
-   df_sales = sup["sales"]
-   df_sales_valid = clean_valid_sales(df_sales, settings)
+   sup = clean_valid_sales(sup, settings)
 
-   # update the SUP sales
-   sup.update_sales(df_sales_valid)
-
-   # make sure sales field has necessary fields
+   # make sure sales field has necessary fields for the next step
    df_sales_hydrated = get_hydrated_sales_from_sup(sup)
 
    # enrich with time adjustment, and mark what fields were added
    df_sales_enriched = enrich_time_adjustment(df_sales_hydrated, settings, verbose)
-   df_sales_hydrated = enrich_time_adjustment(df_sales_hydrated, settings, verbose)
-   new_fields = [col for col in df_sales_hydrated.columns.values if col not in old_fields]
 
    # update the SUP sales
    sup.update_sales(df_sales_enriched)
-   # TODO: modify this when we support 'key_sale':
-   key="key"
-
 
    return sup
 

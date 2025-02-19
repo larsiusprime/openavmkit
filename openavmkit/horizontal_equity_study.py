@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import openavmkit.utilities.stats as stats
+from openavmkit.data import SalesUniversePair
 from openavmkit.utilities.clustering import make_clusters
 from openavmkit.utilities.data import do_per_model_group
 
@@ -104,6 +105,17 @@ class HorizontalEquityStudy:
 def _mark_he_ids(df_in: pd.DataFrame, model_group: str, settings: dict, verbose: bool):
 	df = mark_horizontal_equity_clusters(df_in, settings, verbose)
 	df["he_id"] = model_group + "_" + df["he_id"]
+
+
+def mark_horizontal_equity_clusters_per_model_group_sup(
+		sup: SalesUniversePair,
+		settings: dict,
+		verbose: bool = False
+):
+	df_universe = sup["universe"]
+	df_universe = mark_horizontal_equity_clusters(df_universe, settings, verbose)
+	sup.set("universe", df_universe)
+	return sup
 
 
 def mark_horizontal_equity_clusters_per_model_group(df_in: pd.DataFrame, settings: dict, verbose: bool = False):

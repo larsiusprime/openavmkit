@@ -1,5 +1,6 @@
 import os
 import pickle
+import warnings
 
 import pandas as pd
 from catboost import CatBoostRegressor
@@ -7,7 +8,8 @@ from lightgbm import Booster
 from statsmodels.nonparametric.kernel_regression import KernelReg
 from xgboost import XGBRegressor
 
-from openavmkit.data import get_important_field, get_locations, read_split_keys
+from openavmkit.data import get_important_field, get_locations, read_split_keys, SalesUniversePair, \
+	get_hydrated_sales_from_sup
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, SingleModelResults, \
 	run_garbage, \
 	run_average, run_naive_sqft, DataSplit, run_kernel, run_local_sqft, run_assessor, predict_garbage, \
@@ -278,7 +280,8 @@ def _get_data_split_for(
 		model_group: str,
 		location_fields: list[str] | None,
 		dep_vars: list[str],
-		df: pd.DataFrame,
+		df_sales: pd.DataFrame,
+		df_universe: pd.DataFrame,
 		settings: dict,
 		ind_var: str,
 		ind_var_test: str,
@@ -303,7 +306,8 @@ def _get_data_split_for(
 		_dep_vars = dep_vars
 
 	return DataSplit(
-		df,
+		df_sales,
+		df_universe,
 		model_group,
 		settings,
 		ind_var,
@@ -321,7 +325,8 @@ def _get_data_split_for(
 
 def _run_one_model(
 		df_multiverse: pd.DataFrame,
-		df: pd.DataFrame,
+		df_sales: pd.DataFrame,
+		df_universe: pd.DataFrame,
 		vacant_only: bool,
 		model_group: str,
 		model: str,
@@ -376,28 +381,29 @@ def _run_one_model(
 				print(f"--> using default variables, auto-optimized variable list: {best_variables}")
 		dep_vars = best_variables
 
-	interactions = get_variable_interactions(entry, settings, df)
+	interactions = get_variable_interactions(entry, settings, df_sales)
 
-	location_fields = get_locations(settings, df)
+	location_fields = get_locations(settings, df_sales)
 
 	test_keys, train_keys = read_split_keys(model_group)
 
 	ds = _get_data_split_for(
-		model_name,
-		model_group,
-		location_fields,
-		dep_vars,
-		df,
-		settings,
-		ind_var,
-		ind_var_test,
-		fields_cat,
-		interactions,
-		test_keys,
-		train_keys,
-		vacant_only,
-		hedonic,
-		df_multiverse
+		name=model_name,
+		model_group=model_group,
+		location_fields=location_fields,
+		dep_vars=dep_vars,
+		df_sales=df_sales,
+		df_universe=df_universe,
+		settings=settings,
+		ind_var=ind_var,
+		ind_var_test=ind_var_test,
+		fields_cat=fields_cat,
+		interactions=interactions,
+		test_keys=test_keys,
+		train_keys=train_keys,
+		vacant_only=vacant_only,
+		hedonic=hedonic,
+		df_multiverse=df_multiverse
 	)
 
 	intercept = entry.get("intercept", True)
@@ -509,7 +515,8 @@ def write_ensemble_model_results(
 
 
 def optimize_ensemble_allocation(
-		df: pd.DataFrame | None,
+		df_sales: pd.DataFrame | None,
+		df_universe: pd.DataFrame | None,
 		model_group: str,
 		vacant_only: bool,
 		ind_var: str,
@@ -524,16 +531,18 @@ def optimize_ensemble_allocation(
 	timing.start("total")
 	timing.start("setup")
 
-	if df is None:
+	if df_sales is None:
 		# get first key from all_results.model_results:
 		first_key = list(all_results.model_results.keys())[0]
-		# get the universe dataframe from the first model:
-		df = all_results.model_results[first_key].ds.df_universe_orig
+		# get the dataframes from the first model:
+		df_universe = all_results.model_results[first_key].ds.df_universe_orig
+		df_sales = all_results.model_results[first_key].ds.df_sales_orig
 
 	test_keys, train_keys = read_split_keys(model_group)
 
 	ds = DataSplit(
-		df,
+		df_sales,
+		df_universe,
 		model_group,
 		settings,
 		ind_var,
@@ -664,7 +673,8 @@ def _optimize_ensemble_allocation_iteration(
 
 
 def optimize_ensemble(
-		df: pd.DataFrame | None,
+		df_sales: pd.DataFrame | None,
+		df_universe: pd.DataFrame | None,
 		model_group: str,
 		vacant_only: bool,
 		ind_var: str,
@@ -679,16 +689,19 @@ def optimize_ensemble(
 	timing.start("total")
 	timing.start("setup")
 
-	if df is None:
+	if df_sales is None:
 		# get first key from all_results.model_results:
 		first_key = list(all_results.model_results.keys())[0]
-		# get the universe dataframe from the first model:
-		df = all_results.model_results[first_key].ds.df_universe_orig
+
+		# get the dataframes from the first model:
+		df_universe = all_results.model_results[first_key].ds.df_universe_orig
+		df_sales = all_results.model_results[first_key].ds.df_sales_orig
 
 	test_keys, train_keys = read_split_keys(model_group)
 
 	ds = DataSplit(
-		df,
+		df_sales,
+		df_universe,
 		model_group,
 		settings,
 		ind_var,
@@ -818,7 +831,8 @@ def _optimize_ensemble_iteration(
 
 
 def run_ensemble(
-		df: pd.DataFrame,
+		df_sales: pd.DataFrame,
+		df_universe: pd.DataFrame,
 		model_group: str,
 		vacant_only: bool,
 		hedonic: bool,
@@ -840,7 +854,8 @@ def run_ensemble(
 	test_keys, train_keys = read_split_keys(model_group)
 
 	ds = DataSplit(
-		df,
+		df_sales,
+		df_universe,
 		model_group,
 		settings,
 		ind_var,
@@ -948,7 +963,8 @@ def run_ensemble(
 
 
 def _prepare_ds(
-	df: pd.DataFrame,
+	df_sales: pd.DataFrame,
+	df_universe: pd.DataFrame,
 	model_group: str,
 	vacant_only: bool,
 	settings: dict
@@ -963,8 +979,8 @@ def _prepare_ds(
 	if dep_vars is None:
 		raise ValueError(f"dep_vars not found for model 'default'")
 
-	fields_cat = get_fields_categorical(s, df)
-	interactions = get_variable_interactions(entry, s, df)
+	fields_cat = get_fields_categorical(s, df_sales)
+	interactions = get_variable_interactions(entry, s, df_sales)
 
 	instructions = s.get("modeling", {}).get("instructions", {})
 	ind_var = instructions.get("ind_var", "sale_price")
@@ -973,17 +989,18 @@ def _prepare_ds(
 	test_keys, train_keys = read_split_keys(model_group)
 
 	ds = DataSplit(
-		df,
-		model_group,
-		settings,
-		ind_var,
-		ind_var_test,
-		dep_vars,
-		fields_cat,
-		interactions,
-		test_keys,
-		train_keys,
-		vacant_only
+		df_sales=df_sales,
+		df_universe=df_universe,
+		model_group=model_group,
+		settings=settings,
+		ind_var=ind_var,
+		ind_var_test=ind_var_test,
+		dep_vars=dep_vars,
+		categorical_vars=fields_cat,
+		interactions=interactions,
+		test_keys=test_keys,
+		train_keys=train_keys,
+		vacant_only=vacant_only
 	)
 	return ds
 
@@ -1235,7 +1252,8 @@ def _calc_variable_recommendations(
 
 
 def get_variable_recommendations(
-		df: pd.DataFrame,
+		df_sales: pd.DataFrame,
+		df_universe: pd.DataFrame,
 		vacant_only: bool,
 		settings: dict,
 		model: str,
@@ -1247,8 +1265,11 @@ def get_variable_recommendations(
 
 	report = MarkdownReport("variables")
 
-	df = enrich_time_adjustment(df, settings, verbose=verbose)
-	ds = _prepare_ds(df, model_group, vacant_only, settings)
+	if "sale_price_time_adj" not in df_sales:
+		warnings.warn("Time adjustment was not found in sales data. Calculating now...")
+		df_sales = enrich_time_adjustment(df_sales, settings, verbose=verbose)
+
+	ds = _prepare_ds(df_sales, df_universe, model_group, vacant_only, settings)
 	ds = ds.encode_categoricals_with_one_hot()
 	ds.split()
 
@@ -1387,7 +1408,7 @@ def generate_variable_report(
 
 
 def run_models(
-		df: pd.DataFrame,
+		sup: SalesUniversePair,
 		settings: dict,
 		save_params: bool = True,
 		use_saved_params: bool = True,
@@ -1400,8 +1421,11 @@ def run_models(
 	s_model = s.get("modeling", {})
 	s_inst = s_model.get("instructions", {})
 	model_groups = s_inst.get("model_groups", [])
+
+	df_univ = sup["universe"]
+
 	if len(model_groups) == 0:
-		model_groups = df["model_group"].unique()
+		model_groups = df_univ["model_group"].unique()
 		model_groups = [mg for mg in model_groups if not pd.isna(mg) and str(mg) != "<NA>"]
 
 	for model_group in model_groups:
@@ -1414,7 +1438,8 @@ def run_models(
 			else:
 				if not run_main:
 					continue
-			_run_models(df, model_group, settings, vacant_only, save_params, use_saved_params, use_saved_results, verbose)
+			_run_models(sup, model_group, settings, vacant_only, save_params, use_saved_params, use_saved_results, verbose)
+
 
 def _run_hedonic_models(
 		settings: dict,
@@ -1422,7 +1447,8 @@ def _run_hedonic_models(
 		vacant_only: bool,
 		models_to_run: list[str],
 		all_results: MultiModelResults,
-		df: pd.DataFrame,
+		df_sales: pd.DataFrame,
+		df_universe: pd.DataFrame,
 		ind_var: str,
 		ind_var_test: str,
 		fields_cat: list[str],
@@ -1436,8 +1462,8 @@ def _run_hedonic_models(
 	if not os.path.exists(outpath):
 		os.makedirs(outpath)
 
-	location_field_neighborhood = get_important_field(settings, "loc_neighborhood", df)
-	location_field_market_area = get_important_field(settings, "loc_market_area", df)
+	location_field_neighborhood = get_important_field(settings, "loc_neighborhood", df_sales)
+	location_field_market_area = get_important_field(settings, "loc_market_area", df_sales)
 	location_fields = [location_field_neighborhood, location_field_market_area]
 
 	# Re-run the models one by one and stash the results
@@ -1445,18 +1471,19 @@ def _run_hedonic_models(
 
 		smr = all_results.model_results[model]
 		ds = _get_data_split_for(
-			model,
-			model_group,
-			location_fields,
-			smr.dep_vars,
-			df,
-			settings,
-			ind_var,
-			ind_var_test,
-			fields_cat,
-			smr.ds.interactions.copy(),
-			smr.ds.test_keys,
-			smr.ds.train_keys,
+			name=model,
+			model_group=model_group,
+			location_fields=location_fields,
+			dep_vars=smr.dep_vars,
+			df_sales=df_sales,
+			df_universe=df_universe,
+			settings=settings,
+			ind_var=ind_var,
+			ind_var_test=ind_var_test,
+			fields_cat=fields_cat,
+			interactions=smr.ds.interactions.copy(),
+			test_keys=smr.ds.test_keys,
+			train_keys=smr.ds.train_keys,
 			vacant_only=False,
 			hedonic=True,
 			df_multiverse=df_multiverse
@@ -1486,7 +1513,8 @@ def _run_hedonic_models(
 	)
 
 	best_ensemble = optimize_ensemble(
-		df=df,
+		df_sales=df_sales,
+		df_universe=df_universe,
 		model_group=model_group,
 		vacant_only=vacant_only,
 		ind_var=ind_var,
@@ -1499,7 +1527,8 @@ def _run_hedonic_models(
 
 	# Run the ensemble model
 	ensemble_results = run_ensemble(
-		df=df,
+		df_sales=df_sales,
+		df_universe=df_universe,
 		model_group=model_group,
 		vacant_only=vacant_only,
 		hedonic=True,
@@ -1525,7 +1554,7 @@ def _run_hedonic_models(
 
 
 def _run_models(
-		df_in: pd.DataFrame,
+		sup: SalesUniversePair,
 		model_group: str,
 		settings: dict,
 		vacant_only: bool = False,
@@ -1535,7 +1564,13 @@ def _run_models(
 		verbose: bool = False
 ):
 
-	df = df_in[df_in["model_group"] == model_group].copy()
+	df_univ = sup["universe"]
+	df_sales = get_hydrated_sales_from_sup(sup)
+
+	df_multi = df_univ.copy()
+
+	df_sales = df_sales[df_sales["model_group"].eq(model_group)].copy()
+	df_univ = df_univ[df_univ["model_group"].eq(model_group)].copy()
 
 	s = settings
 	s_model = s.get("modeling", {})
@@ -1544,14 +1579,14 @@ def _run_models(
 
 	ind_var = s_inst.get("ind_var", "sale_price")
 	ind_var_test = s_inst.get("ind_var_test", "sale_price")
-	fields_cat = get_fields_categorical(s, df)
+	fields_cat = get_fields_categorical(s, df_univ)
 	models_to_run = s_inst.get(vacant_status, {}).get("run", None)
 	model_entries = s_model.get("models").get(vacant_status, {})
 	if models_to_run is None:
 		models_to_run = list(model_entries.keys())
 
 	# Enforce that horizontal equity cluster ID's have already been calculated
-	if "he_id" not in df:
+	if "he_id" not in df_univ:
 		raise ValueError("Could not find equity cluster ID's in the dataframe (he_id)")
 
 	model_results = {}
@@ -1560,7 +1595,8 @@ def _run_models(
 		os.makedirs(outpath)
 
 	var_recs = get_variable_recommendations(
-		df,
+		df_sales,
+		df_univ,
 		vacant_only,
 		settings,
 		"default",
@@ -1581,8 +1617,9 @@ def _run_models(
 	# Run the models one by one and stash the results
 	for model in models_to_run:
 		results = _run_one_model(
-			df_multiverse=df_in,
-			df=df,
+			df_multiverse=df_multi,
+			df_sales=df_sales,
+			df_universe=df_univ,
 			vacant_only=vacant_only,
 			model_group=model_group,
 			model=model,
@@ -1608,7 +1645,8 @@ def _run_models(
 	)
 
 	best_ensemble = optimize_ensemble(
-		df=df,
+		df_sales=df_sales,
+		df_universe=df_univ,
 		model_group=model_group,
 		vacant_only=vacant_only,
 		ind_var=ind_var,
@@ -1620,7 +1658,8 @@ def _run_models(
 
 	# Run the ensemble model
 	ensemble_results = run_ensemble(
-		df=df,
+		df_sales=df_sales,
+		df_universe=df_univ,
 		model_group=model_group,
 		vacant_only=vacant_only,
 		hedonic=False,
@@ -1631,7 +1670,7 @@ def _run_models(
 		all_results=all_results,
 		settings=settings,
 		verbose=verbose,
-		df_multiverse=df_in
+		df_multiverse=df_multi
 	)
 
 	out_pickle = f"{outpath}/model_ensemble.pickle"
@@ -1650,18 +1689,19 @@ def _run_models(
 
 	if not vacant_only:
 		_run_hedonic_models(
-			settings,
-			model_group,
-			vacant_only,
-			models_to_run,
-			all_results,
-			df,
-			ind_var,
-			ind_var_test,
-			fields_cat,
-			use_saved_results,
-			verbose,
-			df_multiverse=df_in
+			settings=settings,
+			model_group=model_group,
+			vacant_only=vacant_only,
+			models_to_run=models_to_run,
+			all_results=all_results,
+			df_sales=df_sales,
+			df_universe=df_univ,
+			ind_var=ind_var,
+			ind_var_test=ind_var_test,
+			fields_cat=fields_cat,
+			use_saved_results=use_saved_results,
+			verbose=verbose,
+			df_multiverse=df_multi
 		)
 
 	return all_results

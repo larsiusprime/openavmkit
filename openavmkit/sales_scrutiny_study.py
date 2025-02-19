@@ -299,6 +299,8 @@ def calc_sales_scrutiny(df_in: pd.DataFrame, sales_field: str):
     # Calculate standard deviation thresholds:
     df["low_thresh"] = -float('inf')
     df["high_thresh"] = float('inf')
+    df["low_thresh"] = df["low_thresh"].astype("Float64")
+    df["high_thresh"] = df["high_thresh"].astype("Float64")
 
     # Flag anything above or below 2 standard deviations from the median
     df.loc[
@@ -502,6 +504,7 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
 
   df_out = df_in.copy()
   df_out["anomalies"] = 0
+  df_out["anomalies"] = df_out["anomalies"].astype("Int64")
   for i in range(1, 6):
     field = f"anomaly_{i}"
     df_out[field] = False

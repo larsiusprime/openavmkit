@@ -100,20 +100,73 @@ def fill_unknown_values(df, settings: dict):
 	return df
 
 
-def clean_valid_sales(df, settings):
+def clean_valid_sales(sup: SalesUniversePair, settings : dict):
 	# load metadata
 	val_date = get_valuation_date(settings)
 	val_year = val_date.year
 	metadata = settings.get("modeling", {}).get("metadata", {})
 	use_sales_from = metadata.get("use_sales_from", val_year - 5)
 
-	# mark which sales are to be used
-	df.loc[df["sale_year"].lt(use_sales_from), "valid_sale"] = False
+	df_sales = sup["sales"].copy()
+	df_univ = sup["universe"]
+
+	# temporarily merge in universe's vacancy status (how the parcel is now)
+	df_univ_vacant = df_univ[["key", "is_vacant"]].copy().rename(columns={"is_vacant": "univ_is_vacant"})
+	df_sales = df_sales.merge(df_univ_vacant, on="key", how="left")
+
+	# mark which sales are to be used (only those that are valid and within the specified time frame)
+	df_sales.loc[df_sales["sale_year"].lt(use_sales_from), "valid_sale"] = False
+
+	# initialize these -- we want to further determine which valid sales are valid for ratio studies
+	df_sales["valid_for_ratio_study"] = False
+	df_sales["valid_for_land_ratio_study"] = False
+
+	# NORMAL RATIO STUDIES:
+	# If it's a valid sale, and its vacancy status matches its status at time of sale, it's valid for a ratio study
+	# This is because how it looked at time of sale matches how it looks now, so the prediction is comparable to the sale
+	# If the vacancy status has changed since it sold, we can't meaningfully compare sale price to current valuation
+	df_sales.loc[
+		df_sales["valid_sale"] &
+		df_sales["vacant_sale"].eq(df_sales["univ_is_vacant"]),
+		"valid_for_ratio_study"
+	] = True
+
+	# LAND RATIO STUDIES:
+	# If it's a valid sale, and it was vacant at time of sale, it's valid for a LAND ratio study regardless of whether it
+	# is valid for a normal ratio study. That's because we will come up with a land value prediction no matter what, and
+	# we can always compare that to what it sold for, as long as it was vacant at time of sale
+	df_sales.loc[
+		df_sales["valid_sale"] &
+		df_sales["vacant_sale"].eq(True),
+		"valid_for_land_ratio_study"
+	] = True
 
 	# scrub sales info from invalid sales
-	idx_invalid = df["valid_sale"].eq(False)
-	df.loc[idx_invalid, "sale_date"] = None
-	df.loc[idx_invalid, "sale_price"] = None
+	idx_invalid = df_sales["valid_sale"].eq(False)
+	fields_to_scrub = [
+		"sale_date",
+		"sale_price",
+		"sale_year",
+		"sale_month",
+		"sale_day",
+		"sale_quarter",
+		"sale_year_quarter",
+		"sale_year_month",
+		"sale_age_days"
+	]
 
-	print(f"Using {len(df[df['valid_sale'].eq(1)])} sales...")
-	return df
+	for field in fields_to_scrub:
+		if field in df_sales:
+			df_sales.loc[idx_invalid, field] = None
+
+	print(f"Using {len(df_sales[df_sales['valid_sale'].eq(True)])} sales...")
+	print(f"--> {len(df_sales[df_sales['vacant_sale'].eq(True)])} vacant sales")
+	print(f"--> {len(df_sales[df_sales['vacant_sale'].eq(False)])} improved sales")
+	print(f"--> {len(df_sales[df_sales['valid_for_ratio_study'].eq(True)])} valid for ratio study")
+	print(f"--> {len(df_sales[df_sales['valid_for_land_ratio_study'].eq(True)])} valid for land ratio study")
+
+	df_sales = df_sales.drop(columns=["univ_is_vacant"])
+
+	sup.update_sales(df_sales)
+
+	return sup
