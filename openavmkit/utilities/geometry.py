@@ -392,7 +392,7 @@ def identify_irregular_parcels(gdf, verbose=False, tolerance=10, complex_thresho
     print(f"--> identifying complex geometry...")
   # Detect complex geometry based on rectangularity and vertex count
   gdf["geom_vertices"] = gdf["simplified_geometry"].apply(
-    lambda geom: len(geom.exterior.coords) if geom.type == "Polygon" else 0
+    lambda geom: len(geom.exterior.coords) if geom.geom_type == "Polygon" else 0
   )
   gdf["is_geom_complex"] = (gdf["geom_vertices"].ge(complex_threshold)) & (gdf["geom_rectangularity_num"].le(rectangularity_threshold))
 

@@ -1,5 +1,6 @@
 import os
 
+import numpy as np
 import pandas as pd
 
 import openavmkit
@@ -71,10 +72,13 @@ def examine_df(df: pd.DataFrame, s: dict):
          txt = first_bit + "..." + last_bit
       return f"{txt:{size}}"
 
-   def get_line(col, dtype, count_non_zero, p, uniques: list | str):
+   def get_line(col, dtype, count_non_zero, p, count_non_null, pnn, uniques: list | str):
       dtype = f"{dtype}"
       if type(count_non_zero) != str:
          count_non_zero = f"{count_non_zero:,}"
+
+      if type(count_non_null) != str:
+         count_non_null = f"{count_non_null:,}"
 
       if type(uniques) is list:
          unique_str = str(uniques)
@@ -83,12 +87,12 @@ def examine_df(df: pd.DataFrame, s: dict):
          else:
             uniques = unique_str
 
-      return f"{fit_str(col,30)} {dtype:^10} {count_non_zero:>10} {p:>5.0%} {uniques:>40}"
+      return f"{fit_str(col,30)} {dtype:^10} {count_non_zero:>10} {p:>5.0%} {count_non_null:>10} {pnn:>5.0%} {uniques:>40}"
 
    def print_horz_line(char: str):
-      print(fill_str(char,30)+" "+fill_str(char,10)+" "+fill_str(char,10)+" "+fill_str(char, 5)+" "+fill_str(char,40))
+      print(fill_str(char,30)+" "+fill_str(char,10)+" "+fill_str(char,10)+" "+fill_str(char, 5)+" "+fill_str(char,10)+" "+fill_str(char, 5)+" "+fill_str(char,40))
 
-   print(f"{'FIELD':^30} {'TYPE':^10} {'NON-ZERO':^10} {'%':^5} {'UNIQUE':^40}")
+   print(f"{'FIELD':^30} {'TYPE':^10} {'NON-ZERO':^10} {'%':^5} {'NON-NULL':^10} {'%':^5} {'UNIQUE':^40}")
 
    fields_land = get_fields_land(s, df)
    fields_impr = get_fields_impr(s, df)
@@ -133,9 +137,11 @@ def examine_df(df: pd.DataFrame, s: dict):
          print_horz_line("-")
          for n in nums:
             fields_noted.append(n)
-            non_zero = len(df[df[n].gt(0)])
+            non_zero = len(df[np.abs(df[n]).gt(0)])
             perc = non_zero / len(df)
-            print(get_line(n, df[n].dtype, non_zero, perc, ""))
+            non_null = len(df[~pd.isna(df[n])])
+            perc_non_null = non_null / len(df)
+            print(get_line(n, df[n].dtype, non_zero, perc, non_null, perc_non_null,""))
 
       if len(bools) > 0:
          print_horz_line("-")
@@ -143,9 +149,11 @@ def examine_df(df: pd.DataFrame, s: dict):
          print_horz_line("-")
          for b in bools:
             fields_noted.append(b)
-            non_zero = len(df[df[b].gt(0)])
+            non_zero = len(df[np.abs(df[n]).gt(0)])
             perc = non_zero / len(df)
-            print(get_line(b, df[b].dtype, non_zero, perc, df[b].unique().tolist()))
+            non_null = len(df[~pd.isna(df[b])])
+            perc_non_null = non_null / len(df)
+            print(get_line(b, df[b].dtype, non_zero, perc, non_null, perc_non_null, df[b].unique().tolist()))
 
       if len(cats) > 0:
          print_horz_line("-")
@@ -155,7 +163,7 @@ def examine_df(df: pd.DataFrame, s: dict):
             fields_noted.append(c)
             non_zero = (~pd.isna(df[c])).sum()
             perc = non_zero / len(df)
-            print(get_line(c, df[c].dtype, non_zero, perc, df[c].unique().tolist()))
+            print(get_line(c, df[c].dtype, non_zero, perc, non_zero, perc, df[c].unique().tolist()))
 
       i += 1
 
@@ -174,7 +182,8 @@ def examine_df(df: pd.DataFrame, s: dict):
       for u in fields_unclassified:
          non_zero = (~pd.isna(df[u])).sum()
          perc = non_zero / len(df)
-         print(get_line(u, df[u].dtype, non_zero, perc, list(df[u].unique())))
+         perc_non_null = non_zero / len(df)
+         print(get_line(u, df[u].dtype, non_zero, perc, non_zero, perc, list(df[u].unique())))
 
 
 def load_dataframes(settings: dict, verbose: bool = False) -> dict[str : pd.DataFrame]:

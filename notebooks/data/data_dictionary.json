@@ -55,7 +55,13 @@
 	},
 	"land_area_sqft":{
 		"name": "Land area in square feet",
-		"description": "Land area in square feet",
+		"description": "Land area in square feet. If the value given by the locality is missing, this is filled in from the GIS value.",
+		"type": "number",
+		"groups": ["land"]
+	},
+	"land_area_given_sqft":{
+		"name": "Land area in square feet",
+		"description": "Land area in square feet. This value is the original unaltered value given by the locality.",
 		"type": "number",
 		"groups": ["land"]
 	},
@@ -352,11 +358,11 @@
 		"type": "string",
 		"groups": ["building"]
 	},
-	"total_replacement_value":{},
-	"total_depreciated_value":{},
-	"total_depreciation":{},
-	"percent_depreciation":{},
-	"outbuilding_value":{},
+	"bldg_value_replacement":{},
+	"bldg_value_depreciated":{},
+	"bldg_depreciation_total":{},
+	"bldg_depreciation_percent":{},
+	"bldg_outbuilding_value":{},
 	"bldg_quality_txt":{
 		"name": "Building quality",
 		"description": "Building quality",

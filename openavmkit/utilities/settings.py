@@ -321,12 +321,13 @@ def get_data_dictionary(settings: dict):
   return settings.get("data_dictionary", {})
 
 
-def get_grouped_fields_from_data_dictionary(dd: dict, group: str) -> list[str]:
+def get_grouped_fields_from_data_dictionary(dd: dict, group: str, types: list[str] = None) -> list[str]:
   result = []
   for key in dd:
     entry = dd[key]
     if group in entry.get("groups", []):
-      result.append(key)
+      if types is None or entry.get("type") in types:
+        result.append(key)
   return result
 
 

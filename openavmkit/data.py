@@ -365,6 +365,21 @@ def get_important_field(settings: dict, field_name: str, df: pd.DataFrame = None
 	return other_name
 
 
+def get_field_classifications(settings: dict):
+	field_map = {}
+	for ftype in ["land", "impr", "other"]:
+		nums = get_fields_numeric(settings, None, False, [ftype])
+		cats = get_fields_categorical(settings, None, False, [ftype])
+		bools = get_fields_boolean(settings, None, [ftype])
+		for field in nums:
+			field_map[field] = {"type": ftype, "class": "numeric"}
+		for field in cats:
+			field_map[field] = {"type": ftype, "class": "categorical"}
+		for field in bools:
+			field_map[field] = {"type": ftype, "class": "boolean"}
+	return field_map
+
+
 def get_dtypes_from_settings(settings: dict):
 	cats = get_fields_categorical(settings, include_boolean=False)
 	bools = get_fields_boolean(settings)
@@ -397,6 +412,13 @@ def process_data(dataframes: dict[str : pd.DataFrame], settings: dict, verbose: 
 
 	df_univ = merge_dict_of_dfs(dataframes, merge_univ, settings)
 	df_sales = merge_dict_of_dfs(dataframes, merge_sales, settings)
+
+	if "valid_sale" not in df_sales:
+		raise ValueError("The 'valid_sale' column is required in the sales data.")
+	if "vacant_sale" not in df_sales:
+		raise ValueError("The 'vacant_sale' column is required in the sales data.")
+
+	df_sales = df_sales[df_sales["valid_sale"].eq(True)].copy().reset_index(drop=True)
 
 	sup : SalesUniversePair = SalesUniversePair(universe=df_univ, sales=df_sales)
 
@@ -512,6 +534,8 @@ def _enrich_vacant(
 ) -> pd.DataFrame:
 	df = df_in.copy()
 
+	df["is_vacant"] = False
+
 	df.loc[pd.isna(df["bldg_area_finished_sqft"]), "bldg_area_finished_sqft"] = 0
 	df.loc[df["bldg_area_finished_sqft"].eq(0), "is_vacant"] = True
 
@@ -588,6 +612,11 @@ def basic_geo_enrichment(gdf: gpd.GeoDataFrame, settings: dict, verbose: bool = 
 		print(f"--> calculate GIS area of each parcel...")
 	# Calculate the GIS area of each parcel:
 	gdf["land_area_gis_sqft"] = gdf_area.geometry.area
+
+	# Fill missing land area with GIS area:
+	gdf["land_area_given_sqft"] = gdf["land_area_sqft"]
+	gdf["land_area_sqft"] = gdf["land_area_sqft"].combine_first(gdf["land_area_gis_sqft"])
+
 	gdf["land_area_gis_delta_sqft"] = gdf["land_area_gis_sqft"] - gdf["land_area_sqft"]
 	gdf["land_area_gis_delta_percent"] = div_field_z_safe(gdf["land_area_gis_delta_sqft"], gdf["land_area_sqft"])
 
@@ -690,6 +719,22 @@ def perform_spatial_joins(s_geom: list, dataframes: dict[str: pd.DataFrame], ver
 					raise ValueError(f"Field to tag '{field}' not found in geometry dataframe '{_id}'.")
 
 		gdf_merged = _perform_spatial_join(gdf_merged, gdf, predicate, fields_to_tag)
+
+	# identify parcels with no geometry
+	gdf_no_geometry = gdf_merged[gdf_merged["geometry"].isna()]
+
+	if len(gdf_no_geometry) > 0:
+		warnings.warn(f"Found {len(gdf_no_geometry)} parcels with no geometry. These parcels will be excluded from the analysis. You can find them in out/errors/")
+		os.makedirs("out/errors", exist_ok=True)
+		gdf_no_geometry.to_parquet("out/errors/parcels_no_geometry.parquet")
+		gdf_no_geometry.to_csv("out/errors/parcels_no_geometry.csv", index=False)
+		gdf_no_geom_keys = gdf_no_geometry["key"].values
+		# write out the keys:
+		with open("out/errors/parcels_no_geometry_keys.txt", "w") as f:
+			for key in gdf_no_geom_keys:
+				f.write(f"{key}\n")
+		# exclude no-geometry rows from gdf_merged:
+		gdf_merged = gdf_merged.dropna(subset=["geometry"])
 
 	return gdf_merged
 
@@ -808,6 +853,8 @@ def perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, datafra
 		else:
 			uniques = gdf[field].unique()
 			for unique in uniques:
+				if pd.isna(unique):
+					continue
 				gdf_subset = gdf[gdf[field].eq(unique)]
 				df = _perform_distance_calculations(df, gdf_subset, f"{_id}_{unique}", unit)
 
