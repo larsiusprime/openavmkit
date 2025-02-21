@@ -83,6 +83,7 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 		"train": [],
 		"test": [],
 		"univ": [],
+		"multi": [],
 		"chd": [],
 	}
 
@@ -139,6 +140,7 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 				data_time["train"].append(tim.get("train"))
 				data_time["test"].append(tim.get("predict_test"))
 				data_time["univ"].append(tim.get("predict_univ"))
+				data_time["multi"].append(tim.get("predict_multi"))
 				data_time["chd"].append(tim.get("chd"))
 
 			data["chd"].append(chd_results)
