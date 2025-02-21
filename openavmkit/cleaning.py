@@ -208,7 +208,17 @@ def fill_thing(df: pd.DataFrame, field: str, fill_method: str):
 	elif fill_method == "false":
 		df = fill_with(df, field, False)
 	elif fill_method == "mode":
-		df = fill_with(df, field, df[~df[field].isna()][field].mode().iloc[0])
+		modal_values = df[~df[field].isna()][field].mode()
+		if len(modal_values) > 0:
+			modal_value = modal_values.iloc[0]
+		else:
+			# Rare edge case -- there's NO non-null modal value. Default to 0/unknown depending on dtype.
+			dtype_str = str(df[field].dtype).lower()
+			if "int" in dtype_str or "float" in dtype_str:
+				modal_value = 0
+			else:
+				modal_value = "UNKNOWN"
+		df = fill_with(df, field, modal_value)
 	elif fill_method == "median":
 		df = fill_with(df, field, df[~df[field].isna()][field].median())
 	elif fill_method == "mean":
@@ -224,8 +234,16 @@ def fill_unknown_values_per_model_group(df_in: pd.DataFrame, settings: dict):
 	df = df_in.copy()
 	model_groups = get_model_group_ids(settings, df)
 
+	# TODO: this is a hacky one off, probably need a more systemic way to handle cases where we need to hit all rows no matter what
+	model_groups.append(None)
+	model_groups.append("UNKNOWN")
+	model_groups = list(set(model_groups))
+
 	for model_group in model_groups:
-		df_mg = df[df["model_group"].eq(model_group)].copy()
+		if model_group is None:
+			df_mg = df[pd.isna(df["model_group"])].copy()
+		else:
+			df_mg = df[df["model_group"].eq(model_group)].copy()
 		df_mg = fill_unknown_values(df_mg, settings)
 		df.loc[df_mg.index, :] = df_mg
 

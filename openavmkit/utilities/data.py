@@ -78,7 +78,7 @@ def rename_dict(dict, renames):
 	return new_dict
 
 
-def do_per_model_group(df_in: pd.DataFrame, func: callable, params: dict) -> pd.DataFrame:
+def do_per_model_group(df_in: pd.DataFrame, func: callable, params: dict, verbose: bool = False) -> pd.DataFrame:
 	"""
   Apply a function to each subset of the DataFrame grouped by 'model_group',
   updating rows for which the indices match.
@@ -87,6 +87,7 @@ def do_per_model_group(df_in: pd.DataFrame, func: callable, params: dict) -> pd.
       df_in (pd.DataFrame): Input DataFrame.
       func (callable): A function to apply to each subset.
       params (dict): Additional parameters for the function.
+      verbose (bool): Whether to print progress information.
 
   Returns:
       pd.DataFrame: Modified DataFrame with updates from the function.
@@ -98,6 +99,9 @@ def do_per_model_group(df_in: pd.DataFrame, func: callable, params: dict) -> pd.
 
 		if pd.isna(model_group):
 			continue
+
+		if verbose:
+			print(f"Processing model group: {model_group}")
 
 		# Copy params locally to avoid side effects
 		params_local = params.copy()

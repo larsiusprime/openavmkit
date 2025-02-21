@@ -1248,6 +1248,19 @@ def merge_dict_of_dfs(dataframes: dict[str : pd.DataFrame], merge_list: list, se
 		if col in calc_cols:
 			df_merged = df_merged.drop(columns=[col])
 
+	if "key" not in df_merged:
+		raise ValueError("No 'key' field found in merged dataframe. This field is required.")
+
+	len_old = len(df_merged)
+
+	# Drop any rows that lack primary keys:
+	df_merged = df_merged.dropna(subset=["key"])
+
+	len_new = len(df_merged)
+
+	if len_new < len_old:
+		warnings.warn(f"Dropped {len_old - len_new} rows due to missing primary key.")
+
 	return df_merged
 
 

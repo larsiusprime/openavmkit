@@ -140,9 +140,12 @@ class DataSplit:
     self.df_universe = df_universe.copy()
 
     # Set "sales" fields in the universe so that columns match
+    set_to_zero = ["sale_age_days"]
     set_to_false = ["valid_sale", "vacant_sale", "valid_for_ratio_study", "valid_for_land_ratio_study"]
     set_to_none = ["ss_id", "sale_price", "sale_price_time_adj"]
 
+    for col in set_to_zero:
+      self.df_universe[col] = 0
     for col in set_to_false:
       self.df_universe[col] = False
     for col in set_to_none:
@@ -162,6 +165,8 @@ class DataSplit:
       self.df_multiverse = df_multiverse.copy()
 
       # Set these fields just like we did for the universe fields
+      for col in set_to_zero:
+        self.df_multiverse[col] = 0
       for col in set_to_false:
         self.df_multiverse[col] = False
       for col in set_to_none:

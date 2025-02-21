@@ -509,7 +509,7 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
     field = f"anomaly_{i}"
     df_out[field] = False
     df_out[field] = df[field]
-    df_out["anomalies"] = df_out["anomalies"] + df[field].fillna(0).astype("Int64")
+    df_out["anomalies"] = df_out["anomalies"] + df[field].astype("Int64").fillna(0)
 
   df_out.loc[df_out["anomalies"].le(0), "flagged"] = False
 
