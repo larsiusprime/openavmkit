@@ -581,13 +581,13 @@ def _mark_ss_ids(df_in: pd.DataFrame, model_group: str, settings: dict, verbose:
 
 def mark_ss_ids_per_model_group(df_in: pd.DataFrame, settings: dict, verbose: bool = False) -> pd.DataFrame:
   # Mark the sales scrutiny ID's
-  df = do_per_model_group(df_in.copy(), _mark_ss_ids, {"settings": settings, "verbose": verbose})
+  df = do_per_model_group(df_in.copy(), settings, _mark_ss_ids, {"settings": settings, "verbose": verbose})
   return df
 
 
 def run_sales_scrutiny_per_model_group(df_in: pd.DataFrame, settings: dict, verbose=False) -> pd.DataFrame:
   # Run sales scrutiny for each model group
-  df = do_per_model_group(df_in.copy(), run_sales_scrutiny, {"settings": settings, "verbose": verbose})
+  df = do_per_model_group(df_in.copy(), settings, run_sales_scrutiny, {"settings": settings, "verbose": verbose})
   return df
 
 

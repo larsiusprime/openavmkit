@@ -374,13 +374,26 @@ def apply_dd_to_df_rows(
 
 def get_model_group_ids(settings: dict, df: pd.DataFrame = None):
   modeling = settings.get("modeling", {})
+
+  # Get the model groups defined in the settings
   model_groups = modeling.get("model_groups", {})
+
+  # Get the preferred order, if any
+  order = modeling.get("instructions", {}).get("model_group_order", [])
+
   if df is not None:
+    # If a dataframe is provided, filter out model groups that are not present in the DataFrame
     model_groups_in_df = df["model_group"].unique()
     model_group_ids = [key for key in model_groups if key in model_groups_in_df]
   else:
     model_group_ids = [key for key in model_groups]
-  return model_group_ids
+
+  # Order the model groups according to the preferred order
+  ordered_ids = [key for key in order if key in model_group_ids]
+  unordered_ids = [key for key in model_group_ids if key not in ordered_ids]
+  ordered_ids += unordered_ids
+
+  return ordered_ids
 
 
 def get_small_area_unit(settings: dict):

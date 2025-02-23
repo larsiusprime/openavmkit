@@ -28,4 +28,9 @@ def fancy_format(num):
   while abs(num) >= 1000 and abs(num) > 1e-6:
     magnitude += 1
     num /= 1000.0
-  return '{}{}'.format('{:f}'.format(num).rstrip('0').rstrip('.'), ['', 'K', 'M', 'B', 'T'][magnitude])
+  if magnitude <= 11:
+    magletter = ['', 'K', 'M', 'B', 'T', 'Q', 'Qi', 'S', 'Sp', 'O', 'N', 'D'][magnitude]
+    return '{}{}'.format('{:f}'.format(num).rstrip('0').rstrip('.'), magletter)
+  else:
+    # format num in scientific notation with 2 decimal places
+    return '{:e}'.format(num)

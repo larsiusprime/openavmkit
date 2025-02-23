@@ -4,8 +4,7 @@ import pickle
 
 import polars as pl
 from joblib import Parallel, delayed
-from typing import Union
-
+from typing import Union, Any, Dict
 
 import numpy as np
 import statsmodels.api as sm
@@ -102,7 +101,11 @@ class PredictionResults:
     n = len(y_pred)
     k = len(dep_vars)
 
-    self.adj_r2 = 1 - ((1 - self.r2)*(n-1)/(n-k-1))
+    divisor = n-k-1
+    if divisor == 0:
+      self.adj_r2 = float('inf')
+    else:
+      self.adj_r2 = 1 - ((1 - self.r2)*(n-1)/divisor)
     self.ratio_study = RatioStudy(y_pred_clean, y_clean)
 
 class DataSplit:
@@ -523,6 +526,7 @@ class SingleModelResults:
         df_univ_valid[col] = df_univ_valid[col].astype("str")
 
     pl_df = pl.DataFrame(df_univ_valid)
+
     self.chd = quick_median_chd(pl_df, field_prediction, field_horizontal_equity_id)
     timing.stop("chd")
 
@@ -592,6 +596,14 @@ def model_utility_score(
   return final_score
 
 
+def safe_predict(callable, X: Any, params: Dict[str, Any]=None):
+  if len(X) == 0:
+    return np.array([])
+  if params is None:
+    params = {}
+  return callable(X, **params)
+
+
 def predict_mra(
     ds: DataSplit,
     model: MRAModel,
@@ -602,22 +614,22 @@ def predict_mra(
 
   # predict on test set:
   timing.start("predict_test")
-  y_pred_test = fitted_model.predict(ds.X_test).to_numpy()
+  y_pred_test = safe_predict(fitted_model.predict, ds.X_test).to_numpy()
   timing.stop("predict_test")
 
   # predict on the sales set:
   timing.start("predict_sales")
-  y_pred_sales = fitted_model.predict(ds.X_sales).to_numpy()
+  y_pred_sales = safe_predict(fitted_model.predict, ds.X_sales).to_numpy()
   timing.stop("predict_sales")
 
   # predict on the universe set:
   timing.start("predict_univ")
-  y_pred_univ = fitted_model.predict(ds.X_univ).to_numpy()
+  y_pred_univ = safe_predict(fitted_model.predict, ds.X_univ).to_numpy()
   timing.stop("predict_univ")
 
   timing.start("predict_multi")
   if ds.df_multiverse is not None:
-    y_pred_multi = fitted_model.predict(ds.X_multiverse).to_numpy()
+    y_pred_multi = safe_predict(fitted_model.predict, ds.X_multiverse).to_numpy()
   else:
     y_pred_multi = None
   timing.stop("predict_multi")
@@ -955,16 +967,18 @@ def predict_gwr(
 
   np_coords_test = np.array(coords_test)
   timing.start("predict_test")
-  gwr_result_test = gwr.predict(
-    np_coords_test,
-    X_test
-  )
-  y_pred_test = gwr_result_test.predictions.flatten()
+
+  if len(np_coords_test) == 0 or len(X_test) == 0:
+    y_pred_test = np.array([])
+  else:
+    gwr_result_test = gwr.predict(
+      np_coords_test,
+      X_test
+    )
+    y_pred_test = gwr_result_test.predictions.flatten()
   timing.stop("predict_test")
 
   timing.start("predict_sales")
-  if verbose:
-    print("GWR: predicting sales set...")
   y_pred_sales = _run_gwr_prediction(
     coords_sales,
     coords_train,
@@ -978,8 +992,6 @@ def predict_gwr(
   timing.stop("predict_sales")
 
   timing.start("predict_univ")
-  if verbose:
-    print("GWR: predicting universe set...")
   y_pred_univ = _run_gwr_prediction(
     coords_univ,
     coords_train,
@@ -996,8 +1008,6 @@ def predict_gwr(
 
   timing.start("predict_multi")
   if ds.df_multiverse is not None:
-    if verbose:
-      print("GWR: predicting multiverse...")
     y_pred_multi = _run_gwr_prediction(
       coords_multi,
       coords_train,
@@ -1120,20 +1130,20 @@ def predict_xgboost(
     verbose: bool = False
 ):
   timing.start("predict_test")
-  y_pred_test = xgboost_model.predict(ds.X_test)
+  y_pred_test = safe_predict(xgboost_model.predict, ds.X_test)
   timing.stop("predict_test")
 
   timing.start("predict_sales")
-  y_pred_sales = xgboost_model.predict(ds.X_sales)
+  y_pred_sales = safe_predict(xgboost_model.predict, ds.X_sales)
   timing.stop("predict_sales")
 
   timing.start("predict_univ")
-  y_pred_univ = xgboost_model.predict(ds.X_univ)
+  y_pred_univ = safe_predict(xgboost_model.predict, ds.X_univ)
   timing.stop("predict_univ")
 
   timing.start("predict_multi")
   if ds.df_multiverse is not None:
-    y_pred_multi = xgboost_model.predict(ds.X_multiverse)
+    y_pred_multi = safe_predict(xgboost_model.predict, ds.X_multiverse)
   else:
     y_pred_multi = None
   timing.stop("predict_multi")
@@ -1206,20 +1216,20 @@ def predict_lightgbm(
     verbose: bool = False
 ):
   timing.start("predict_test")
-  y_pred_test = gbm.predict(ds.X_test, num_iteration=gbm.best_iteration)
+  y_pred_test = safe_predict(gbm.predict, ds.X_test, {"num_iteration": gbm.best_iteration})
   timing.stop("predict_test")
 
   timing.start("predict_sales")
-  y_pred_sales = gbm.predict(ds.X_sales, num_iteration=gbm.best_iteration)
+  y_pred_sales = safe_predict(gbm.predict, ds.X_sales, {"num_iteration": gbm.best_iteration})
   timing.stop("predict_sales")
 
   timing.start("predict_univ")
-  y_pred_univ = gbm.predict(ds.X_univ, num_iterations=gbm.best_iteration)
+  y_pred_univ = safe_predict(gbm.predict, ds.X_univ, {"num_iteration": gbm.best_iteration})
   timing.stop("predict_univ")
 
   timing.start("predict_multi")
   if ds.df_multiverse is not None:
-    y_pred_multi = gbm.predict(ds.X_multiverse, num_iterations=gbm.best_iteration)
+    y_pred_multi = safe_predict(gbm.predict, ds.X_multiverse, {"num_iteration": gbm.best_iteration})
   else:
     y_pred_multi = None
   timing.stop("predict_multi")
@@ -1305,26 +1315,37 @@ def predict_catboost(
 ):
   cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
 
-  test_pool = Pool(data=ds.X_test, label=ds.y_test, cat_features=cat_vars)
-  sales_pool = Pool(data=ds.X_sales, label=ds.y_sales, cat_features=cat_vars)
-  univ_pool = Pool(data=ds.X_univ, cat_features=cat_vars)
-
   timing.start("predict_test")
-  y_pred_test = catboost_model.predict(test_pool)
+  if len(ds.y_test) == 0:
+    y_pred_test = np.array([])
+  else:
+    test_pool = Pool(data=ds.X_test, label=ds.y_test, cat_features=cat_vars)
+    y_pred_test = catboost_model.predict(test_pool)
   timing.stop("predict_test")
 
   timing.start("predict_sales")
-  y_pred_sales = catboost_model.predict(sales_pool)
+  if len(ds.y_sales) == 0:
+    y_pred_sales = np.array([])
+  else:
+    sales_pool = Pool(data=ds.X_sales, label=ds.y_sales, cat_features=cat_vars)
+    y_pred_sales = catboost_model.predict(sales_pool)
   timing.stop("predict_sales")
 
   timing.start("predict_univ")
-  y_pred_univ = catboost_model.predict(univ_pool)
+  if len(ds.X_univ) == 0:
+    y_pred_univ = np.array([])
+  else:
+    univ_pool = Pool(data=ds.X_univ, cat_features=cat_vars)
+    y_pred_univ = catboost_model.predict(univ_pool)
   timing.stop("predict_univ")
 
   timing.start("predict_multi")
   if ds.df_multiverse is not None:
-    multi_pool = Pool(data=ds.X_multiverse, cat_features=cat_vars)
-    y_pred_multi = catboost_model.predict(multi_pool)
+    if len(ds.y_multiverse) == 0 or len(ds.X_multiverse) == 0:
+      y_pred_multi = np.array([])
+    else:
+      multi_pool = Pool(data=ds.X_multiverse, cat_features=cat_vars)
+      y_pred_multi = catboost_model.predict(ds.X_multiverse, multi_pool)
   else:
     y_pred_multi = None
   timing.stop("predict_multi")
@@ -1850,8 +1871,8 @@ def predict_local_sqft(
   X_univ_vacant = X_univ[X_univ["bldg_area_finished_sqft"].eq(0)]
   X_univ["prediction_impr"] = X_univ_improved["bldg_area_finished_sqft"] * X_univ_improved["per_impr_sqft"]
   X_univ["prediction_land"] = X_univ_vacant["land_area_sqft"] * X_univ_vacant["per_land_sqft"]
-  X_univ.loc[X_univ["prediction_impr"].isna() | X_univ["prediction_impr"].eq(0)] = overall_per_impr_sqft
-  X_univ.loc[X_univ["prediction_land"].isna() | X_univ["prediction_land"].eq(0)] = overall_per_land_sqft
+  X_univ.loc[X_univ["prediction_impr"].isna() | X_univ["prediction_impr"].eq(0), "prediction_impr"] = overall_per_impr_sqft
+  X_univ.loc[X_univ["prediction_land"].isna() | X_univ["prediction_land"].eq(0), "prediction_land"] = overall_per_land_sqft
   X_univ["prediction"] = np.where(X_univ["bldg_area_finished_sqft"].gt(0), X_univ["prediction_impr"], X_univ["prediction_land"])
   y_pred_univ = X_univ["prediction"].to_numpy()
   X_univ.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_sqft"], inplace=True)
@@ -1871,8 +1892,8 @@ def predict_local_sqft(
     X_multi_vacant = X_multi[X_multi["bldg_area_finished_sqft"].eq(0)]
     X_multi["prediction_impr"] = X_multi_improved["bldg_area_finished_sqft"] * X_multi_improved["per_impr_sqft"]
     X_multi["prediction_land"] = X_multi_vacant["land_area_sqft"] * X_multi_vacant["per_land_sqft"]
-    X_multi.loc[X_multi["prediction_impr"].isna() | X_multi["prediction_impr"].eq(0)] = overall_per_impr_sqft
-    X_multi.loc[X_multi["prediction_land"].isna() | X_multi["prediction_land"].eq(0)] = overall_per_land_sqft
+    X_multi.loc[X_multi["prediction_impr"].isna() | X_multi["prediction_impr"].eq(0), "prediction_impr"] = overall_per_impr_sqft
+    X_multi.loc[X_multi["prediction_land"].isna() | X_multi["prediction_land"].eq(0), "prediction_land"] = overall_per_land_sqft
     X_multi["prediction"] = np.where(X_multi["bldg_area_finished_sqft"].gt(0), X_multi["prediction_impr"], X_multi["prediction_land"])
     y_pred_multi = X_multi["prediction"].to_numpy()
     X_multi.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_sqft"], inplace=True)

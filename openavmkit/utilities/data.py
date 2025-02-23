@@ -4,6 +4,9 @@ import pickle
 import numpy as np
 import pandas as pd
 
+from openavmkit.utilities.settings import get_model_group_ids
+
+
 def clean_column_names(df: pd.DataFrame):
 	# find column names that contain forbidden characters and replace them with legal representations:
 	replace_map = {
@@ -78,7 +81,7 @@ def rename_dict(dict, renames):
 	return new_dict
 
 
-def do_per_model_group(df_in: pd.DataFrame, func: callable, params: dict, verbose: bool = False) -> pd.DataFrame:
+def do_per_model_group(df_in: pd.DataFrame, settings: dict, func: callable, params: dict, verbose: bool = False) -> pd.DataFrame:
 	"""
   Apply a function to each subset of the DataFrame grouped by 'model_group',
   updating rows for which the indices match.
@@ -93,7 +96,7 @@ def do_per_model_group(df_in: pd.DataFrame, func: callable, params: dict, verbos
       pd.DataFrame: Modified DataFrame with updates from the function.
   """
 	df = df_in.copy()
-	model_groups = df["model_group"].unique()
+	model_groups = get_model_group_ids(settings, df_in)
 
 	for model_group in model_groups:
 

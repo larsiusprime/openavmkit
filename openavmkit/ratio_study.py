@@ -276,7 +276,10 @@ def _run_ratio_study_breakdowns(settings: dict, df_sales: pd.DataFrame, confiden
 							labels = []
 							last_value = 0
 							for q in range(quantiles+1):
-								quantile_value = np.quantile(df_sub[by], q / quantiles)
+								try:
+									quantile_value = np.quantile(df_sub[by], q / quantiles)
+								except IndexError:
+									quantile_value = float('nan')
 								percentile = f"{q / quantiles * 100:3.0f}th %ile ({last_value:,.0f} - {quantile_value:,.0f})"
 								if quantile_value not in bins:
 									bins.append(quantile_value)

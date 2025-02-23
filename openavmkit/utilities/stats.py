@@ -1,3 +1,5 @@
+import warnings
+
 import polars as pl
 import statsmodels.api as sm
 import pandas as pd
@@ -35,7 +37,7 @@ def calc_chds(
 
 def quick_median_chd(df: pl.DataFrame, field_value: str, field_cluster: str) -> float:
 	# limit df to rows where field_value is not null/nan/etc
-	df = df.filter(df[field_value].is_not_null())
+	df = df.filter(~pd.isna(df[field_value]))
 
 	chds = (
 		df
@@ -58,7 +60,12 @@ def calc_cod(values: np.ndarray) -> float:
 	abs_delta_values = np.abs(values - median_value)
 	avg_abs_deviation = np.sum(abs_delta_values) / len(values)
 	if median_value == 0:
-		return float('nan')
+		# if every value is zero, the COD is zero:
+		if np.all(values == 0):
+			return 0.0
+		else:
+			# if the median is zero but not all values are zero, return infinity
+			return float('inf')
 	cod = avg_abs_deviation / median_value
 	cod *= 100
 	return cod
@@ -218,7 +225,11 @@ def calc_correlations(X: pd.DataFrame, threshold: float = 0.1, do_plots: bool = 
 
 		# Identify the variable with the lowest score
 		min_score_idx = score.idxmin()
-		min_score = score[min_score_idx]
+
+		if pd.isna(min_score_idx):
+			min_score = score[0]
+		else:
+			min_score = score[min_score_idx]
 
 		data = {
 			"corr_strength": strength,
@@ -381,6 +392,8 @@ def calc_t_values_recursive_drop(X: pd.DataFrame, y: pd.Series, threshold: float
 		if first_run is None:
 			first_run = t_values
 		min_t_var = t_values.abs().idxmin()
+		if pd.isna(min_t_var):
+			min_t_var = 0
 		min_t_val = t_values[min_t_var]
 		if min_t_val < threshold:
 			X = X.drop(min_t_var, axis=1)
@@ -444,6 +457,11 @@ def calc_vif(X: pd.DataFrame):
 	vif_data = pd.DataFrame()
 	vif_data["variable"] = X.columns
 
+	if len(X.values) < 5:
+		warnings.warn("Can't calculate VIF for less than 5 samples")
+		vif_data["vif"] = [float('nan')] * len(X.columns)
+		return vif_data
+
 	# Calculate VIF for each column
 	vif_data["vif"] = [variance_inflation_factor(X.values, i) for i in range(X.shape[1])]
 
@@ -457,5 +475,9 @@ def calc_mse(prediction: np.ndarray, ground_truth: np.ndarray):
 def calc_cross_validation_score(X, y):
 	model = LinearRegression()
 	# Use negative MSE and negate it to return positive MSE
-	scores = cross_val_score(model, X, y, cv=5, scoring="neg_mean_squared_error")
+	try:
+		scores = cross_val_score(model, X, y, cv=5, scoring="neg_mean_squared_error")
+	except ValueError:
+		return float('nan')
+
 	return -scores.mean()  # Convert negative MSE to positive

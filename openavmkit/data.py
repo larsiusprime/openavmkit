@@ -335,6 +335,13 @@ def boolify_column_in_df(df: pd.DataFrame, field: str):
 	return df
 
 
+def get_report_locations(settings: dict, df: pd.DataFrame = None) -> list[str]:
+	locations = settings.get("field_classification", {}).get("important", {}).get("report_locations", [])
+	if df is not None:
+		locations = [loc for loc in locations if loc in df]
+	return locations
+
+
 def get_locations(settings: dict, df: pd.DataFrame = None) -> list[str]:
 	locations = settings.get("field_classification", {}).get("important", {}).get("locations", [])
 	if df is not None:

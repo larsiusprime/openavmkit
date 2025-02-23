@@ -9,7 +9,7 @@ from statsmodels.nonparametric.kernel_regression import KernelReg
 from xgboost import XGBRegressor
 
 from openavmkit.data import get_important_field, get_locations, read_split_keys, SalesUniversePair, \
-	get_hydrated_sales_from_sup
+	get_hydrated_sales_from_sup, get_report_locations
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, SingleModelResults, \
 	run_garbage, \
 	run_average, run_naive_sqft, DataSplit, run_kernel, run_local_sqft, run_assessor, predict_garbage, \
@@ -21,7 +21,7 @@ from openavmkit.utilities.data import div_z_safe, dataframe_to_markdown
 from openavmkit.utilities.format import fancy_format
 from openavmkit.utilities.modeling import NaiveSqftModel, LocalSqftModel, AssessorModel, GWRModel, MRAModel
 from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions, get_valuation_date, \
-	get_model_group, apply_dd_to_df_rows
+	get_model_group, apply_dd_to_df_rows, get_model_group_ids
 from openavmkit.utilities.stats import calc_vif_recursive_drop, calc_t_values_recursive_drop, \
 	calc_p_values_recursive_drop, calc_elastic_net_regularization, calc_correlations, calc_r2, \
 	calc_cross_validation_score, calc_cod
@@ -344,7 +344,7 @@ def _run_one_model(
 		use_saved_results: bool,
 		verbose: bool = False,
 		hedonic: bool = False
-) -> SingleModelResults:
+) -> SingleModelResults | None:
 
 	model_name = model
 
@@ -408,6 +408,11 @@ def _run_one_model(
 		df_multiverse=df_multiverse
 	)
 
+	if len(ds.y_sales < 15):
+		if verbose:
+			print(f"--> model {model} has less than 15 sales. Skipping...")
+		return None
+
 	intercept = entry.get("intercept", True)
 
 	if model_name == "garbage":
@@ -451,7 +456,7 @@ def _run_one_model(
 
 
 def _assemble_model_results(results: SingleModelResults, settings: dict):
-	locations = get_locations(settings)
+	locations = get_report_locations(settings)
 
 	fields = ["key", "geometry", "prediction", "assr_market_value", "assr_market_land_value", "sale_price", "sale_price_time_adj", "sale_date"] + locations
 	fields = [field for field in fields if field in results.df_sales.columns]
@@ -494,6 +499,7 @@ def write_model_results(results: SingleModelResults, outpath: str, settings: dic
 	for key in dfs:
 		df = dfs[key]
 		df.to_parquet(f"{path}/pred_{key}.parquet")
+		df = df.drop(columns=["geometry"])
 		df.to_csv(f"{path}/pred_{key}.csv", index=False)
 
 
@@ -961,6 +967,7 @@ def run_ensemble(
 		dfs["multiverse"] = df_multi_ensemble
 
 	write_ensemble_model_results(results, outpath, settings, dfs, ensemble_list)
+
 	return results
 
 
@@ -1427,8 +1434,7 @@ def run_models(
 	df_univ = sup["universe"]
 
 	if len(model_groups) == 0:
-		model_groups = df_univ["model_group"].unique()
-		model_groups = [mg for mg in model_groups if not pd.isna(mg) and str(mg) != "<NA>"]
+		model_groups = get_model_group_ids(settings, df_univ)
 
 	for model_group in model_groups:
 		if verbose:
@@ -1471,6 +1477,9 @@ def _run_hedonic_models(
 	# Re-run the models one by one and stash the results
 	for model in models_to_run:
 
+		if model not in all_results.model_results:
+			continue
+		
 		smr = all_results.model_results[model]
 		ds = _get_data_split_for(
 			name=model,
@@ -1491,10 +1500,12 @@ def _run_hedonic_models(
 			df_multiverse=df_multiverse
 		)
 
-		# TODO: there is a bug here because the number of rows in df_test winds up different across models (224 vs 227)
-
 		# We call this here because we are re-running prediction without first calling run(), which would call this
 		ds.split()
+
+		if len(ds.y_sales) < 15:
+			print(f"Skipping hedonic model because there are not enough sale records")
+			return
 
 		smr.ds = ds
 
@@ -1616,6 +1627,8 @@ def _run_models(
 	pdf_path = f"{outpath}/reports/variable_report.pdf"
 	markdown_to_pdf(var_report_md, pdf_path, css_file="variable")
 
+	any_results = False
+
 	# Run the models one by one and stash the results
 	for model in models_to_run:
 		results = _run_one_model(
@@ -1639,6 +1652,13 @@ def _run_models(
 		)
 		if results is not None:
 			model_results[model] = results
+			any_results = True
+		else:
+			print(f"Could not generate results for model: {model}")
+
+	if not any_results:
+		print(f"No results generated for model_group: {model_group}, vacant_only: {vacant_only}. Skipping...")
+		return
 
 	# Calculate initial results (ensemble will use them)
 	all_results = MultiModelResults(

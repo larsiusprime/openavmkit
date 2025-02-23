@@ -119,7 +119,7 @@ def mark_horizontal_equity_clusters_per_model_group_sup(
 
 
 def mark_horizontal_equity_clusters_per_model_group(df_in: pd.DataFrame, settings: dict, verbose: bool = False):
-	return do_per_model_group(df_in, _mark_he_ids, {"settings": settings, "verbose": verbose}, verbose)
+	return do_per_model_group(df_in, settings, _mark_he_ids, {"settings": settings, "verbose": verbose}, verbose)
 
 
 def mark_horizontal_equity_clusters(df: pd.DataFrame, settings: dict, verbose: bool = False):
