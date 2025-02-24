@@ -1105,8 +1105,20 @@ def run_gwr(
         print(f"--> using saved bandwidth: {gwr_bw:0.2f}")
 
   if gwr_bw < 0:
-    gwr_selector = Sel_BW(coords_train, y_train, X_train)
-    gwr_bw = gwr_selector.search()
+    bw_max = len(y_train)
+
+    try:
+      gwr_selector = Sel_BW(coords_train, y_train, X_train)
+      gwr_bw = gwr_selector.search(bw_max=bw_max)
+    except ValueError:
+      if len(y_train) < 100:
+        # Set n_jobs to 1 in case the # of cores exceeds the number of rows
+        gwr_selector = Sel_BW(coords_train, y_train, X_train, fixed=True, n_jobs = 1)
+        gwr_bw = gwr_selector.search()
+      else:
+        # Use default n_jobs
+        gwr_selector = Sel_BW(coords_train, y_train, X_train, fixed=True)
+        gwr_bw = gwr_selector.search()
 
     if save_params:
       os.makedirs(outpath, exist_ok=True)
@@ -1345,7 +1357,7 @@ def predict_catboost(
       y_pred_multi = np.array([])
     else:
       multi_pool = Pool(data=ds.X_multiverse, cat_features=cat_vars)
-      y_pred_multi = catboost_model.predict(ds.X_multiverse, multi_pool)
+      y_pred_multi = catboost_model.predict(multi_pool)
   else:
     y_pred_multi = None
   timing.stop("predict_multi")

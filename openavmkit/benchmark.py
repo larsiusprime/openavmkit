@@ -84,7 +84,7 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 		"test": [],
 		"univ": [],
 		"multi": [],
-		"chd": [],
+		"chd": []
 	}
 
 	data = {
@@ -408,7 +408,7 @@ def _run_one_model(
 		df_multiverse=df_multiverse
 	)
 
-	if len(ds.y_sales < 15):
+	if len(ds.y_sales) < 15:
 		if verbose:
 			print(f"--> model {model} has less than 15 sales. Skipping...")
 		return None
@@ -1438,7 +1438,9 @@ def run_models(
 
 	for model_group in model_groups:
 		if verbose:
+			print("")
 			print(f"*** Running models for model_group: {model_group} ***")
+			print("")
 		for vacant_only in [False, True]:
 			if vacant_only:
 				if not run_vacant:
