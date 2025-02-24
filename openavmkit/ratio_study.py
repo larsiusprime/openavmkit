@@ -279,8 +279,8 @@ def _run_ratio_study_breakdowns(settings: dict, df_sales: pd.DataFrame, confiden
 								try:
 									quantile_value = np.quantile(df_sub[by], q / quantiles)
 								except IndexError:
-									quantile_value = float('nan')
-								percentile = f"{q / quantiles * 100:3.0f}th %ile ({last_value:,.0f} - {quantile_value:,.0f})"
+									continue
+								percentile = f"{q / quantiles * 100:3.0f}th %ile<br>({last_value:,.0f} - {quantile_value:,.0f})"
 								if quantile_value not in bins:
 									bins.append(quantile_value)
 									labels.append(percentile)
@@ -331,7 +331,6 @@ def _run_ratio_study_breakdowns(settings: dict, df_sales: pd.DataFrame, confiden
 						"by": by,
 						"cluster": cluster
 					})
-
 
 
 			all[modeler] = results
@@ -443,13 +442,14 @@ def _write_ratio_study_report(all_results: dict, settings: dict, model_group: st
 
 					md_chunk = f"#### By {by_name}, {vacant_name} only\n\n"
 					df = pd.DataFrame(data=data)
-					md_chunk += dataframe_to_markdown(df)
-					md_chunk += "\n\n"
+					if len(df) > 1:
+						md_chunk += dataframe_to_markdown(df)
+						md_chunk += "\n\n"
 
-					if modeler == "assessor":
-						locality_results += md_chunk
-					else:
-						modeler_results += md_chunk
+						if modeler == "assessor":
+							locality_results += md_chunk
+						else:
+							modeler_results += md_chunk
 
 		df_untrim = pd.DataFrame(data=data_overall)
 		df_trim = pd.DataFrame(data=data_overall_trim)
@@ -473,6 +473,6 @@ def _write_ratio_study_report(all_results: dict, settings: dict, model_group: st
 
 		report.set_var("sales_back_to_date", look_back_date_str)
 
-		outpath = f"{path}/reports/{model_group}/ratio_study"
+		outpath = f"{path}/reports/ratio_study"
 
 		finish_report(report, outpath, "ratio_study")

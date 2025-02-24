@@ -68,6 +68,7 @@ def start_report(report_name: str, settings: dict, model_group: str):
 
 def finish_report(report: MarkdownReport, outpath: str, css_file: str):
   report_text = report.render()
+  os.makedirs(outpath, exist_ok=True)
   with open(f"{outpath}.md", "w", encoding="utf-8") as f:
     f.write(report_text)
   pdf_path = f"{outpath}.pdf"
