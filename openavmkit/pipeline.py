@@ -1,10 +1,24 @@
+"""
+Pipeline
+---------
+This module contains every public function called from the notebooks. The rules for this module are:
+
+- Every public function should be called from at least one notebook
+- The primary openavmkit notebooks should not call any functions from openavmkit that are not in this module
+- This module imports from other modules, but no other modules import from it
+
+"""
+
 import os
+import pickle
 
 import numpy as np
 import pandas as pd
 
 import openavmkit
+import openavmkit.checkpoint
 from openavmkit.cleaning import clean_valid_sales
+from openavmkit.cloud import cloud
 from openavmkit.data import load_dataframe, process_data, SalesUniversePair, get_hydrated_sales_from_sup
 from openavmkit.sales_scrutiny_study import run_sales_scrutiny_per_model_group, mark_ss_ids_per_model_group
 from openavmkit.time_adjustment import enrich_time_adjustment
@@ -24,23 +38,21 @@ class NotebookState:
          self.base_path = base_path
 
 
-def set_locality(nbs, locality: str):
-   base_path = None
-   if nbs is not None:
-      base_path = nbs.base_path
-      if locality != nbs.locality:
-         nbs = NotebookState(locality, base_path)
-   if base_path is None:
-      nbs = NotebookState(locality, None)
-
-   if base_path is not None:
-      os.chdir(nbs.base_path)
-
-   os.chdir(f"data/{locality}")
-
-   print(f"locality = {locality}")
-   print(f"base path = {nbs.base_path}")
-   return nbs
+def init_notebook(locality: str):
+   """
+    Initialize the notebook for the specific locality. This function should be called at the beginning of every notebook.
+   :param locality: The locality slug, e.g. "us-nc-guilford"
+   :return: None
+   """
+   first_run = False
+   if hasattr(init_notebook, "nbs"):
+      nbs = init_notebook.nbs
+   else:
+      nbs = None
+      first_run = True
+   nbs = _set_locality(nbs, locality)
+   if first_run:
+      init_notebook.nbs = nbs
 
 
 def examine_sup(sup: SalesUniversePair, s: dict):
@@ -222,6 +234,10 @@ def load_and_process_data(settings: dict):
    return results
 
 
+def tag_model_groups_sup(sup: SalesUniversePair, settings: dict, verbose: bool = False):
+   return openavmkit.data.tag_model_groups_sup(sup, settings, verbose)
+
+
 def load_settings():
    return openavmkit.utilities.settings.load_settings()
 
@@ -254,3 +270,64 @@ def run_sales_scrutiny_per_model_group_sup(sup: SalesUniversePair, settings: dic
    df_scrutinized = run_sales_scrutiny_per_model_group(df_sales_hydrated, settings, verbose)
    sup.update_sales(df_scrutinized)
    return sup
+
+
+def cloud_sync(settings: dict, verbose: bool = False, dry_run: bool = False):
+    """
+    Syncs the data to the cloud.
+    """
+    cloud_service = cloud.init(verbose)
+    if cloud_service is None:
+      print("Cloud service not initialized, skipping...")
+      return
+
+    locality = settings.get("locality", {})
+    slug : str | None = locality.get("slug", None)
+    if slug is None:
+        raise ValueError("No slug found in the locality settings.")
+
+    remote_path = slug.replace("-", "/")
+    cloud_service.sync_files(slug,"in", remote_path, dry_run=dry_run, verbose=verbose)
+
+
+def from_checkpoint(path: str, func: callable, params: dict)->pd.DataFrame:
+   return openavmkit.checkpoint.from_checkpoint(path, func, params)
+
+
+def delete_checkpoints(prefix: str):
+   return openavmkit.checkpoint.delete_checkpoints(prefix)
+
+
+def write_out_assemble_results(sup: SalesUniversePair):
+   with open (f"out/sales_univ.pickle", "wb") as file:
+      pickle.dump(sup, file)
+   os.makedirs("out/look", exist_ok=True)
+   sup["universe"].to_parquet("out/look/1-assemble-universe.parquet")
+   sup["sales"].to_parquet("out/look/1-assemble-sales.parquet")
+   print("Results written to:")
+   print("...out/sales_univ.pickle")
+   print("...out/look/1-assemble-universe.parquet")
+   print("...out/look/1-assemble-sales.parquet")
+
+
+# PRIVATE:
+
+
+def _set_locality(nbs, locality: str):
+   base_path = None
+   if nbs is not None:
+      base_path = nbs.base_path
+      if locality != nbs.locality:
+         nbs = NotebookState(locality, base_path)
+   if base_path is None:
+      nbs = NotebookState(locality, None)
+
+   if base_path is not None:
+      os.chdir(nbs.base_path)
+
+   os.chdir(f"data/{locality}")
+
+   print(f"locality = {locality}")
+   print(f"base path = {nbs.base_path}")
+   print(f"current path = {os.getcwd()}")
+   return nbs

@@ -1408,6 +1408,7 @@ def run_catboost(
   timing.start("setup")
 
   params["verbose"] = False
+  params["train_dir"] = outpath
   cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
   catboost_model = catboost.CatBoostRegressor(**params)
   train_pool = Pool(data=ds.X_train, label=ds.y_train, cat_features=cat_vars)

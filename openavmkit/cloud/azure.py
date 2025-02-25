@@ -31,18 +31,16 @@ class AzureService(CloudService):
 
 
   def download_file(self, remote_file: CloudFile, local_file_path: str):
-    if self.verbose:
-      print(f"Downloading: {local_file_path} <-- {remote_file.name}")
+    super().download_file(remote_file, local_file_path)
     blob_client = self.container_client.get_blob_client(remote_file.name)
     with open(local_file_path, "wb") as f:
       download_stream = blob_client.download_blob()
       f.write(download_stream.readall())
 
 
-  def upload_file(self, remote_path: str, local_file_path: str):
-    if self.verbose:
-      print(f"Uploading: {local_file_path} --> {remote_path}.")
-    blob_client = self.container_client.get_blob_client(remote_path)
+  def upload_file(self, remote_file_path: str, local_file_path: str):
+    super().upload_file(remote_file_path, local_file_path)
+    blob_client = self.container_client.get_blob_client(remote_file_path)
     with open(local_file_path, "rb") as f:
       blob_client.upload_blob(f, overwrite=True)
 

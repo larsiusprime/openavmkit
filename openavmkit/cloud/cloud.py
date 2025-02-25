@@ -5,11 +5,16 @@ from dotenv import load_dotenv
 from openavmkit.cloud.base import CloudService, CloudType, CloudCredentials
 
 
-def init() -> CloudService:
+def init(verbose: bool) -> CloudService | None:
   load_dotenv()
   cloud_type = os.getenv("CLOUD_TYPE").lower()
   credentials = _get_creds_from_env()
-  return _init_service(cloud_type, credentials)
+  try:
+    cloud_service = _init_service(cloud_type, credentials)
+  except ValueError as e:
+    return None
+  cloud_service.verbose = verbose
+  return cloud_service
 
 
 def _get_creds_from_env() -> CloudCredentials:

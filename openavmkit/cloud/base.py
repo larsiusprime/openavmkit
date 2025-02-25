@@ -35,15 +35,20 @@ class CloudService:
     pass
 
 
-  def download_file(self, remote_file: CloudFile, local_path: str):
-    pass
+  def download_file(self, remote_file: CloudFile, local_file_path: str):
+    r = os.path.basename(remote_file.name)
+    l = os.path.basename(local_file_path)
+    if r != l:
+      raise ValueError(f"Remote path '{r}' does not match local path '{l}'.")
+
+  def upload_file(self, remote_file_path: str, local_file_path: str):
+    r = os.path.basename(remote_file_path)
+    l = os.path.basename(local_file_path)
+    if r != l:
+      raise ValueError(f"Remote path '{r}' does not match local path '{l}'.")
 
 
-  def upload_file(self, remote_path: str, local_path: str):
-    pass
-
-
-  def sync_files(self, local_folder: str, remote_folder: str, verbose: bool = False):
+  def sync_files(self, locality: str, local_folder: str, remote_folder: str, dry_run: bool = False, verbose: bool = False):
     # Build a dictionary of remote files: {relative_path: file}
     remote_files = {}
     if verbose:
@@ -52,23 +57,43 @@ class CloudService:
       remote_files[file.name] = file
 
     # Build a dictionary of local files relative to the local folder.
-    local_files = {}
+    local_files = []
+    remote_file_map = {}
     for root, dirs, files in os.walk(local_folder):
       for file in files:
         # Compute the relative path with respect to the given local folder.
         rel_path = os.path.relpath(os.path.join(root, file), local_folder)
-        local_files[rel_path] = os.path.join(root, file)
+        loc_bits = locality.split("-")
+        loc_path = os.path.join("", *loc_bits)
+        remote_file_path = os.path.join(loc_path, rel_path)
+        local_file_path = os.path.join(root, file)
+        remote_file_path = _fix_path_slashes(remote_file_path)
+        local_file_path = _fix_path_slashes(local_file_path)
+        entry = {
+          "remote": remote_file_path,
+          "local": local_file_path
+        }
+        local_files.append(entry)
+        remote_file_map[remote_file_path] = entry
 
     # Process files that exist remotely:
     for rel_path, file in remote_files.items():
-      local_file_path = os.path.join(local_folder, rel_path)
 
-      if not os.path.exists(local_file_path):
+      local_file_exists = False
+      local_file_path = None
+
+      if rel_path in remote_file_map:
+        local_file_path = remote_file_map[rel_path]["local"]
+        local_file_exists = os.path.exists(local_file_path)
+
+      if not local_file_exists:
         # File exists in remote only: download it
         if verbose:
           print(f"Local file missing for remote file '{rel_path}'. Downloading...")
         os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
-        self.download_file(file, local_file_path)
+        _print_download(file.name, local_file_path)
+        if not dry_run:
+          self.download_file(file, local_file_path)
       else:
         # Both sides exist: compare file size and last modified timestamp.
         local_size = os.path.getsize(local_file_path)
@@ -77,45 +102,58 @@ class CloudService:
         local_mod_time_utc = _get_local_file_mod_time_utc(local_file_path)
         remote_mod_time_utc = file.last_modified_utc
 
+        TIME_TOLERANCE = timedelta(days=1)
+        size_delta = abs(local_size - remote_size)
+        time_delta = abs(remote_mod_time_utc - local_mod_time_utc)
+
         if verbose:
           print(f"\nConflict for '{rel_path}':")
-          print(f"-->Local  - size: {local_size:12.0f} bytes, modified: {local_mod_time_utc}")
-          print(f"-->Remote - size: {remote_size:12.0f} bytes, modified: {local_mod_time_utc}")
-
-        TIME_TOLERANCE =  timedelta(seconds=10)
+          print(f"-->Local  - size: {local_size:10,.0f} bytes, modified: {local_mod_time_utc}")
+          print(f"-->Remote - size: {remote_size:10,.0f} bytes, modified: {remote_mod_time_utc}")
+          print(f"-->Size delta: {size_delta:10,.0f} bytes")
+          print(f"-->Time delta: {time_delta}")
 
         # If both the size and modification time are nearly identical, assume they are in sync.
-        if (local_size == remote_size and
-            abs(remote_mod_time_utc - local_mod_time_utc) <= TIME_TOLERANCE):
+        if (size_delta == 0 and time_delta <= TIME_TOLERANCE):
           if verbose:
             print("  Files are in sync. No action needed.")
           continue
 
         # Decide which version is more current.
-        if remote_mod_time_utc > local_mod_time_utc + TIME_TOLERANCE:
+        if remote_mod_time_utc > local_mod_time_utc:
           if verbose:
             print("  Remote file is newer. Downloading remote version...")
-          self.download_file(file, local_file_path)
-        elif local_mod_time_utc > remote_mod_time_utc + TIME_TOLERANCE:
-          if local_size != remote_size:
-            if verbose:
-              print("  Local file is newer. Uploading local version...")
-            self.upload_file(file, local_file_path)
-          else:
-            if verbose:
-              print("  No action needed.")
-        else:
-          # If the time difference is within the tolerance but sizes differ, I'm not sure how to resolve.
-          pass
+          _print_download(file.name, local_file_path)
+          if not dry_run:
+            self.download_file(file, local_file_path)
+        elif local_mod_time_utc > remote_mod_time_utc:
+          if verbose:
+            print("  Local file is newer. Uploading local version...")
+          _print_upload(file.name, local_file_path)
+          if not dry_run:
+            self.upload_file(file.name, local_file_path)
 
     # Process files that exist locally but not remotely.
-    for rel_path, local_file_path in local_files.items():
-      if rel_path not in remote_files:
+    for entry in local_files:
+      remote_path = entry["remote"]
+      local_file_path = entry["local"]
+      if remote_path not in remote_files:
         # File exists in local only: upload it.
         if verbose:
-          print(f"Remote file missing for local file '{rel_path}'. Uploading...")
+          print(f"Remote file missing for local file '{local_file_path}'. Uploading...")
+        _print_upload(remote_path, local_file_path)
+        if not dry_run:
+          self.upload_file(remote_path, local_file_path)
 
-        self.upload_file(rel_path, local_file_path)
+
+def _print_download(remote_file: str, local_file: str):
+  print(f"Downloading '{remote_file}' <-- '{local_file}'...")
+
+def _print_upload(remote_file: str, local_file: str):
+  print(f"Uploading '{remote_file}' --> '{local_file}'...")
+
+def _fix_path_slashes(path: str):
+  return path.replace("\\", "/")
 
 
 def _get_local_file_mod_time_utc(file_path):

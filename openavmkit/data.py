@@ -1350,7 +1350,7 @@ def read_split_keys(
 	return test_keys, train_keys
 
 
-def sup_tag_model_groups(
+def tag_model_groups_sup(
 		sup: SalesUniversePair,
 		settings: dict,
 		verbose: bool = False
