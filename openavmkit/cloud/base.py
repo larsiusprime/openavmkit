@@ -14,7 +14,7 @@ CloudType = Literal[
 
 class CloudFile:
   def __init__(self, name: str, last_modified_utc: datetime, size: int):
-    self.name = name
+    self.name = _fix_path_slashes(name)
     self.last_modified_utc = last_modified_utc
     self.size = size
 
@@ -50,12 +50,13 @@ class CloudService:
 
 
   def sync_files(self, locality: str, local_folder: str, remote_folder: str, dry_run: bool = False, verbose: bool = False):
+
     # Build a dictionary of remote files: {relative_path: file}
     remote_files = {}
     if verbose:
-      print("Querying remote folder...")
+      print(f"Syncing files from local=\"{local_folder}\" to remote=\"{remote_folder}\"...")
     for file in self.list_files(remote_folder):
-      remote_files[file.name] = file
+      remote_files[_fix_path_slashes(file.name)] = file
 
     # Build a dictionary of local files relative to the local folder.
     local_files = []
@@ -63,7 +64,7 @@ class CloudService:
     for root, dirs, files in os.walk(local_folder):
       for file in files:
         # Compute the relative path with respect to the given local folder.
-        rel_path = os.path.relpath(os.path.join(root, file), local_folder)
+        rel_path = _fix_path_slashes(os.path.relpath(os.path.join(root, file), local_folder))
         loc_bits = locality.split("-")
         loc_path = os.path.join("", *loc_bits)
         remote_file_path = os.path.join(loc_path, rel_path)
@@ -76,6 +77,21 @@ class CloudService:
         }
         local_files.append(entry)
         remote_file_map[remote_file_path] = entry
+      for dir in dirs:
+        rel_path = _fix_path_slashes(os.path.relpath(os.path.join(root, dir), local_folder))
+        loc_bits = locality.split("-")
+        loc_path = os.path.join("", *loc_bits)
+        remote_file_path = os.path.join(loc_path, rel_path)
+        remote_file_path = _fix_path_slashes(remote_file_path)
+        entry = {
+          "remote": remote_file_path,
+          "local": os.path.join(root, dir)
+        }
+        local_files.append(entry)
+        remote_file_map[remote_file_path] = entry
+
+    for key in remote_file_map:
+      print(key)
 
     # Process files that exist remotely:
     for rel_path, file in remote_files.items():
@@ -86,16 +102,29 @@ class CloudService:
       if rel_path in remote_file_map:
         local_file_path = remote_file_map[rel_path]["local"]
         local_file_exists = os.path.exists(local_file_path)
+      else:
+        # remove "remote_folder" from the beginning of the path
+        local_file_path = rel_path[len(remote_folder)+1:]
+        local_file_path = _fix_path_slashes(os.path.join(local_folder, local_file_path))
 
       if not local_file_exists:
+        if local_file_path is not None:
+          # Create the local directory if it doesn't exist.
+          if not os.path.exists(os.path.dirname(local_file_path)):
+            os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+          # If the file IS just a directory, then we're done.
+          if os.path.isdir(local_file_path):
+            continue
         # File exists in remote only: download it
         if verbose:
-          print(f"Local file missing for remote file '{rel_path}'. Downloading...")
-        os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+          print(f"Local file '{local_file_path}' missing for remote file '{rel_path}'. Downloading...")
         _print_download(file.name, local_file_path)
         if not dry_run:
           self.download_file(file, local_file_path)
       else:
+        if os.path.isdir(local_file_path):
+          continue
+
         # Both sides exist: compare file size and last modified timestamp.
         local_size = os.path.getsize(local_file_path)
         remote_size = file.size
@@ -148,7 +177,7 @@ class CloudService:
 
 
 def _print_download(remote_file: str, local_file: str):
-  print(f"Downloading '{remote_file}' <-- '{local_file}'...")
+  print(f"Downloading '{local_file}' <-- '{remote_file}'...")
 
 def _print_upload(remote_file: str, local_file: str):
   print(f"Uploading '{local_file}' --> '{remote_file}'...")
