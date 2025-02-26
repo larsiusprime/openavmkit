@@ -28,7 +28,7 @@ from statsmodels.nonparametric.kernel_regression import KernelReg
 from statsmodels.regression.linear_model import RegressionResults
 from xgboost import XGBRegressor
 
-from openavmkit.data import get_sales, simulate_removed_buildings, enrich_time, _enrich_time_field, enrich_sale_age_days
+from openavmkit.data import get_sales, simulate_removed_buildings, _enrich_time_field, _enrich_sale_age_days
 from openavmkit.ratio_study import RatioStudy
 from openavmkit.utilities.format import fancy_format
 from openavmkit.utilities.modeling import GarbageModel, AverageModel, NaiveSqftModel, LocalSqftModel, AssessorModel, \
@@ -55,6 +55,7 @@ PredictionModel = Union[
   str,
   None
 ]
+
 
 class PredictionResults:
 
@@ -108,6 +109,7 @@ class PredictionResults:
       self.adj_r2 = 1 - ((1 - self.r2)*(n-1)/divisor)
     self.ratio_study = RatioStudy(y_pred_clean, y_clean)
 
+
 class DataSplit:
 
   counter: int = 0
@@ -158,7 +160,7 @@ class DataSplit:
     val_date = get_valuation_date(settings)
     self.df_universe["sale_date"] = val_date
     self.df_universe = _enrich_time_field(self.df_universe, "sale")
-    self.df_universe = enrich_sale_age_days(self.df_universe, settings)
+    self.df_universe = _enrich_sale_age_days(self.df_universe, settings)
 
     # The parcel "multiverse" is a parcel universe that contains *all* model groups, not just the current model group
     self.df_multiverse_orig = None
@@ -177,7 +179,7 @@ class DataSplit:
 
       self.df_multiverse["sale_date"] = val_date
       self.df_multiverse = _enrich_time_field(self.df_multiverse, "sale")
-      self.df_multiverse = enrich_sale_age_days(self.df_multiverse, settings)
+      self.df_multiverse = _enrich_sale_age_days(self.df_multiverse, settings)
 
     self.df_sales = get_sales(df_sales, settings, vacant_only).reset_index(drop=True)
 
@@ -2056,13 +2058,9 @@ def run_local_sqft(
     print(f"--> optimal vacant   $/land     sqft (overall) = {overall_per_land_sqft:0.2f}")
 
   sqft_model = LocalSqftModel(loc_map, location_fields, overall_per_impr_sqft, overall_per_land_sqft, sales_chase)
-
   return predict_local_sqft(ds, sqft_model, timing, verbose)
 
-
-##### PRIVATE:
-
-
+# Private:
 
 def _sales_chase_univ(df_in, ind_var, y_pred_univ):
   """

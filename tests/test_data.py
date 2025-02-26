@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 from IPython.core.display_functions import display
 
-from openavmkit.data import _perform_canonical_split, handle_duplicated_rows, perform_ref_tables, merge_dict_of_dfs, \
-	_enrich_year_built, enrich_time, SalesUniversePair, get_hydrated_sales_from_sup
+from openavmkit.data import _perform_canonical_split, _handle_duplicated_rows, _perform_ref_tables, _merge_dict_of_dfs, \
+	_do_enrich_year_built, enrich_time, SalesUniversePair, get_hydrated_sales_from_sup
 from openavmkit.modeling import DataSplit
 from openavmkit.utilities.assertions import dfs_are_equal
 from openavmkit.utilities.data import div_z_safe
@@ -117,7 +117,8 @@ def test_split_keys():
 	assert(df_train[df_train["is_vacant"].eq(False)].shape[0] == expected_train_improved)
 
 	ds = DataSplit(
-		df=df,
+		df_sales=df_sales,
+		df_universe=df,
 		model_group="residential_sf",
 		settings={},
 		ind_var="sale_price",
@@ -133,7 +134,8 @@ def test_split_keys():
 	ds.split()
 
 	ds_v = DataSplit(
-		df=df,
+		df_sales=df_sales,
+		df_universe=df,
 		model_group="residential_sf",
 		settings={},
 		ind_var="sale_price",
@@ -149,7 +151,8 @@ def test_split_keys():
 	ds_v.split()
 
 	ds_h = DataSplit(
-		df=df,
+		df_sales=df_sales,
+		df_universe=df,
 		model_group="residential_sf",
 		settings={},
 		ind_var="sale_price",
@@ -238,7 +241,7 @@ def test_duplicates():
 		"sale_price": [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100],
 	}
 	df_expected = pd.DataFrame(data=data_expected)
-	df_results = handle_duplicated_rows(df, dupes)
+	df_results = _handle_duplicated_rows(df, dupes)
 	df_results = df_results.sort_values(by="key").reset_index(drop=True)
 	df_expected = df_expected.sort_values(by="key").reset_index(drop=True)
 
@@ -264,7 +267,7 @@ def test_duplicates():
 	}
 
 	df_expected = pd.DataFrame(data=data_expected)
-	df_results = handle_duplicated_rows(df, dupes)
+	df_results = _handle_duplicated_rows(df, dupes)
 
 	df_results = df_results.sort_values(by="key").reset_index(drop=True)
 	df_expected = df_expected.sort_values(by="key").reset_index(drop=True)
@@ -314,7 +317,7 @@ def test_ref_table():
 		"zoning_mixed_use": [False, False, False, False, False, False, False, False, False, False, True, True, True, True]
 	}
 	df_expected = pd.DataFrame(data=data_expected)
-	df_results = perform_ref_tables(df, ref_table, dataframes)
+	df_results = _perform_ref_tables(df, ref_table, dataframes)
 
 	# Test the case where the keys are different
 	assert dfs_are_equal(df_expected, df_results, primary_key="key")
@@ -335,7 +338,7 @@ def test_ref_table():
 		},
 	]
 
-	df_results = perform_ref_tables(df, ref_tables, dataframes)
+	df_results = _perform_ref_tables(df, ref_tables, dataframes)
 
 	assert dfs_are_equal(df_expected, df_results, primary_key="key")
 
@@ -343,7 +346,7 @@ def test_ref_table():
 	dataframes["ref_zoning"] = dataframes["ref_zoning"].rename(columns={"zoning_id": "zoning"})
 	ref_table["key_ref_table"] = "zoning"
 
-	df_results = perform_ref_tables(df, ref_table, dataframes)
+	df_results = _perform_ref_tables(df, ref_table, dataframes)
 
 	assert dfs_are_equal(df_expected, df_results, primary_key="key")
 
@@ -371,7 +374,7 @@ def test_merge_conflicts():
 		df = pd.DataFrame(data=datas[data])
 		dfs[data] = df
 
-	merge_dict_of_dfs(
+	_merge_dict_of_dfs(
 		dataframes=dfs,
 		merge_list=["a", "b", "c"],
 		settings={}
@@ -405,7 +408,8 @@ def test_enrich_year_built():
 		"sale_quarter": [None, None, None, "1", None, None, None, None, None, "4", None],
 		"sale_year_month": ["NaT", "NaT", "NaT", "2021-01", "NaT", "NaT", "NaT", "NaT", "NaT", "2022-11", "NaT"],
 		"sale_year_quarter": ["NaT", "NaT", "NaT", "2021Q1", "NaT", "NaT", "NaT", "NaT", "NaT", "2022Q4", "NaT"],
-		"bldg_age_years": [35, 34, 33, 32, 31, 30, 29, 28, 27, 26, 25],
+		"sale_age_days": [None, None, None, 1461, None, None, None, None, None, 778, None],
+		"bldg_age_years": [35, 34, 33, 32, 31, 30, 29, 28, 27, 26, 25]
 	}
 
 	expected_sales = {
@@ -419,27 +423,28 @@ def test_enrich_year_built():
 		"sale_quarter": ["1", "4"],
 		"sale_year_month": ["2021-01", "2022-11"],
 		"sale_year_quarter": ["2021Q1", "2022Q4"],
+		"sale_age_days": [1461, 778],
 		"bldg_age_years": [28.0, 23.0]
 	}
 
 	time_formats = {"sale_date":"%Y-%m-%d"}
 
-	df_univ = enrich_time(df_univ, time_formats)
-	df_sales = enrich_time(df_sales, time_formats)
+	df_univ = enrich_time(df_univ, time_formats, {})
+	df_sales = enrich_time(df_sales, time_formats, {})
 
-	df_univ = _enrich_year_built(df_univ, "bldg_year_built", "bldg_age_years", val_date, False)
-	df_sales = _enrich_year_built(df_sales, "bldg_year_built", "bldg_age_years", val_date, True)
+	df_univ = _do_enrich_year_built(df_univ, "bldg_year_built", "bldg_age_years", val_date, False)
+	df_sales = _do_enrich_year_built(df_sales, "bldg_year_built", "bldg_age_years", val_date, True)
 
 	df_univ_expected = pd.DataFrame(data=expected_univ)
 	df_sales_expected = pd.DataFrame(data=expected_sales)
 
-	for thing in ["sale_year", "sale_month", "sale_quarter"]:
+	for thing in ["sale_year", "sale_month", "sale_quarter", "sale_age_days"]:
 		df_univ[thing] = df_univ[thing].astype("Int64").astype("string")
 		df_sales[thing] = df_sales[thing].astype("Int64").astype("string")
 		df_univ_expected[thing] = df_univ_expected[thing].astype("Int64").astype("string")
 		df_sales_expected[thing] = df_sales_expected[thing].astype("Int64").astype("string")
 
-	for thing in ["sale_date", "sale_year_month", "sale_year_quarter"]:
+	for thing in ["sale_date", "sale_year_month", "sale_year_quarter", "sale_age_days"]:
 		df_univ[thing] = df_univ[thing].astype("string")
 		df_sales[thing] = df_sales[thing].astype("string")
 		df_univ_expected[thing] = df_univ_expected[thing].astype("string")

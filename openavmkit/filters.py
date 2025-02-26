@@ -39,7 +39,7 @@ def resolve_filter(df: pd.DataFrame, f: list) -> pd.Series:
   operator = f[0]
 
   # check if operator is FilterOperatorBool:
-  if is_bool_operator(operator):
+  if _is_bool_operator(operator):
     return resolve_bool_filter(df, f)
   else:
     field = f[1]
@@ -95,9 +95,9 @@ def validate_filter(f: list):
   return True
 
 
-def is_basic_operator(s : str) -> bool:
+def _is_basic_operator(s : str) -> bool:
   return s in ["<", ">", "<=", ">=", "==", "!=", "isin", "notin", "contains"]
 
 
-def is_bool_operator(s : str) -> bool:
+def _is_bool_operator(s : str) -> bool:
   return s in ["and", "or", "nand", "nor", "xor", "xnor"]

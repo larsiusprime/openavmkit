@@ -1,8 +1,6 @@
 import calendar
 from datetime import timedelta, datetime
 
-from IPython.core.display_functions import display
-
 import numpy as np
 import pandas as pd
 
@@ -197,7 +195,7 @@ def _crunch_time_adjustment(df_in: pd.DataFrame, field: str, period: str = "M", 
   return df_result
 
 
-def determine_value_driver(df_in: pd.DataFrame, settings: dict):
+def _determine_value_driver(df_in: pd.DataFrame, settings: dict):
   # We want to determine if this modeling group's values are driven by land or improvement
   df = df_in.copy()
 
@@ -281,7 +279,7 @@ def calculate_time_adjustment(df_sales_in: pd.DataFrame, settings: dict, period:
   df_sales["sale_price_per_land_sqft"] = div_z_safe(df_sales, "sale_price", "land_area_sqft")
 
   # Determine whether land or improvement drives value the modeling group:
-  per = determine_value_driver(df_sales, settings)
+  per = _determine_value_driver(df_sales, settings)
   sale_field = f"sale_price_per_{per}_sqft"
 
   df_per = df_sales[df_sales[sale_field].gt(0)]

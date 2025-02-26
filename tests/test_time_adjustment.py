@@ -81,15 +81,15 @@ def test_time_adjustment():
   first_period = df_norm["period"].min()
   df_norm["sale_price_per_impr_sqft"] = df_norm["sale_price_per_impr_sqft"] / df_norm[df_norm["period"].eq(first_period)]["sale_price_per_impr_sqft"].median()
 
-  plt.plot(df_time_m["period"], df_time_m["value"])
-  plt.plot(df_time_q["period"], df_time_q["value"])
-  plt.plot(df_time_y["period"], df_time_y["value"])
-  plt.plot(time_land_mult["period"], time_land_mult["value"])
-
-  #scatterplot df norm:
-  plt.scatter(df_norm["period"], df_norm["sale_price_per_impr_sqft"], color="gray", s=1)
-
-  plt.show()
+  # plt.plot(df_time_m["period"], df_time_m["value"])
+  # plt.plot(df_time_q["period"], df_time_q["value"])
+  # plt.plot(df_time_y["period"], df_time_y["value"])
+  # plt.plot(time_land_mult["period"], time_land_mult["value"])
+  #
+  # #scatterplot df norm:
+  # plt.scatter(df_norm["period"], df_norm["sale_price_per_impr_sqft"], color="gray", s=1)
+  #
+  # plt.show()
 
 
 def test_apply_time_adjustment():
@@ -106,8 +106,8 @@ def test_apply_time_adjustment():
     df_median = df.groupby("sale_year_month")["sale_price_time_adj_per_impr_sqft"].agg(["count", "median"])
     df_median["period"] = pd.to_datetime(df_median.index)
 
-    plt.plot(df_median["period"], df_median["median"], color=color)
-    plt.scatter(df["sale_date"], df["sale_price_per_impr_sqft"], s=1, color=color2)
-    plt.scatter(df["sale_date"], df["sale_price_time_adj_per_impr_sqft"], s=1, color=color2)
+    # plt.plot(df_median["period"], df_median["median"], color=color)
+    # plt.scatter(df["sale_date"], df["sale_price_per_impr_sqft"], s=1, color=color2)
+    # plt.scatter(df["sale_date"], df["sale_price_time_adj_per_impr_sqft"], s=1, color=color2)
 
-  plt.show()
+  # plt.show()

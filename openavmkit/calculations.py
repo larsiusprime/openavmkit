@@ -102,7 +102,7 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0):
 
 
   if op == "asint":
-    return np.floor(lhs.astype("Float64")).astype("Int64")
+    return (lhs.astype("Float64")).astype("Int64")
   elif op == "asfloat":
     return lhs.astype(float)
   elif op == "asstr":

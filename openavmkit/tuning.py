@@ -163,8 +163,7 @@ def tune_catboost(X, y, n_trials=100, n_splits=5, random_state=42, verbose=False
     return study.best_params
 
 
-
-#### PRIVATE:
+## PRIVATE:
 
 
 def _xgb_rolling_origin_cv(X, y, params, num_boost_round, n_splits=5, random_state=42, verbose_eval=50):

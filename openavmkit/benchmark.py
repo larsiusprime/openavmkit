@@ -8,14 +8,14 @@ from lightgbm import Booster
 from statsmodels.nonparametric.kernel_regression import KernelReg
 from xgboost import XGBRegressor
 
-from openavmkit.data import get_important_field, get_locations, read_split_keys, SalesUniversePair, \
+from openavmkit.data import get_important_field, get_locations, _read_split_keys, SalesUniversePair, \
 	get_hydrated_sales_from_sup, get_report_locations
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, SingleModelResults, \
 	run_garbage, \
 	run_average, run_naive_sqft, DataSplit, run_kernel, run_local_sqft, run_assessor, predict_garbage, \
 	GarbageModel, predict_average, AverageModel, predict_naive_sqft, predict_local_sqft, predict_assessor, predict_kernel, \
 	predict_gwr, predict_xgboost, predict_catboost, predict_lightgbm
-from openavmkit.reports import MarkdownReport, markdown_to_pdf
+from openavmkit.reports import MarkdownReport, _markdown_to_pdf
 from openavmkit.time_adjustment import enrich_time_adjustment
 from openavmkit.utilities.data import div_z_safe, dataframe_to_markdown
 from openavmkit.utilities.format import fancy_format
@@ -594,7 +594,7 @@ def _run_one_model(
 
 	location_fields = get_locations(settings, df_sales)
 
-	test_keys, train_keys = read_split_keys(model_group)
+	test_keys, train_keys = _read_split_keys(model_group)
 
 	ds = _get_data_split_for(
 		name=model_name,
@@ -753,7 +753,7 @@ def _optimize_ensemble_allocation(
 		df_universe = all_results.model_results[first_key].ds.df_universe_orig
 		df_sales = all_results.model_results[first_key].ds.df_sales_orig
 
-	test_keys, train_keys = read_split_keys(model_group)
+	test_keys, train_keys = _read_split_keys(model_group)
 
 	ds = DataSplit(
 		df_sales,
@@ -912,7 +912,7 @@ def _optimize_ensemble(
 		df_universe = all_results.model_results[first_key].ds.df_universe_orig
 		df_sales = all_results.model_results[first_key].ds.df_sales_orig
 
-	test_keys, train_keys = read_split_keys(model_group)
+	test_keys, train_keys = _read_split_keys(model_group)
 
 	ds = DataSplit(
 		df_sales,
@@ -1066,7 +1066,7 @@ def _run_ensemble(
 
 	timing.start("setup")
 
-	test_keys, train_keys = read_split_keys(model_group)
+	test_keys, train_keys = _read_split_keys(model_group)
 
 	ds = DataSplit(
 		df_sales,
@@ -1202,7 +1202,7 @@ def _prepare_ds(
 	ind_var = instructions.get("ind_var", "sale_price")
 	ind_var_test = instructions.get("ind_var_test", "sale_price_time_adj")
 
-	test_keys, train_keys = read_split_keys(model_group)
+	test_keys, train_keys = _read_split_keys(model_group)
 
 	ds = DataSplit(
 		df_sales=df_sales,
@@ -1642,7 +1642,7 @@ def _run_models(
 		f.write(var_report_md)
 
 	pdf_path = f"{outpath}/reports/variable_report.pdf"
-	markdown_to_pdf(var_report_md, pdf_path, css_file="variable")
+	_markdown_to_pdf(var_report_md, pdf_path, css_file="variable")
 
 	any_results = False
 

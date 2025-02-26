@@ -8,10 +8,9 @@ import pandas as pd
 import pyarrow.parquet as pq
 import geopandas as gpd
 from pandas import Series
-from typing import TypedDict, Literal
-from shapely.geometry import Polygon, MultiPolygon
+from typing import Literal
+from shapely.geometry import Polygon
 from shapely.ops import unary_union
-from shapely import LineString
 
 from openavmkit.calculations import _crawl_calc_dict_for_fields, perform_calculations
 from openavmkit.filters import resolve_filter, select_filter
@@ -19,7 +18,6 @@ from openavmkit.utilities.data import combine_dfs, div_field_z_safe
 from openavmkit.utilities.geometry import get_crs, clean_geometry, identify_irregular_parcels, get_exterior_coords
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
 	get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit, get_valuation_date
-from matplotlib import pyplot as plt
 
 @dataclass
 class SalesUniversePair:
@@ -92,138 +90,8 @@ def enrich_time(df: pd.DataFrame, time_formats: dict, settings: dict) -> pd.Data
 		if do_enrich:
 			df = _enrich_time_field(df, prefix, add_year_month=True, add_year_quarter=True)
 			if prefix == "sale":
-				df = enrich_sale_age_days(df, settings)
+				df = _enrich_sale_age_days(df, settings)
 
-	return df
-
-
-def enrich_sale_age_days(df: pd.DataFrame, settings: dict) -> pd.DataFrame:
-	val_date = get_valuation_date(settings)
-	# create a new field with dtype Int64
-	df["sale_age_days"] = None
-	df["sale_age_days"] = df["sale_age_days"].astype("Int64")
-	sale_date_as_datetime = pd.to_datetime(df["sale_date"], format="%Y-%m-%d", errors="coerce")
-	df.loc[~sale_date_as_datetime.isna(), "sale_age_days"] = (val_date - sale_date_as_datetime).dt.days
-	return df
-
-
-def enrich_year_built(df: pd.DataFrame, settings: dict, is_sales: bool = False):
-	val_date = get_valuation_date(settings)
-	for prefix in ["bldg", "bldg_effective"]:
-		col = f"{prefix}_year_built"
-		if col in df:
-			new_col = f"{prefix}_age_years"
-			df = _enrich_year_built(df, col, new_col, val_date, is_sales)
-	return df
-
-
-def _enrich_year_built(
-		df: pd.DataFrame,
-		col: str,
-		new_col: str,
-		val_date: datetime,
-		is_sales: bool = False
-) -> pd.DataFrame:
-
-	if not is_sales:
-		val_year = val_date.year
-		df[new_col] = val_year - df[col]
-	else:
-		df.loc[df["sale_year"].notna(), new_col] = df["sale_year"] - df[col]
-
-	return df
-
-
-
-def _enrich_time_field(
-		df: pd.DataFrame,
-		prefix: str,
-		add_year_month: bool = True,
-		add_year_quarter: bool = True
-) -> pd.DataFrame:
-
-	if f"{prefix}_date" not in df:
-		# Check if we have _year, _month, and _day:
-		if f"{prefix}_year" in df and f"{prefix}_month" in df and f"{prefix}_day" in df:
-			date_str_series = (
-					df[f"{prefix}_year"].astype(str).str.pad(4,fillchar="0") + "-" +
-					df[f"{prefix}_month"].astype(str).str.pad(2,fillchar="0") + "-" +
-					df[f"{prefix}_day"].astype(str).str.pad(2,fillchar="0")
-			)
-			df[f"{prefix}_date"] = pd.to_datetime(date_str_series, format="%Y-%m-%d", errors="coerce")
-		else:
-			raise ValueError(f"The dataframe does not contain a '{prefix}_date' column.")
-
-	# ensure f"{prefix}_date" is a datetime object:
-	df[f"{prefix}_date"] = pd.to_datetime(df[f"{prefix}_date"], format="%Y-%m-%d", errors="coerce")
-
-	# create a f"{prefix}_year" column if it does not exist:
-	if f"{prefix}_year" not in df:
-		df[f"{prefix}_year"] = df[f"{prefix}_date"].dt.year
-	if f"{prefix}_month" not in df:
-		df[f"{prefix}_month"] = df[f"{prefix}_date"].dt.month
-	if f"{prefix}_quarter" not in df:
-		df[f"{prefix}_quarter"] = df[f"{prefix}_date"].dt.quarter
-
-	if add_year_month:
-		if f"{prefix}_year_month" not in df:
-			# format sale date in the form of "YYYY-MM"
-			df[f"{prefix}_year_month"] = df[f"{prefix}_date"].dt.to_period("M").astype("str")
-
-	if add_year_quarter:
-		if f"{prefix}_year_quarter" not in df:
-			# format sale date in the form of "YYYY-QX"
-			df[f"{prefix}_year_quarter"] = df[f"{prefix}_date"].dt.to_period("Q").astype("str")
-
-	checks = ["_year", "_month", "_day", "_year_month", "_year_quarter"]
-	for check in checks:
-		# Verify that the derived field a. exists and b. matches the value in the date field:
-		if f"{prefix}{check}" in df:
-			if f"{prefix}_date" in df:
-				if check in ["_year", "_month", "_day"]:
-					date_value = None
-					if check == "_year":
-						date_value = df[f"{prefix}_date"].dt.year.astype("Int64")
-					elif check == "_month":
-						date_value = df[f"{prefix}_date"].dt.month.astype("Int64")
-					elif check == "_day":
-						date_value = df[f"{prefix}_date"].dt.day.astype("Int64")
-					if not df[f"{prefix}{check}"].astype("Int64").equals(date_value):
-						# Count how many fields differ:
-						n_diff = df[f"{prefix}{check}"].astype("Int64").ne(date_value).sum()
-						raise ValueError(f"Derived field '{prefix}{check}' does not match the date field '{prefix}_date' in {n_diff} rows.")
-				elif check in ["_year_month", "_year_quarter"]:
-					date_value = None
-					if check == "_year_month":
-						date_value = df[f"{prefix}_date"].dt.to_period("M").astype("str")
-					elif check == "_year_quarter":
-						date_value = df[f"{prefix}_date"].dt.to_period("Q").astype("str")
-					if not df[f"{prefix}{check}"].equals(date_value):
-						# Count how many fields differ:
-						n_diff = df[f"{prefix}{check}"].ne(date_value).sum()
-						raise ValueError(f"Derived field '{prefix}{check}' does not match the date field '{prefix}_date' in {n_diff} rows.")
-
-	return df
-
-
-def old_enrich_time(df: pd.DataFrame) -> pd.DataFrame:
-	if "sale_date" not in df:
-		raise ValueError("The dataframe does not contain a 'sale_date' column.")
-	# ensure "sale_date" is a datetime object:
-	df["sale_date"] = pd.to_datetime(df["sale_date"], format="%Y-%m-%d", errors="coerce")
-	# create a "sale_year" column if it does not exist:
-	if "sale_year" not in df:
-		df["sale_year"] = df["sale_date"].dt.year
-	if "sale_month" not in df:
-		df["sale_month"] = df["sale_date"].dt.month
-	if "sale_quarter" not in df:
-		df["sale_quarter"] = df["sale_date"].dt.quarter
-	if "sale_year_month" not in df:
-		# format sale date in the form of "YYYY-MM"
-		df["sale_year_month"] = df["sale_date"].dt.to_period("M").astype("str")
-	if "sale_year_quarter" not in df:
-		# format sale date in the form of "YYYY-QX"
-		df["sale_year_quarter"] = df["sale_date"].dt.to_period("Q").astype("str")
 	return df
 
 
@@ -262,7 +130,7 @@ def get_sale_field(settings: dict) -> str:
 
 def get_vacant_sales(df_in: pd.DataFrame, settings: dict, invert:bool = False) -> pd.DataFrame:
 	df = df_in.copy()
-	df = boolify_column_in_df(df, "vacant_sale")
+	df = _boolify_column_in_df(df, "vacant_sale")
 	idx_vacant_sale = df["vacant_sale"].eq(True)
 	if invert:
 		idx_vacant_sale = ~idx_vacant_sale
@@ -270,7 +138,7 @@ def get_vacant_sales(df_in: pd.DataFrame, settings: dict, invert:bool = False) -
 	return df_vacant_sales
 
 
-def  get_vacant(df_in: pd.DataFrame, settings: dict, invert:bool = False) -> pd.DataFrame:
+def get_vacant(df_in: pd.DataFrame, settings: dict, invert:bool = False) -> pd.DataFrame:
 	# TODO : support custom vacant filter from user settings
 	df = df_in.copy()
 
@@ -313,26 +181,9 @@ def get_sales(df_in: pd.DataFrame, settings: dict, vacant_only: bool = False) ->
 		df["sale_price"].gt(0) &
 		df["valid_sale"].eq(True) &
 		(df["vacant_sale"].eq(True) if vacant_only else True)
-	].copy()
+		].copy()
 
 	return df_sales
-
-
-def boolify_series(series: pd.Series):
-	if series.dtype in ["object", "string", "str"]:
-		series = series.astype(str).str.lower().str.strip()
-		series = series.replace(["true", "t", "1"], 1)
-		series = series.replace(["false", "f", "0"], 0)
-	series = series.fillna(0)
-	series = series.astype(bool)
-	return series
-
-
-def boolify_column_in_df(df: pd.DataFrame, field: str):
-	series = df[field]
-	series = boolify_series(series)
-	df[field] = series
-	return df
 
 
 def get_report_locations(settings: dict, df: pd.DataFrame = None) -> list[str]:
@@ -417,8 +268,8 @@ def process_data(dataframes: dict[str : pd.DataFrame], settings: dict, verbose: 
 	if merge_sales is None:
 		raise ValueError(f"No \"sales\" merge instructions found. data.process.merge must have exactly two keys: \"universe\", and \"sales\"")
 
-	df_univ = merge_dict_of_dfs(dataframes, merge_univ, settings)
-	df_sales = merge_dict_of_dfs(dataframes, merge_sales, settings)
+	df_univ = _merge_dict_of_dfs(dataframes, merge_univ, settings)
+	df_sales = _merge_dict_of_dfs(dataframes, merge_sales, settings)
 
 	if "valid_sale" not in df_sales:
 		raise ValueError("The 'valid_sale' column is required in the sales data.")
@@ -486,6 +337,164 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str : p
 	return sup
 
 
+def identify_parcels_with_holes(df: gpd.GeoDataFrame) -> (gpd.GeoDataFrame, gpd.GeoDataFrame):
+	"""
+	Identify parcels with holes (interior rings)
+
+	Parameters:
+			df (GeoDataFrame): GeoDataFrame with parcel geometries.
+
+	Returns:
+			GeoDataFrame with parcels containing interior rings (holes).
+	"""
+
+	# Identify parcels with holes
+	def has_holes(geom):
+		if geom.is_valid:
+			if geom.geom_type == "Polygon":
+				return len(geom.interiors) > 0
+			elif geom.geom_type == "MultiPolygon":
+				return any(len(p.interiors) > 0 for p in geom.geoms)
+		return False
+
+	# Identify:
+	parcels_with_holes = df[df.geometry.apply(has_holes)]
+
+	# Remove duplicates:
+	parcels_with_holes = parcels_with_holes.drop_duplicates(subset="key")
+
+	return parcels_with_holes
+
+
+# Private
+
+
+def _enrich_sale_age_days(df: pd.DataFrame, settings: dict) -> pd.DataFrame:
+	val_date = get_valuation_date(settings)
+	# create a new field with dtype Int64
+	df["sale_age_days"] = None
+	df["sale_age_days"] = df["sale_age_days"].astype("Int64")
+	sale_date_as_datetime = pd.to_datetime(df["sale_date"], format="%Y-%m-%d", errors="coerce")
+	df.loc[~sale_date_as_datetime.isna(), "sale_age_days"] = (val_date - sale_date_as_datetime).dt.days
+	return df
+
+
+def _enrich_year_built(df: pd.DataFrame, settings: dict, is_sales: bool = False):
+	val_date = get_valuation_date(settings)
+	for prefix in ["bldg", "bldg_effective"]:
+		col = f"{prefix}_year_built"
+		if col in df:
+			new_col = f"{prefix}_age_years"
+			df = _do_enrich_year_built(df, col, new_col, val_date, is_sales)
+	return df
+
+
+def _do_enrich_year_built(
+		df: pd.DataFrame,
+		col: str,
+		new_col: str,
+		val_date: datetime,
+		is_sales: bool = False
+) -> pd.DataFrame:
+
+	if not is_sales:
+		val_year = val_date.year
+		df[new_col] = val_year - df[col]
+	else:
+		df.loc[df["sale_year"].notna(), new_col] = df["sale_year"] - df[col]
+
+	return df
+
+
+def _enrich_time_field(
+		df: pd.DataFrame,
+		prefix: str,
+		add_year_month: bool = True,
+		add_year_quarter: bool = True
+) -> pd.DataFrame:
+
+	if f"{prefix}_date" not in df:
+		# Check if we have _year, _month, and _day:
+		if f"{prefix}_year" in df and f"{prefix}_month" in df and f"{prefix}_day" in df:
+			date_str_series = (
+					df[f"{prefix}_year"].astype(str).str.pad(4,fillchar="0") + "-" +
+					df[f"{prefix}_month"].astype(str).str.pad(2,fillchar="0") + "-" +
+					df[f"{prefix}_day"].astype(str).str.pad(2,fillchar="0")
+			)
+			df[f"{prefix}_date"] = pd.to_datetime(date_str_series, format="%Y-%m-%d", errors="coerce")
+		else:
+			raise ValueError(f"The dataframe does not contain a '{prefix}_date' column.")
+
+	# ensure f"{prefix}_date" is a datetime object:
+	df[f"{prefix}_date"] = pd.to_datetime(df[f"{prefix}_date"], format="%Y-%m-%d", errors="coerce")
+
+	# create a f"{prefix}_year" column if it does not exist:
+	if f"{prefix}_year" not in df:
+		df[f"{prefix}_year"] = df[f"{prefix}_date"].dt.year
+	if f"{prefix}_month" not in df:
+		df[f"{prefix}_month"] = df[f"{prefix}_date"].dt.month
+	if f"{prefix}_quarter" not in df:
+		df[f"{prefix}_quarter"] = df[f"{prefix}_date"].dt.quarter
+
+	if add_year_month:
+		if f"{prefix}_year_month" not in df:
+			# format sale date in the form of "YYYY-MM"
+			df[f"{prefix}_year_month"] = df[f"{prefix}_date"].dt.to_period("M").astype("str")
+
+	if add_year_quarter:
+		if f"{prefix}_year_quarter" not in df:
+			# format sale date in the form of "YYYY-QX"
+			df[f"{prefix}_year_quarter"] = df[f"{prefix}_date"].dt.to_period("Q").astype("str")
+
+	checks = ["_year", "_month", "_day", "_year_month", "_year_quarter"]
+	for check in checks:
+		# Verify that the derived field a. exists and b. matches the value in the date field:
+		if f"{prefix}{check}" in df:
+			if f"{prefix}_date" in df:
+				if check in ["_year", "_month", "_day"]:
+					date_value = None
+					if check == "_year":
+						date_value = df[f"{prefix}_date"].dt.year.astype("Int64")
+					elif check == "_month":
+						date_value = df[f"{prefix}_date"].dt.month.astype("Int64")
+					elif check == "_day":
+						date_value = df[f"{prefix}_date"].dt.day.astype("Int64")
+					if not df[f"{prefix}{check}"].astype("Int64").equals(date_value):
+						# Count how many fields differ:
+						n_diff = df[f"{prefix}{check}"].astype("Int64").ne(date_value).sum()
+						if n_diff > 0:
+							raise ValueError(f"Derived field '{prefix}{check}' does not match the date field '{prefix}_date' in {n_diff} rows.")
+				elif check in ["_year_month", "_year_quarter"]:
+					date_value = None
+					if check == "_year_month":
+						date_value = df[f"{prefix}_date"].dt.to_period("M").astype("str")
+					elif check == "_year_quarter":
+						date_value = df[f"{prefix}_date"].dt.to_period("Q").astype("str")
+					if not df[f"{prefix}{check}"].equals(date_value):
+						# Count how many fields differ:
+						n_diff = df[f"{prefix}{check}"].ne(date_value).sum()
+						raise ValueError(f"Derived field '{prefix}{check}' does not match the date field '{prefix}_date' in {n_diff} rows.")
+
+	return df
+
+
+def _boolify_series(series: pd.Series):
+	if series.dtype in ["object", "string", "str"]:
+		series = series.astype(str).str.lower().str.strip()
+		series = series.replace(["true", "t", "1"], 1)
+		series = series.replace(["false", "f", "0"], 0)
+	series = series.fillna(0)
+	series = series.astype(bool)
+	return series
+
+
+def _boolify_column_in_df(df: pd.DataFrame, field: str):
+	series = df[field]
+	series = _boolify_series(series)
+	df[field] = series
+	return df
+
+
 def _enrich_df_basic(
 		df_in: pd.DataFrame,
 		s_enrich_this: dict,
@@ -501,13 +510,13 @@ def _enrich_df_basic(
 	s_calc = s_enrich_this.get("calc", {})
 
 	# reference tables:
-	df = perform_ref_tables(df, s_ref, dataframes, verbose=verbose)
+	df = _perform_ref_tables(df, s_ref, dataframes, verbose=verbose)
 
 	# calculations:
 	df = perform_calculations(df, s_calc)
 
 	# enrich year built:
-	df = enrich_year_built(df, settings, is_sales)
+	df = _enrich_year_built(df, settings, is_sales)
 
 	# enrich vacant:
 	df = _enrich_vacant(df)
@@ -567,10 +576,10 @@ def _enrich_df_geometry(
 	gdf : gpd.GeoDataFrame
 
 	# geometry
-	gdf = perform_spatial_joins(s_geom, dataframes, verbose=verbose)
+	gdf = _perform_spatial_joins(s_geom, dataframes, verbose=verbose)
 
 	# distances
-	gdf = perform_distance_calculations(gdf, s_dist, dataframes, get_long_distance_unit(settings), verbose=verbose)
+	gdf = _perform_distance_calculations(gdf, s_dist, dataframes, get_long_distance_unit(settings), verbose=verbose)
 
 	# Merge everything together:
 	try_keys = ["key", "key2", "key3"]
@@ -595,12 +604,12 @@ def _enrich_df_geometry(
 		raise ValueError(f"Could not find a common key between geo_parcels and base dataframe. Tried keys: {try_keys}")
 
 	# basic geometric enrichment
-	gdf_merged = basic_geo_enrichment(gdf_merged, settings, verbose=verbose)
+	gdf_merged = _basic_geo_enrichment(gdf_merged, settings, verbose=verbose)
 
 	return gdf_merged
 
 
-def basic_geo_enrichment(gdf: gpd.GeoDataFrame, settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
+def _basic_geo_enrichment(gdf: gpd.GeoDataFrame, settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
 
 	if verbose:
 		print(f"Performing basic geometric enrichment...")
@@ -672,8 +681,7 @@ def _calc_geom_stuff(gdf: gpd.GeoDataFrame, verbose: bool = False) -> gpd.GeoDat
 	return gdf
 
 
-
-def perform_spatial_joins(s_geom: list, dataframes: dict[str: pd.DataFrame], verbose: bool = False) -> gpd.GeoDataFrame:
+def _perform_spatial_joins(s_geom: list, dataframes: dict[str: pd.DataFrame], verbose: bool = False) -> gpd.GeoDataFrame:
 
 	#  For geometry, provide a list of strings and/or objects, these represent spatial joins.
 	#  Strings are interpreted as the IDs of loaded shapefiles. Objects must have these keys: 'id', and 'predicate',
@@ -794,7 +802,7 @@ def _perform_spatial_join(gdf_in: gpd.GeoDataFrame, gdf_overlay: gpd.GeoDataFram
 	return gdf
 
 
-def _perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDataFrame, _id: str, unit: str = "km") -> pd.DataFrame:
+def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDataFrame, _id: str, unit: str = "km") -> pd.DataFrame:
 
 	unit_factors = {"m": 1, "km": 0.001, "mile": 0.000621371, "ft": 3.28084}
 	if unit not in unit_factors:
@@ -829,7 +837,7 @@ def _perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDataF
 	return df_out
 
 
-def perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, dataframes: dict[str: pd.DataFrame], unit: str = "km", verbose: bool = False) -> gpd.GeoDataFrame:
+def _perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, dataframes: dict[str: pd.DataFrame], unit: str = "km", verbose: bool = False) -> gpd.GeoDataFrame:
 	# For distances, provide a list of strings and/or objects. Strings are interpreted as the IDs of loaded shapefiles.
 	# Objects must have an 'id' key, and optionally a 'field' key. If a 'field' key is provided, distances will be
 	# calculated for each row in the shapefile corresponding to a unique value for that field.
@@ -856,19 +864,19 @@ def perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, datafra
 		if verbose:
 			print(f"--> {_id}")
 		if field is None:
-			df = _perform_distance_calculations(df, gdf, _id, unit)
+			df = _do_perform_distance_calculations(df, gdf, _id, unit)
 		else:
 			uniques = gdf[field].unique()
 			for unique in uniques:
 				if pd.isna(unique):
 					continue
 				gdf_subset = gdf[gdf[field].eq(unique)]
-				df = _perform_distance_calculations(df, gdf_subset, f"{_id}_{unique}", unit)
+				df = _do_perform_distance_calculations(df, gdf_subset, f"{_id}_{unique}", unit)
 
 	return df
 
 
-def perform_ref_tables(df_in: pd.DataFrame | gpd.GeoDataFrame, s_ref: list | dict, dataframes: dict[str: pd.DataFrame], verbose: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
+def _perform_ref_tables(df_in: pd.DataFrame | gpd.GeoDataFrame, s_ref: list | dict, dataframes: dict[str: pd.DataFrame], verbose: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
 	df = df_in.copy()
 	if not isinstance(s_ref, list):
 		s_ref = [s_ref]
@@ -925,31 +933,31 @@ def perform_ref_tables(df_in: pd.DataFrame | gpd.GeoDataFrame, s_ref: list | dic
 	return df
 
 
-def get_calc_cols(settings: dict) -> list[str]:
+def _get_calc_cols(settings: dict) -> list[str]:
 	s_load = settings.get("data", {}).get("load", {})
 	cols_to_load = []
 	for key in s_load:
 		entry = s_load[key]
-		cols = _get_calc_cols(entry)
+		cols = _do_get_calc_cols(entry)
 		cols_to_load += cols
 	cols_to_load = list(set(cols_to_load))
 	return cols_to_load
 
 
-def _get_calc_cols(df_entry: dict) -> list[str]:
+def _do_get_calc_cols(df_entry: dict) -> list[str]:
 	e_calc = df_entry.get("calc", {})
 	fields_in_calc = _crawl_calc_dict_for_fields(e_calc)
 	return fields_in_calc
 
 
-def load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_cat: list = None, fields_bool: list = None, fields_num: list = None) -> pd.DataFrame | None:
+def _load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_cat: list = None, fields_bool: list = None, fields_num: list = None) -> pd.DataFrame | None:
 	filename = entry.get("filename", "")
 	filename = f"in/{filename}"
 	if filename == "":
 		return None
 	ext = str(filename).split(".")[-1]
 
-	column_names = snoop_column_names(filename)
+	column_names = _snoop_column_names(filename)
 
 	e_load = entry.get("load", {})
 	e_calc = entry.get("calc", {})
@@ -1025,7 +1033,7 @@ def load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_ca
 		if col in fields_cat:
 			df[col] = df[col].astype("string")
 		elif col in fields_bool:
-			df[col] = boolify_series(df[col])
+			df[col] = _boolify_series(df[col])
 		elif col in fields_num:
 			df[col] = df[col].astype("Float64")
 
@@ -1078,7 +1086,7 @@ def load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_ca
 					}
 					break
 
-	df = handle_duplicated_rows(df, dupes)
+	df = _handle_duplicated_rows(df, dupes)
 
 	# Check if it's a geodataframe and if so clean it:
 	if is_geometry:
@@ -1089,7 +1097,7 @@ def load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_ca
 	return df
 
 
-def snoop_column_names(filename: str) -> list[str]:
+def _snoop_column_names(filename: str) -> list[str]:
 	ext = str(filename).split(".")[-1]
 	if ext == "parquet":
 		parquet_file = pq.ParquetFile(filename)
@@ -1099,7 +1107,7 @@ def snoop_column_names(filename: str) -> list[str]:
 	raise ValueError(f"Unsupported file extension: \"{ext}\"")
 
 
-def handle_duplicated_rows(df_in: pd.DataFrame, dupes: dict) -> pd.DataFrame:
+def _handle_duplicated_rows(df_in: pd.DataFrame, dupes: dict) -> pd.DataFrame:
 
 	subset = dupes.get("subset", "key")
 
@@ -1144,7 +1152,7 @@ def handle_duplicated_rows(df_in: pd.DataFrame, dupes: dict) -> pd.DataFrame:
 	return df_in
 
 
-def merge_dict_of_dfs(dataframes: dict[str : pd.DataFrame], merge_list: list, settings: dict) -> pd.DataFrame:
+def _merge_dict_of_dfs(dataframes: dict[str: pd.DataFrame], merge_list: list, settings: dict) -> pd.DataFrame:
 	merges = []
 
 	s_reconcile = settings.get("data", {}).get("process", {}).get("reconcile", {})
@@ -1249,7 +1257,7 @@ def merge_dict_of_dfs(dataframes: dict[str : pd.DataFrame], merge_list: list, se
 			# Drop all child fields
 			df_merged = df_merged.drop(columns=child_fields)
 
-	calc_cols = get_calc_cols(settings)
+	calc_cols = _get_calc_cols(settings)
 
 	for col in df_merged.columns.values:
 		if col in calc_cols:
@@ -1271,7 +1279,7 @@ def merge_dict_of_dfs(dataframes: dict[str : pd.DataFrame], merge_list: list, se
 	return df_merged
 
 
-def write_canonical_splits(
+def _write_canonical_splits(
 		df_sales_in: pd.DataFrame,
 		settings: dict
 ):
@@ -1281,7 +1289,7 @@ def write_canonical_splits(
 	test_train_frac = instructions.get("test_train_frac", 0.8)
 	random_seed = instructions.get("random_seed", 1337)
 	for model_group in model_groups:
-		_write_canonical_split(model_group, df_sales, settings, test_train_frac, random_seed)
+		_do_write_canonical_split(model_group, df_sales, settings, test_train_frac, random_seed)
 
 
 def _perform_canonical_split(
@@ -1314,7 +1322,7 @@ def _perform_canonical_split(
 	return df_test, df_train
 
 
-def _write_canonical_split(
+def _do_write_canonical_split(
 		model_group: str,
 		df_sales_in: pd.DataFrame,
 		settings: dict,
@@ -1337,7 +1345,7 @@ def _write_canonical_split(
 	df_test[["key"]].to_csv(f"{outpath}/test_keys.csv", index=False)
 
 
-def read_split_keys(
+def _read_split_keys(
 		model_group: str
 ):
 	path = f"out/models/{model_group}/_data"
@@ -1350,7 +1358,7 @@ def read_split_keys(
 	return test_keys, train_keys
 
 
-def tag_model_groups_sup(
+def _tag_model_groups_sup(
 		sup: SalesUniversePair,
 		settings: dict,
 		verbose: bool = False
@@ -1409,7 +1417,7 @@ def tag_model_groups_sup(
 
 		print(f"common area filters = {common_area_filters}")
 
-		df_univ = assign_modal_model_group_to_common_area(df_univ, mg_id, common_area_filters)
+		df_univ = _assign_modal_model_group_to_common_area(df_univ, mg_id, common_area_filters)
 
 	df_univ.to_parquet("out/look/tag-univ-1.parquet")
 
@@ -1449,37 +1457,7 @@ def tag_model_groups_sup(
 	return sup
 
 
-
-def identify_parcels_with_holes(df: gpd.GeoDataFrame) -> (gpd.GeoDataFrame, gpd.GeoDataFrame):
-	"""
-	Identify parcels with holes (interior rings)
-
-	Parameters:
-			df (GeoDataFrame): GeoDataFrame with parcel geometries.
-
-	Returns:
-			GeoDataFrame with parcels containing interior rings (holes).
-	"""
-
-	# Identify parcels with holes
-	def has_holes(geom):
-		if geom.is_valid:
-			if geom.geom_type == "Polygon":
-				return len(geom.interiors) > 0
-			elif geom.geom_type == "MultiPolygon":
-				return any(len(p.interiors) > 0 for p in geom.geoms)
-		return False
-
-	# Identify:
-	parcels_with_holes = df[df.geometry.apply(has_holes)]
-
-	# Remove duplicates:
-	parcels_with_holes = parcels_with_holes.drop_duplicates(subset="key")
-
-	return parcels_with_holes
-
-
-def assign_modal_model_group_to_common_area(df_univ_in: gpd.GeoDataFrame, model_group_id: str, common_area_filters: list | None = None) -> gpd.GeoDataFrame:
+def _assign_modal_model_group_to_common_area(df_univ_in: gpd.GeoDataFrame, model_group_id: str, common_area_filters: list | None = None) -> gpd.GeoDataFrame:
 	"""
 	Assign the modal model_group of parcels inside an enveloping "COMMON AREA" parcel to the "COMMON AREA" parcel.
 

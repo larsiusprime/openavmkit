@@ -3,7 +3,6 @@ import os
 import pandas as pd
 from diptest import diptest
 
-from openavmkit.checkpoint import read_checkpoint, write_checkpoint
 from openavmkit.data import get_sales, get_sale_field, get_important_fields, get_locations, \
   get_vacant_sales
 from openavmkit.horizontal_equity_study import HorizontalEquityStudy
@@ -250,40 +249,6 @@ class SalesScrutinyStudy:
     finish_report(report, outpath, "sales_scrutiny")
 
 
-def _get_ss_renames():
-  return {
-    "key": "Primary key",
-    "ss_id": "Sales scrutiny cluster",
-    "count": "# of sales in cluster",
-    "sale_price": "Sale price",
-    "sale_price_impr_sqft": "Sale price / improved sqft",
-    "sale_price_land_sqft": "Sale price / land sqft",
-    "sale_price_time_adj": "Sale price (time adjusted)",
-    "sale_price_time_adj_impr_sqft": "Sale price / improved sqft (time adjusted)",
-    "sale_price_time_adj_land_sqft": "Sale price / land sqft (time adjusted)",
-    "median": "Median",
-    "chd": "CHD",
-    "max": "Max",
-    "min": "Min",
-    "stdev": "Standard deviation",
-    "relative_ratio": "Relative ratio",
-    "med_dist_stdevs": "Median distance from median, in std. deviations",
-    "flagged": "Flagged",
-    "bimodal": "Bimodal cluster",
-    "anomaly_1": "Weird price/sqft & weird sqft",
-    "anomaly_2": "Low price & low price/sqft",
-    "anomaly_3": "High price & high price/sqft",
-    "anomaly_4": "Normal price & high price/sqft",
-    "anomaly_5": "Normal price & low price/sqft"
-  }
-
-
-def _prettify(df: pd.DataFrame, settings: dict) -> pd.DataFrame:
-  df = df.rename(columns=_get_ss_renames())
-  df = _apply_dd_to_df_cols(df, settings)
-  return df
-
-
 def calc_sales_scrutiny(df_in: pd.DataFrame, sales_field: str):
     df = df_in.copy()
 
@@ -340,6 +305,107 @@ def calc_sales_scrutiny(df_in: pd.DataFrame, sales_field: str):
     df = df[["key", "ss_id", "count", sales_field, base_sales_field, "median", "max", "min", "chd", "stdev", "relative_ratio", "med_dist_stdevs", "flagged", "bimodal", "anomaly_1", "anomaly_2", "anomaly_3", "anomaly_4", "anomaly_5"]]
 
     return df
+
+
+def mark_sales_scrutiny_clusters(df: pd.DataFrame, settings: dict, verbose: bool = False):
+  df_sales = get_sales(df, settings)
+
+  ss = settings.get("analysis", {}).get("sales_scrutiny", {})
+  location = ss.get("location", "neighborhood")
+  fields_categorical = ss.get("fields_categorical", [])
+  fields_numeric = ss.get("fields_numeric", None)
+
+  # check if this is a vacant dataset:
+  if df_sales["is_vacant"].eq(1).all():
+    # if so remove all improved categoricals
+    impr_fields = get_fields_categorical(settings, df, include_boolean=False, types=["impr"])
+    fields_categorical = [f for f in fields_categorical if f not in impr_fields]
+
+  df_sales["ss_id"], fields_used = make_clusters(df_sales, location, fields_categorical, fields_numeric, min_cluster_size=5, verbose=verbose)
+
+  return df_sales, fields_used
+
+
+# def identify_suspicious_characteristics(df: pd.DataFrame, settings: dict, is_vacant: bool = False, verbose: bool = False):
+#   df_sales = get_sales(df, settings)
+#   df_sales = get_vacant_sales(df_sales, settings, not is_vacant)
+#
+#   ss = settings.get("analysis", {}).get("sales_scrutiny", {})
+#   location = ss.get("location", "neighborhood")
+#
+#   sale_field = get_sale_field(settings)
+#   per_field = "land_sqft" if is_vacant else "impr_sqft"
+#   sale_field_per = f"{sale_field}_{per_field}"
+#
+#   df_sales.groupby("location")[[sale_field, sale_field_per]].agg(["count", "min", "median", "max", "std"])
+#
+#   # What we are looking for is parcels where the sale_field is in line with the overall area but the sale_field_per is not
+
+
+def mark_ss_ids_per_model_group(df_in: pd.DataFrame, settings: dict, verbose: bool = False) -> pd.DataFrame:
+  # Mark the sales scrutiny ID's
+  df = do_per_model_group(df_in.copy(), settings, _mark_ss_ids, {"settings": settings, "verbose": verbose})
+  return df
+
+
+def run_sales_scrutiny_per_model_group(df_in: pd.DataFrame, settings: dict, verbose=False) -> pd.DataFrame:
+  # Run sales scrutiny for each model group
+  df = do_per_model_group(df_in.copy(), settings, run_sales_scrutiny, {"settings": settings, "verbose": verbose})
+  return df
+
+
+def run_sales_scrutiny(df_in: pd.DataFrame, settings: dict, model_group: str, verbose=False) -> pd.DataFrame:
+  # run sales validity:
+  ss = SalesScrutinyStudy(df_in, settings, model_group=model_group)
+  ss.write(f"out/sales_scrutiny/{model_group}")
+
+  # clean sales data:
+  return ss.get_scrutinized(df_in)
+
+
+# Private
+
+
+def _mark_ss_ids(df_in: pd.DataFrame, model_group: str, settings: dict, verbose: bool) -> pd.DataFrame:
+  df, _ = mark_sales_scrutiny_clusters(df_in, settings, verbose)
+  if pd.isna(model_group):
+    model_group = "UNKNOWN"
+  df["ss_id"] = model_group + "_" + df["ss_id"].astype(str)
+  return df
+
+
+def _get_ss_renames():
+  return {
+    "key": "Primary key",
+    "ss_id": "Sales scrutiny cluster",
+    "count": "# of sales in cluster",
+    "sale_price": "Sale price",
+    "sale_price_impr_sqft": "Sale price / improved sqft",
+    "sale_price_land_sqft": "Sale price / land sqft",
+    "sale_price_time_adj": "Sale price (time adjusted)",
+    "sale_price_time_adj_impr_sqft": "Sale price / improved sqft (time adjusted)",
+    "sale_price_time_adj_land_sqft": "Sale price / land sqft (time adjusted)",
+    "median": "Median",
+    "chd": "CHD",
+    "max": "Max",
+    "min": "Min",
+    "stdev": "Standard deviation",
+    "relative_ratio": "Relative ratio",
+    "med_dist_stdevs": "Median distance from median, in std. deviations",
+    "flagged": "Flagged",
+    "bimodal": "Bimodal cluster",
+    "anomaly_1": "Weird price/sqft & weird sqft",
+    "anomaly_2": "Low price & low price/sqft",
+    "anomaly_3": "High price & high price/sqft",
+    "anomaly_4": "Normal price & high price/sqft",
+    "anomaly_5": "Normal price & low price/sqft"
+  }
+
+
+def _prettify(df: pd.DataFrame, settings: dict) -> pd.DataFrame:
+  df = df.rename(columns=_get_ss_renames())
+  df = _apply_dd_to_df_cols(df, settings)
+  return df
 
 
 def _apply_he_stats(df: pd.DataFrame, cluster_id: str, sales_field: str):
@@ -472,35 +538,35 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
   df.loc[
     (idx_price_sqft_low | idx_price_sqft_high) &
     (idx_sqft_low | idx_sqft_high),
-  "anomaly_1"] = True
+    "anomaly_1"] = True
 
   # 2. Low price, low price/sqft, sqft is in range
   df.loc[
     idx_price_low &
     idx_price_sqft_low &
     (idx_sqft_not_low | idx_sqft_not_high),
-  "anomaly_2"] = True
+    "anomaly_2"] = True
 
   # 3. High price, high price/sqft, sqft is in range
   df.loc[
     idx_price_high &
     idx_price_sqft_high &
     (idx_sqft_not_low | idx_sqft_not_high),
-  "anomaly_3"] = True
+    "anomaly_3"] = True
 
   # 4. Price in range, high price/sqft
   df.loc[
     (idx_price_not_low & idx_price_not_high) &
     idx_price_sqft_high &
     (idx_sqft_not_low | idx_sqft_not_high),
-  "anomaly_4"] = True
+    "anomaly_4"] = True
 
   # 5. Price in range, low price/sqft
   df.loc[
     (idx_price_not_low & idx_price_not_high) &
     idx_price_sqft_low &
     (idx_sqft_not_low | idx_sqft_not_high),
-  "anomaly_5"] = True
+    "anomaly_5"] = True
 
   df_out = df_in.copy()
   df_out["anomalies"] = 0
@@ -518,7 +584,6 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
   return df_out
 
 
-
 def _get_base_sales_field(field: str):
   return "sale_price" if "time_adj" not in field else "sale_price_time_adj"
 
@@ -534,68 +599,3 @@ def _identify_bimodal_clusters(df, sales_field):
         bimodal_clusters.append(cluster_id)
 
   return bimodal_clusters
-
-
-def mark_sales_scrutiny_clusters(df: pd.DataFrame, settings: dict, verbose: bool = False):
-  df_sales = get_sales(df, settings)
-
-  ss = settings.get("analysis", {}).get("sales_scrutiny", {})
-  location = ss.get("location", "neighborhood")
-  fields_categorical = ss.get("fields_categorical", [])
-  fields_numeric = ss.get("fields_numeric", None)
-
-  # check if this is a vacant dataset:
-  if df_sales["is_vacant"].eq(1).all():
-    # if so remove all improved categoricals
-    impr_fields = get_fields_categorical(settings, df, include_boolean=False, types=["impr"])
-    fields_categorical = [f for f in fields_categorical if f not in impr_fields]
-
-  df_sales["ss_id"], fields_used = make_clusters(df_sales, location, fields_categorical, fields_numeric, min_cluster_size=5, verbose=verbose)
-
-  return df_sales, fields_used
-
-
-def identify_suspicious_characteristics(df: pd.DataFrame, settings: dict, is_vacant: bool = False, verbose: bool = False):
-  df_sales = get_sales(df, settings)
-  df_sales = get_vacant_sales(df_sales, settings, not is_vacant)
-
-  ss = settings.get("analysis", {}).get("sales_scrutiny", {})
-  location = ss.get("location", "neighborhood")
-
-  sale_field = get_sale_field(settings)
-  per_field = "land_sqft" if is_vacant else "impr_sqft"
-  sale_field_per = f"{sale_field}_{per_field}"
-
-  df_sales.groupby("location")[[sale_field, sale_field_per]].agg(["count", "min", "median", "max", "std"])
-
-  # What we are looking for is parcels where the sale_field is in line with the overall area but the sale_field_per is not
-
-
-def _mark_ss_ids(df_in: pd.DataFrame, model_group: str, settings: dict, verbose: bool) -> pd.DataFrame:
-  df, _ = mark_sales_scrutiny_clusters(df_in, settings, verbose)
-  if pd.isna(model_group):
-    model_group = "UNKNOWN"
-  df["ss_id"] = model_group + "_" + df["ss_id"].astype(str)
-  return df
-
-
-def mark_ss_ids_per_model_group(df_in: pd.DataFrame, settings: dict, verbose: bool = False) -> pd.DataFrame:
-  # Mark the sales scrutiny ID's
-  df = do_per_model_group(df_in.copy(), settings, _mark_ss_ids, {"settings": settings, "verbose": verbose})
-  return df
-
-
-def run_sales_scrutiny_per_model_group(df_in: pd.DataFrame, settings: dict, verbose=False) -> pd.DataFrame:
-  # Run sales scrutiny for each model group
-  df = do_per_model_group(df_in.copy(), settings, run_sales_scrutiny, {"settings": settings, "verbose": verbose})
-  return df
-
-
-
-def run_sales_scrutiny(df_in: pd.DataFrame, settings: dict, model_group: str, verbose=False) -> pd.DataFrame:
-  # run sales validity:
-  ss = SalesScrutinyStudy(df_in, settings, model_group=model_group)
-  ss.write(f"out/sales_scrutiny/{model_group}")
-
-  # clean sales data:
-  return ss.get_scrutinized(df_in)

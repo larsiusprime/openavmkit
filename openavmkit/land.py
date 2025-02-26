@@ -176,7 +176,7 @@ def _finalize_land_values(
   value_field = "model_market_value_impr_sqft"
 
   if generate_boundaries:
-    generate_raster(
+    _generate_raster(
       df_not_tiny,
       outpath,
       value_field,
@@ -187,7 +187,7 @@ def _finalize_land_values(
 
 
 
-def save_raster(
+def _save_raster(
     filepath: str,
     n_rows: int,
     n_cols: int,
@@ -219,7 +219,7 @@ def save_raster(
 
 
 # Generate a raster from the final land values on a map
-def generate_raster(
+def _generate_raster(
     gdf_in: gpd.GeoDataFrame,
     path: str,
     field: str,
@@ -283,7 +283,7 @@ def generate_raster(
 
   filepath = f"{path}/{field}.tiff"
   # Write the raster to disk as a GeoTIFF
-  save_raster(filepath, n_rows, n_cols, raster, nodata_value, gdf.crs, minx, miny, maxx, maxy)
+  _save_raster(filepath, n_rows, n_cols, raster, nodata_value, gdf.crs, minx, miny, maxx, maxy)
 
   # Optionally, plot the result
   if plot:
@@ -311,7 +311,7 @@ def generate_raster(
     convex_hull = gdf.union_all().convex_hull
     print(f"Convex Hull: {type(convex_hull)}")
 
-    find_areas_from_negative_space(
+    _find_areas_from_negative_space(
       raster,
       path,
       convex_hull,
@@ -327,7 +327,7 @@ def generate_raster(
       nodata_value
     )
 
-    find_areas_from_negative_space(
+    _find_areas_from_negative_space(
       raster,
       path,
       convex_hull,
@@ -363,7 +363,7 @@ def generate_raster(
     # )
 
 
-def remove_isolated_islands(mask, min_area=200, min_major_axis=40):
+def _remove_isolated_islands(mask, min_area=200, min_major_axis=40):
   """
   Remove connected regions from a binary mask that are smaller than a given area
   or that do not have a sufficiently long major axis.
@@ -388,13 +388,13 @@ def remove_isolated_islands(mask, min_area=200, min_major_axis=40):
   return filtered_mask
 
 
-def pixel_to_coords(coords, minx, maxy, pixel_width, pixel_height):
+def _pixel_to_coords(coords, minx, maxy, pixel_width, pixel_height):
   xs = minx + coords[:, 1] * pixel_width
   ys = maxy - coords[:, 0] * pixel_height
   return xs, ys
 
 
-def extract_line_segments_from_skeleton(skeleton, minx, maxy, pixel_width, pixel_height):
+def _extract_line_segments_from_skeleton(skeleton, minx, maxy, pixel_width, pixel_height):
   """
   Convert a skeletonized binary image (where True indicates a skeleton pixel)
   into a list of ordered line segments. This method decomposes each connected
@@ -488,14 +488,14 @@ def extract_line_segments_from_skeleton(skeleton, minx, maxy, pixel_width, pixel
     # Convert each segment from pixel coordinates to spatial coordinates.
     for seg in segs:
       seg_arr = np.array(seg)
-      xs, ys = pixel_to_coords(seg_arr, minx, maxy, pixel_width, pixel_height)
+      xs, ys = _pixel_to_coords(seg_arr, minx, maxy, pixel_width, pixel_height)
       seg_spatial = list(zip(xs, ys))
       segments_spatial.append(seg_spatial)
 
   return segments_spatial
 
 
-def shatter_polygon_with_lines(line_segments, convex_hull):
+def _shatter_polygon_with_lines(line_segments, convex_hull):
   # 1. Convert all line segments to Shapely LineString objects, filtering invalid ones
   valid_lines = []
   for seg in line_segments:
@@ -579,7 +579,7 @@ def shatter_polygon_with_lines(line_segments, convex_hull):
   return flattened_polygons
 
 
-def find_areas_from_negative_space(
+def _find_areas_from_negative_space(
     raster: np.ndarray,
     path: str,
     convex_hull,
@@ -615,7 +615,7 @@ def find_areas_from_negative_space(
   # Remove small connected components that are likely noise.
   big_road_mask_clean : np.ndarray = remove_small_objects(big_road_mask, min_size=min_size)
 
-  big_road_mask_filtered = remove_isolated_islands(big_road_mask_clean,
+  big_road_mask_filtered = _remove_isolated_islands(big_road_mask_clean,
     min_area=island_min_area,
     min_major_axis=island_min_major)
 
@@ -624,14 +624,14 @@ def find_areas_from_negative_space(
   skeleton : np.ndarray = skeletonize(big_road_mask_filtered)
 
   # Write out each layer:
-  save_raster(f"{path}{prefix}road_mask.tiff", n_rows, n_cols, road_mask, nodata_value, crs, minx, miny, maxx, maxy)
-  save_raster(f"{path}{prefix}blurred_mask.tiff", n_rows, n_cols, blurred_mask, nodata_value, crs, minx, miny, maxx, maxy)
-  save_raster(f"{path}{prefix}big_road_mask.tiff", n_rows, n_cols, big_road_mask.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
-  save_raster(f"{path}{prefix}big_road_mask_clean.tiff", n_rows, n_cols, big_road_mask_clean.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
-  save_raster(f"{path}{prefix}big_road_mask_filtered.tiff", n_rows, n_cols, big_road_mask_filtered.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
-  save_raster(f"{path}{prefix}skeleton.tiff", n_rows, n_cols, skeleton.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
+  _save_raster(f"{path}{prefix}road_mask.tiff", n_rows, n_cols, road_mask, nodata_value, crs, minx, miny, maxx, maxy)
+  _save_raster(f"{path}{prefix}blurred_mask.tiff", n_rows, n_cols, blurred_mask, nodata_value, crs, minx, miny, maxx, maxy)
+  _save_raster(f"{path}{prefix}big_road_mask.tiff", n_rows, n_cols, big_road_mask.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
+  _save_raster(f"{path}{prefix}big_road_mask_clean.tiff", n_rows, n_cols, big_road_mask_clean.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
+  _save_raster(f"{path}{prefix}big_road_mask_filtered.tiff", n_rows, n_cols, big_road_mask_filtered.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
+  _save_raster(f"{path}{prefix}skeleton.tiff", n_rows, n_cols, skeleton.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
 
-  segments = extract_line_segments_from_skeleton(skeleton, minx, maxy, pixel_width, pixel_height)
+  segments = _extract_line_segments_from_skeleton(skeleton, minx, maxy, pixel_width, pixel_height)
 
   # add line segments from the convex_hull to segments:
   for i in range(len(convex_hull.exterior.coords) - 1):
@@ -642,7 +642,7 @@ def find_areas_from_negative_space(
   gdf.crs = crs
   gdf.to_parquet(f"{path}{prefix}road_segments.parquet")
 
-  polygons = shatter_polygon_with_lines(segments, convex_hull)
+  polygons = _shatter_polygon_with_lines(segments, convex_hull)
 
   # write out the polygons as a geodataframe parquet:
   gdf_poly = gpd.GeoDataFrame(geometry=polygons)
@@ -681,7 +681,7 @@ def find_areas_from_negative_space(
   # plt.show()
 
 
-def find_areas_from_energy_gradient(
+def _find_areas_from_energy_gradient(
   raster: np.ndarray,
   path: str,
   convex_hull,
@@ -718,9 +718,9 @@ def find_areas_from_energy_gradient(
 
   # (Optional: If you want to convert pixel coordinates to spatial coordinates,
   #  you can apply your affine transform here.)
-  save_raster(f"{path}_smoothed.tiff", n_rows, n_cols, smoothed, nodata_value, crs, minx, miny, maxx, maxy)
-  save_raster(f"{path}_edges.tiff", n_rows, n_cols, edges.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
-  save_raster(f"{path}_skeleton.tiff", n_rows, n_cols, skeleton.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
+  _save_raster(f"{path}_smoothed.tiff", n_rows, n_cols, smoothed, nodata_value, crs, minx, miny, maxx, maxy)
+  _save_raster(f"{path}_edges.tiff", n_rows, n_cols, edges.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
+  _save_raster(f"{path}_skeleton.tiff", n_rows, n_cols, skeleton.astype(float), nodata_value, crs, minx, miny, maxx, maxy)
 
   fig, axes = plt.subplots(1, 4, figsize=(16, 4))
   ax = axes.ravel()
@@ -957,7 +957,7 @@ def _run_land_analysis(
   gdf.to_parquet(f"out/models/{model_group}/_cache/land_analysis.parquet")
 
 
-def get_median_value_with_kdtree(row, field, tree, valid_gdf, k=3, counter=[0]):
+def _get_median_value_with_kdtree(row, field, tree, valid_gdf, k=3, counter=[0]):
 
   counter[0] += 1
   if counter[0] % 1000 == 0:
@@ -979,7 +979,7 @@ def get_median_value_with_kdtree(row, field, tree, valid_gdf, k=3, counter=[0]):
   return neighbor_values.median()
 
 
-def paint_and_blur_median_value(
+def _paint_and_blur_median_value(
     gdf: gpd.GeoDataFrame,
     field: str
 ):
@@ -1006,21 +1006,21 @@ def paint_and_blur_median_value(
 
   # Apply the KDTree-based function to fill missing values.
   gdf.loc[mask_missing, field] = gdf[mask_missing].apply(
-    lambda row: get_median_value_with_kdtree(row, field, tree, gdf_valid, k=3),
+    lambda row: _get_median_value_with_kdtree(row, field, tree, gdf_valid, k=3),
     axis=1
   )
 
   print("SECOND VERSE, SAME AS THE FIRST")
 
   gdf.loc[mask_all, field] = gdf[mask_all].apply(
-    lambda row: get_median_value_with_kdtree(row, field, tree, gdf_valid, k=3),
+    lambda row: _get_median_value_with_kdtree(row, field, tree, gdf_valid, k=3),
     axis=1
   )
 
   return gdf
 
 
-def extract_lines(geom):
+def _extract_lines(geom):
   """
   Given a geometry (LineString, MultiLineString or GeometryCollection),
   return a list of all LineString components.
@@ -1032,11 +1032,11 @@ def extract_lines(geom):
     lines.extend(list(geom.geoms))
   elif geom.geom_type == 'GeometryCollection':
     for part in geom:
-      lines.extend(extract_lines(part))
+      lines.extend(_extract_lines(part))
   return lines
 
 
-def get_edge_lengths(polygon):
+def _get_edge_lengths(polygon):
   """
   Compute the lengths of the edges of the polygon’s minimum rotated rectangle.
   """
@@ -1049,7 +1049,7 @@ def get_edge_lengths(polygon):
   return edge_lengths
 
 
-def is_polygon_small(poly, min_area, min_width):
+def _is_polygon_small(poly, min_area, min_width):
   """
   Returns True if the polygon is considered too small:
     - Its area is below min_area, or
@@ -1057,13 +1057,13 @@ def is_polygon_small(poly, min_area, min_width):
   """
   if poly.area < min_area:
     return True
-  edges = get_edge_lengths(poly)
+  edges = _get_edge_lengths(poly)
   if edges and min(edges) < min_width:
     return True
   return False
 
 
-def merge_small_polygons(gdf, min_area, min_width):
+def _merge_small_polygons(gdf, min_area, min_width):
   """
   Iteratively find polygons that are “too small” and merge them with
   their largest nearest neighbor.
@@ -1073,7 +1073,7 @@ def merge_small_polygons(gdf, min_area, min_width):
   max_iterations = 1000
   while iteration < max_iterations:
     iteration += 1
-    gdf['small'] = gdf.geometry.apply(lambda poly: is_polygon_small(poly, min_area, min_width))
+    gdf['small'] = gdf.geometry.apply(lambda poly: _is_polygon_small(poly, min_area, min_width))
 
     count_small = gdf['small'].sum()
     print(f"iteration {iteration}/1000, small = {count_small}")
@@ -1106,9 +1106,8 @@ def merge_small_polygons(gdf, min_area, min_width):
     gdf = gdf.drop(index=small_idx).reset_index(drop=True)
   return gdf.drop(columns='small', errors='ignore')
 
-# --- Main Function ---
 
-def process_county(county_name, min_area_threshold=500, min_width_threshold=10):
+def _process_county(county_name, min_area_threshold=500, min_width_threshold=10):
   """
   Given a county name (e.g., "Guilford County, North Carolina"), this function:
     1. Retrieves the county boundary polygon.
@@ -1146,10 +1145,10 @@ def process_county(county_name, min_area_threshold=500, min_width_threshold=10):
   all_lines = []
   # Extract lines from highway geometries
   for geom in highways.geometry:
-    all_lines.extend(extract_lines(geom))
+    all_lines.extend(_extract_lines(geom))
   # Also add the county boundary (its exterior) as lines
   county_boundary_line = county_polygon.boundary
-  all_lines.extend(extract_lines(county_boundary_line))
+  all_lines.extend(_extract_lines(county_boundary_line))
 
   print("Polygonizing the line network…")
   merged_lines = unary_union(all_lines)
@@ -1161,6 +1160,6 @@ def process_county(county_name, min_area_threshold=500, min_width_threshold=10):
 
   # --- Step 4: Merge Small Polygons ---
   print("Merging small polygons…")
-  poly_gdf_cleaned = merge_small_polygons(poly_gdf, min_area_threshold, min_width_threshold)
+  poly_gdf_cleaned = _merge_small_polygons(poly_gdf, min_area_threshold, min_width_threshold)
 
   return poly_gdf_cleaned

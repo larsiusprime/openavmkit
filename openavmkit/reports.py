@@ -42,16 +42,6 @@ class MarkdownReport:
     return self.rendered
 
 
-def markdown_to_pdf(md_text, out_path, css_file=None):
-  html_text = _markdown_to_html(md_text, css_file)
-  html_path = out_path.replace(".pdf", ".html")
-  with open(html_path, "w", encoding="utf-8") as html_file:
-    html_file.write(html_text)
-  _html_to_pdf(html_text, out_path)
-  # delete the html:
-  os.remove(html_path)
-
-
 def start_report(report_name: str, settings: dict, model_group: str):
   report = MarkdownReport(report_name)
   locality = settings.get("locality", {}).get("name")
@@ -66,15 +56,29 @@ def start_report(report_name: str, settings: dict, model_group: str):
   report.set_var("model_group", model_group_name)
   return report
 
+
 def finish_report(report: MarkdownReport, outpath: str, css_file: str):
   report_text = report.render()
   os.makedirs(outpath, exist_ok=True)
   with open(f"{outpath}.md", "w", encoding="utf-8") as f:
     f.write(report_text)
   pdf_path = f"{outpath}.pdf"
-  markdown_to_pdf(report_text, pdf_path, css_file=css_file)
+  _markdown_to_pdf(report_text, pdf_path, css_file=css_file)
   # remove the markdown:
   os.remove(f"{outpath}.md")
+
+
+# Private
+
+
+def _markdown_to_pdf(md_text, out_path, css_file=None):
+  html_text = _markdown_to_html(md_text, css_file)
+  html_path = out_path.replace(".pdf", ".html")
+  with open(html_path, "w", encoding="utf-8") as html_file:
+    html_file.write(html_text)
+  _html_to_pdf(html_text, out_path)
+  # delete the html:
+  os.remove(html_path)
 
 
 def _markdown_to_html(md_text, css_file_stub=None):

@@ -102,11 +102,6 @@ class HorizontalEquityStudy:
 		)
 
 
-def _mark_he_ids(df_in: pd.DataFrame, model_group: str, settings: dict, verbose: bool):
-	df = mark_horizontal_equity_clusters(df_in, settings, verbose)
-	df["he_id"] = model_group + "_" + df["he_id"]
-
-
 def mark_horizontal_equity_clusters_per_model_group_sup(
 		sup: SalesUniversePair,
 		settings: dict,
@@ -129,3 +124,9 @@ def mark_horizontal_equity_clusters(df: pd.DataFrame, settings: dict, verbose: b
 	fields_numeric = he.get("fields_numeric", None)
 	df["he_id"], _ = make_clusters(df, location, fields_categorical, fields_numeric, verbose=verbose)
 	return df
+
+
+def _mark_he_ids(df_in: pd.DataFrame, model_group: str, settings: dict, verbose: bool):
+	df = mark_horizontal_equity_clusters(df_in, settings, verbose)
+	df["he_id"] = model_group + "_" + df["he_id"]
+

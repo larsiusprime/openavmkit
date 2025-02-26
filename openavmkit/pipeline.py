@@ -27,7 +27,7 @@ import openavmkit.cleaning
 
 from openavmkit.cleaning import clean_valid_sales
 from openavmkit.cloud import cloud
-from openavmkit.data import load_dataframe, process_data, SalesUniversePair, get_hydrated_sales_from_sup
+from openavmkit.data import _load_dataframe, process_data, SalesUniversePair, get_hydrated_sales_from_sup
 from openavmkit.sales_scrutiny_study import run_sales_scrutiny_per_model_group, mark_ss_ids_per_model_group
 from openavmkit.time_adjustment import enrich_time_adjustment
 from openavmkit.utilities.data import combine_dfs
@@ -230,7 +230,7 @@ def load_dataframes(settings: dict, verbose: bool = False) -> dict[str : pd.Data
 
    for key in s_load:
       entry = s_load[key]
-      df = load_dataframe(entry, settings, verbose=verbose, fields_cat=fields_cat, fields_bool=fields_bool, fields_num=fields_num)
+      df = _load_dataframe(entry, settings, verbose=verbose, fields_cat=fields_cat, fields_bool=fields_bool, fields_num=fields_num)
       if df is not None:
          dataframes[key] = df
 
@@ -252,7 +252,7 @@ def load_and_process_data(settings: dict):
 
 
 def tag_model_groups_sup(sup: SalesUniversePair, settings: dict, verbose: bool = False):
-   return openavmkit.data.tag_model_groups_sup(sup, settings, verbose)
+   return openavmkit.data._tag_model_groups_sup(sup, settings, verbose)
 
 
 def process_sales(sup: SalesUniversePair, settings: dict, verbose: bool = False):
@@ -366,11 +366,12 @@ def finalize_land_values_sup(sup: SalesUniversePair, settings: dict, generate_bo
 
 
 def write_canonical_splits(df_sales_in: pd.DataFrame, settings: dict):
-   openavmkit.data.write_canonical_splits(df_sales_in, settings)
+   openavmkit.data._write_canonical_splits(df_sales_in, settings)
 
 
 def run_and_write_ratio_study_breakdowns(settings: dict):
    openavmkit.ratio_study.run_and_write_ratio_study_breakdowns(settings)
+
 
 # PRIVATE:
 

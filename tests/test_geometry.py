@@ -5,7 +5,7 @@ from matplotlib import pyplot as plt
 from pyproj import Transformer
 from shapely import Point, Polygon
 
-from openavmkit.data import perform_spatial_joins
+from openavmkit.data import _perform_spatial_joins
 from openavmkit.modeling import plot_value_surface
 from openavmkit.utilities.assertions import dfs_are_equal
 from openavmkit.utilities.geometry import get_crs, offset_coordinate_miles, create_geo_rect, create_geo_circle, \
@@ -216,7 +216,7 @@ def test_spatial_join_contains_centroid():
     "circle"
   ]
 
-  gdf = perform_spatial_joins(s_geom, dataframes)
+  gdf = _perform_spatial_joins(s_geom, dataframes)
 
   gdf["rgb"] = gdf["color_square"].combine_first(gdf["color_circle"]).combine_first(gdf["rgb"])
 
@@ -248,14 +248,14 @@ def test_spatial_join_contains_centroid():
   df_expected = pd.DataFrame(data=data_expected)
 
   assert dfs_are_equal(df_expected, df_results)
-
-  fig, ax = plt.subplots(figsize=(10, 6))
-  gdf_parcels.plot(color=gdf["rgb"], edgecolor="black", ax=ax)
-
-  gdf_square.plot(ax=ax, color="none", edgecolor="black")
-
-  # plot the circle, connect the lines:
-  gdf_circle.plot(ax=ax, color="none", edgecolor="black")
-
-  # Create a legend manually
-  plt.show()
+  #
+  # fig, ax = plt.subplots(figsize=(10, 6))
+  # gdf_parcels.plot(color=gdf["rgb"], edgecolor="black", ax=ax)
+  #
+  # gdf_square.plot(ax=ax, color="none", edgecolor="black")
+  #
+  # # plot the circle, connect the lines:
+  # gdf_circle.plot(ax=ax, color="none", edgecolor="black")
+  #
+  # # Create a legend manually
+  # plt.show()
