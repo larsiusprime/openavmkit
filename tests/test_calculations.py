@@ -1,7 +1,7 @@
 import pandas as pd
 from IPython.core.display_functions import display
 
-from openavmkit.calculations import perform_calculations, crawl_calc_dict_for_fields
+from openavmkit.calculations import perform_calculations, _crawl_calc_dict_for_fields
 from openavmkit.filters import resolve_filter
 from openavmkit.utilities.assertions import dfs_are_equal
 
@@ -214,7 +214,7 @@ def test_crawl_calc_list_for_fields():
       "str: - "
     ],
   }
-  results = crawl_calc_dict_for_fields(calc)
+  results = _crawl_calc_dict_for_fields(calc)
   results.sort()
   expected = ['a', 'b', 'condition_num', 'quality_num', 'quality_txt']
   assert results == expected

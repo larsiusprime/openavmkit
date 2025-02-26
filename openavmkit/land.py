@@ -25,8 +25,8 @@ from scipy.ndimage import gaussian_filter
 from skimage.feature import canny
 from skimage.measure import label, regionprops, find_contours
 
-from openavmkit.benchmark import MultiModelResults, _calc_benchmark, run_ensemble, \
-  optimize_ensemble_allocation
+from openavmkit.benchmark import MultiModelResults, _calc_benchmark, _run_ensemble, \
+  _optimize_ensemble_allocation
 from openavmkit.data import get_sales
 from openavmkit.modeling import SingleModelResults, plot_value_surface
 from openavmkit.quality_control import check_land_values
@@ -881,7 +881,7 @@ def _run_land_analysis(
     _calc_benchmark(land_results)
   )
 
-  best_ensemble = optimize_ensemble_allocation(
+  best_ensemble = _optimize_ensemble_allocation(
     df=None,
     model_group=model_group,
     vacant_only=True,
@@ -895,7 +895,7 @@ def _run_land_analysis(
   print(f"Best land ensemble --> {best_ensemble}")
 
   # Run the ensemble model
-  ensemble_results = run_ensemble(
+  ensemble_results = _run_ensemble(
     df=df_in,
     model_group=model_group,
     vacant_only=True,

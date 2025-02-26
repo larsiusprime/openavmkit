@@ -40,6 +40,7 @@ def div_field_z_safe(numerator: pd.Series|np.ndarray, denominator: pd.Series|np.
 	result[~idx_denominator_zero] = series_numerator / series_denominator
 	return result
 
+
 def div_z_safe(df: pd.DataFrame, numerator: str, denominator: str):
 	# perform a divide-by-zero-safe division of the two columns, replacing divide by zero values with NaN:
 
@@ -61,7 +62,6 @@ def div_z_safe(df: pd.DataFrame, numerator: str, denominator: str):
 	return result
 
 
-# Function to manually build Markdown
 def dataframe_to_markdown(df: pd.DataFrame):
 	# Create the header
 	header = "| " + " | ".join(df.columns) + " |"

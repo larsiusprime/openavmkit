@@ -3,7 +3,7 @@ import pandas as pd
 
 from openavmkit.filters import resolve_filter, validate_filter_list, validate_filter, select_filter
 from openavmkit.utilities.assertions import lists_are_equal
-from openavmkit.utilities.settings import replace_variables
+from openavmkit.utilities.settings import _replace_variables
 
 
 def test_filter_logic():
@@ -498,7 +498,7 @@ def test_filter_debug():
     }
   }
 
-  settings = replace_variables(settings)
+  settings = _replace_variables(settings)
   th = settings["ref"]["filters"]["th"]
 
   th_building = th["building"]

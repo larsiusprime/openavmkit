@@ -95,7 +95,7 @@ def make_clusters(
   return df["cluster_id"], list_fields_used
 
 
-###### PRIVATE:
+# PRIVATE:
 
 def _get_entry_field(entry, df):
   field = ""

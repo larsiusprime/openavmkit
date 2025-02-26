@@ -245,7 +245,6 @@ def create_geo_circle(lat, lon, crs, radius_km, num_points=100):
   return gdf
 
 
-
 def create_geo_rect(lat, lon, crs, width_km, height_km):
   """
   Creates a GeoDataFrame containing a rectangle centered at the specified latitude and longitude.

@@ -1,5 +1,5 @@
-from openavmkit.utilities.settings import merge_settings, remove_comments_from_settings, lookup_variable_in_settings, \
-	replace_variables
+from openavmkit.utilities.settings import _merge_settings, _remove_comments_from_settings, _lookup_variable_in_settings, \
+	_replace_variables
 from openavmkit.utilities.assertions import dicts_are_equal, objects_are_equal
 
 
@@ -38,7 +38,7 @@ def test_basic():
 		}
 	}
 
-	merged = merge_settings(template, local)
+	merged = _merge_settings(template, local)
 
 	expected = {
 		"version": "def",
@@ -104,7 +104,7 @@ def test_comments():
 		}
 	}
 
-	provided = remove_comments_from_settings(provided)
+	provided = _remove_comments_from_settings(provided)
 
 	expected = {
 		"version": "def",
@@ -161,10 +161,10 @@ def test_lookup_variable_in_settings():
 		}
 	}
 
-	a = lookup_variable_in_settings(data, "earth.north_america.usa.texas.houston.greenspoint.haystack")
-	b = lookup_variable_in_settings(data, "earth.north_america.mexico.chihuahua.juarez.almiar")
-	c = lookup_variable_in_settings(data, "mars.rover.cargo")
-	d = lookup_variable_in_settings(data, "earth.north_america.usa.texas.houston.greenspoint.truck.bed.lunchbox")
+	a = _lookup_variable_in_settings(data, "earth.north_america.usa.texas.houston.greenspoint.haystack")
+	b = _lookup_variable_in_settings(data, "earth.north_america.mexico.chihuahua.juarez.almiar")
+	c = _lookup_variable_in_settings(data, "mars.rover.cargo")
+	d = _lookup_variable_in_settings(data, "earth.north_america.usa.texas.houston.greenspoint.truck.bed.lunchbox")
 
 	a_expected = "needle"
 	a_unexpected = "haystack"
@@ -328,7 +328,7 @@ def test_replace_variables_in_settings():
 		}
 	}
 
-	replaced = replace_variables(data)
+	replaced = _replace_variables(data)
 
 	assert objects_are_equal(replaced, expected), f"Expected VS Result:\n{expected}\n{replaced}"
 	assert not objects_are_equal(data, replaced), f"Unexpected VS Result:\n{data}\n{replaced}"
@@ -368,7 +368,7 @@ def test_recursive_replace_variables_in_settings():
 		}
 	}
 
-	replaced = replace_variables(data)
+	replaced = _replace_variables(data)
 
 	assert objects_are_equal(replaced, expected), f"Expected VS Result:\n{expected}\n{replaced}"
 	assert not objects_are_equal(data, replaced), f"Unexpected VS Result:\n{data}\n{replaced}"

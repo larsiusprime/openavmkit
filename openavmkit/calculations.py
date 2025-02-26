@@ -5,7 +5,20 @@ from openavmkit.filters import resolve_filter
 from openavmkit.utilities.data import div_field_z_safe
 
 
-def crawl_calc_dict_for_fields(calc_dict: dict):
+def perform_calculations(df_in: pd.DataFrame, calc: dict):
+  df = df_in.copy()
+  for new_field in calc:
+    entry = calc[new_field]
+    new_value = _do_calc(df, entry)
+    df[new_field] = new_value
+  # remove temporary columns
+  for col in df.columns:
+    if col.startswith("__temp_"):
+      del df[col]
+  return df
+
+
+def _crawl_calc_dict_for_fields(calc_dict: dict):
   fields = []
   for field in calc_dict:
     calc_list = calc_dict[field]
@@ -153,15 +166,3 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0):
 
   raise ValueError(f"Unknown operation: {op}")
 
-
-def perform_calculations(df_in: pd.DataFrame, calc: dict):
-  df = df_in.copy()
-  for new_field in calc:
-    entry = calc[new_field]
-    new_value = _do_calc(df, entry)
-    df[new_field] = new_value
-  # remove temporary columns
-  for col in df.columns:
-    if col.startswith("__temp_"):
-      del df[col]
-  return df

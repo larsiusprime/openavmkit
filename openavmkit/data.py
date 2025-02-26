@@ -13,7 +13,7 @@ from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
 from shapely import LineString
 
-from openavmkit.calculations import crawl_calc_dict_for_fields, perform_calculations
+from openavmkit.calculations import _crawl_calc_dict_for_fields, perform_calculations
 from openavmkit.filters import resolve_filter, select_filter
 from openavmkit.utilities.data import combine_dfs, div_field_z_safe
 from openavmkit.utilities.geometry import get_crs, clean_geometry, identify_irregular_parcels, get_exterior_coords
@@ -938,7 +938,7 @@ def get_calc_cols(settings: dict) -> list[str]:
 
 def _get_calc_cols(df_entry: dict) -> list[str]:
 	e_calc = df_entry.get("calc", {})
-	fields_in_calc = crawl_calc_dict_for_fields(e_calc)
+	fields_in_calc = _crawl_calc_dict_for_fields(e_calc)
 	return fields_in_calc
 
 
@@ -981,7 +981,7 @@ def load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_ca
 			rename_map[original] = rename_key
 
 	# Get a list of every field that is either renamed or used in a calculation:
-	fields_in_calc = crawl_calc_dict_for_fields(entry.get("calc", {}))
+	fields_in_calc = _crawl_calc_dict_for_fields(entry.get("calc", {}))
 
 	cols_to_load += fields_in_calc
 

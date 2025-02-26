@@ -11,7 +11,7 @@ from openavmkit.reports import start_report, finish_report
 from openavmkit.utilities.clustering import make_clusters
 from openavmkit.utilities.data import div_z_safe, div_field_z_safe, rename_dict, do_per_model_group, combine_dfs
 from openavmkit.utilities.excel import write_to_excel
-from openavmkit.utilities.settings import get_fields_categorical, apply_dd_to_df_cols
+from openavmkit.utilities.settings import get_fields_categorical, _apply_dd_to_df_cols
 
 
 class SalesScrutinyStudySummary:
@@ -280,7 +280,7 @@ def _get_ss_renames():
 
 def _prettify(df: pd.DataFrame, settings: dict) -> pd.DataFrame:
   df = df.rename(columns=_get_ss_renames())
-  df = apply_dd_to_df_cols(df, settings)
+  df = _apply_dd_to_df_cols(df, settings)
   return df
 
 

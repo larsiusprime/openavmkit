@@ -21,12 +21,14 @@ from openavmkit.utilities.data import div_z_safe, dataframe_to_markdown
 from openavmkit.utilities.format import fancy_format
 from openavmkit.utilities.modeling import NaiveSqftModel, LocalSqftModel, AssessorModel, GWRModel, MRAModel
 from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions, get_valuation_date, \
-	get_model_group, apply_dd_to_df_rows, get_model_group_ids
+	get_model_group, _apply_dd_to_df_rows, get_model_group_ids
 from openavmkit.utilities.stats import calc_vif_recursive_drop, calc_t_values_recursive_drop, \
 	calc_p_values_recursive_drop, calc_elastic_net_regularization, calc_correlations, calc_r2, \
 	calc_cross_validation_score, calc_cod
 from openavmkit.utilities.timing import TimingData
 
+
+# Public:
 
 class BenchmarkResults:
 	df_time: pd.DataFrame
@@ -41,13 +43,13 @@ class BenchmarkResults:
 
 	def print(self) -> str:
 		result = "Timings:\n"
-		result += format_benchmark_df(self.df_time)
+		result += _format_benchmark_df(self.df_time)
 		result += "\n\n"
 		result += "Test set:\n"
-		result += format_benchmark_df(self.df_stats_test)
+		result += _format_benchmark_df(self.df_stats_test)
 		result += "\n\n"
 		result += "Universe set:\n"
-		result += format_benchmark_df(self.df_stats_full)
+		result += _format_benchmark_df(self.df_stats_full)
 		result += "\n\n"
 		return result
 
@@ -73,6 +75,210 @@ class MultiModelResults:
 		self.model_results[model] = results
 		# recalculate the benchmark
 		self.benchmark = _calc_benchmark(self.model_results)
+
+
+
+
+def get_variable_recommendations(
+		df_sales: pd.DataFrame,
+		df_universe: pd.DataFrame,
+		vacant_only: bool,
+		settings: dict,
+		model_group: str,
+		verbose: bool = False
+):
+	"""
+	Determines which variables are likely to be the most meaningful in a model.
+	:param df_sales: The sales data
+	:param df_universe: The parcel universe
+	:param vacant_only: Whether to only consider vacant sales
+	:param settings: The settings dictionary
+	:param model_group: The model group to consider
+	:param verbose:
+	:return:
+	"""
+	if verbose:
+		print("")
+
+	report = MarkdownReport("variables")
+
+	if "sale_price_time_adj" not in df_sales:
+		warnings.warn("Time adjustment was not found in sales data. Calculating now...")
+		df_sales = enrich_time_adjustment(df_sales, settings, verbose=verbose)
+
+	ds = _prepare_ds(df_sales, df_universe, model_group, vacant_only, settings)
+	ds = ds.encode_categoricals_with_one_hot()
+	ds.split()
+
+	feature_selection = settings.get("modeling", {}).get("instructions", {}).get("feature_selection", {})
+	thresh = feature_selection.get("thresholds", {})
+
+	X_sales = ds.X_sales[ds.dep_vars]
+	y_sales = ds.y_sales
+
+	# Correlation
+	X_corr = ds.df_sales[[ds.ind_var] + ds.dep_vars]
+	corr_results = calc_correlations(X_corr, thresh.get("correlation", 0.1))
+
+	# Elastic net regularization
+	enr_coefs = calc_elastic_net_regularization(X_sales, y_sales, thresh.get("enr", 0.01))
+
+	# R^2 values
+	r2_values = calc_r2(ds.df_sales, ds.dep_vars, y_sales)
+
+	# P Values
+	p_values = calc_p_values_recursive_drop(X_sales, y_sales, thresh.get("p_value", 0.05))
+
+	# T Values
+	t_values = calc_t_values_recursive_drop(X_sales, y_sales, thresh.get("t_value", 2))
+
+	# VIF
+	vif = calc_vif_recursive_drop(X_sales, thresh.get("vif", 10))
+
+	# Generate final results & recommendations
+	df_results = _calc_variable_recommendations(
+		ds=ds,
+		settings=settings,
+		correlation_results=corr_results,
+		enr_results=enr_coefs,
+		r2_values_results=r2_values,
+		p_values_results=p_values,
+		t_values_results=t_values,
+		vif_results=vif,
+		report=report
+	)
+
+	curr_variables = df_results["variable"].tolist()
+	best_variables = curr_variables.copy()
+	best_score = float('inf')
+
+	y = ds.y_sales
+	while len(curr_variables) > 0:
+		X = ds.df_sales[curr_variables]
+		cv_score = calc_cross_validation_score(X, y)
+		if cv_score < best_score:
+			best_score = cv_score
+			best_variables = curr_variables.copy()
+		worst_idx = df_results["weighted_score"].idxmin()
+		worst_variable = df_results.loc[worst_idx, "variable"]
+		curr_variables.remove(worst_variable)
+		# remove the variable from the dataframe:
+		df_results = df_results[df_results["variable"].ne(worst_variable)]
+		if verbose:
+			print(f"--> score: {cv_score:,.0f}  {len(curr_variables)} variables: {curr_variables}")
+
+	# make a table from the list of best variables:
+	df_best = pd.DataFrame(best_variables, columns=["Variable"])
+	df_best["Rank"] = range(1, len(df_best) + 1)
+	df_best["Description"] = df_best["Variable"]
+	df_best = _apply_dd_to_df_rows(df_best, "Variable", settings, ds.one_hot_descendants, "name")
+	df_best = _apply_dd_to_df_rows(df_best, "Description", settings, ds.one_hot_descendants, "description")
+	df_best = df_best[["Rank", "Variable", "Description"]]
+	df_best.loc[
+		df_best["Variable"].eq(df_best["Description"]),
+		"Description"
+	] = ""
+	df_best.set_index("Rank", inplace=True)
+	report.set_var("summary_table", df_best.to_markdown())
+
+	report = generate_variable_report(
+		report,
+		settings,
+		model_group,
+		best_variables
+	)
+
+	return {
+		"variables": best_variables,
+		"report": report
+	}
+
+
+def generate_variable_report(
+		report: MarkdownReport,
+		settings: dict,
+		model_group: str,
+		best_variables: list[str]
+):
+
+	locality = settings.get("locality", {})
+	report.set_var("locality", locality.get("name", "...LOCALITY..."))
+
+	mg = get_model_group(settings, model_group)
+	report.set_var("val_date", get_valuation_date(settings).strftime("%Y-%m-%d"))
+	report.set_var("model_group", mg.get("name", mg))
+
+
+	instructions = settings.get("modeling", {}).get("instructions", {})
+	feature_selection = instructions.get("feature_selection", {})
+	thresh = feature_selection.get("thresholds", {})
+
+	report.set_var("thresh_correlation", thresh.get("correlation"), fmt=".2f")
+	report.set_var("thresh_enr_coef", thresh.get("enr_coef"), fmt=".2f")
+	report.set_var("thresh_vif", thresh.get("vif"), fmt=".2f")
+	report.set_var("thresh_p_value", thresh.get("p_value"), fmt=".2f")
+	report.set_var("thresh_t_value", thresh.get("t_value"), fmt=".2f")
+	report.set_var("thresh_adj_r2", thresh.get("adj_r2"), fmt=".2f")
+
+	weights = feature_selection.get("weights", {})
+	df_weights = pd.DataFrame(weights.items(), columns=["Statistic", "Weight"])
+	df_weights["Statistic"] = df_weights["Statistic"].map({
+		"vif": "VIF",
+		"p_value": "P-value",
+		"t_value": "T-value",
+		"corr_score": "Correlation",
+		"enr_coef": "ENR",
+		"coef_sign": "Coef. sign",
+		"adj_r2": "R-squared"
+	})
+	df_weights.set_index("Statistic", inplace=True)
+	report.set_var("pre_model_weights", df_weights.to_markdown())
+
+	# TODO: construct these
+	#summary_table = "...SUMMARY TABLE..."
+	#report.set_var("summary_table", summary_table)
+
+	post_model_table = "...POST MODEL TABLE..."
+	report.set_var("post_model_table", post_model_table)
+
+	return report
+
+
+def run_models(
+		sup: SalesUniversePair,
+		settings: dict,
+		save_params: bool = True,
+		use_saved_params: bool = True,
+		use_saved_results: bool = True,
+		verbose: bool = False,
+		run_main: bool = True,
+		run_vacant: bool = True
+):
+	s = settings
+	s_model = s.get("modeling", {})
+	s_inst = s_model.get("instructions", {})
+	model_groups = s_inst.get("model_groups", [])
+
+	df_univ = sup["universe"]
+
+	if len(model_groups) == 0:
+		model_groups = get_model_group_ids(settings, df_univ)
+
+	for model_group in model_groups:
+		if verbose:
+			print("")
+			print(f"*** Running models for model_group: {model_group} ***")
+			print("")
+		for vacant_only in [False, True]:
+			if vacant_only:
+				if not run_vacant:
+					continue
+			else:
+				if not run_main:
+					continue
+			_run_models(sup, model_group, settings, vacant_only, save_params, use_saved_params, use_saved_results, verbose)
+
+# Private:
 
 
 def _calc_benchmark(model_results: dict[str, SingleModelResults]):
@@ -164,7 +370,8 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 
 	return results
 
-def format_benchmark_df(df: pd.DataFrame):
+
+def _format_benchmark_df(df: pd.DataFrame):
 
 	formats = {
 		"utility_score": fancy_format,
@@ -269,7 +476,7 @@ def _predict_one_model(
 		results = predict_catboost(ds, catboost_regressor, timing, verbose)
 
 	# write out the results:
-	write_model_results(results, outpath, settings)
+	_write_model_results(results, outpath, settings)
 
 	with open(out_pickle, "wb") as file:
 		pickle.dump(results, file)
@@ -447,7 +654,7 @@ def _run_one_model(
 		raise ValueError(f"Model {model_name} not found!")
 
 	# write out the results:
-	write_model_results(results, outpath, settings)
+	_write_model_results(results, outpath, settings)
 
 	with open(out_pickle, "wb") as file:
 		pickle.dump(results, file)
@@ -490,7 +697,7 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
 	return dfs
 
 
-def write_model_results(results: SingleModelResults, outpath: str, settings: dict):
+def _write_model_results(results: SingleModelResults, outpath: str, settings: dict):
 	dfs = _assemble_model_results(results, settings)
 	path = f"{outpath}/{results.type}"
 	if "*" in path:
@@ -503,7 +710,7 @@ def write_model_results(results: SingleModelResults, outpath: str, settings: dic
 		df.to_csv(f"{path}/pred_{key}.csv", index=False)
 
 
-def write_ensemble_model_results(
+def _write_ensemble_model_results(
 		results: SingleModelResults,
 		outpath: str,
 		settings: dict,
@@ -522,7 +729,7 @@ def write_ensemble_model_results(
 		df.to_csv(f"{path}/pred_ensemble_{key}.csv", index=False)
 
 
-def optimize_ensemble_allocation(
+def _optimize_ensemble_allocation(
 		df_sales: pd.DataFrame | None,
 		df_universe: pd.DataFrame | None,
 		model_group: str,
@@ -680,7 +887,7 @@ def _optimize_ensemble_allocation_iteration(
 	return best_score, best_list
 
 
-def optimize_ensemble(
+def _optimize_ensemble(
 		df_sales: pd.DataFrame | None,
 		df_universe: pd.DataFrame | None,
 		model_group: str,
@@ -838,7 +1045,7 @@ def _optimize_ensemble_iteration(
 	return best_score, best_list
 
 
-def run_ensemble(
+def _run_ensemble(
 		df_sales: pd.DataFrame,
 		df_universe: pd.DataFrame,
 		model_group: str,
@@ -966,7 +1173,7 @@ def run_ensemble(
 	if df_multi_ensemble is not None:
 		dfs["multiverse"] = df_multi_ensemble
 
-	write_ensemble_model_results(results, outpath, settings, dfs, ensemble_list)
+	_write_ensemble_model_results(results, outpath, settings, dfs, ensemble_list)
 
 	return results
 
@@ -1151,7 +1358,7 @@ def _calc_variable_recommendations(
 			dfr_corr["Rank"] = range(1, len(dfr_corr) + 1)
 			dfr_corr = dfr_corr[["Rank", "Variable", "Strength", "Clarity", "Score", "Pass/Fail"]]
 			dfr_corr.set_index("Rank", inplace=True)
-			dfr_corr = apply_dd_to_df_rows(dfr_corr, "Variable", settings, ds.one_hot_descendants)
+			dfr_corr = _apply_dd_to_df_rows(dfr_corr, "Variable", settings, ds.one_hot_descendants)
 			report.set_var(f"table_corr_{state}", dataframe_to_markdown(dfr_corr))
 
 			# TODO: refactor this down to DRY it out a bit
@@ -1165,7 +1372,7 @@ def _calc_variable_recommendations(
 			dfr_vif["Rank"] = range(1, len(dfr_vif) + 1)
 			dfr_vif = dfr_vif[["Rank", "Variable", "VIF", "Pass/Fail"]]
 			dfr_vif.set_index("Rank", inplace=True)
-			dfr_vif = apply_dd_to_df_rows(dfr_vif, "Variable", settings, ds.one_hot_descendants)
+			dfr_vif = _apply_dd_to_df_rows(dfr_vif, "Variable", settings, ds.one_hot_descendants)
 			report.set_var(f"table_vif_{state}", dataframe_to_markdown(dfr_vif))
 
 			# P-value:
@@ -1178,7 +1385,7 @@ def _calc_variable_recommendations(
 			dfr_p_value["Rank"] = range(1, len(dfr_p_value) + 1)
 			dfr_p_value = dfr_p_value[["Rank", "Variable", "P-value", "Pass/Fail"]]
 			dfr_p_value.set_index("Rank", inplace=True)
-			dfr_p_value = apply_dd_to_df_rows(dfr_p_value, "Variable", settings, ds.one_hot_descendants)
+			dfr_p_value = _apply_dd_to_df_rows(dfr_p_value, "Variable", settings, ds.one_hot_descendants)
 			report.set_var(f"table_p_value_{state}", dataframe_to_markdown(dfr_p_value))
 
 			# T-value:
@@ -1191,7 +1398,7 @@ def _calc_variable_recommendations(
 			dfr_t_value["Rank"] = range(1, len(dfr_t_value) + 1)
 			dfr_t_value = dfr_t_value[["Rank", "Variable", "T-value", "Pass/Fail"]]
 			dfr_t_value.set_index("Rank", inplace=True)
-			dfr_t_value = apply_dd_to_df_rows(dfr_t_value, "Variable", settings, ds.one_hot_descendants)
+			dfr_t_value = _apply_dd_to_df_rows(dfr_t_value, "Variable", settings, ds.one_hot_descendants)
 			report.set_var(f"table_t_value_{state}", dataframe_to_markdown(dfr_t_value))
 
 			# ENR:
@@ -1203,7 +1410,7 @@ def _calc_variable_recommendations(
 			dfr_enr["Rank"] = range(1, len(dfr_enr) + 1)
 			dfr_enr = dfr_enr[["Rank", "Variable", "Coefficient", "Pass/Fail"]]
 			dfr_enr.set_index("Rank", inplace=True)
-			dfr_enr = apply_dd_to_df_rows(dfr_enr, "Variable", settings, ds.one_hot_descendants)
+			dfr_enr = _apply_dd_to_df_rows(dfr_enr, "Variable", settings, ds.one_hot_descendants)
 			report.set_var(f"table_enr_{state}", dataframe_to_markdown(dfr_enr))
 
 			# R-squared
@@ -1215,7 +1422,7 @@ def _calc_variable_recommendations(
 			dfr_r2["Rank"] = range(1, len(dfr_r2) + 1)
 			dfr_r2 = dfr_r2[["Rank", "Variable", "R-squared", "Pass/Fail"]]
 			dfr_r2.set_index("Rank", inplace=True)
-			dfr_r2 = apply_dd_to_df_rows(dfr_r2, "Variable", settings, ds.one_hot_descendants)
+			dfr_r2 = _apply_dd_to_df_rows(dfr_r2, "Variable", settings, ds.one_hot_descendants)
 			if state == "final":
 				dfr_r2 = dfr_r2[dfr_r2["Pass/Fail"].eq("✅")]
 			report.set_var(f"table_adj_r2_{state}", dataframe_to_markdown(dfr_r2))
@@ -1237,14 +1444,14 @@ def _calc_variable_recommendations(
 			dfr_coef_sign = dfr_coef_sign[["Variable", "ENR sign", "T-value sign", "Coef. sign", "Pass/Fail"]]
 			for field in ["ENR sign", "T-value sign", "Coef. sign"]:
 				dfr_coef_sign[field] = dfr_coef_sign[field].apply(lambda x: f"{x:.0f}").astype("string")
-			dfr_coef_sign = apply_dd_to_df_rows(dfr_coef_sign, "Variable", settings, ds.one_hot_descendants)
+			dfr_coef_sign = _apply_dd_to_df_rows(dfr_coef_sign, "Variable", settings, ds.one_hot_descendants)
 			if state == "final":
 				dfr_coef_sign = dfr_coef_sign[dfr_coef_sign["Pass/Fail"].eq("✅")]
 			report.set_var(f"table_coef_sign_{state}", dataframe_to_markdown(dfr_coef_sign))
 
 
 		dfr["Rank"] = range(1, len(dfr) + 1)
-		dfr = apply_dd_to_df_rows(dfr, "Variable", settings, ds.one_hot_descendants)
+		dfr = _apply_dd_to_df_rows(dfr, "Variable", settings, ds.one_hot_descendants)
 
 		dfr = dfr[["Rank", "Weighted Score", "Variable", "VIF", "P Value", "T Value", "ENR", "Correlation", "Coef. sign", "R-squared"]]
 		dfr.set_index("Rank", inplace=True)
@@ -1258,197 +1465,6 @@ def _calc_variable_recommendations(
 		report.set_var("pre_model_table", dfr.to_markdown())
 
 	return df
-
-
-def get_variable_recommendations(
-		df_sales: pd.DataFrame,
-		df_universe: pd.DataFrame,
-		vacant_only: bool,
-		settings: dict,
-		model: str,
-		model_group: str,
-		verbose: bool = False
-):
-	if verbose:
-		print("")
-
-	report = MarkdownReport("variables")
-
-	if "sale_price_time_adj" not in df_sales:
-		warnings.warn("Time adjustment was not found in sales data. Calculating now...")
-		df_sales = enrich_time_adjustment(df_sales, settings, verbose=verbose)
-
-	ds = _prepare_ds(df_sales, df_universe, model_group, vacant_only, settings)
-	ds = ds.encode_categoricals_with_one_hot()
-	ds.split()
-
-	feature_selection = settings.get("modeling", {}).get("instructions", {}).get("feature_selection", {})
-	thresh = feature_selection.get("thresholds", {})
-
-	X_sales = ds.X_sales[ds.dep_vars]
-	y_sales = ds.y_sales
-
-	# Correlation
-	X_corr = ds.df_sales[[ds.ind_var] + ds.dep_vars]
-	corr_results = calc_correlations(X_corr, thresh.get("correlation", 0.1))
-
-	# Elastic net regularization
-	enr_coefs = calc_elastic_net_regularization(X_sales, y_sales, thresh.get("enr", 0.01))
-
-	# R^2 values
-	r2_values = calc_r2(ds.df_sales, ds.dep_vars, y_sales)
-
-	# P Values
-	p_values = calc_p_values_recursive_drop(X_sales, y_sales, thresh.get("p_value", 0.05))
-
-	# T Values
-	t_values = calc_t_values_recursive_drop(X_sales, y_sales, thresh.get("t_value", 2))
-
-	# VIF
-	vif = calc_vif_recursive_drop(X_sales, thresh.get("vif", 10))
-
-	# Generate final results & recommendations
-	df_results = _calc_variable_recommendations(
-		ds=ds,
-		settings=settings,
-		correlation_results=corr_results,
-		enr_results=enr_coefs,
-		r2_values_results=r2_values,
-		p_values_results=p_values,
-		t_values_results=t_values,
-		vif_results=vif,
-		report=report
-	)
-
-	curr_variables = df_results["variable"].tolist()
-	best_variables = curr_variables.copy()
-	best_score = float('inf')
-
-	y = ds.y_sales
-	while len(curr_variables) > 0:
-		X = ds.df_sales[curr_variables]
-		cv_score = calc_cross_validation_score(X, y)
-		if cv_score < best_score:
-			best_score = cv_score
-			best_variables = curr_variables.copy()
-		worst_idx = df_results["weighted_score"].idxmin()
-		worst_variable = df_results.loc[worst_idx, "variable"]
-		curr_variables.remove(worst_variable)
-		# remove the variable from the dataframe:
-		df_results = df_results[df_results["variable"].ne(worst_variable)]
-		if verbose:
-			print(f"--> score: {cv_score:,.0f}  {len(curr_variables)} variables: {curr_variables}")
-
-	# make a table from the list of best variables:
-	df_best = pd.DataFrame(best_variables, columns=["Variable"])
-	df_best["Rank"] = range(1, len(df_best) + 1)
-	df_best["Description"] = df_best["Variable"]
-	df_best = apply_dd_to_df_rows(df_best, "Variable", settings, ds.one_hot_descendants, "name")
-	df_best = apply_dd_to_df_rows(df_best, "Description", settings, ds.one_hot_descendants, "description")
-	df_best = df_best[["Rank", "Variable", "Description"]]
-	df_best.loc[
-		df_best["Variable"].eq(df_best["Description"]),
-		"Description"
-	] = ""
-	df_best.set_index("Rank", inplace=True)
-	report.set_var("summary_table", df_best.to_markdown())
-
-	report = generate_variable_report(
-		report,
-		settings,
-		model_group,
-		best_variables
-	)
-
-	return {
-		"variables": best_variables,
-		"report": report
-	}
-
-
-def generate_variable_report(
-		report: MarkdownReport,
-		settings: dict,
-		model_group: str,
-		best_variables: list[str]
-):
-
-	locality = settings.get("locality", {})
-	report.set_var("locality", locality.get("name", "...LOCALITY..."))
-
-	mg = get_model_group(settings, model_group)
-	report.set_var("val_date", get_valuation_date(settings).strftime("%Y-%m-%d"))
-	report.set_var("model_group", mg.get("name", mg))
-
-
-	instructions = settings.get("modeling", {}).get("instructions", {})
-	feature_selection = instructions.get("feature_selection", {})
-	thresh = feature_selection.get("thresholds", {})
-
-	report.set_var("thresh_correlation", thresh.get("correlation"), fmt=".2f")
-	report.set_var("thresh_enr_coef", thresh.get("enr_coef"), fmt=".2f")
-	report.set_var("thresh_vif", thresh.get("vif"), fmt=".2f")
-	report.set_var("thresh_p_value", thresh.get("p_value"), fmt=".2f")
-	report.set_var("thresh_t_value", thresh.get("t_value"), fmt=".2f")
-	report.set_var("thresh_adj_r2", thresh.get("adj_r2"), fmt=".2f")
-
-	weights = feature_selection.get("weights", {})
-	df_weights = pd.DataFrame(weights.items(), columns=["Statistic", "Weight"])
-	df_weights["Statistic"] = df_weights["Statistic"].map({
-		"vif": "VIF",
-		"p_value": "P-value",
-		"t_value": "T-value",
-		"corr_score": "Correlation",
-		"enr_coef": "ENR",
-		"coef_sign": "Coef. sign",
-		"adj_r2": "R-squared"
-	})
-	df_weights.set_index("Statistic", inplace=True)
-	report.set_var("pre_model_weights", df_weights.to_markdown())
-
-	# TODO: construct these
-	#summary_table = "...SUMMARY TABLE..."
-	#report.set_var("summary_table", summary_table)
-
-	post_model_table = "...POST MODEL TABLE..."
-	report.set_var("post_model_table", post_model_table)
-
-	return report
-
-
-def run_models(
-		sup: SalesUniversePair,
-		settings: dict,
-		save_params: bool = True,
-		use_saved_params: bool = True,
-		use_saved_results: bool = True,
-		verbose: bool = False,
-		run_main: bool = True,
-		run_vacant: bool = True
-):
-	s = settings
-	s_model = s.get("modeling", {})
-	s_inst = s_model.get("instructions", {})
-	model_groups = s_inst.get("model_groups", [])
-
-	df_univ = sup["universe"]
-
-	if len(model_groups) == 0:
-		model_groups = get_model_group_ids(settings, df_univ)
-
-	for model_group in model_groups:
-		if verbose:
-			print("")
-			print(f"*** Running models for model_group: {model_group} ***")
-			print("")
-		for vacant_only in [False, True]:
-			if vacant_only:
-				if not run_vacant:
-					continue
-			else:
-				if not run_main:
-					continue
-			_run_models(sup, model_group, settings, vacant_only, save_params, use_saved_params, use_saved_results, verbose)
 
 
 def _run_hedonic_models(
@@ -1527,7 +1543,7 @@ def _run_hedonic_models(
 		benchmark=_calc_benchmark(hedonic_results)
 	)
 
-	best_ensemble = optimize_ensemble(
+	best_ensemble = _optimize_ensemble(
 		df_sales=df_sales,
 		df_universe=df_universe,
 		model_group=model_group,
@@ -1541,7 +1557,7 @@ def _run_hedonic_models(
 	)
 
 	# Run the ensemble model
-	ensemble_results = run_ensemble(
+	ensemble_results = _run_ensemble(
 		df_sales=df_sales,
 		df_universe=df_universe,
 		model_group=model_group,
@@ -1614,7 +1630,6 @@ def _run_models(
 		df_univ,
 		vacant_only,
 		settings,
-		"default",
 		model_group,
 		verbose=True,
 	)
@@ -1668,7 +1683,7 @@ def _run_models(
 		benchmark=_calc_benchmark(model_results)
 	)
 
-	best_ensemble = optimize_ensemble(
+	best_ensemble = _optimize_ensemble(
 		df_sales=df_sales,
 		df_universe=df_univ,
 		model_group=model_group,
@@ -1681,7 +1696,7 @@ def _run_models(
 	)
 
 	# Run the ensemble model
-	ensemble_results = run_ensemble(
+	ensemble_results = _run_ensemble(
 		df_sales=df_sales,
 		df_universe=df_univ,
 		model_group=model_group,

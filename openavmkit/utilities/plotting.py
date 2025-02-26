@@ -14,6 +14,7 @@ def plot_histogram_df(df: pd.DataFrame, fields: list[str], xlabel: str = "", yla
     })
   plot_histogram_mult(entries, xlabel, ylabel, title, bins, x_lim, out_file)
 
+
 def plot_histogram_mult(entries: list[dict],  xlabel:str = "", ylabel: str = "", title: str = "", bins=500, x_lim=None, out_file: str = None):
   plt.close('all')
   ylim_min = 0
@@ -45,11 +46,3 @@ def plot_histogram_mult(entries: list[dict],  xlabel:str = "", ylabel: str = "",
     plt.savefig(out_file)
   plt.show()
 
-def highest_middle_quantile_count(series: pd.Series, min_value: float, max_value: float, num_quantiles:int):
-  series = series[~series.isna()]
-  series = series[series.ge(min_value) & series.le(max_value)]
-  if num_quantiles < 3:
-    raise ValueError("Number of quantiles must be at least 3")
-  quantiles = pd.qcut(series, q=num_quantiles, duplicates="drop")
-  quantile_counts = quantiles.value_counts()
-  return quantile_counts.max()

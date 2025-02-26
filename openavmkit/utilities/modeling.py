@@ -1,7 +1,4 @@
 import numpy as np
-import pandas as pd
-from mgwr.gwr import GWR
-from sklearn.linear_model import LinearRegression
 from statsmodels.regression.linear_model import RegressionResults
 
 
