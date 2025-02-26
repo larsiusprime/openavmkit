@@ -159,7 +159,7 @@ def infer_fill_missing_logic(df: pd.DataFrame, settings: dict):
 
 
 
-def sup_fill_unknown_values(sup: SalesUniversePair, settings: dict):
+def fill_unknown_values_sup(sup: SalesUniversePair, settings: dict):
 	df_sales = sup["sales"].copy()
 	df_univ = sup["universe"].copy()
 
@@ -177,15 +177,6 @@ def sup_fill_unknown_values(sup: SalesUniversePair, settings: dict):
 	df_sales_subset = fill_unknown_values(df_sales_subset, settings)
 	for col in df_sales_subset:
 		df_sales[col] = df_sales_subset[col]
-
-	# max_rows_old = pd.get_option("display.max_rows")
-	# pd.set_option("display.max_rows", None)
-	# print("Identifying unknown values in SALES...")
-	# identify_unknown_values(df_sales, settings)
-	#
-	# print("Identifying unknown values in UNIVERSE...")
-	# identify_unknown_values(df_sales, settings)
-	# pd.set_option("display.max_rows", max_rows_old)
 
 	sup.set("sales", df_sales)
 	sup.set("universe", df_univ)

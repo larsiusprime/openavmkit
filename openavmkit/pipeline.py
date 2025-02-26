@@ -11,12 +11,20 @@ This module contains every public function called from the notebooks. The rules 
 
 import os
 import pickle
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 import openavmkit
+import openavmkit.data
+import openavmkit.benchmark
+import openavmkit.land
 import openavmkit.checkpoint
+import openavmkit.ratio_study
+import openavmkit.horizontal_equity_study
+import openavmkit.cleaning
+
 from openavmkit.cleaning import clean_valid_sales
 from openavmkit.cloud import cloud
 from openavmkit.data import load_dataframe, process_data, SalesUniversePair, get_hydrated_sales_from_sup
@@ -26,6 +34,8 @@ from openavmkit.utilities.data import combine_dfs
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_numeric, get_fields_boolean, \
    get_fields_land, get_fields_impr, get_fields_other
 
+
+# Basic data stuff
 
 class NotebookState:
    base_path: str
@@ -53,6 +63,10 @@ def init_notebook(locality: str):
    nbs = _set_locality(nbs, locality)
    if first_run:
       init_notebook.nbs = nbs
+
+
+def load_settings():
+   return openavmkit.utilities.settings.load_settings()
 
 
 def examine_sup(sup: SalesUniversePair, s: dict):
@@ -198,6 +212,9 @@ def examine_df(df: pd.DataFrame, s: dict):
          print(get_line(u, df[u].dtype, non_zero, perc, non_zero, perc, list(df[u].unique())))
 
 
+# Data loading & processing stuff
+
+
 def load_dataframes(settings: dict, verbose: bool = False) -> dict[str : pd.DataFrame]:
    """
    Load the data from the settings.
@@ -238,10 +255,6 @@ def tag_model_groups_sup(sup: SalesUniversePair, settings: dict, verbose: bool =
    return openavmkit.data.tag_model_groups_sup(sup, settings, verbose)
 
 
-def load_settings():
-   return openavmkit.utilities.settings.load_settings()
-
-
 def process_sales(sup: SalesUniversePair, settings: dict, verbose: bool = False):
    # select only valid sales
    sup = clean_valid_sales(sup, settings)
@@ -258,11 +271,22 @@ def process_sales(sup: SalesUniversePair, settings: dict, verbose: bool = False)
    return sup
 
 
+def fill_unknown_values_sup(sup: SalesUniversePair, settings: dict):
+   return openavmkit.cleaning.fill_unknown_values_sup(sup, settings)
+
+
+# Clustering stuff
+
+
 def mark_ss_ids_per_model_group_sup(sup: SalesUniversePair, settings: dict, verbose: bool = False):
    df_sales_hydrated = get_hydrated_sales_from_sup(sup)
    df_marked = mark_ss_ids_per_model_group(df_sales_hydrated, settings, verbose)
    sup.update_sales(df_marked)
    return sup
+
+
+def mark_horizontal_equity_clusters_per_model_group_sup(sup: SalesUniversePair, settings: dict, verbose: bool = False):
+   return openavmkit.horizontal_equity_study.mark_horizontal_equity_clusters_per_model_group_sup(sup, settings, verbose)
 
 
 def run_sales_scrutiny_per_model_group_sup(sup: SalesUniversePair, settings: dict, verbose: bool = False) -> SalesUniversePair:
@@ -272,23 +296,7 @@ def run_sales_scrutiny_per_model_group_sup(sup: SalesUniversePair, settings: dic
    return sup
 
 
-def cloud_sync(settings: dict, verbose: bool = False, dry_run: bool = False):
-    """
-    Syncs the data to the cloud.
-    """
-    cloud_service = cloud.init(verbose)
-    if cloud_service is None:
-      print("Cloud service not initialized, skipping...")
-      return
-
-    locality = settings.get("locality", {})
-    slug : str | None = locality.get("slug", None)
-    if slug is None:
-        raise ValueError("No slug found in the locality settings.")
-
-    remote_path = slug.replace("-", "/")
-    cloud_service.sync_files(slug,"in", remote_path, dry_run=dry_run, verbose=verbose)
-
+# Read & write stuff
 
 def from_checkpoint(path: str, func: callable, params: dict)->pd.DataFrame:
    return openavmkit.checkpoint.from_checkpoint(path, func, params)
@@ -298,17 +306,71 @@ def delete_checkpoints(prefix: str):
    return openavmkit.checkpoint.delete_checkpoints(prefix)
 
 
-def write_out_assemble_results(sup: SalesUniversePair):
-   with open (f"out/sales_univ.pickle", "wb") as file:
+def write_checkpoint(data: Any, path: str):
+    return openavmkit.checkpoint.write_checkpoint(data, path)
+
+
+def write_notebook_output_sup(sup: SalesUniversePair, prefix="1-assemble"):
+   with open (f"out/{prefix}-sup.pickle", "wb") as file:
       pickle.dump(sup, file)
    os.makedirs("out/look", exist_ok=True)
-   sup["universe"].to_parquet("out/look/1-assemble-universe.parquet")
-   sup["sales"].to_parquet("out/look/1-assemble-sales.parquet")
+   sup["universe"].to_parquet(f"out/look/{prefix}-universe.parquet")
+   sup["sales"].to_parquet(f"out/look/{prefix}-sales.parquet")
    print("Results written to:")
-   print("...out/sales_univ.pickle")
-   print("...out/look/1-assemble-universe.parquet")
-   print("...out/look/1-assemble-sales.parquet")
+   print(f"...out/{prefix}-sup.pickle")
+   print(f"...out/look/{prefix}-universe.parquet")
+   print(f"...out/look/{prefix}-sales.parquet")
 
+
+def cloud_sync(settings: dict, verbose: bool = False, dry_run: bool = False):
+   """
+   Syncs the data to the cloud.
+   """
+   cloud_service = cloud.init(verbose)
+   if cloud_service is None:
+      print("Cloud service not initialized, skipping...")
+      return
+
+   locality = settings.get("locality", {})
+   slug : str | None = locality.get("slug", None)
+   if slug is None:
+      raise ValueError("No slug found in the locality settings.")
+
+   remote_path = slug.replace("-", "/")
+   cloud_service.sync_files(slug,"in", remote_path, dry_run=dry_run, verbose=verbose)
+
+
+def read_pickle(path: str):
+   return openavmkit.checkpoint.read_pickle(path)
+
+
+# Modeling stuff
+
+
+def run_models(
+    sup: SalesUniversePair,
+    settings: dict,
+    save_params: bool = True,
+    use_saved_params: bool = True,
+    use_saved_results: bool = True,
+    verbose: bool = False,
+    run_main: bool = True,
+    run_vacant: bool = True
+):
+   return openavmkit.benchmark.run_models(sup, settings, save_params, use_saved_params, use_saved_results, verbose, run_main, run_vacant)
+
+
+def finalize_land_values_sup(sup: SalesUniversePair, settings: dict, generate_boundaries: bool = False, verbose: bool = False):
+   raise NotImplementedError("This function is not yet implemented.")
+   #return openavmkit.land.finalize_land_values()
+
+
+def write_canonical_splits(df_sales_in: pd.DataFrame, settings: dict):
+   openavmkit.data.write_canonical_splits(df_sales_in, settings)
+
+
+def run_and_write_ratio_study_breakdowns(settings: dict):
+   openavmkit.ratio_study.run_and_write_ratio_study_breakdowns(settings)
 
 # PRIVATE:
 

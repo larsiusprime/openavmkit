@@ -73,3 +73,9 @@ def delete_checkpoints(prefix: str):
   for file in os.listdir("out/checkpoints"):
     if file.startswith(prefix):
       os.remove(f"out/checkpoints/{file}")
+
+
+def read_pickle(path: str) -> Any:
+  full_path = f"{path}.pickle"
+  with open(full_path, "rb") as file:
+    return pickle.load(file)
