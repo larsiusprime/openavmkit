@@ -45,7 +45,7 @@ class AzureService(CloudService):
       blob_client.upload_blob(f, overwrite=True)
 
 
-def init_service_azure(credentials: dict):
+def init_service_azure(credentials: AzureCredentials) -> AzureService:
   container_name = os.getenv("AZURE_STORAGE_CONTAINER_NAME")
   if container_name is None:
     raise ValueError("Missing 'AZURE_STORAGE_CONTAINER_NAME' in environment.")
@@ -55,7 +55,7 @@ def init_service_azure(credentials: dict):
     raise ValueError("Invalid credentials for Azure service.")
 
 
-def get_creds_from_env_azure():
+def get_creds_from_env_azure() -> AzureCredentials:
   connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
   if not connection_string:
     raise ValueError("Missing Azure connection string in environment.")

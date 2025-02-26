@@ -141,3 +141,4 @@ pyarrow~=18.0.0
 osmnx~=2.0.0rc2
 networkx~=3.4.2
 geopy~=2.4.1
+paramiko~=3.5.1

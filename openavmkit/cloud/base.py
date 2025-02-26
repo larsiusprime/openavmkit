@@ -4,11 +4,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 CloudType = Literal[
-  "azure"
+  "azure",
+  "huggingface",
+  "sftp"
   # In the future we'll add more types here:
   # "aws",
-  # "gcp",
-  # "sftp
+  # "gcp"
 ]
 
 class CloudFile:
@@ -150,7 +151,7 @@ def _print_download(remote_file: str, local_file: str):
   print(f"Downloading '{remote_file}' <-- '{local_file}'...")
 
 def _print_upload(remote_file: str, local_file: str):
-  print(f"Uploading '{remote_file}' --> '{local_file}'...")
+  print(f"Uploading '{local_file}' --> '{remote_file}'...")
 
 def _fix_path_slashes(path: str):
   return path.replace("\\", "/")
