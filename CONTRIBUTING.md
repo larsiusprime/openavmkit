@@ -4,11 +4,13 @@ Thank you for your interest in contributing to **Open AVM Kit**! Contributions a
 
 ## Contributor License Agreement (CLA)
 
-Before we can accept your contributions, you must agree to our Contributor License Agreement (CLA). This ensures we can re-license contributions as part of the dual-license model.
+Before we can accept your contributions, you must agree to our Contributor License Agreement (CLA). This ensures we can re-license contributions as part of the dual-license model. You can find the contributor license agreement here:
+https://docuseal.com/d/4iF7pn89f5v914
 
 ### How to Sign the CLA
 - When you open a pull request, a bot will comment with a link to the CLA.
 - Follow the link and agree to the terms to proceed.
+- The maintainer will note your agreement prior to approving the PR.
 
 ## Contribution Guidelines
 
