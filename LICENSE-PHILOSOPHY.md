@@ -1,6 +1,6 @@
-# Licensing Philosophy
+# Licensing Philosophy for openavmkit
 
-by Lars A. Doucet, BDFL of openavmkit
+by Lars A. Doucet, [BDFL](https://en.wikipedia.org/wiki/Benevolent_dictator_for_life)
 
 Dual licensing is controversial for some in the open source community, so I feel it is best to be completely transparent about my reasoning for choosing this model for openavmkit.
 
@@ -14,7 +14,7 @@ Commercial companies are free to use the software for any purpose, they just nee
 This isn't the only choice I could have made. Let's look at the alternatives:
 
 - Permissive license (MIT/BSD)
-- Copyleft license (*GPL)
+- Copyleft license (GPL/AGPL)
 - Commercial license
 - Dual license (copyleft + commercial)
 
@@ -62,6 +62,8 @@ You have rights under the published license that no one can ever take away.
 You can always use the latest version of the software that is licensed with the AGPLv3 under those terms. That means, among other things, that you never have to pay to use the software.  
 
 Also, you will always have the right to fork the AGPLv3 version of the project and continue development under the AGPLv3. This holds even if I one day decide to re-license the entire thing under some other license. You will always be able to use the software for any purpose, including commercial purposes, under the terms of the AGPLv3.
+
+You also have the right to not sign any contributor license agreement. The only thing not signing would prevent you from doing is having your changes merged into this upstream repository. Other forks of this repository are free to accept changes under the AGPLv3 without any further agreement.
 
 It's true that many companies are scared away by aggressive copyleft terms (and I am intentionally incorporating a copyleft license for that very reason) but let's recognize that such reticence is a *business decision* and that plenty of companies are happy to use and contribute back to AGPLv3-licensed projects.
  
