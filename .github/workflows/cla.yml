@@ -27,7 +27,7 @@ jobs:
         with:
           path-to-signatures: 'signatures/version1/cla.json'
           path-to-document: 'https://docuseal.com/d/4iF7pn89f5v914'
-          branch: 'main'
+          branch: 'master'
           # Custom messages for the new workflow
           custom-notsigned-prcomment: 'Thank you for your contribution. Please sign our CLA by clicking the document link. A maintainer will verify your signature and confirm it here.'
           custom-pr-sign-comment: 'I affirm that this contributor has signed the CLA'
