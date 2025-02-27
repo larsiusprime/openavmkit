@@ -17,19 +17,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: "CLA Assistant"
-        # Only trigger on maintainer confirmation or PR events
-        if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I affirm that this contributor has signed the CLA') || github.event_name == 'pull_request_target'
-        # Check if the commenter has write permissions to the repo
-        # This ensures only maintainers can trigger the confirmation
-        if: github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR' || github.event_name == 'pull_request_target'
+        # Combined conditions with logical AND (&&) between the two sets of conditions
+        if: >-
+          ((github.event.comment.body == 'recheck' || github.event.comment.body == 'I affirm that this contributor has signed the CLA') || github.event_name == 'pull_request_target') &&
+          (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR' || github.event_name == 'pull_request_target')
         uses: contributor-assistant/github-action@v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           path-to-signatures: 'signatures/version1/cla.json'
           path-to-document: 'https://docuseal.com/d/4iF7pn89f5v914'
-          branch: 'main'
+          branch: 'master'
           # Custom messages for the new workflow
-          custom-notsigned-prcomment: 'Thank you for your contribution. Please sign our CLA by clicking the document link. A maintainer will verify your signature and confirm it here.'
-          custom-pr-sign-comment: 'I affirm that this contributor has signed the CLA'
+          custom-notsigned-prcomment: 'Thank you for your contribution. Please sign our CLA at the following link:<br>[Click here to sign the CLA](https://docuseal.com/d/4iF7pn89f5v914).<br>A maintainer will verify your signature and confirm it here.'
+          custom-pr-sign-comment: ''
           custom-allsigned-prcomment: 'A maintainer has confirmed that all contributors have signed the CLA.'
