@@ -635,8 +635,7 @@ def _enrich_df_census(df: pd.DataFrame | gpd.GeoDataFrame, census_settings: dict
 			return df
 			
 		# Get census columns to keep
-		census_cols_to_keep = ['std_geoid', 'median_income', 'total_pop', 'white_pop', 
-							 'black_pop', 'hispanic_pop']
+		census_cols_to_keep = ['std_geoid', 'median_income', 'total_pop']
 		
 		# Ensure all census columns exist in the census_boundaries
 		missing_cols = [col for col in census_cols_to_keep if col not in census_boundaries.columns]

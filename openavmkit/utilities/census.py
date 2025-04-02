@@ -252,7 +252,7 @@ def match_to_census_blockgroups(
         return joined
     else:
         # No matches, so just return the original GeoDataFrame with census columns added (all NaN)
-        census_columns = ['std_geoid', 'median_income', 'total_pop', 'white_pop', 'black_pop', 'hispanic_pop']
+        census_columns = ['std_geoid', 'median_income', 'total_pop']
         for col in census_columns:
             if col in census_gdf.columns:
                 gdf[col] = None
