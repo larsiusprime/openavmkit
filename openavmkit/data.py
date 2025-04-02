@@ -569,58 +569,6 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
 		del s_enrich2["both"]  # remove the now-redundant "both" key
 		s_enrich = s_enrich2
 
-	# Handle Census enrichment if enabled	
-	census_settings = s_enrich.get("census", {})
-	census_data = None
-	if census_settings.get("enabled", False):
-		try:
-			# Get Census credentials and initialize service
-			creds = get_creds_from_env_census()
-			census_service = init_service_census(creds)
-			
-			# Get FIPS code from settings
-			fips_code = census_settings.get("fips", "")
-			if not fips_code:
-				warnings.warn("Census enrichment enabled but no FIPS code provided in settings")
-			else:
-				year = census_settings.get("year", 2022)
-				print("Getting Census Data...")
-				# Get Census data with boundaries
-				census_data, census_boundaries = census_service.get_census_data_with_boundaries(
-					fips_code=fips_code,
-					year=year
-				)
-				
-				# Spatial join with universe data only
-				df_univ = sup["universe"]
-				if isinstance(df_univ, gpd.GeoDataFrame):
-					# Get census columns to keep
-					census_cols_to_keep = ['std_geoid', 'median_income', 'total_pop', 'white_pop', 
-										 'black_pop', 'hispanic_pop']
-					
-					# Ensure all census columns exist in the census_boundaries
-					missing_cols = [col for col in census_cols_to_keep if col not in census_boundaries.columns]
-					if missing_cols:
-						# Filter to only include columns that exist
-						census_cols_to_keep = [col for col in census_cols_to_keep if col in census_boundaries.columns]
-					
-					# Create a copy of census_boundaries with only the columns we need
-					census_boundaries_subset = census_boundaries[['geometry'] + census_cols_to_keep].copy()
-					
-					print("Performing spatial join with Census Data...")
-					# Perform the spatial join
-					df_univ = match_to_census_blockgroups(
-						gdf=df_univ,
-						census_gdf=census_boundaries_subset,
-						join_type="left"
-					)
-					
-					sup.set("universe", df_univ)
-				else:
-					warnings.warn("Universe DataFrame is not a GeoDataFrame, skipping Census enrichment")
-		except Exception as e:
-			warnings.warn(f"Failed to enrich with Census data: {str(e)}")
-
 	for supkey in supkeys:
 		if verbose:
 			print(f"Enriching {supkey}...")
@@ -633,12 +581,87 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
 		df = _enrich_vacant(df)
 
 		if s_enrich_local is not None:
+			# Handle Census enrichment for universe if enabled
+			if supkey == "universe" and "census" in s_enrich_local:
+				df = _enrich_df_census(df, s_enrich_local.get("census", {}), verbose=verbose)
+			
 			df = _enrich_df_geometry(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
 			df = _enrich_df_basic(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
 
 		sup.set(supkey, df)
 
 	return sup
+
+def _enrich_df_census(df: pd.DataFrame | gpd.GeoDataFrame, census_settings: dict, verbose: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
+	"""
+	Enrich a DataFrame with Census data by performing a spatial join with Census block groups.
+	
+	:param df: Input DataFrame or GeoDataFrame to enrich with Census data.
+	:type df: pd.DataFrame | gpd.GeoDataFrame
+	:param census_settings: Census enrichment settings.
+	:type census_settings: dict
+	:param verbose: If True, prints progress information.
+	:type verbose: bool, optional
+	:returns: DataFrame enriched with Census data.
+	:rtype: pd.DataFrame | gpd.GeoDataFrame
+	"""
+	if not census_settings.get("enabled", False):
+		return df
+		
+	try:
+		# Get Census credentials and initialize service
+		creds = get_creds_from_env_census()
+		census_service = init_service_census(creds)
+		
+		# Get FIPS code from settings
+		fips_code = census_settings.get("fips", "")
+		if not fips_code:
+			warnings.warn("Census enrichment enabled but no FIPS code provided in settings")
+			return df
+			
+		year = census_settings.get("year", 2022)
+		if verbose:
+			print("Getting Census Data...")
+			
+		# Get Census data with boundaries
+		census_data, census_boundaries = census_service.get_census_data_with_boundaries(
+			fips_code=fips_code,
+			year=year
+		)
+		
+		# Spatial join with universe data only
+		if not isinstance(df, gpd.GeoDataFrame):
+			warnings.warn("DataFrame is not a GeoDataFrame, skipping Census enrichment")
+			return df
+			
+		# Get census columns to keep
+		census_cols_to_keep = ['std_geoid', 'median_income', 'total_pop', 'white_pop', 
+							 'black_pop', 'hispanic_pop']
+		
+		# Ensure all census columns exist in the census_boundaries
+		missing_cols = [col for col in census_cols_to_keep if col not in census_boundaries.columns]
+		if missing_cols:
+			# Filter to only include columns that exist
+			census_cols_to_keep = [col for col in census_cols_to_keep if col in census_boundaries.columns]
+		
+		# Create a copy of census_boundaries with only the columns we need
+		census_boundaries_subset = census_boundaries[['geometry'] + census_cols_to_keep].copy()
+		
+		if verbose:
+			print("Performing spatial join with Census Data...")
+			
+		# Perform the spatial join
+		df = match_to_census_blockgroups(
+			gdf=df,
+			census_gdf=census_boundaries_subset,
+			join_type="left"
+		)
+		
+		return df
+		
+	except Exception as e:
+		warnings.warn(f"Failed to enrich with Census data: {str(e)}")
+		return df
 
 
 def identify_parcels_with_holes(df: gpd.GeoDataFrame) -> (gpd.GeoDataFrame, gpd.GeoDataFrame):

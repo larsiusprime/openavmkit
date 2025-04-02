@@ -63,10 +63,7 @@ class CensusService:
         # Rename columns
         df = df.rename(columns={
             'B19013_001E': 'median_income',
-            'B01003_001E': 'total_pop',
-            'B03002_003E': 'white_pop',
-            'B03002_004E': 'black_pop',
-            'B03002_012E': 'hispanic_pop'
+            'B01003_001E': 'total_pop'
         })
 
         # Create GEOID for block groups (state+county+tract+block group)
@@ -247,6 +244,11 @@ def match_to_census_blockgroups(
         except:
             joined = joined.set_geometry('centroid')
         
+        # Calculate and print percentage of records with valid census geoid
+        valid_geoid_count = joined['std_geoid'].notna().sum()
+        valid_percentage = (valid_geoid_count / len(gdf)) * 100
+        print(f"Census block group matching: {valid_geoid_count} of {len(gdf)} records have valid census geoid ({valid_percentage:.2f}%)")
+        
         return joined
     else:
         # No matches, so just return the original GeoDataFrame with census columns added (all NaN)
@@ -254,6 +256,8 @@ def match_to_census_blockgroups(
         for col in census_columns:
             if col in census_gdf.columns:
                 gdf[col] = None
+        
+        print(f"Census block group matching: 0 of {len(gdf)} records matched (0.00%)")
         return gdf
 
 def init_service_census(credentials: CensusCredentials) -> CensusService:
