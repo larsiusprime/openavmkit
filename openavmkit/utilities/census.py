@@ -47,10 +47,7 @@ class CensusService:
         data = self.census_client.acs5.state_county_blockgroup(
             fields=['NAME',
                     'B19013_001E',  # Median income
-                    'B01003_001E',  # Total population
-                    'B03002_003E',  # White alone
-                    'B03002_004E',  # Black alone
-                    'B03002_012E'],  # Hispanic/Latino
+                    'B01003_001E'],  # Hispanic/Latino
             state_fips=state_fips,
             county_fips=county_fips,
             blockgroup='*',  # All block groups
