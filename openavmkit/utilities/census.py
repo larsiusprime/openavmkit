@@ -2,10 +2,11 @@ import os
 from typing import Dict, List, Optional, Tuple, Union
 import pandas as pd
 import geopandas as gpd
-from openavmkit.cloud.census import Census
 import requests
 from shapely.geometry import Point, Polygon
 import json
+from census import Census
+from openavmkit.utilities.geometry import stamp_geo_field_onto_df, get_crs
 
 class CensusCredentials:
     def __init__(self, api_key: str):
@@ -99,8 +100,8 @@ class CensusService:
         if len(fips_code) != 5:
             raise ValueError("fips_code must be 5 digits (state + county)")
 
-        # TIGERweb REST API endpoint
-        base_url = "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Tracts_Blocks/MapServer/2/query"
+        # TIGERweb REST API endpoint for block groups
+        base_url = "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Tracts_Blocks/MapServer/1/query"
         
         # Query parameters
         params = {
@@ -127,6 +128,9 @@ class CensusService:
 
             # Create standardized GEOID
             gdf['std_geoid'] = gdf['state_fips'] + gdf['county_fips'] + gdf['tract_fips'] + gdf['bg_fips']
+            
+            # Explicitly set the CRS to EPSG:4326 (WGS84)
+            gdf.crs = "EPSG:4326"
             
             return gdf
             
@@ -155,11 +159,15 @@ class CensusService:
             ValueError: If inputs have invalid values
             requests.RequestException: If API requests fail
         """
-        # Get demographic data
+        # Get demographic data first
         census_data = self.get_census_data(fips_code, year)
+        # Get the list of block groups we have data for
+        valid_block_groups = census_data['std_geoid'].unique()
         
         # Get boundary files
         census_boundaries = self.get_census_blockgroups_shapefile(fips_code)
+        # Filter boundaries to only include block groups we have data for
+        census_boundaries = census_boundaries[census_boundaries['std_geoid'].isin(valid_block_groups)]
         
         # Merge demographic data with boundaries
         census_boundaries = census_boundaries.merge(
@@ -167,8 +175,86 @@ class CensusService:
             on='std_geoid',
             how='left'
         )
+        # Verify the merge
+        missing_geoids = census_boundaries[census_boundaries.isna().any(axis=1)]['std_geoid'].unique()
+        if len(missing_geoids) > 0:
+            print(f"\nWarning: Found {len(missing_geoids)} block groups with missing data")
+            print("First few missing GEOIDs:", missing_geoids[:5])
         
         return census_data, census_boundaries
+
+def match_to_census_blockgroups(
+    gdf: gpd.GeoDataFrame,
+    census_gdf: gpd.GeoDataFrame,
+    join_type: str = "left"
+) -> gpd.GeoDataFrame:
+    """
+    Match each row in a GeoDataFrame to its corresponding Census Block Group using spatial join.
+    
+    Args:
+        gdf (gpd.GeoDataFrame): Input GeoDataFrame to match
+        census_gdf (gpd.GeoDataFrame): Census Block Group boundaries GeoDataFrame
+        join_type (str): Type of join to perform ('left', 'right', 'inner', 'outer')
+    
+    Returns:
+        gpd.GeoDataFrame: Input GeoDataFrame with Census Block Group data appended
+    """
+    if not isinstance(gdf, gpd.GeoDataFrame):
+        raise TypeError("gdf must be a GeoDataFrame")
+    if not isinstance(census_gdf, gpd.GeoDataFrame):
+        raise TypeError("census_gdf must be a GeoDataFrame")
+    if join_type not in ['left', 'right', 'inner', 'outer']:
+        raise ValueError("join_type must be one of: 'left', 'right', 'inner', 'outer'")
+
+    # Create a copy of the input GeoDataFrame to avoid modifying the original
+    gdf_for_join = gdf.copy()
+    
+    # Store original geometry column name
+    orig_geom_col = gdf_for_join.geometry.name
+    
+    # If the data is in a geographic CRS (like WGS84/EPSG:4326), 
+    # reproject to a projected CRS before calculating centroids
+    if gdf_for_join.crs.is_geographic:
+        # Use the geometry utility to get an appropriate equal-area CRS based on the data
+        projected_crs = get_crs(gdf_for_join, 'equal_area')
+        gdf_for_join = gdf_for_join.to_crs(projected_crs)
+        census_gdf = census_gdf.to_crs(projected_crs)
+    
+    # Calculate centroids in the projected CRS
+    gdf_for_join['centroid'] = gdf_for_join.geometry.centroid
+    
+    # Create a temporary GeoDataFrame with centroids for the spatial join
+    centroid_gdf = gpd.GeoDataFrame(
+        gdf_for_join.drop(columns=[orig_geom_col]),
+        geometry='centroid',
+        crs=gdf_for_join.crs
+    )
+    
+    # Perform the spatial join
+    joined = centroid_gdf.sjoin(census_gdf, predicate="intersects", how=join_type)
+    
+    # If we have matches, process them
+    if not joined.empty:
+        # Calculate areas for each match
+        joined["area"] = joined.geometry.area
+        
+        # Group by the index and find the smallest area for each
+        smallest_areas = joined.groupby(level=0)["area"].idxmin()
+        joined = joined.loc[smallest_areas]
+        
+        try:
+            joined = joined.set_geometry(orig_geom_col)
+        except:
+            joined = joined.set_geometry('centroid')
+        
+        return joined
+    else:
+        # No matches, so just return the original GeoDataFrame with census columns added (all NaN)
+        census_columns = ['std_geoid', 'median_income', 'total_pop', 'white_pop', 'black_pop', 'hispanic_pop']
+        for col in census_columns:
+            if col in census_gdf.columns:
+                gdf[col] = None
+        return gdf
 
 def init_service_census(credentials: CensusCredentials) -> CensusService:
     """

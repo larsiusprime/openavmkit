@@ -2,13 +2,13 @@ import os
 import warnings
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal, Dict, Any, Optional
 
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import geopandas as gpd
 from pandas import Series
-from typing import Literal
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
@@ -20,6 +20,8 @@ from openavmkit.utilities.geometry import get_crs, clean_geometry, identify_irre
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
 	get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit, get_valuation_date
 
+from openavmkit.utilities.census import get_creds_from_env_census, init_service_census, match_to_census_blockgroups
+from openavmkit.utilities.census import CensusService
 
 @dataclass
 class SalesUniversePair:
@@ -528,26 +530,25 @@ def process_data(dataframes: dict[str, pd.DataFrame], settings: dict, verbose: b
 
 	return sup
 
-
 def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd.DataFrame], settings: dict, verbose: bool = False) -> SalesUniversePair:
 	"""
-  Enrich both sales and universe data based on enrichment instructions.
+	Enrich both sales and universe data based on enrichment instructions.
 
-  Applies enrichment operations (e.g., spatial and basic enrichment) to both "sales" and "universe" DataFrames.
+	Applies enrichment operations (e.g., spatial and basic enrichment) to both "sales" and "universe" DataFrames.
 
-  :param sup: SalesUniversePair containing sales and universe data.
-  :type sup: SalesUniversePair
-  :param s_enrich: Enrichment instructions.
-  :type s_enrich: dict
-  :param dataframes: Dictionary of additional DataFrames.
-  :type dataframes: dict[str, pd.DataFrame]
-  :param settings: Settings dictionary.
-  :type settings: dict
-  :param verbose: If True, prints progress information.
-  :type verbose: bool, optional
-  :returns: Enriched SalesUniversePair.
-  :rtype: SalesUniversePair
-  """
+	:param sup: SalesUniversePair containing sales and universe data.
+	:type sup: SalesUniversePair
+	:param s_enrich: Enrichment instructions.
+	:type s_enrich: dict
+	:param dataframes: Dictionary of additional DataFrames.
+	:type dataframes: dict[str, pd.DataFrame]
+	:param settings: Settings dictionary.
+	:type settings: dict
+	:param verbose: If True, prints progress information.
+	:type verbose: bool, optional
+	:returns: Enriched SalesUniversePair.
+	:rtype: SalesUniversePair
+	"""
 	supkeys: list[SUPKey] = ["universe", "sales"]
 
 	# Add the "both" entries to both "universe" and "sales" and delete the "both" entry afterward.
@@ -567,6 +568,58 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
 				s_enrich2[supkey] = sup_entry2
 		del s_enrich2["both"]  # remove the now-redundant "both" key
 		s_enrich = s_enrich2
+
+	# Handle Census enrichment if enabled	
+	census_settings = s_enrich.get("census", {})
+	census_data = None
+	if census_settings.get("enabled", False):
+		try:
+			# Get Census credentials and initialize service
+			creds = get_creds_from_env_census()
+			census_service = init_service_census(creds)
+			
+			# Get FIPS code from settings
+			fips_code = census_settings.get("fips", "")
+			if not fips_code:
+				warnings.warn("Census enrichment enabled but no FIPS code provided in settings")
+			else:
+				year = census_settings.get("year", 2022)
+				print("Getting Census Data...")
+				# Get Census data with boundaries
+				census_data, census_boundaries = census_service.get_census_data_with_boundaries(
+					fips_code=fips_code,
+					year=year
+				)
+				
+				# Spatial join with universe data only
+				df_univ = sup["universe"]
+				if isinstance(df_univ, gpd.GeoDataFrame):
+					# Get census columns to keep
+					census_cols_to_keep = ['std_geoid', 'median_income', 'total_pop', 'white_pop', 
+										 'black_pop', 'hispanic_pop']
+					
+					# Ensure all census columns exist in the census_boundaries
+					missing_cols = [col for col in census_cols_to_keep if col not in census_boundaries.columns]
+					if missing_cols:
+						# Filter to only include columns that exist
+						census_cols_to_keep = [col for col in census_cols_to_keep if col in census_boundaries.columns]
+					
+					# Create a copy of census_boundaries with only the columns we need
+					census_boundaries_subset = census_boundaries[['geometry'] + census_cols_to_keep].copy()
+					
+					print("Performing spatial join with Census Data...")
+					# Perform the spatial join
+					df_univ = match_to_census_blockgroups(
+						gdf=df_univ,
+						census_gdf=census_boundaries_subset,
+						join_type="left"
+					)
+					
+					sup.set("universe", df_univ)
+				else:
+					warnings.warn("Universe DataFrame is not a GeoDataFrame, skipping Census enrichment")
+		except Exception as e:
+			warnings.warn(f"Failed to enrich with Census data: {str(e)}")
 
 	for supkey in supkeys:
 		if verbose:
