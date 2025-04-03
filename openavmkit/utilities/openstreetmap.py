@@ -44,76 +44,87 @@ class OpenStreetMapService:
         hemisphere = 'north' if centroid_lat >= 0 else 'south'
         return f"+proj=utm +zone={utm_zone} +{hemisphere} +datum=WGS84 +units=m +no_defs"
 
-    def get_water_bodies(self, bbox: Tuple[float, float, float, float], min_area: float = 10000) -> gpd.GeoDataFrame:
+    def get_water_bodies(self, bbox: Tuple[float, float, float, float], settings: dict) -> gpd.GeoDataFrame:
         """
         Get water bodies (rivers, lakes, etc.) from OpenStreetMap.
+        Stores both all water bodies and top N largest ones for distance calculations.
         
         Args:
             bbox (Tuple[float, float, float, float]): Bounding box (min_lon, min_lat, max_lon, max_lat)
-            min_area (float): Minimum area in square meters for water bodies to include
+            settings (dict): Settings for water bodies including min_area and top_n
             
         Returns:
-            gpd.GeoDataFrame: GeoDataFrame containing water bodies
+            gpd.GeoDataFrame: GeoDataFrame containing all water bodies
         """
-        print(f"[DEBUG] Getting water bodies with bbox: {bbox}, min_area: {min_area}")
+        if not settings.get('enabled', False):
+            return gpd.GeoDataFrame()
+        
+        min_area = settings.get('min_area', 10000)
+        top_n = settings.get('top_n', 5)
         
         # Define tags for water bodies
         tags = {
             'natural': ['water', 'bay', 'strait'],
             'water': ['river', 'lake', 'reservoir', 'canal', 'stream']
         }
-        print(f"[DEBUG] Using tags: {tags}")
         
         # Create polygon from bbox
         polygon = box(bbox[0], bbox[1], bbox[2], bbox[3])
-        print(f"[DEBUG] Created polygon from bbox: {polygon}")
         
         # Get water bodies from OSM
-        print("[DEBUG] Fetching water bodies from OSM...")
         water_bodies = ox.features.features_from_polygon(
             polygon,
             tags=tags
         )
         
         if water_bodies.empty:
-            print("[DEBUG] No water bodies found, returning empty GeoDataFrame")
             return gpd.GeoDataFrame()
-        
-        print(f"[DEBUG] Found {len(water_bodies)} water bodies before filtering")
         
         # Project to UTM for accurate area calculation
         utm_crs = self._get_utm_crs(bbox)
-        print(f"[DEBUG] Using UTM CRS: {utm_crs}")
         water_bodies_proj = water_bodies.to_crs(utm_crs)
         
-        # Filter by minimum area (now in square meters)
+        # Calculate areas and filter by minimum area
         water_bodies_proj['area'] = water_bodies_proj.geometry.area
-        print(f"[DEBUG] Area range: min={water_bodies_proj['area'].min()}, max={water_bodies_proj['area'].max()}")
         water_bodies_filtered = water_bodies_proj[water_bodies_proj['area'] >= min_area]
-        print(f"[DEBUG] After area filtering: {len(water_bodies_filtered)} water bodies remain")
         
-        # Project back to WGS84 for consistency
-        if not water_bodies_filtered.empty:
-            print("[DEBUG] Projecting back to WGS84")
-            water_bodies_filtered = water_bodies_filtered.to_crs('EPSG:4326')
+        if water_bodies_filtered.empty:
+            return gpd.GeoDataFrame()
         
-        # Simplify geometries for better performance
-        print("[DEBUG] Simplifying geometries")
-        water_bodies_filtered.geometry = water_bodies_filtered.geometry.simplify(0.0001)
+        # Project back to WGS84
+        water_bodies_filtered = water_bodies_filtered.to_crs('EPSG:4326')
         
-        print(f"[DEBUG] Returning {len(water_bodies_filtered)} water bodies")
+        # Clean up names
+        water_bodies_filtered['name'] = water_bodies_filtered['name'].fillna('unnamed_water_body')
+        water_bodies_filtered['name'] = water_bodies_filtered['name'].str.lower().str.replace(' ', '_')
+        
+        # Create a copy for top N features
+        water_bodies_top = water_bodies_filtered.nlargest(top_n, 'area').copy()
+        
+        # Store both dataframes
+        self.features['water_bodies'] = water_bodies_filtered
+        self.features['water_bodies_top'] = water_bodies_top
+        
         return water_bodies_filtered
-    def get_transportation(self, bbox: Tuple[float, float, float, float], min_length: float = 100) -> gpd.GeoDataFrame:
+
+    def get_transportation(self, bbox: Tuple[float, float, float, float], settings: dict) -> gpd.GeoDataFrame:
         """
         Get major transportation networks (roads, railways) from OpenStreetMap.
+        Stores both all routes and top N longest ones for distance calculations.
         
         Args:
             bbox (Tuple[float, float, float, float]): Bounding box (min_lon, min_lat, max_lon, max_lat)
-            min_length (float): Minimum length in meters for transportation features to include
+            settings (dict): Settings for transportation including min_length and top_n
             
         Returns:
-            gpd.GeoDataFrame: GeoDataFrame containing major transportation networks
+            gpd.GeoDataFrame: GeoDataFrame containing all transportation routes
         """
+        if not settings.get('enabled', False):
+            return gpd.GeoDataFrame()
+            
+        min_length = settings.get('min_length', 1000)
+        top_n = settings.get('top_n', 5)
+        
         # Define tags for major transportation routes
         tags = {
             'highway': ['motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'trunk_link', 'primary_link', 'secondary_link'],
@@ -136,16 +147,26 @@ class OpenStreetMapService:
         utm_crs = self._get_utm_crs(bbox)
         transportation_proj = transportation.to_crs(utm_crs)
         
-        # Filter by minimum length
+        # Calculate lengths and filter by minimum length
         transportation_proj['length'] = transportation_proj.geometry.length
         transportation_filtered = transportation_proj[transportation_proj['length'] >= min_length]
         
-        # Project back to WGS84 for consistency
-        if not transportation_filtered.empty:
-            transportation_filtered = transportation_filtered.to_crs('EPSG:4326')
+        if transportation_filtered.empty:
+            return gpd.GeoDataFrame()
         
-        # Simplify geometries for better performance
-        transportation_filtered.geometry = transportation_filtered.geometry.simplify(0.0001)
+        # Project back to WGS84
+        transportation_filtered = transportation_filtered.to_crs('EPSG:4326')
+        
+        # Clean up names
+        transportation_filtered['name'] = transportation_filtered['name'].fillna('unnamed_route')
+        transportation_filtered['name'] = transportation_filtered['name'].str.lower().str.replace(' ', '_')
+        
+        # Create a copy for top N features
+        transportation_top = transportation_filtered.nlargest(top_n, 'length').copy()
+        
+        # Store both dataframes
+        self.features['transportation'] = transportation_filtered
+        self.features['transportation_top'] = transportation_top
         
         return transportation_filtered
     
@@ -176,17 +197,24 @@ class OpenStreetMapService:
         
         return elevation, (lon_range, lat_range)
     
-    def get_educational_institutions(self, bbox: Tuple[float, float, float, float], min_area: float = 1000) -> gpd.GeoDataFrame:
+    def get_educational_institutions(self, bbox: Tuple[float, float, float, float], settings: dict) -> gpd.GeoDataFrame:
         """
-        Get colleges and universities from OpenStreetMap.
+        Get educational institutions from OpenStreetMap.
+        Stores both all institutions and top N largest ones for distance calculations.
         
         Args:
             bbox (Tuple[float, float, float, float]): Bounding box (min_lon, min_lat, max_lon, max_lat)
-            min_area (float): Minimum area in square meters for institutions to include
+            settings (dict): Settings for educational institutions including min_area and top_n
             
         Returns:
-            gpd.GeoDataFrame: GeoDataFrame containing educational institutions
+            gpd.GeoDataFrame: GeoDataFrame containing all educational institutions
         """
+        if not settings.get('enabled', False):
+            return gpd.GeoDataFrame()
+            
+        min_area = settings.get('min_area', 1000)
+        top_n = settings.get('top_n', 5)
+        
         # Define tags for educational institutions
         tags = {
             'amenity': ['university', 'college', 'school'],
@@ -204,47 +232,52 @@ class OpenStreetMapService:
         
         if institutions.empty:
             return gpd.GeoDataFrame()
+            
+        # Project to UTM for accurate area calculation
+        utm_crs = self._get_utm_crs(bbox)
+        institutions_proj = institutions.to_crs(utm_crs)
         
-        # Filter to keep only higher education institutions
-        institutions = institutions[
-            (institutions['amenity'].isin(['university', 'college'])) |
-            (institutions['building'].isin(['university', 'college']))
-        ]
+        # Calculate areas and filter by minimum area
+        institutions_proj['area'] = institutions_proj.geometry.area
+        institutions_filtered = institutions_proj[institutions_proj['area'] >= min_area]
         
-        if not institutions.empty:
-            # Project to UTM for accurate area calculation
-            utm_crs = self._get_utm_crs(bbox)
-            institutions_proj = institutions.to_crs(utm_crs)
+        if institutions_filtered.empty:
+            return gpd.GeoDataFrame()
             
-            # Filter by minimum area for polygon geometries
-            institutions_proj['area'] = institutions_proj.geometry.area
-            institutions_filtered = institutions_proj[
-                (institutions_proj.geometry.geom_type == 'Point') |
-                ((institutions_proj.geometry.geom_type != 'Point') & (institutions_proj['area'] >= min_area))
-            ]
-            
-            # Project back to WGS84 for consistency
-            institutions_filtered = institutions_filtered.to_crs('EPSG:4326')
-            
-            # Simplify geometries for better performance (only for non-point geometries)
-            mask = institutions_filtered.geometry.geom_type != 'Point'
-            institutions_filtered.loc[mask, 'geometry'] = institutions_filtered.loc[mask, 'geometry'].simplify(0.0001)
-            
-            return institutions_filtered
+        # Project back to WGS84
+        institutions_filtered = institutions_filtered.to_crs('EPSG:4326')
         
-        return institutions
+        # Clean up names
+        institutions_filtered['name'] = institutions_filtered['name'].fillna('unnamed_institution')
+        institutions_filtered['name'] = institutions_filtered['name'].str.lower().str.replace(' ', '_')
+        
+        # Create a copy for top N features
+        institutions_top = institutions_filtered.nlargest(top_n, 'area').copy()
+        
+        # Store both dataframes
+        self.features['educational'] = institutions_filtered
+        self.features['educational_top'] = institutions_top
+        
+        return institutions_filtered
     
-    def get_parks(self, bbox: Tuple[float, float, float, float], min_area: float = 1000) -> gpd.GeoDataFrame:
+    def get_parks(self, bbox: Tuple[float, float, float, float], settings: dict) -> gpd.GeoDataFrame:
         """
         Get parks from OpenStreetMap.
+        Stores both all parks and top N largest ones for distance calculations.
         
         Args:
             bbox (Tuple[float, float, float, float]): Bounding box (min_lon, min_lat, max_lon, max_lat)
-            min_area (float): Minimum area in square meters for parks to include
+            settings (dict): Settings for parks including min_area and top_n
             
         Returns:
-            gpd.GeoDataFrame: GeoDataFrame containing parks
+            gpd.GeoDataFrame: GeoDataFrame containing all parks
         """
+        if not settings.get('enabled', False):
+            return gpd.GeoDataFrame()
+            
+        min_area = settings.get('min_area', 1000)
+        top_n = settings.get('top_n', 5)
+        
         # Define tags for parks
         tags = {
             'leisure': ['park', 'garden', 'playground'],
@@ -262,35 +295,52 @@ class OpenStreetMapService:
         
         if parks.empty:
             return gpd.GeoDataFrame()
-        
+            
         # Project to UTM for accurate area calculation
         utm_crs = self._get_utm_crs(bbox)
         parks_proj = parks.to_crs(utm_crs)
         
-        # Filter by minimum area
+        # Calculate areas and filter by minimum area
         parks_proj['area'] = parks_proj.geometry.area
         parks_filtered = parks_proj[parks_proj['area'] >= min_area]
         
-        # Project back to WGS84 for consistency
-        if not parks_filtered.empty:
-            parks_filtered = parks_filtered.to_crs('EPSG:4326')
+        if parks_filtered.empty:
+            return gpd.GeoDataFrame()
             
-            # Simplify geometries for better performance
-            parks_filtered.geometry = parks_filtered.geometry.simplify(0.0001)
+        # Project back to WGS84
+        parks_filtered = parks_filtered.to_crs('EPSG:4326')
+        
+        # Clean up names
+        parks_filtered['name'] = parks_filtered['name'].fillna('unnamed_park')
+        parks_filtered['name'] = parks_filtered['name'].str.lower().str.replace(' ', '_')
+        
+        # Create a copy for top N features
+        parks_top = parks_filtered.nlargest(top_n, 'area').copy()
+        
+        # Store both dataframes
+        self.features['parks'] = parks_filtered
+        self.features['parks_top'] = parks_top
         
         return parks_filtered
     
-    def get_golf_courses(self, bbox: Tuple[float, float, float, float], min_area: float = 10000) -> gpd.GeoDataFrame:
+    def get_golf_courses(self, bbox: Tuple[float, float, float, float], settings: dict) -> gpd.GeoDataFrame:
         """
         Get golf courses from OpenStreetMap.
+        Stores both all golf courses and top N largest ones for distance calculations.
         
         Args:
             bbox (Tuple[float, float, float, float]): Bounding box (min_lon, min_lat, max_lon, max_lat)
-            min_area (float): Minimum area in square meters for golf courses to include
+            settings (dict): Settings for golf courses including min_area and top_n
             
         Returns:
-            gpd.GeoDataFrame: GeoDataFrame containing golf courses
+            gpd.GeoDataFrame: GeoDataFrame containing all golf courses
         """
+        if not settings.get('enabled', False):
+            return gpd.GeoDataFrame()
+            
+        min_area = settings.get('min_area', 10000)
+        top_n = settings.get('top_n', 3)
+        
         # Define tags for golf courses
         tags = {
             'leisure': ['golf_course']
@@ -307,21 +357,31 @@ class OpenStreetMapService:
         
         if golf_courses.empty:
             return gpd.GeoDataFrame()
-        
+            
         # Project to UTM for accurate area calculation
         utm_crs = self._get_utm_crs(bbox)
         golf_courses_proj = golf_courses.to_crs(utm_crs)
         
-        # Filter by minimum area
+        # Calculate areas and filter by minimum area
         golf_courses_proj['area'] = golf_courses_proj.geometry.area
         golf_courses_filtered = golf_courses_proj[golf_courses_proj['area'] >= min_area]
         
-        # Project back to WGS84 for consistency
-        if not golf_courses_filtered.empty:
-            golf_courses_filtered = golf_courses_filtered.to_crs('EPSG:4326')
+        if golf_courses_filtered.empty:
+            return gpd.GeoDataFrame()
             
-            # Simplify geometries for better performance
-            golf_courses_filtered.geometry = golf_courses_filtered.geometry.simplify(0.0001)
+        # Project back to WGS84
+        golf_courses_filtered = golf_courses_filtered.to_crs('EPSG:4326')
+        
+        # Clean up names
+        golf_courses_filtered['name'] = golf_courses_filtered['name'].fillna('unnamed_golf_course')
+        golf_courses_filtered['name'] = golf_courses_filtered['name'].str.lower().str.replace(' ', '_')
+        
+        # Create a copy for top N features
+        golf_courses_top = golf_courses_filtered.nlargest(top_n, 'area').copy()
+        
+        # Store both dataframes
+        self.features['golf_courses'] = golf_courses_filtered
+        self.features['golf_courses_top'] = golf_courses_top
         
         return golf_courses_filtered
     
@@ -381,156 +441,93 @@ class OpenStreetMapService:
         
         return elevation_stats
     
-    def enrich_parcels(self, gdf: gpd.GeoDataFrame, settings: Dict) -> gpd.GeoDataFrame:
+    def calculate_distances(self, gdf: gpd.GeoDataFrame, features: gpd.GeoDataFrame, feature_type: str) -> pd.DataFrame:
         """
-        Enrich parcels with OpenStreetMap data based on settings.
+        Calculate distances to features, both aggregate and specific top N features.
         
         Args:
             gdf (gpd.GeoDataFrame): Parcel GeoDataFrame
+            features (gpd.GeoDataFrame): Features GeoDataFrame
+            feature_type (str): Type of feature (e.g., 'water', 'park')
+            
+        Returns:
+            pd.DataFrame: DataFrame with distances
+        """
+        # Project to UTM for accurate distance calculation
+        utm_crs = self._get_utm_crs(gdf.total_bounds)
+        gdf_proj = gdf.to_crs(utm_crs)
+        features_proj = features.to_crs(utm_crs)
+        
+        # Calculate aggregate distance (distance to nearest feature of any type)
+        distances = pd.DataFrame(index=gdf.index)
+        distances[f'dist_to_{feature_type}_any'] = gdf_proj.geometry.apply(
+            lambda g: features_proj.geometry.distance(g).min()
+        )
+        
+        # Calculate distances to top N features if available
+        if f'{feature_type}_top' in self.features:
+            top_features = self.features[f'{feature_type}_top']
+            for _, feature in top_features.iterrows():
+                feature_name = feature['name']
+                feature_geom = feature.geometry
+                feature_proj = gpd.GeoSeries([feature_geom]).to_crs(utm_crs)[0]
+                
+                distances[f'dist_to_{feature_type}_{feature_name}'] = gdf_proj.geometry.apply(
+                    lambda g: feature_proj.distance(g)
+                )
+        
+        return distances
+
+    def enrich_parcels(self, gdf: gpd.GeoDataFrame, settings: Dict) -> Dict[str, gpd.GeoDataFrame]:
+        """
+        Get OpenStreetMap features and prepare them for spatial joins.
+        Returns a dictionary of feature dataframes for use by data.py's spatial join logic.
+        
+        Args:
+            gdf (gpd.GeoDataFrame): Parcel GeoDataFrame (used for bbox)
             settings (Dict): Settings for enrichment
             
         Returns:
-            gpd.GeoDataFrame: Enriched GeoDataFrame
+            Dict[str, gpd.GeoDataFrame]: Dictionary of feature dataframes
         """
-        # Make a copy of the input GeoDataFrame
-        enriched_gdf = gdf.copy()
-        
         # Get the bounding box of the GeoDataFrame
-        bbox = enriched_gdf.total_bounds
+        bbox = gdf.total_bounds
+        
+        # Dictionary to store all dataframes
+        dataframes = {}
         
         # Process each feature type based on settings
-        if settings.get('water_bodies', False):
-            water_bodies = self.get_water_bodies(bbox, min_area=settings.get('water_bodies_min_area', 10000))
+        if settings.get('water_bodies', {}).get('enabled', False):
+            water_bodies = self.get_water_bodies(bbox, settings['water_bodies'])
             if not water_bodies.empty:
-                # Add unique identifier if not present
-                if 'id' not in water_bodies.columns:
-                    water_bodies['id'] = range(len(water_bodies))
-                
-                # Buffer the water bodies
-                utm_crs = self._get_utm_crs(bbox)
-                water_bodies_proj = water_bodies.to_crs(utm_crs)
-                water_bodies_proj['geometry'] = water_bodies_proj.geometry.buffer(1000)  # 1km buffer
-                water_bodies = water_bodies_proj.to_crs('EPSG:4326')
-                
-                # Spatial join to find parcels near water
-                near_water = gpd.sjoin(enriched_gdf, water_bodies, how='inner', predicate='intersects')
-                near_water_ids = near_water.index.unique()
-                
-                # Calculate distances only for parcels near water
-                if len(near_water_ids) > 0:
-                    near_water_gdf = enriched_gdf.loc[near_water_ids]
-                    water_distances = self.calculate_distances(near_water_gdf, water_bodies, 'water')
-                    enriched_gdf.loc[near_water_ids, 'distance_to_water'] = water_distances
-                    
-                    # Add waterfront flags
-                    enriched_gdf['is_waterfront'] = False
-                    enriched_gdf.loc[near_water_ids, 'is_waterfront'] = enriched_gdf.loc[near_water_ids, 'distance_to_water'] <= 0.1  # 100m threshold
-                    
-                    # Stamp water body characteristics
-                    water_fields = ['name', 'water', 'natural']  # Add more fields as needed
-                    enriched_gdf = stamp_geo_field_onto_df(enriched_gdf, water_bodies, water_fields, 'water_')
+                dataframes['water_bodies'] = self.features['water_bodies']
+                dataframes['water_bodies_top'] = self.features['water_bodies_top']
         
-        if settings.get('transportation', False):
-            transportation = self.get_transportation(bbox, min_length=settings.get('transportation_min_length', 100))
+        if settings.get('transportation', {}).get('enabled', False):
+            transportation = self.get_transportation(bbox, settings['transportation'])
             if not transportation.empty:
-                # Buffer the transportation features
-                utm_crs = self._get_utm_crs(bbox)
-                transportation_proj = transportation.to_crs(utm_crs)
-                transportation_proj['geometry'] = transportation_proj.geometry.buffer(500)  # 500m buffer
-                transportation = transportation_proj.to_crs('EPSG:4326')
-                
-                # Spatial join to find parcels near transportation
-                near_transport = gpd.sjoin(enriched_gdf, transportation, how='inner', predicate='intersects')
-                near_transport_ids = near_transport.index.unique()
-                
-                # Calculate distances only for parcels near transportation
-                if len(near_transport_ids) > 0:
-                    near_transport_gdf = enriched_gdf.loc[near_transport_ids]
-                    transport_distances = self.calculate_distances(near_transport_gdf, transportation, 'transportation')
-                    enriched_gdf.loc[near_transport_ids, 'distance_to_transportation'] = transport_distances
+                dataframes['transportation'] = self.features['transportation']
+                dataframes['transportation_top'] = self.features['transportation_top']
         
-        if settings.get('educational', False):
-            institutions = self.get_educational_institutions(bbox, min_area=settings.get('educational_min_area', 1000))
+        if settings.get('educational', {}).get('enabled', False):
+            institutions = self.get_educational_institutions(bbox, settings['educational'])
             if not institutions.empty:
-                # Add unique identifier if not present
-                if 'id' not in institutions.columns:
-                    institutions['id'] = range(len(institutions))
-                
-                # Buffer the institutions
-                utm_crs = self._get_utm_crs(bbox)
-                institutions_proj = institutions.to_crs(utm_crs)
-                institutions_proj['geometry'] = institutions_proj.geometry.buffer(1000)  # 1km buffer
-                institutions = institutions_proj.to_crs('EPSG:4326')
-                
-                # Spatial join to find parcels near institutions
-                near_institutions = gpd.sjoin(enriched_gdf, institutions, how='inner', predicate='intersects')
-                near_institutions_ids = near_institutions.index.unique()
-                
-                # Calculate distances only for parcels near institutions
-                if len(near_institutions_ids) > 0:
-                    near_institutions_gdf = enriched_gdf.loc[near_institutions_ids]
-                    institution_distances = self.calculate_distances(near_institutions_gdf, institutions, 'educational')
-                    enriched_gdf.loc[near_institutions_ids, 'distance_to_educational'] = institution_distances
-                    
-                    # Stamp institution characteristics
-                    institution_fields = ['name', 'amenity', 'building']  # Add more fields as needed
-                    enriched_gdf = stamp_geo_field_onto_df(enriched_gdf, institutions, institution_fields, 'educational_')
+                dataframes['educational'] = self.features['educational']
+                dataframes['educational_top'] = self.features['educational_top']
         
-        if settings.get('parks', False):
-            parks = self.get_parks(bbox, min_area=settings.get('park_min_area', 1000))
+        if settings.get('parks', {}).get('enabled', False):
+            parks = self.get_parks(bbox, settings['parks'])
             if not parks.empty:
-                # Add unique identifier if not present
-                if 'id' not in parks.columns:
-                    parks['id'] = range(len(parks))
-                
-                # Buffer the parks
-                utm_crs = self._get_utm_crs(bbox)
-                parks_proj = parks.to_crs(utm_crs)
-                parks_proj['geometry'] = parks_proj.geometry.buffer(1000)  # 1km buffer
-                parks = parks_proj.to_crs('EPSG:4326')
-                
-                # Spatial join to find parcels near parks
-                near_parks = gpd.sjoin(enriched_gdf, parks, how='inner', predicate='intersects')
-                near_parks_ids = near_parks.index.unique()
-                
-                # Calculate distances only for parcels near parks
-                if len(near_parks_ids) > 0:
-                    near_parks_gdf = enriched_gdf.loc[near_parks_ids]
-                    park_distances = self.calculate_distances(near_parks_gdf, parks, 'park')
-                    enriched_gdf.loc[near_parks_ids, 'distance_to_park'] = park_distances
-                    
-                    # Stamp park characteristics
-                    park_fields = ['name', 'leisure', 'landuse']  # Add more fields as needed
-                    enriched_gdf = stamp_geo_field_onto_df(enriched_gdf, parks, park_fields, 'park_')
+                dataframes['parks'] = self.features['parks']
+                dataframes['parks_top'] = self.features['parks_top']
         
-        if settings.get('golf_courses', False):
-            golf_courses = self.get_golf_courses(bbox, min_area=settings.get('golf_course_min_area', 10000))
+        if settings.get('golf_courses', {}).get('enabled', False):
+            golf_courses = self.get_golf_courses(bbox, settings['golf_courses'])
             if not golf_courses.empty:
-                # Add unique identifier if not present
-                if 'id' not in golf_courses.columns:
-                    golf_courses['id'] = range(len(golf_courses))
-                
-                # Buffer the golf courses
-                utm_crs = self._get_utm_crs(bbox)
-                golf_courses_proj = golf_courses.to_crs(utm_crs)
-                golf_courses_proj['geometry'] = golf_courses_proj.geometry.buffer(1000)  # 1km buffer
-                golf_courses = golf_courses_proj.to_crs('EPSG:4326')
-                
-                # Spatial join to find parcels near golf courses
-                near_golf = gpd.sjoin(enriched_gdf, golf_courses, how='inner', predicate='intersects')
-                near_golf_ids = near_golf.index.unique()
-                
-                # Calculate distances only for parcels near golf courses
-                if len(near_golf_ids) > 0:
-                    near_golf_gdf = enriched_gdf.loc[near_golf_ids]
-                    golf_distances = self.calculate_distances(near_golf_gdf, golf_courses, 'golf_course')
-                    enriched_gdf.loc[near_golf_ids, 'distance_to_golf_course'] = golf_distances
-                    
-                    # Stamp golf course characteristics
-                    golf_fields = ['name', 'leisure']  # Add more fields as needed
-                    enriched_gdf = stamp_geo_field_onto_df(enriched_gdf, golf_courses, golf_fields, 'golf_')
+                dataframes['golf_courses'] = self.features['golf_courses']
+                dataframes['golf_courses_top'] = self.features['golf_courses_top']
         
-        return enriched_gdf
+        return dataframes
 
 def init_service_openstreetmap(settings: Dict = None) -> OpenStreetMapService:
     """

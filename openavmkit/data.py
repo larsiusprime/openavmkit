@@ -671,22 +671,16 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
     """
     Enrich a DataFrame with OpenStreetMap data.
     
-    :param df: Input DataFrame or GeoDataFrame to enrich with OpenStreetMap data.
-    :type df: pd.DataFrame | gpd.GeoDataFrame
-    :param osm_settings: OpenStreetMap enrichment settings.
-    :type osm_settings: dict
-    :param s_enrich_this: Enrichment settings to update with distances configuration
-    :type s_enrich_this: dict
-    :param dataframes: Dictionary of all dataframes, will be updated with OSM features
-    :type dataframes: dict
-    :param verbose: If True, prints progress information.
-    :type verbose: bool, optional
-    :returns: DataFrame enriched with OpenStreetMap data.
-    :rtype: pd.DataFrame | gpd.GeoDataFrame
-    """
-    if not osm_settings.get("enabled", False):
-        return df
+    Args:
+        df (pd.DataFrame | gpd.GeoDataFrame): DataFrame to enrich
+        osm_settings (dict): Settings for OpenStreetMap enrichment
+        s_enrich_this (dict): Enrichment settings to update with distances configuration
+        dataframes (dict): Dictionary of all dataframes, will be updated with OSM features
+        verbose (bool): If True, prints progress information
         
+    Returns:
+        pd.DataFrame | gpd.GeoDataFrame: DataFrame enriched with OpenStreetMap data
+    """
     try:
         if verbose:
             print("Enriching with OpenStreetMap data...")
@@ -703,37 +697,33 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
         bbox = df.total_bounds  # Returns (minx, miny, maxx, maxy)
         
         # Process each feature based on settings
-        if osm_settings.get('water_bodies', False):
+        if osm_settings.get('water_bodies', {}).get('enabled', False):
             if verbose:
                 print("--> Getting water bodies...")
             try:
                 water_bodies = osm_service.get_water_bodies(
                     bbox=bbox,
-                    min_area=osm_settings.get('water_bodies_min_area', 10000)
+                    settings=osm_settings['water_bodies']
                 )
                 if verbose:
                     print(f"--> Found {len(water_bodies)} water bodies")
                 if not water_bodies.empty:
-                    # Add unique identifier and name field
-                    water_bodies['osm_feature_id'] = range(len(water_bodies))
-                    water_bodies.set_index('osm_feature_id', inplace=True)
-                    if 'name' not in water_bodies.columns:
-                        water_bodies['name'] = 'Unnamed Water Body'
-                    dataframes['water_bodies'] = water_bodies
+                    dataframes['water_bodies'] = osm_service.features['water_bodies']
+                    dataframes['water_bodies_top'] = osm_service.features['water_bodies_top']
             except Exception as e:
                 warnings.warn(f"Failed to get water bodies: {str(e)}")
                 
-        if osm_settings.get('transportation', False):
+        if osm_settings.get('transportation', {}).get('enabled', False):
             if verbose:
                 print("--> Getting transportation networks...")
             try:
-                transportation = osm_service.get_transportation(bbox)
+                transportation = osm_service.get_transportation(
+                    bbox=bbox,
+                    settings=osm_settings['transportation']
+                )
                 if not transportation.empty:
-                    transportation['osm_feature_id'] = range(len(transportation))
-                    transportation.set_index('osm_feature_id', inplace=True)
-                    if 'name' not in transportation.columns:
-                        transportation['name'] = 'Unnamed Transportation'
-                    dataframes['transportation'] = transportation
+                    dataframes['transportation'] = osm_service.features['transportation']
+                    dataframes['transportation_top'] = osm_service.features['transportation_top']
             except Exception as e:
                 warnings.warn(f"Failed to get transportation networks: {str(e)}")
                 
@@ -750,57 +740,63 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
             except Exception as e:
                 warnings.warn(f"Failed to get elevation data: {str(e)}")
             
-        if osm_settings.get('educational', False):
+        if osm_settings.get('educational', {}).get('enabled', False):
             if verbose:
                 print("--> Getting educational institutions...")
             try:
-                educational = osm_service.get_educational_institutions(bbox)
+                educational = osm_service.get_educational_institutions(
+                    bbox=bbox,
+                    settings=osm_settings['educational']
+                )
                 if not educational.empty:
-                    educational['osm_feature_id'] = range(len(educational))
-                    educational.set_index('osm_feature_id', inplace=True)
-                    if 'name' not in educational.columns:
-                        educational['name'] = 'Unnamed Educational Institution'
-                    dataframes['educational'] = educational
+                    dataframes['educational'] = osm_service.features['educational']
+                    dataframes['educational_top'] = osm_service.features['educational_top']
             except Exception as e:
                 warnings.warn(f"Failed to get educational institutions: {str(e)}")
                 
-        if osm_settings.get('parks', False):
+        if osm_settings.get('parks', {}).get('enabled', False):
             if verbose:
                 print("--> Getting parks...")
             try:
-                parks = osm_service.get_parks(bbox)
+                parks = osm_service.get_parks(
+                    bbox=bbox,
+                    settings=osm_settings['parks']
+                )
                 if verbose:
                     print(f"--> Found {len(parks)} parks")
                 if not parks.empty:
-                    parks['osm_feature_id'] = range(len(parks))
-                    parks.set_index('osm_feature_id', inplace=True)
-                    if 'name' not in parks.columns:
-                        parks['name'] = 'Unnamed Park'
-                    dataframes['parks'] = parks
+                    dataframes['parks'] = osm_service.features['parks']
+                    dataframes['parks_top'] = osm_service.features['parks_top']
             except Exception as e:
                 warnings.warn(f"Failed to get parks: {str(e)}")
                 
-        if osm_settings.get('golf_courses', False):
+        if osm_settings.get('golf_courses', {}).get('enabled', False):
             if verbose:
                 print("--> Getting golf courses...")
             try:
-                golf_courses = osm_service.get_golf_courses(bbox)
+                golf_courses = osm_service.get_golf_courses(
+                    bbox=bbox,
+                    settings=osm_settings['golf_courses']
+                )
                 if not golf_courses.empty:
-                    golf_courses['osm_feature_id'] = range(len(golf_courses))
-                    golf_courses.set_index('osm_feature_id', inplace=True)
-                    if 'name' not in golf_courses.columns:
-                        golf_courses['name'] = 'Unnamed Golf Course'
-                    dataframes['golf_courses'] = golf_courses
+                    dataframes['golf_courses'] = osm_service.features['golf_courses']
+                    dataframes['golf_courses_top'] = osm_service.features['golf_courses_top']
             except Exception as e:
                 warnings.warn(f"Failed to get golf courses: {str(e)}")
         
         # Configure distance calculations with both distance and name fields
         distances = []
         for feature_name in ['water_bodies', 'transportation', 'educational', 'parks', 'golf_courses']:
-            if feature_name in dataframes and not dataframes[feature_name].empty:
+            # Add both the full feature and top N features to distances
+            if feature_name in dataframes:
                 distances.append({
                     "id": feature_name,
-                    "field": "name"  # Use the name field for feature characteristics
+                    "field": None  # No field needed for aggregate distance
+                })
+            if f"{feature_name}_top" in dataframes:
+                distances.append({
+                    "id": f"{feature_name}_top",
+                    "field": "name"  # Use name field for specific features
                 })
         
         # Add the distances configuration to the enrichment settings
