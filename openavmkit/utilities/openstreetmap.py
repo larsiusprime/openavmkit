@@ -105,19 +105,19 @@ class OpenStreetMapService:
         return water_bodies_filtered
     def get_transportation(self, bbox: Tuple[float, float, float, float], min_length: float = 100) -> gpd.GeoDataFrame:
         """
-        Get transportation networks (roads, railways) from OpenStreetMap.
+        Get major transportation networks (roads, railways) from OpenStreetMap.
         
         Args:
             bbox (Tuple[float, float, float, float]): Bounding box (min_lon, min_lat, max_lon, max_lat)
             min_length (float): Minimum length in meters for transportation features to include
             
         Returns:
-            gpd.GeoDataFrame: GeoDataFrame containing transportation networks
+            gpd.GeoDataFrame: GeoDataFrame containing major transportation networks
         """
-        # Define tags for transportation
+        # Define tags for major transportation routes
         tags = {
-            'highway': True,
-            'railway': True
+            'highway': ['motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'trunk_link', 'primary_link', 'secondary_link'],
+            'railway': ['rail', 'subway', 'light_rail', 'monorail', 'tram']
         }
         
         # Create polygon from bbox

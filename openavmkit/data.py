@@ -588,7 +588,7 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
 			
 			# Handle OpenStreetMap enrichment for universe if enabled
 			if supkey == "universe" and "openstreetmap" in s_enrich_local:
-				df = _enrich_df_openstreetmap(df, s_enrich_local.get("openstreetmap", {}), verbose=verbose)
+				df = _enrich_df_openstreetmap(df, s_enrich_local.get("openstreetmap", {}), s_enrich_local, dataframes, verbose=verbose)
 			
 			df = _enrich_df_geometry(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
 			df = _enrich_df_basic(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
@@ -666,7 +666,8 @@ def _enrich_df_census(df: pd.DataFrame | gpd.GeoDataFrame, census_settings: dict
 	except Exception as e:
 		warnings.warn(f"Failed to enrich with Census data: {str(e)}")
 		return df
-def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: dict, verbose: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
+
+def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: dict, s_enrich_this: dict, dataframes: dict, verbose: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
     """
     Enrich a DataFrame with OpenStreetMap data.
     
@@ -674,6 +675,10 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
     :type df: pd.DataFrame | gpd.GeoDataFrame
     :param osm_settings: OpenStreetMap enrichment settings.
     :type osm_settings: dict
+    :param s_enrich_this: Enrichment settings to update with distances configuration
+    :type s_enrich_this: dict
+    :param dataframes: Dictionary of all dataframes, will be updated with OSM features
+    :type dataframes: dict
     :param verbose: If True, prints progress information.
     :type verbose: bool, optional
     :returns: DataFrame enriched with OpenStreetMap data.
@@ -709,9 +714,12 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
                 if verbose:
                     print(f"--> Found {len(water_bodies)} water bodies")
                 if not water_bodies.empty:
-                    df = _do_perform_distance_calculations(df, water_bodies, 'water')
-                    # Add waterfront flag based on distance
-                    df['is_waterfront'] = df['dist_to_water'].le(0.1)  # 100m threshold
+                    # Add unique identifier and name field
+                    water_bodies['osm_feature_id'] = range(len(water_bodies))
+                    water_bodies.set_index('osm_feature_id', inplace=True)
+                    if 'name' not in water_bodies.columns:
+                        water_bodies['name'] = 'Unnamed Water Body'
+                    dataframes['water_bodies'] = water_bodies
             except Exception as e:
                 warnings.warn(f"Failed to get water bodies: {str(e)}")
                 
@@ -721,7 +729,11 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
             try:
                 transportation = osm_service.get_transportation(bbox)
                 if not transportation.empty:
-                    df = _do_perform_distance_calculations(df, transportation, 'transportation')
+                    transportation['osm_feature_id'] = range(len(transportation))
+                    transportation.set_index('osm_feature_id', inplace=True)
+                    if 'name' not in transportation.columns:
+                        transportation['name'] = 'Unnamed Transportation'
+                    dataframes['transportation'] = transportation
             except Exception as e:
                 warnings.warn(f"Failed to get transportation networks: {str(e)}")
                 
@@ -744,7 +756,11 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
             try:
                 educational = osm_service.get_educational_institutions(bbox)
                 if not educational.empty:
-                    df = _do_perform_distance_calculations(df, educational, 'educational')
+                    educational['osm_feature_id'] = range(len(educational))
+                    educational.set_index('osm_feature_id', inplace=True)
+                    if 'name' not in educational.columns:
+                        educational['name'] = 'Unnamed Educational Institution'
+                    dataframes['educational'] = educational
             except Exception as e:
                 warnings.warn(f"Failed to get educational institutions: {str(e)}")
                 
@@ -756,7 +772,11 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
                 if verbose:
                     print(f"--> Found {len(parks)} parks")
                 if not parks.empty:
-                    df = _do_perform_distance_calculations(df, parks, 'park')
+                    parks['osm_feature_id'] = range(len(parks))
+                    parks.set_index('osm_feature_id', inplace=True)
+                    if 'name' not in parks.columns:
+                        parks['name'] = 'Unnamed Park'
+                    dataframes['parks'] = parks
             except Exception as e:
                 warnings.warn(f"Failed to get parks: {str(e)}")
                 
@@ -766,13 +786,26 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
             try:
                 golf_courses = osm_service.get_golf_courses(bbox)
                 if not golf_courses.empty:
-                    df = _do_perform_distance_calculations(df, golf_courses, 'golf_course')
+                    golf_courses['osm_feature_id'] = range(len(golf_courses))
+                    golf_courses.set_index('osm_feature_id', inplace=True)
+                    if 'name' not in golf_courses.columns:
+                        golf_courses['name'] = 'Unnamed Golf Course'
+                    dataframes['golf_courses'] = golf_courses
             except Exception as e:
                 warnings.warn(f"Failed to get golf courses: {str(e)}")
         
-        # Remove the placeholder column if it exists
-        if 'osm_enriched' in df.columns:
-            df = df.drop(columns=['osm_enriched'])
+        # Configure distance calculations with both distance and name fields
+        distances = []
+        for feature_name in ['water_bodies', 'transportation', 'educational', 'parks', 'golf_courses']:
+            if feature_name in dataframes and not dataframes[feature_name].empty:
+                distances.append({
+                    "id": feature_name,
+                    "field": "name"  # Use the name field for feature characteristics
+                })
+        
+        # Add the distances configuration to the enrichment settings
+        if distances:
+            s_enrich_this['distances'] = distances
             
         return df
         
