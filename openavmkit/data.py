@@ -22,6 +22,7 @@ from openavmkit.utilities.settings import get_fields_categorical, get_fields_imp
 
 from openavmkit.utilities.census import get_creds_from_env_census, init_service_census, match_to_census_blockgroups
 from openavmkit.utilities.census import CensusService
+from openavmkit.utilities.openstreetmap import init_service_openstreetmap
 
 @dataclass
 class SalesUniversePair:
@@ -585,6 +586,10 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
 			if supkey == "universe" and "census" in s_enrich_local:
 				df = _enrich_df_census(df, s_enrich_local.get("census", {}), verbose=verbose)
 			
+			# Handle OpenStreetMap enrichment for universe if enabled
+			if supkey == "universe" and "openstreetmap" in s_enrich_local:
+				df = _enrich_df_openstreetmap(df, s_enrich_local.get("openstreetmap", {}), verbose=verbose)
+			
 			df = _enrich_df_geometry(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
 			df = _enrich_df_basic(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
 
@@ -661,7 +666,119 @@ def _enrich_df_census(df: pd.DataFrame | gpd.GeoDataFrame, census_settings: dict
 	except Exception as e:
 		warnings.warn(f"Failed to enrich with Census data: {str(e)}")
 		return df
-
+def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: dict, verbose: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
+    """
+    Enrich a DataFrame with OpenStreetMap data.
+    
+    :param df: Input DataFrame or GeoDataFrame to enrich with OpenStreetMap data.
+    :type df: pd.DataFrame | gpd.GeoDataFrame
+    :param osm_settings: OpenStreetMap enrichment settings.
+    :type osm_settings: dict
+    :param verbose: If True, prints progress information.
+    :type verbose: bool, optional
+    :returns: DataFrame enriched with OpenStreetMap data.
+    :rtype: pd.DataFrame | gpd.GeoDataFrame
+    """
+    if not osm_settings.get("enabled", False):
+        return df
+        
+    try:
+        if verbose:
+            print("Enriching with OpenStreetMap data...")
+            
+        # Initialize OpenStreetMap service
+        osm_service = init_service_openstreetmap(osm_settings)
+        
+        # Convert DataFrame to GeoDataFrame if it isn't already
+        if not isinstance(df, gpd.GeoDataFrame):
+            warnings.warn("DataFrame is not a GeoDataFrame, skipping OpenStreetMap enrichment")
+            return df
+            
+        # Get the bounding box of all parcels
+        bbox = df.total_bounds  # Returns (minx, miny, maxx, maxy)
+        
+        # Process each feature based on settings
+        if osm_settings.get('water_bodies', False):
+            if verbose:
+                print("--> Getting water bodies...")
+            try:
+                water_bodies = osm_service.get_water_bodies(
+                    bbox=bbox,
+                    min_area=osm_settings.get('water_bodies_min_area', 10000)
+                )
+                if verbose:
+                    print(f"--> Found {len(water_bodies)} water bodies")
+                if not water_bodies.empty:
+                    df = _do_perform_distance_calculations(df, water_bodies, 'water')
+                    # Add waterfront flag based on distance
+                    df['is_waterfront'] = df['dist_to_water'].le(0.1)  # 100m threshold
+            except Exception as e:
+                warnings.warn(f"Failed to get water bodies: {str(e)}")
+                
+        if osm_settings.get('transportation', False):
+            if verbose:
+                print("--> Getting transportation networks...")
+            try:
+                transportation = osm_service.get_transportation(bbox)
+                if not transportation.empty:
+                    df = _do_perform_distance_calculations(df, transportation, 'transportation')
+            except Exception as e:
+                warnings.warn(f"Failed to get transportation networks: {str(e)}")
+                
+        if osm_settings.get('elevation', False):
+            if verbose:
+                print("--> Getting elevation data...")
+            try:
+                elevation_data, lon_lat_ranges = osm_service.get_elevation_data(
+                    bbox=bbox,
+                    resolution=osm_settings.get('elevation_resolution', 30)
+                )
+                elevation_stats = osm_service.calculate_elevation_stats(df, elevation_data, lon_lat_ranges)
+                df = df.join(elevation_stats)
+            except Exception as e:
+                warnings.warn(f"Failed to get elevation data: {str(e)}")
+            
+        if osm_settings.get('educational', False):
+            if verbose:
+                print("--> Getting educational institutions...")
+            try:
+                educational = osm_service.get_educational_institutions(bbox)
+                if not educational.empty:
+                    df = _do_perform_distance_calculations(df, educational, 'educational')
+            except Exception as e:
+                warnings.warn(f"Failed to get educational institutions: {str(e)}")
+                
+        if osm_settings.get('parks', False):
+            if verbose:
+                print("--> Getting parks...")
+            try:
+                parks = osm_service.get_parks(bbox)
+                if verbose:
+                    print(f"--> Found {len(parks)} parks")
+                if not parks.empty:
+                    df = _do_perform_distance_calculations(df, parks, 'park')
+            except Exception as e:
+                warnings.warn(f"Failed to get parks: {str(e)}")
+                
+        if osm_settings.get('golf_courses', False):
+            if verbose:
+                print("--> Getting golf courses...")
+            try:
+                golf_courses = osm_service.get_golf_courses(bbox)
+                if not golf_courses.empty:
+                    df = _do_perform_distance_calculations(df, golf_courses, 'golf_course')
+            except Exception as e:
+                warnings.warn(f"Failed to get golf courses: {str(e)}")
+        
+        # Remove the placeholder column if it exists
+        if 'osm_enriched' in df.columns:
+            df = df.drop(columns=['osm_enriched'])
+            
+        return df
+        
+    except Exception as e:
+        warnings.warn(f"Failed to enrich with OpenStreetMap data: {str(e)}")
+        return df
 
 def identify_parcels_with_holes(df: gpd.GeoDataFrame) -> (gpd.GeoDataFrame, gpd.GeoDataFrame):
 	"""
