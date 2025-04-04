@@ -125,6 +125,7 @@ def make_clusters(
     verbose: bool = False,
     output_folder: str = ""
 ):
+  # Use original dataframe where possible, only copy when needed
   df = df_in.copy()
 
   iteration = 0
@@ -174,10 +175,54 @@ def make_clusters(
     
     if verbose:
       print(f"--> crunching on {entry}, {len(clusters)} clusters")
+    
+    # Create the next_cluster column once
+    df["next_cluster"] = df["cluster"]
+    
+    # Process clusters in batches for better performance
+    batch_size = min(100, len(clusters))
+    for batch_start in range(0, len(clusters), batch_size):
+      batch_end = min(batch_start + batch_size, len(clusters))
+      batch_clusters = clusters[batch_start:batch_end]
+      
+      if verbose and batch_start % 100 == 0:
+        print(f"----> Processing batch {batch_start}-{batch_end} of {len(clusters)}")
+      
+      for i, cluster in enumerate(batch_clusters):
+        # Get all rows in this cluster (avoid copy unless needed)
+        cluster_mask = df["cluster"].eq(cluster)
+        df_sub = df[cluster_mask]  # View, not copy
+        
+        # Skip small clusters
+        if len(df_sub) < min_cluster_size:
+          continue
+          
+        # Get the field to crunch
+        field = _get_entry_field(entry, df_sub)
+        if field == "" or field not in df_sub:
+          continue
+          
+        # Only make a copy if we need to modify df_sub
+        df_sub_copy = None
+        
+        # Attempt to crunch into smaller clusters
+        series = _crunch(df_sub, field, min_cluster_size)
+        
+        if series is not None and len(series) > 0:
+          if verbose and (batch_start + i) % 100 == 0:
+            print(f"----> {batch_start + i}/{len(clusters)}, {(batch_start + i)/len(clusters):0.0%} clustering on {cluster}, field = {field}, size = {len(series)}")
+            
+          # Update next_cluster directly in the main dataframe
+          df.loc[cluster_mask, "next_cluster"] = df.loc[cluster_mask, "next_cluster"] + "_" + series.astype(str)
+          
+          # Create copy only for updating cluster dict
+          df_sub_copy = df_sub.copy()
+          df_sub_copy.loc[:, "__temp_series__"] = series
+          cluster_dict = add_to_cluster_dict(cluster_dict, "numeric", "__temp_series__", iteration, df_sub_copy, field)
+          fields_used[field] = True
 
-    i = 0
-    # step through each unique cluster:
-    for cluster in clusters:
+    # Update the cluster column with the new cluster names
+    df.loc[:, "cluster"] = df["next_cluster"]
 
       # get all the rows in this cluster
       mask = df["cluster"].eq(cluster)
