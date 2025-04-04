@@ -102,6 +102,7 @@ def make_clusters(
     verbose: bool = False,
     output_folder: str = ""
 ):
+  # Make a proper copy of the input DataFrame
   df = df_in.copy()
 
   iteration = 0
@@ -154,8 +155,9 @@ def make_clusters(
     # step through each unique cluster:
     for cluster in clusters:
 
-      # get all the rows in this cluster
-      df_sub = df[df["cluster"].eq(cluster)]
+      # get all the rows in this cluster - create a true copy
+      cluster_mask = df["cluster"].eq(cluster)
+      df_sub = df.loc[cluster_mask].copy()
 
       # if the cluster is already too small, skip it
       if len(df_sub) < min_cluster_size:
@@ -175,19 +177,19 @@ def make_clusters(
             print(f"----> {i}/{len(clusters)}, {i/len(clusters):0.0%} clustering on {cluster}, field = {field}, size = {len(series)}")
         # if we succeeded, update the cluster names with the new breakdowns
         df_sub.loc[:, "next_cluster"] = df_sub["next_cluster"] + "_" + series.astype(str)
-        df.loc[df["cluster"].eq(cluster), "next_cluster"] = df_sub["next_cluster"].values
-        df_sub["__temp_series__"] = series
+        df.loc[cluster_mask, "next_cluster"] = df_sub["next_cluster"].values
+        df_sub.loc[:, "__temp_series__"] = series
         cluster_dict = add_to_cluster_dict(cluster_dict, "numeric", "__temp_series__", iteration, df_sub, field)
         fields_used[field] = True
 
       i += 1
 
     # update the cluster column with the new cluster names, then iterate on those next
-    df["cluster"] = df["next_cluster"]
+    df.loc[:, "cluster"] = df["next_cluster"]
 
   # assign a unique ID # to each cluster:
   i = 0
-  df["cluster_id"] = "0"
+  df.loc[:, "cluster_id"] = "0"
 
   for cluster in df["cluster"].unique():
     cluster_dict["index"][cluster] = str(i)
