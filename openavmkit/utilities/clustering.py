@@ -224,6 +224,8 @@ def make_clusters(
     # Update the cluster column with the new cluster names
     df.loc[:, "cluster"] = df["next_cluster"]
 
+    # Loop through each cluster
+    for i, cluster in enumerate(clusters):
       # get all the rows in this cluster
       mask = df["cluster"].eq(cluster)
       df_sub = df[mask]
