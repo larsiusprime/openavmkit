@@ -5,23 +5,27 @@ def resolve_cluster_dict(
     cluster_dict: dict
 ) -> dict:
   final_dict = {}
-  for key in cluster_dict["index"]:
-    id = cluster_dict["index"][key]
-    found = False
-    for iteration in cluster_dict["iterations"]:
-      entries = cluster_dict["iterations"][iteration]
-      for entry_key in entries:
-        if entry_key == key:
-          found = True
-          final_dict[id] = {
-            "name": entry_key,
-            "iteration": iteration,
-            "clusters": entries[entry_key]
-          }
-          break
-      if found:
-        break
-    if not found:
+  
+  # Create a mapping of iterations to their entries for faster lookups
+  iteration_entries = {}
+  for iteration, entries in cluster_dict["iterations"].items():
+    for entry_key in entries:
+      if entry_key not in iteration_entries:
+        iteration_entries[entry_key] = {}
+      iteration_entries[entry_key][iteration] = entries[entry_key]
+  
+  # Process each key in the index
+  for key, id in cluster_dict["index"].items():
+    # If we've pre-mapped this key to an iteration, use it directly
+    if key in iteration_entries:
+      # Find the highest iteration number for this key
+      highest_iteration = max(iteration_entries[key].keys())
+      final_dict[id] = {
+        "name": key,
+        "iteration": highest_iteration,
+        "clusters": iteration_entries[key][highest_iteration]
+      }
+    else:
       final_dict[id] = {
         "name": "???",
         "iteration": -1,
@@ -50,10 +54,11 @@ def add_to_cluster_dict(
     "boolean": "b"
   }[type]
 
-  # check if cluster_dict is empty or {}:
+  # Initialize if empty
   if not cluster_dict:
     cluster_dict = {"iterations":{}, "index":{}}
 
+  # Get previous iteration data if available
   last_iteration = str(iteration-1)
   if last_iteration in cluster_dict["iterations"]:
     old_dict = cluster_dict["iterations"][last_iteration]
@@ -63,35 +68,50 @@ def add_to_cluster_dict(
     old_keys = [""]
 
   new_dict = {}
-
+  
+  # Get all unique values at once
   unique_values = df[field].unique()
 
+  # For numeric fields with min/max values, precompute the needed data
+  min_max_values = {}
+  if type == "numeric" and field_raw:
+    # Group by the field to calculate min/max values for each unique value
+    grouped = df.groupby(field, observed=False)
+    min_max_values = {
+      v: (grouped.get_group(v)[field_raw].min(), grouped.get_group(v)[field_raw].max()) 
+      for v in unique_values if v in grouped.groups
+    }
+
+  # Process each old key and unique value
   for old_key in old_keys:
     old_list = old_dict[old_key]
+    
     for unique_value in unique_values:
       new_list = old_list.copy()
+      
       entry = {
         "t": type_code,
         "f": field,
         "v": unique_value
       }
+      
       if type == "numeric":
-        # Use proper loc indexing and make a copy to avoid SettingWithCopyWarning
-        value_mask = df[field].eq(unique_value)
-        df_cluster = df.loc[value_mask].copy()
-        
-        min_value = df_cluster[field_raw].min()
-        max_value = df_cluster[field_raw].max()
-        entry["f"] = field_raw
-        entry["v"] = [min_value, max_value]
-        entry["n"] = unique_value
+        if unique_value in min_max_values:
+          min_value, max_value = min_max_values[unique_value]
+          entry["f"] = field_raw
+          entry["v"] = [min_value, max_value]
+          entry["n"] = unique_value
 
       new_list.append(entry)
+      
+      # Create the new key
       if old_key == "":
         new_key = str(unique_value)
       else:
         new_key = str(old_key) + "_" + str(unique_value)
+        
       new_dict[new_key] = new_list
+      
   cluster_dict["iterations"][str(iteration)] = new_dict
   return cluster_dict
 
@@ -108,8 +128,6 @@ def make_clusters(
   df = df_in.copy()
 
   iteration = 0
-  # We are assigning a unique id to each cluster
-
   cluster_dict = {}
 
   # Phase 1: split the data into clusters based on the location:
@@ -143,20 +161,17 @@ def make_clusters(
       "land_area_sqft",
       "bldg_area_finished_sqft",
       "bldg_quality_num",
-      ["bldg_effective_age_years", "bldg_age_years"], # Try effective age years first, then normal age
+      ["bldg_effective_age_years", "bldg_age_years"],
       "bldg_condition_num"
     ]
 
   # Phase 4: iterate over numeric fields, trying to crunch down whenever possible:
   for entry in fields_numeric:
-
     iteration+=1
-    # get all unique clusters
+    
+    # Pre-calculate clusters once per numeric field
     clusters = df["cluster"].unique()
-
-    # store the base for the next iteration as the current cluster
-    df["next_cluster"] = df["cluster"]
-
+    
     if verbose:
       print(f"--> crunching on {entry}, {len(clusters)} clusters")
 
@@ -210,10 +225,8 @@ def make_clusters(
   # print(cluster_dict)
 
   cluster_dict = resolve_cluster_dict(cluster_dict)
+  list_fields_used = list(fields_used.keys())
 
-  list_fields_used = [field for field in fields_used]
-
-  # return the new cluster ID's
   return df["cluster_id"], list_fields_used, cluster_dict
 
 
@@ -240,53 +253,43 @@ def _crunch(_df, field, min_count):
   :param min_count:
   :return:
   """
-  # Make sure we have a copy of the input dataframe
-  df_copy = _df.copy() if not isinstance(_df, pd.DataFrame) or not _df._is_copy else _df
+  # Avoid unnecessary copy if possible
+  df = _df
+  
+  # Check if boolean type first - fastest path
+  if pd.api.types.is_bool_dtype(df[field]):
+    bool_series = df[field].astype(int)
+    if bool_series.value_counts().min() < min_count:
+      return None
+    return bool_series
+
+  # Pre-calculate field values once - avoid recalculating for each level
+  field_values = df[field]
   
   crunch_levels = [
     (0.0, 0.5, 1.0),                # 2 clusters (high & low)
     (0.0, 0.25, 0.75, 1.0),         # 3 clusters (high, medium, low)
     (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)  # 5 clusters
   ]
-  good_series = None
-  too_small = False
-
-  # if it's a boolean type:
-  is_boolean = pd.api.types.is_bool_dtype(df_copy[field])
-  if is_boolean:
-    # convert to 0 and 1:
-    bool_series = df_copy[field].astype(int)
-    if bool_series.value_counts().min() < min_count:
-      return None
-    return bool_series
+  
+  # Calculate all quantiles at once instead of repeatedly
+  all_quantiles = field_values.quantile([q for level in crunch_levels for q in level]).unique()
 
   # Try every configuration, starting with the most conservative
   for crunch_level in crunch_levels:
-    test_bins = []
-    for quantile in crunch_level:
-      bin = df_copy[field].quantile(quantile)
-      if bin not in test_bins and pd.isna(bin) == False:
-        test_bins.append(bin)
+    test_bins = [field_values.quantile(q) for q in crunch_level]
+    test_bins = [bin for bin in test_bins if not pd.isna(bin)]
+    test_bins = sorted(set(test_bins))  # Remove duplicates and ensure sorted
 
-    if len(test_bins) > 1:
-      labels = test_bins[1:]
-      series = pd.cut(df_copy[field], bins=test_bins, labels=labels, include_lowest=True)
-    else:
-      # if we only have one bin, this crunch is pointless
-      too_small = True
-      break
+    if len(test_bins) <= 1:
+      continue  # Skip if we can't make meaningful bins
 
-    if series.value_counts().min() < min_count:
-      # if any of the bins are too small, give up on this level
-      too_small = True
-      break
-    else:
-      # if all bins are big enough, keep this series, and try the next level
-      good_series = series
+    labels = test_bins[1:]
+    series = pd.cut(field_values, bins=test_bins, labels=labels, include_lowest=True)
+    
+    # Check if any bin is too small
+    if series.value_counts().min() >= min_count:
+      return series  # Return first good series
 
-  # if we never found a good series, or if every series was too small, return None
-  if too_small or good_series is None:
-    return None
-
-  # if we found a good series, return it
-  return good_series
+  # No good binning found
+  return None
