@@ -76,7 +76,10 @@ def add_to_cluster_dict(
         "v": unique_value
       }
       if type == "numeric":
-        df_cluster = df[df[field].eq(unique_value)]
+        # Use proper loc indexing and make a copy to avoid SettingWithCopyWarning
+        value_mask = df[field].eq(unique_value)
+        df_cluster = df.loc[value_mask].copy()
+        
         min_value = df_cluster[field_raw].min()
         max_value = df_cluster[field_raw].max()
         entry["f"] = field_raw
@@ -237,6 +240,9 @@ def _crunch(_df, field, min_count):
   :param min_count:
   :return:
   """
+  # Make sure we have a copy of the input dataframe
+  df_copy = _df.copy() if not isinstance(_df, pd.DataFrame) or not _df._is_copy else _df
+  
   crunch_levels = [
     (0.0, 0.5, 1.0),                # 2 clusters (high & low)
     (0.0, 0.25, 0.75, 1.0),         # 3 clusters (high, medium, low)
@@ -246,10 +252,10 @@ def _crunch(_df, field, min_count):
   too_small = False
 
   # if it's a boolean type:
-  is_boolean = pd.api.types.is_bool_dtype(_df[field])
+  is_boolean = pd.api.types.is_bool_dtype(df_copy[field])
   if is_boolean:
     # convert to 0 and 1:
-    bool_series = _df[field].astype(int)
+    bool_series = df_copy[field].astype(int)
     if bool_series.value_counts().min() < min_count:
       return None
     return bool_series
@@ -258,13 +264,13 @@ def _crunch(_df, field, min_count):
   for crunch_level in crunch_levels:
     test_bins = []
     for quantile in crunch_level:
-      bin = _df[field].quantile(quantile)
+      bin = df_copy[field].quantile(quantile)
       if bin not in test_bins and pd.isna(bin) == False:
         test_bins.append(bin)
 
     if len(test_bins) > 1:
       labels = test_bins[1:]
-      series = pd.cut(_df[field], bins=test_bins, labels=labels, include_lowest=True)
+      series = pd.cut(df_copy[field], bins=test_bins, labels=labels, include_lowest=True)
     else:
       # if we only have one bin, this crunch is pointless
       too_small = True
