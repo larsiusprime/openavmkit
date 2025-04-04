@@ -159,8 +159,9 @@ def do_per_model_group(df_in: pd.DataFrame, settings: dict, func: callable, para
     params_local = params.copy()
     params_local["model_group"] = model_group
 
-    # Filter the subset.
-    df_sub = df[df["model_group"].eq(model_group)]
+    # Filter the subset using .loc to avoid SettingWithCopyWarning
+    mask = df["model_group"].eq(model_group)
+    df_sub = df.loc[mask].copy()
 
     # Apply the function.
     df_sub_updated = func(df_sub, **params_local)
@@ -218,7 +219,7 @@ def combine_dfs(df1: pd.DataFrame, df2: pd.DataFrame, df2_stomps=False, index: s
   # Save the original index for restoration
   original_index = df.index.copy()
 
-  # Work on a copy so we don’t modify df2 outside this function.
+  # Work on a copy so we don't modify df2 outside this function.
   df2 = df2.copy()
 
   # Set the index to the key column for alignment.
