@@ -5,23 +5,27 @@ def resolve_cluster_dict(
     cluster_dict: dict
 ) -> dict:
   final_dict = {}
-  for key in cluster_dict["index"]:
-    id = cluster_dict["index"][key]
-    found = False
-    for iteration in cluster_dict["iterations"]:
-      entries = cluster_dict["iterations"][iteration]
-      for entry_key in entries:
-        if entry_key == key:
-          found = True
-          final_dict[id] = {
-            "name": entry_key,
-            "iteration": iteration,
-            "clusters": entries[entry_key]
-          }
-          break
-      if found:
-        break
-    if not found:
+  
+  # Create a mapping of iterations to their entries for faster lookups
+  iteration_entries = {}
+  for iteration, entries in cluster_dict["iterations"].items():
+    for entry_key in entries:
+      if entry_key not in iteration_entries:
+        iteration_entries[entry_key] = {}
+      iteration_entries[entry_key][iteration] = entries[entry_key]
+  
+  # Process each key in the index
+  for key, id in cluster_dict["index"].items():
+    # If we've pre-mapped this key to an iteration, use it directly
+    if key in iteration_entries:
+      # Find the highest iteration number for this key
+      highest_iteration = max(iteration_entries[key].keys())
+      final_dict[id] = {
+        "name": key,
+        "iteration": highest_iteration,
+        "clusters": iteration_entries[key][highest_iteration]
+      }
+    else:
       final_dict[id] = {
         "name": "???",
         "iteration": -1,
@@ -50,10 +54,11 @@ def add_to_cluster_dict(
     "boolean": "b"
   }[type]
 
-  # check if cluster_dict is empty or {}:
+  # Initialize if empty
   if not cluster_dict:
     cluster_dict = {"iterations":{}, "index":{}}
 
+  # Get previous iteration data if available
   last_iteration = str(iteration-1)
   if last_iteration in cluster_dict["iterations"]:
     old_dict = cluster_dict["iterations"][last_iteration]
@@ -63,32 +68,50 @@ def add_to_cluster_dict(
     old_keys = [""]
 
   new_dict = {}
-
+  
+  # Get all unique values at once
   unique_values = df[field].unique()
 
+  # For numeric fields with min/max values, precompute the needed data
+  min_max_values = {}
+  if type == "numeric" and field_raw:
+    # Group by the field to calculate min/max values for each unique value
+    grouped = df.groupby(field, observed=False)
+    min_max_values = {
+      v: (grouped.get_group(v)[field_raw].min(), grouped.get_group(v)[field_raw].max()) 
+      for v in unique_values if v in grouped.groups
+    }
+
+  # Process each old key and unique value
   for old_key in old_keys:
     old_list = old_dict[old_key]
+    
     for unique_value in unique_values:
       new_list = old_list.copy()
+      
       entry = {
         "t": type_code,
         "f": field,
         "v": unique_value
       }
+      
       if type == "numeric":
-        df_cluster = df[df[field].eq(unique_value)]
-        min_value = df_cluster[field_raw].min()
-        max_value = df_cluster[field_raw].max()
-        entry["f"] = field_raw
-        entry["v"] = [min_value, max_value]
-        entry["n"] = unique_value
+        if unique_value in min_max_values:
+          min_value, max_value = min_max_values[unique_value]
+          entry["f"] = field_raw
+          entry["v"] = [min_value, max_value]
+          entry["n"] = unique_value
 
       new_list.append(entry)
+      
+      # Create the new key
       if old_key == "":
         new_key = str(unique_value)
       else:
         new_key = str(old_key) + "_" + str(unique_value)
+        
       new_dict[new_key] = new_list
+      
   cluster_dict["iterations"][str(iteration)] = new_dict
   return cluster_dict
 
@@ -230,41 +253,47 @@ def _get_entry_field(entry, df):
 
 def _crunch(_df, field, min_count):
   """
-  Crunch a field into a smaller number of bins, each with at least min_count elements. Dynamically adapts to find the
-  best number of bins to use.
-  :param _df:
-  :param field:
-  :param min_count:
-  :return:
+  Crunch a field into a smaller number of bins, each with at least min_count elements.
+  Dynamically adapts to find the best number of bins to use.
+  :param _df: DataFrame containing the field
+  :param field: Name of the field to crunch
+  :param min_count: Minimum count required per bin
+  :return: A series with binned values or None if no valid configuration is found
   """
   crunch_levels = [
-    (0.0, 0.5, 1.0),                # 2 clusters (high & low)
+    (0.0, 0.2, 0.4, 0.6, 0.8, 1.0), # 5 clusters
     (0.0, 0.25, 0.75, 1.0),         # 3 clusters (high, medium, low)
-    (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)  # 5 clusters
+    (0.0, 0.5, 1.0)                # 2 clusters (high & low)
   ]
   good_series = None
   too_small = False
 
-  # if it's a boolean type:
-  is_boolean = pd.api.types.is_bool_dtype(_df[field])
-  if is_boolean:
-    # convert to 0 and 1:
-    bool_series = _df[field].astype(int)
+  # Cache the column to avoid repeated attribute lookups
+  field_values = _df[field]
+
+  # Boolean fast path
+  if pd.api.types.is_bool_dtype(field_values):
+    bool_series = field_values.astype(int)
     if bool_series.value_counts().min() < min_count:
       return None
     return bool_series
 
-  # Try every configuration, starting with the most conservative
+  # Precompute all unique quantiles required by all crunch levels
+  unique_qs = {q for level in crunch_levels for q in level}
+  quantile_values = {q: field_values.quantile(q) for q in unique_qs}
+
+  # Iterate over each crunch level
   for crunch_level in crunch_levels:
     test_bins = []
-    for quantile in crunch_level:
-      bin = _df[field].quantile(quantile)
-      if bin not in test_bins and pd.isna(bin) == False:
-        test_bins.append(bin)
+    for q in crunch_level:
+      bin_val = quantile_values[q]
+      # Only add non-NaN and new bin values to test_bins
+      if not pd.isna(bin_val) and bin_val not in test_bins:
+        test_bins.append(bin_val)
 
     if len(test_bins) > 1:
       labels = test_bins[1:]
-      series = pd.cut(_df[field], bins=test_bins, labels=labels, include_lowest=True)
+      series = pd.cut(field_values, bins=test_bins, labels=labels, include_lowest=True)
     else:
       # if we only have one bin, this crunch is pointless
       too_small = True
@@ -275,12 +304,7 @@ def _crunch(_df, field, min_count):
       too_small = True
       break
     else:
-      # if all bins are big enough, keep this series, and try the next level
-      good_series = series
+      # if all bins are big enough, return this series
+      return series
 
-  # if we never found a good series, or if every series was too small, return None
-  if too_small or good_series is None:
-    return None
-
-  # if we found a good series, return it
-  return good_series
+  return None

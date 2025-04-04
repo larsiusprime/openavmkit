@@ -151,7 +151,7 @@ def get_variable_recommendations(
   :param model_group: The model group to consider.
   :type model_group: str
   :param verbose: If True, prints additional debugging information.
-  :type verbose: bool, optional
+  :type verbose: bool, optional	
   :returns: A dictionary with keys "variables" (the best variables list) and "report" (the generated report).
   :rtype: dict
   """
