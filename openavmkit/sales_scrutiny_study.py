@@ -318,8 +318,12 @@ def mark_sales_scrutiny_clusters(df: pd.DataFrame, settings: dict, verbose: bool
     # if so remove all improved categoricals
     impr_fields = get_fields_categorical(settings, df, include_boolean=False, types=["impr"])
     fields_categorical = [f for f in fields_categorical if f not in impr_fields]
-
-  df_sales["ss_id"], fields_used = make_clusters(df_sales, location, fields_categorical, fields_numeric, min_cluster_size=5, verbose=verbose)
+  
+  # Get cluster IDs and used fields
+  cluster_ids, fields_used, _ = make_clusters(df_sales, location, fields_categorical, fields_numeric, min_cluster_size=5, verbose=verbose)
+  
+  # Ensure cluster IDs are strings
+  df_sales["ss_id"] = cluster_ids.astype(str)
 
   return df_sales, fields_used
 
@@ -368,7 +372,9 @@ def _mark_ss_ids(df_in: pd.DataFrame, model_group: str, settings: dict, verbose:
   df, _ = mark_sales_scrutiny_clusters(df_in, settings, verbose)
   if pd.isna(model_group):
     model_group = "UNKNOWN"
-  df["ss_id"] = model_group + "_" + df["ss_id"].astype(str)
+  # Ensure both parts are strings before concatenation  
+  model_group_str = str(model_group)
+  df["ss_id"] = model_group_str + "_" + df["ss_id"]
   return df
 
 
