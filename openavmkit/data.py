@@ -694,7 +694,7 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
             return df
             
         # Get the bounding box of all parcels
-        bbox = df.total_bounds  # Returns (minx, miny, maxx, maxy)
+        bbox = df.total_bounds
         
         # Process each feature based on settings
         if osm_settings.get('water_bodies', {}).get('enabled', False):
@@ -708,8 +708,7 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
                 if verbose:
                     print(f"--> Found {len(water_bodies)} water bodies")
                 if not water_bodies.empty:
-                    dataframes['water_bodies'] = osm_service.features['water_bodies']
-                    dataframes['water_bodies_top'] = osm_service.features['water_bodies_top']
+                    dataframes['water_bodies'] = water_bodies
             except Exception as e:
                 warnings.warn(f"Failed to get water bodies: {str(e)}")
                 
@@ -722,8 +721,7 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
                     settings=osm_settings['transportation']
                 )
                 if not transportation.empty:
-                    dataframes['transportation'] = osm_service.features['transportation']
-                    dataframes['transportation_top'] = osm_service.features['transportation_top']
+                    dataframes['transportation'] = transportation
             except Exception as e:
                 warnings.warn(f"Failed to get transportation networks: {str(e)}")
                 
@@ -749,8 +747,7 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
                     settings=osm_settings['educational']
                 )
                 if not educational.empty:
-                    dataframes['educational'] = osm_service.features['educational']
-                    dataframes['educational_top'] = osm_service.features['educational_top']
+                    dataframes['educational'] = educational
             except Exception as e:
                 warnings.warn(f"Failed to get educational institutions: {str(e)}")
                 
@@ -765,8 +762,7 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
                 if verbose:
                     print(f"--> Found {len(parks)} parks")
                 if not parks.empty:
-                    dataframes['parks'] = osm_service.features['parks']
-                    dataframes['parks_top'] = osm_service.features['parks_top']
+                    dataframes['parks'] = parks
             except Exception as e:
                 warnings.warn(f"Failed to get parks: {str(e)}")
                 
@@ -779,25 +775,23 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
                     settings=osm_settings['golf_courses']
                 )
                 if not golf_courses.empty:
-                    dataframes['golf_courses'] = osm_service.features['golf_courses']
-                    dataframes['golf_courses_top'] = osm_service.features['golf_courses_top']
+                    dataframes['golf_courses'] = golf_courses
             except Exception as e:
                 warnings.warn(f"Failed to get golf courses: {str(e)}")
         
-        # Configure distance calculations with both distance and name fields
+        # Configure distance calculations to match settings file format
         distances = []
         for feature_name in ['water_bodies', 'transportation', 'educational', 'parks', 'golf_courses']:
-            # Add both the full feature and top N features to distances
             if feature_name in dataframes:
-                distances.append({
-                    "id": feature_name,
-                    "field": None  # No field needed for aggregate distance
-                })
-            if f"{feature_name}_top" in dataframes:
-                distances.append({
-                    "id": f"{feature_name}_top",
-                    "field": "name"  # Use name field for specific features
-                })
+                if feature_name == 'transportation':
+                    # Transportation doesn't need a name field
+                    distances.append(feature_name)
+                else:
+                    # Other features need name field for individual feature distances
+                    distances.append({
+                        "id": feature_name,
+                        "field": "name"
+                    })
         
         # Add the distances configuration to the enrichment settings
         if distances:

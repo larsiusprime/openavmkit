@@ -500,6 +500,7 @@ class OpenStreetMapService:
         if settings.get('water_bodies', {}).get('enabled', False):
             water_bodies = self.get_water_bodies(bbox, settings['water_bodies'])
             if not water_bodies.empty:
+                # Store both the main and top features in dataframes
                 dataframes['water_bodies'] = self.features['water_bodies']
                 dataframes['water_bodies_top'] = self.features['water_bodies_top']
         
