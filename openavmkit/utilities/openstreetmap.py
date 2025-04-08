@@ -249,8 +249,6 @@ class OpenStreetMapService:
             else:
                 institutions_proj['name'] = institutions_proj['name'].fillna('unnamed_institution')
             
-            print(f"Unique names before dissolving: {institutions_proj['name'].unique().tolist()}")
-            
             # Dissolve by name to combine multiple buildings/features of same institution
             institutions_dissolved = institutions_proj.dissolve(by='name', as_index=False)
             print(f"After dissolving by name: {len(institutions_dissolved)} unique institutions")
