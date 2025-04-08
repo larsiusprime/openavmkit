@@ -225,51 +225,65 @@ class OpenStreetMapService:
         # Create polygon from bbox
         polygon = box(bbox[0], bbox[1], bbox[2], bbox[3])
         
-        # Get educational institutions from OSM
-        institutions = ox.features.features_from_polygon(
-            polygon,
-            tags=tags
-        )
-        
-        if institutions.empty:
-            print(f"No educational institutions found in the area")
+        try:
+            # Get educational institutions from OSM
+            institutions = ox.features.features_from_polygon(
+                polygon,
+                tags=tags
+            )
+            
+            if institutions.empty:
+                print(f"No educational institutions found in the area")
+                return gpd.GeoDataFrame()
+                
+            print(f"Found {len(institutions)} raw educational features")
+                
+            # Project to UTM for accurate area calculation
+            utm_crs = self._get_utm_crs(bbox)
+            institutions_proj = institutions.to_crs(utm_crs)
+            
+            # Fill NaN names before dissolving
+            if 'name' not in institutions_proj.columns:
+                print("Warning: 'name' column not found, using 'amenity' as identifier")
+                institutions_proj['name'] = institutions_proj['amenity'].fillna('unnamed_institution')
+            else:
+                institutions_proj['name'] = institutions_proj['name'].fillna('unnamed_institution')
+            
+            print(f"Unique names before dissolving: {institutions_proj['name'].unique().tolist()}")
+            
+            # Dissolve by name to combine multiple buildings/features of same institution
+            institutions_dissolved = institutions_proj.dissolve(by='name', as_index=False)
+            print(f"After dissolving by name: {len(institutions_dissolved)} unique institutions")
+            
+            # Calculate areas after dissolving
+            institutions_dissolved['area'] = institutions_dissolved.geometry.area
+            institutions_filtered = institutions_dissolved[institutions_dissolved['area'] >= min_area]
+            
+            if institutions_filtered.empty:
+                print(f"No educational institutions found meeting minimum area requirement of {min_area} sq meters")
+                return gpd.GeoDataFrame()
+                
+            # Project back to WGS84
+            institutions_filtered = institutions_filtered.to_crs('EPSG:4326')
+            
+            # Clean up names
+            institutions_filtered['name'] = institutions_filtered['name'].str.lower().str.replace(' ', '_')
+            
+            # Create a copy for top N features
+            institutions_top = institutions_filtered.nlargest(top_n, 'area').copy()
+            
+            # Store both dataframes
+            self.features['educational'] = institutions_filtered
+            self.features['educational_top'] = institutions_top
+            
+            return institutions_filtered
+            
+        except Exception as e:
+            print(f"Error processing educational institutions: {str(e)}")
+            print(f"Error type: {type(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
             return gpd.GeoDataFrame()
-            
-        print(f"Found {len(institutions)} raw educational features")
-            
-        # Project to UTM for accurate area calculation
-        utm_crs = self._get_utm_crs(bbox)
-        institutions_proj = institutions.to_crs(utm_crs)
-        
-        # Fill NaN names before dissolving
-        institutions_proj['name'] = institutions_proj['name'].fillna('unnamed_institution')
-        
-        # Dissolve by name to combine multiple buildings/features of same institution
-        institutions_dissolved = institutions_proj.dissolve(by='name', aggfunc='first')
-        print(f"After dissolving by name: {len(institutions_dissolved)} unique institutions")
-        
-        # Calculate areas after dissolving
-        institutions_dissolved['area'] = institutions_dissolved.geometry.area
-        institutions_filtered = institutions_dissolved[institutions_dissolved['area'] >= min_area]
-        
-        if institutions_filtered.empty:
-            print(f"No educational institutions found meeting minimum area requirement of {min_area} sq meters")
-            return gpd.GeoDataFrame()
-            
-        # Project back to WGS84
-        institutions_filtered = institutions_filtered.to_crs('EPSG:4326')
-        
-        # Clean up names
-        institutions_filtered['name'] = institutions_filtered['name'].str.lower().str.replace(' ', '_')
-        
-        # Create a copy for top N features
-        institutions_top = institutions_filtered.nlargest(top_n, 'area').copy()
-        
-        # Store both dataframes
-        self.features['educational'] = institutions_filtered
-        self.features['educational_top'] = institutions_top
-        
-        return institutions_filtered
     
     def get_parks(self, bbox: Tuple[float, float, float, float], settings: dict) -> gpd.GeoDataFrame:
         """
