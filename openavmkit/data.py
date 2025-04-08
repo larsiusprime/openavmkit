@@ -721,7 +721,10 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
                     settings=osm_settings['water_bodies']
                 )
                 if verbose:
-                    print(f"--> Found {len(water_bodies)} water bodies")
+                    if water_bodies.empty:
+                        print("    No water bodies found")
+                    else:
+                        print(f"--> Found {len(water_bodies)} water bodies")
                 if not water_bodies.empty:
                     dataframes['water_bodies'] = osm_service.features['water_bodies']
             except Exception as e:
@@ -735,6 +738,11 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
                     bbox=bbox,
                     settings=osm_settings['transportation']
                 )
+                if verbose:
+                    if transportation.empty:
+                        print("    No transportation networks found")
+                    else:
+                        print(f"--> Found {len(transportation)} transportation networks")
                 if not transportation.empty:
                     dataframes['transportation'] = osm_service.features['transportation']
             except Exception as e:
@@ -748,6 +756,11 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
                     bbox=bbox,
                     settings=osm_settings['educational']
                 )
+                if verbose:
+                    if educational.empty:
+                        print("    No educational institutions found")
+                    else:
+                        print(f"--> Found {len(educational)} educational institutions")
                 if not educational.empty:
                     dataframes['educational'] = osm_service.features['educational']
             except Exception as e:
@@ -762,7 +775,10 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
                     settings=osm_settings['parks']
                 )
                 if verbose:
-                    print(f"--> Found {len(parks)} parks")
+                    if parks.empty:
+                        print("    No parks found")
+                    else:
+                        print(f"--> Found {len(parks)} parks")
                 if not parks.empty:
                     dataframes['parks'] = osm_service.features['parks']
             except Exception as e:
@@ -776,6 +792,11 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
                     bbox=bbox,
                     settings=osm_settings['golf_courses']
                 )
+                if verbose:
+                    if golf_courses.empty:
+                        print("    No golf courses found")
+                    else:
+                        print(f"--> Found {len(golf_courses)} golf courses")
                 if not golf_courses.empty:
                     dataframes['golf_courses'] = osm_service.features['golf_courses']
             except Exception as e:

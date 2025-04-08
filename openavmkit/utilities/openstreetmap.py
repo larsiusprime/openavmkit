@@ -8,6 +8,7 @@ from shapely.geometry import Point, Polygon, LineString, MultiPolygon, box
 import json
 import osmnx as ox
 from openavmkit.utilities.geometry import distance_km, get_crs, stamp_geo_field_onto_df
+import warnings
 
 class OpenStreetMapService:
     """
@@ -141,6 +142,7 @@ class OpenStreetMapService:
         )
         
         if transportation.empty:
+            warnings.warn(f"No transportation networks found in the area")
             return gpd.GeoDataFrame()
         
         # Project to UTM for accurate length calculation
@@ -152,6 +154,7 @@ class OpenStreetMapService:
         transportation_filtered = transportation_proj[transportation_proj['length'] >= min_length]
         
         if transportation_filtered.empty:
+            warnings.warn(f"No transportation networks found meeting minimum length requirement of {min_length} meters")
             return gpd.GeoDataFrame()
         
         # Project back to WGS84
@@ -231,6 +234,7 @@ class OpenStreetMapService:
         )
         
         if institutions.empty:
+            warnings.warn(f"No educational institutions found in the area")
             return gpd.GeoDataFrame()
             
         # Project to UTM for accurate area calculation
@@ -242,6 +246,7 @@ class OpenStreetMapService:
         institutions_filtered = institutions_proj[institutions_proj['area'] >= min_area]
         
         if institutions_filtered.empty:
+            warnings.warn(f"No educational institutions found meeting minimum area requirement of {min_area} sq meters")
             return gpd.GeoDataFrame()
             
         # Project back to WGS84
