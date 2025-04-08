@@ -1618,8 +1618,11 @@ def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDa
     df_projected = df_in.to_crs(crs).copy()
     gdf_projected = gdf_in.to_crs(crs).copy()
     
-    # Initialize the within_distance column as False for all parcels
-    df_projected[f"within_{_id}"] = False
+    # Initialize new columns dictionary
+    new_columns = {}
+    
+    # Initialize the within_distance column
+    new_columns[f"within_{_id}"] = pd.Series(False, index=df_projected.index)
     
     if max_distance is not None:
         # Create buffer around features we're measuring distance to
@@ -1646,10 +1649,22 @@ def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDa
             nearest[f"dist_to_{_id}"] *= unit_factors[unit]
             
             # Mark these parcels as within distance
-            df_projected.loc[df_projected["key"].isin(parcels_within["key"]), f"within_{_id}"] = True
+            new_columns[f"within_{_id}"] = pd.Series(False, index=df_projected.index)
+            new_columns[f"within_{_id}"].loc[df_projected["key"].isin(parcels_within["key"])] = True
+            
+            # Handle duplicates in nearest
+            if nearest.duplicated(subset="key").sum() > 0:
+                nearest = nearest.sort_values(by=["key", f"dist_to_{_id}"], ascending=[True, True])
+                nearest = nearest.drop_duplicates(subset="key")
+            
+            # Add distance column
+            new_columns[f"dist_to_{_id}"] = pd.Series(index=df_projected.index)
+            distances_series = pd.Series(nearest.set_index("key")[f"dist_to_{_id}"])
+            new_columns[f"dist_to_{_id}"] = distances_series.reindex(df_projected["key"]).values
+            
         else:
-            # If no parcels within buffer, create empty result
-            nearest = pd.DataFrame(columns=["key", f"dist_to_{_id}"])
+            # If no parcels within buffer, add empty distance column
+            new_columns[f"dist_to_{_id}"] = pd.Series(np.nan, index=df_projected.index)
     else:
         # If no max_distance specified, calculate for all parcels
         nearest = gpd.sjoin_nearest(
@@ -1660,22 +1675,28 @@ def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDa
         )[["key", f"dist_to_{_id}"]]
         
         nearest[f"dist_to_{_id}"] *= unit_factors[unit]
+        
+        # Handle duplicates in nearest
+        if nearest.duplicated(subset="key").sum() > 0:
+            nearest = nearest.sort_values(by=["key", f"dist_to_{_id}"], ascending=[True, True])
+            nearest = nearest.drop_duplicates(subset="key")
+        
         # All parcels considered "within distance" when no max_distance specified
-        df_projected[f"within_{_id}"] = True
+        new_columns[f"within_{_id}"] = pd.Series(True, index=df_projected.index)
+        
+        # Add distance column
+        distances_series = pd.Series(nearest.set_index("key")[f"dist_to_{_id}"])
+        new_columns[f"dist_to_{_id}"] = distances_series.reindex(df_projected["key"]).values
     
-    # Handle duplicates
-    n_duplicates_nearest = nearest.duplicated(subset="key").sum()
-    n_duplicates_df = df_in.duplicated(subset="key").sum()
-    if n_duplicates_df > 0:
-        raise ValueError(f"Found {n_duplicates_nearest} duplicate keys in the base dataframe, cannot perform distance calculations.")
-    if n_duplicates_nearest > 0:
-        nearest = nearest.sort_values(by=["key", f"dist_to_{_id}"], ascending=[True, True])
-        nearest = nearest.drop_duplicates(subset="key")
+    # Check for duplicates in input DataFrame
+    if df_in.duplicated(subset="key").sum() > 0:
+        raise ValueError("Found duplicate keys in the base dataframe, cannot perform distance calculations.")
     
-    # Merge the results back
-    df_out = df_in.copy()
-    df_out[f"within_{_id}"] = df_projected[f"within_{_id}"]
-    df_out = df_out.merge(nearest, on="key", how="left")
+    # Create new DataFrame with all new columns
+    new_df = pd.DataFrame(new_columns, index=df_projected.index)
+    
+    # Combine original DataFrame with new columns using concat
+    df_out = pd.concat([df_in, new_df], axis=1)
     
     return df_out
 
