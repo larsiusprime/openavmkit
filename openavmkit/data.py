@@ -156,13 +156,13 @@ def enrich_time(df: pd.DataFrame, time_formats: dict, settings: dict) -> pd.Data
   enriches the dataframe with additional time fields (e.g., "sale_year", "sale_month", "sale_age_days").
 
   :param df: Input DataFrame.
-  :type df: pandas.DataFrame
+  :type df: pd.DataFrame
   :param time_formats: Dictionary mapping field names to datetime formats.
   :type time_formats: dict
   :param settings: Settings dictionary.
   :type settings: dict
   :returns: DataFrame with enriched time fields.
-  :rtype: pandas.DataFrame
+  :rtype: pd.DataFrame
   """
 	for key in time_formats:
 		time_format = time_formats[key]
@@ -191,7 +191,7 @@ def simulate_removed_buildings(df: pd.DataFrame, settings: dict, idx_vacant: Ser
   False for the rows specified by idx_vacant (or all rows if idx_vacant is None).
 
   :param df: Input DataFrame.
-  :type df: pandas.DataFrame
+  :type df: pd.DataFrame
   :param settings: Settings dictionary.
   :type settings: dict
   :param idx_vacant: Optional Series indicating which rows are vacant.
