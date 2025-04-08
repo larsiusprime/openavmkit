@@ -481,9 +481,11 @@ class OpenStreetMapService:
         gdf_proj = gdf.to_crs(utm_crs)
         features_proj = features.to_crs(utm_crs)
         
+        # Initialize dictionary to store all distance calculations
+        distance_data = {}
+        
         # Calculate aggregate distance (distance to nearest feature of any type)
-        distances = pd.DataFrame(index=gdf.index)
-        distances[f'dist_to_{feature_type}_any'] = gdf_proj.geometry.apply(
+        distance_data[f'dist_to_{feature_type}_any'] = gdf_proj.geometry.apply(
             lambda g: features_proj.geometry.distance(g).min()
         )
         
@@ -495,11 +497,12 @@ class OpenStreetMapService:
                 feature_geom = feature.geometry
                 feature_proj = gpd.GeoSeries([feature_geom]).to_crs(utm_crs)[0]
                 
-                distances[f'dist_to_{feature_type}_{feature_name}'] = gdf_proj.geometry.apply(
+                distance_data[f'dist_to_{feature_type}_{feature_name}'] = gdf_proj.geometry.apply(
                     lambda g: feature_proj.distance(g)
                 )
         
-        return distances
+        # Create DataFrame from all collected distances at once
+        return pd.DataFrame(distance_data, index=gdf.index)
 
     def enrich_parcels(self, gdf: gpd.GeoDataFrame, settings: Dict) -> Dict[str, gpd.GeoDataFrame]:
         """
