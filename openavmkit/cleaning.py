@@ -365,9 +365,8 @@ def _fill_unknown_values(df, settings: dict):
 	if bool_fields is not None:
 		for field in bool_fields:
 			if field in df:
-				# Fix pandas FutureWarning about downcasting during fillna
-				result = df[field].fillna(False)
-				result = result.infer_objects(copy=False)
-				df[field] = result.astype(bool)
+				# First convert to boolean type explicitly, then fill NA values
+				df[field] = pd.Series(df[field], dtype="boolean")
+				df[field] = df[field].fillna(False).astype(bool)
 
 	return df
