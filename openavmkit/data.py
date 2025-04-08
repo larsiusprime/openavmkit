@@ -156,13 +156,13 @@ def enrich_time(df: pd.DataFrame, time_formats: dict, settings: dict) -> pd.Data
   enriches the dataframe with additional time fields (e.g., "sale_year", "sale_month", "sale_age_days").
 
   :param df: Input DataFrame.
-  :type df: pd.DataFrame
+  :type df: pandas.DataFrame
   :param time_formats: Dictionary mapping field names to datetime formats.
   :type time_formats: dict
   :param settings: Settings dictionary.
   :type settings: dict
   :returns: DataFrame with enriched time fields.
-  :rtype: pd.DataFrame
+  :rtype: pandas.DataFrame
   """
 	for key in time_formats:
 		time_format = time_formats[key]
@@ -191,7 +191,7 @@ def simulate_removed_buildings(df: pd.DataFrame, settings: dict, idx_vacant: Ser
   False for the rows specified by idx_vacant (or all rows if idx_vacant is None).
 
   :param df: Input DataFrame.
-  :type df: pd.DataFrame
+  :type df: pandas.DataFrame
   :param settings: Settings dictionary.
   :type settings: dict
   :param idx_vacant: Optional Series indicating which rows are vacant.
@@ -608,7 +608,7 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
 
 		sup.set(supkey, df)
 
-		sup = _enrich_sup_spatial_lag(sup, settings, verbose=verbose)
+		#sup = _enrich_sup_spatial_lag(sup, settings, verbose=verbose)
 
 	return sup
 
@@ -1618,11 +1618,11 @@ def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDa
     df_projected = df_in.to_crs(crs).copy()
     gdf_projected = gdf_in.to_crs(crs).copy()
     
-    # Initialize new columns dictionary
-    new_columns = {}
-    
-    # Initialize the within_distance column
-    new_columns[f"within_{_id}"] = pd.Series(False, index=df_projected.index)
+    # Initialize dictionary to store new columns
+    new_columns = {
+        f"within_{_id}": pd.Series(False, index=df_projected.index),
+        f"dist_to_{_id}": pd.Series(np.nan, index=df_projected.index)
+    }
     
     if max_distance is not None:
         # Create buffer around features we're measuring distance to
@@ -1658,13 +1658,9 @@ def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDa
                 nearest = nearest.drop_duplicates(subset="key")
             
             # Add distance column
-            new_columns[f"dist_to_{_id}"] = pd.Series(index=df_projected.index)
             distances_series = pd.Series(nearest.set_index("key")[f"dist_to_{_id}"])
             new_columns[f"dist_to_{_id}"] = distances_series.reindex(df_projected["key"]).values
             
-        else:
-            # If no parcels within buffer, add empty distance column
-            new_columns[f"dist_to_{_id}"] = pd.Series(np.nan, index=df_projected.index)
     else:
         # If no max_distance specified, calculate for all parcels
         nearest = gpd.sjoin_nearest(
@@ -1722,6 +1718,10 @@ def _perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, datafr
     df = df_in.copy()
     if verbose:
         print(f"Performing distance calculations...")
+    
+    # Collect all distance calculations to apply at once
+    all_distance_dfs = []
+    
     for entry in s_dist:
         if isinstance(entry, str):
             entry = {"id": str(entry)}
@@ -1746,14 +1746,31 @@ def _perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, datafr
                 print(f"    max_distance: {max_distance} {entry_unit}")
             
         if field is None:
-            df = _do_perform_distance_calculations(df, gdf, _id, max_distance, entry_unit)
+            # Calculate distances for this feature
+            distance_df = _do_perform_distance_calculations(df, gdf, _id, max_distance, entry_unit)
+            # Extract only the new columns
+            new_cols = [col for col in distance_df.columns if col not in df.columns]
+            all_distance_dfs.append(distance_df[new_cols])
+            print(f"--> {_id} done")
         else:
             uniques = gdf[field].unique()
             for unique in uniques:
                 if pd.isna(unique):
                     continue
                 gdf_subset = gdf[gdf[field].eq(unique)]
-                df = _do_perform_distance_calculations(df, gdf_subset, f"{_id}_{unique}", max_distance, entry_unit)
+                # Calculate distances for this subset
+                distance_df = _do_perform_distance_calculations(df, gdf_subset, f"{_id}_{unique}", max_distance, entry_unit)
+                # Extract only the new columns
+                new_cols = [col for col in distance_df.columns if col not in df.columns]
+                all_distance_dfs.append(distance_df[new_cols])
+            print(f"--> {_id} done")
+    
+    # Apply all distance calculations at once
+    if all_distance_dfs:
+        # Combine all distance DataFrames
+        combined_distances = pd.concat(all_distance_dfs, axis=1)
+        # Combine with original DataFrame
+        df = pd.concat([df, combined_distances], axis=1)
                 
     return df
 
