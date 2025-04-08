@@ -219,8 +219,7 @@ class OpenStreetMapService:
         
         # Define tags for educational institutions
         tags = {
-            'amenity': ['university', 'college'],
-            'building': ['university', 'college']
+            'amenity': ['university']
         }
         
         # Create polygon from bbox
@@ -233,26 +232,34 @@ class OpenStreetMapService:
         )
         
         if institutions.empty:
-            warnings.warn(f"No educational institutions found in the area")
+            print(f"No educational institutions found in the area")
             return gpd.GeoDataFrame()
+            
+        print(f"Found {len(institutions)} raw educational features")
             
         # Project to UTM for accurate area calculation
         utm_crs = self._get_utm_crs(bbox)
         institutions_proj = institutions.to_crs(utm_crs)
         
-        # Calculate areas and filter by minimum area
-        institutions_proj['area'] = institutions_proj.geometry.area
-        institutions_filtered = institutions_proj[institutions_proj['area'] >= min_area]
+        # Fill NaN names before dissolving
+        institutions_proj['name'] = institutions_proj['name'].fillna('unnamed_institution')
+        
+        # Dissolve by name to combine multiple buildings/features of same institution
+        institutions_dissolved = institutions_proj.dissolve(by='name', aggfunc='first')
+        print(f"After dissolving by name: {len(institutions_dissolved)} unique institutions")
+        
+        # Calculate areas after dissolving
+        institutions_dissolved['area'] = institutions_dissolved.geometry.area
+        institutions_filtered = institutions_dissolved[institutions_dissolved['area'] >= min_area]
         
         if institutions_filtered.empty:
-            warnings.warn(f"No educational institutions found meeting minimum area requirement of {min_area} sq meters")
+            print(f"No educational institutions found meeting minimum area requirement of {min_area} sq meters")
             return gpd.GeoDataFrame()
             
         # Project back to WGS84
         institutions_filtered = institutions_filtered.to_crs('EPSG:4326')
         
         # Clean up names
-        institutions_filtered['name'] = institutions_filtered['name'].fillna('unnamed_institution')
         institutions_filtered['name'] = institutions_filtered['name'].str.lower().str.replace(' ', '_')
         
         # Create a copy for top N features
