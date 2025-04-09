@@ -731,7 +731,11 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
                     else:
                         print(f"--> Found {len(water_bodies)} water bodies")
                 if not water_bodies.empty:
-                    dataframes['water_bodies'] = osm_service.features['water_bodies']
+                    # Store only the base feature for general distance
+                    dataframes['water_bodies'] = water_bodies
+                    # Store top features separately for individual distances
+                    if 'water_bodies_top' in osm_service.features:
+                        dataframes['water_bodies_top'] = osm_service.features['water_bodies_top']
             except Exception as e:
                 warnings.warn(f"Failed to get water bodies: {str(e)}")
                 
@@ -749,7 +753,8 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
                     else:
                         print(f"--> Found {len(transportation)} transportation networks")
                 if not transportation.empty:
-                    dataframes['transportation'] = osm_service.features['transportation']
+                    # For transportation, we only need the base feature
+                    dataframes['transportation'] = transportation
             except Exception as e:
                 warnings.warn(f"Failed to get transportation networks: {str(e)}")
                 
@@ -767,7 +772,11 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
                     else:
                         print(f"--> Found {len(educational)} educational institutions")
                 if not educational.empty:
-                    dataframes['educational'] = osm_service.features['educational']
+                    # Store only the base feature for general distance
+                    dataframes['educational'] = educational
+                    # Store top features separately for individual distances
+                    if 'educational_top' in osm_service.features:
+                        dataframes['educational_top'] = osm_service.features['educational_top']
             except Exception as e:
                 warnings.warn(f"Failed to get educational institutions: {str(e)}")
                 
@@ -785,7 +794,11 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
                     else:
                         print(f"--> Found {len(parks)} parks")
                 if not parks.empty:
-                    dataframes['parks'] = osm_service.features['parks']
+                    # Store only the base feature for general distance
+                    dataframes['parks'] = parks
+                    # Store top features separately for individual distances
+                    if 'parks_top' in osm_service.features:
+                        dataframes['parks_top'] = osm_service.features['parks_top']
             except Exception as e:
                 warnings.warn(f"Failed to get parks: {str(e)}")
                 
@@ -803,7 +816,11 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
                     else:
                         print(f"--> Found {len(golf_courses)} golf courses")
                 if not golf_courses.empty:
-                    dataframes['golf_courses'] = osm_service.features['golf_courses']
+                    # Store only the base feature for general distance
+                    dataframes['golf_courses'] = golf_courses
+                    # Store top features separately for individual distances
+                    if 'golf_courses_top' in osm_service.features:
+                        dataframes['golf_courses_top'] = osm_service.features['golf_courses_top']
             except Exception as e:
                 warnings.warn(f"Failed to get golf courses: {str(e)}")
         
@@ -811,13 +828,14 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
         distances = []
         for feature_name in ['water_bodies', 'transportation', 'educational', 'parks', 'golf_courses']:
             if feature_name in dataframes:
-                if feature_name == 'transportation':
-                    # Transportation doesn't need a name field
-                    distances.append(feature_name)
-                else:
-                    # Other features need name field for individual feature distances
+                # Add base feature for general distance
+                distances.append(feature_name)
+                
+                # Add top features for individual distances if available
+                top_feature_name = f"{feature_name}_top"
+                if top_feature_name in dataframes:
                     distances.append({
-                        "id": feature_name,
+                        "id": top_feature_name,
                         "field": "name"
                     })
         
@@ -1749,15 +1767,19 @@ def _perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, datafr
             print(f"--> {_id}")
             if max_distance is not None:
                 print(f"    max_distance: {max_distance} {entry_unit}")
-            
         if field is None:
+            if verbose:
+                print(f"--> {_id} field is None")
             # Calculate distances for this feature
             distance_df = _do_perform_distance_calculations(df, gdf, _id, max_distance, entry_unit)
             # Extract only the new columns
             new_cols = [col for col in distance_df.columns if col not in df.columns]
             all_distance_dfs.append(distance_df[new_cols])
-            print(f"--> {_id} done")
+            if verbose:
+                print(f"--> {_id} done")
         else:
+            if verbose:
+                print(f"--> {_id} field is {field}")
             uniques = gdf[field].unique()
             for unique in uniques:
                 if pd.isna(unique):
@@ -1768,7 +1790,8 @@ def _perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, datafr
                 # Extract only the new columns
                 new_cols = [col for col in distance_df.columns if col not in df.columns]
                 all_distance_dfs.append(distance_df[new_cols])
-            print(f"--> {_id} done")
+            if verbose:
+                print(f"--> {_id} done")
     
     # Apply all distance calculations at once
     if all_distance_dfs:
