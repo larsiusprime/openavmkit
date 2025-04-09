@@ -754,7 +754,11 @@ class DataSplit:
           self.X_train[col].dtype == "boolean" or
           self.X_train[col].dtype == "bool"
       ):
-        self.X_train.loc[:, col] = self.X_train[col].astype("float64")
+        # First convert boolean to numeric, then to float64
+        if self.X_train[col].dtype in ["boolean", "bool"]:
+          self.X_train.loc[:, col] = pd.to_numeric(self.X_train[col], downcast="float")
+        else:
+          self.X_train.loc[:, col] = self.X_train[col].astype("float64")
 
     ind_vars = [col for col in self.ind_vars if col in _df_test.columns]
     self.X_test = _df_test[ind_vars]
@@ -3743,3 +3747,52 @@ def simple_ols(
     "r2": model.rsquared,
     "adj_r2": model.rsquared_adj
   }
+
+def calc_mse_r2_adj_r2(predictions: np.ndarray, ground_truth: np.ndarray, num_vars: int):
+    """
+    Calculate MSE, R², and adjusted R² with proper handling of edge cases.
+    
+    :param predictions: Array of predicted values
+    :param ground_truth: Array of actual values
+    :param num_vars: Number of predictor variables
+    :returns: Tuple of (MSE, R², adjusted R²)
+    """
+    # Check if we have enough data points
+    if len(predictions) <= num_vars + 1:  
+        return float('nan'), float('nan'), float('nan')
+
+    # Handle empty arrays
+    if len(predictions) == 0 or len(ground_truth) == 0:
+        return float('nan'), float('nan'), float('nan')
+
+    # Calculate MSE
+    mse = np.mean((ground_truth - predictions) ** 2)
+    
+    # Calculate R²
+    ss_res = np.sum((ground_truth - predictions) ** 2)
+    ss_tot = np.sum((ground_truth - np.mean(ground_truth)) ** 2)
+
+    # Handle division by zero for R²
+    if ss_tot == 0 or np.isnan(ss_tot):
+        r2 = float('nan')
+    else:
+        r2 = 1 - (ss_res / ss_tot)
+        # Handle edge case where R² is slightly above 1 due to numerical precision
+        if r2 > 1:
+            r2 = 1.0
+
+    # Calculate adjusted R²
+    n = len(predictions)
+    k = num_vars
+    divisor = n - k - 1
+    
+    # Handle division by zero for adjusted R²
+    if divisor <= 0 or np.isnan(r2):
+        adj_r2 = float('nan')
+    else:
+        adj_r2 = 1 - ((1 - r2) * (n - 1) / divisor)
+        # Handle edge case where adj_r2 is slightly above 1
+        if adj_r2 > 1:
+            adj_r2 = 1.0
+        
+    return mse, r2, adj_r2
