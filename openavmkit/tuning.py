@@ -7,6 +7,7 @@ from catboost import Pool, CatBoostRegressor
 from optuna import Trial
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_absolute_error
+import gc  # Add garbage collection
 
 
 
@@ -23,37 +24,69 @@ def tune_xgboost(X, y, sizes, he_ids, n_trials=100, n_splits=5, random_state=42,
         Objective function for Optuna to optimize XGBoost hyperparameters.
         """
         params = {
-            "objective": "reg:squarederror",  # Regression objective
-            "eval_metric": "mae",   # Mean Absolute Error
-            "tree_method": "hist",  # Use 'hist' for performance; use 'gpu_hist' for GPUs
+            "objective": "reg:squarederror",
+            "eval_metric": "mae",
+            "tree_method": "hist",  # More memory efficient than 'auto'
             "learning_rate": trial.suggest_float("learning_rate", 0.001, 0.1, log=True),
-            "max_depth": trial.suggest_int("max_depth", 3, 15),
+            "max_depth": trial.suggest_int("max_depth", 3, 12),  # Reduced from 15
             "min_child_weight": trial.suggest_float("min_child_weight", 1, 10, log=True),
-            "subsample": trial.suggest_float("subsample", 0.5, 1.0, log=False),
-            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.4, 1.0, log=False),
-            "colsample_bylevel": trial.suggest_float("colsample_bylevel", 0.4, 1.0, log=False),
-            "colsample_bynode": trial.suggest_float("colsample_bynode", 0.4, 1.0, log=False),
-            "gamma": trial.suggest_float("gamma", 0.1, 10, log=True),  # min_split_loss
-            "lambda": trial.suggest_float("lambda", 1e-4, 10, log=True),  # reg_lambda
-            "alpha": trial.suggest_float("alpha", 1e-4, 10, log=True),  # reg_alpha
-            "max_bin": trial.suggest_int("max_bin", 64, 512),  # Relevant for 'hist' tree_method
+            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.4, 1.0),
+            "colsample_bylevel": trial.suggest_float("colsample_bylevel", 0.4, 1.0),
+            "colsample_bynode": trial.suggest_float("colsample_bynode", 0.4, 1.0),
+            "gamma": trial.suggest_float("gamma", 0.1, 10, log=True),
+            "lambda": trial.suggest_float("lambda", 1e-4, 10, log=True),
+            "alpha": trial.suggest_float("alpha", 1e-4, 10, log=True),
+            "max_bin": trial.suggest_int("max_bin", 64, 512),
             "grow_policy": trial.suggest_categorical("grow_policy", ["depthwise", "lossguide"]),
         }
-        num_boost_round = trial.suggest_int("num_boost_round", 100, 3000)
+        num_boost_round = trial.suggest_int("num_boost_round", 100, 2000)
 
-        mae = _xgb_rolling_origin_cv(
-            X, y, params, num_boost_round, n_splits, random_state,
-            verbose_eval=False, sizes=sizes, he_ids=he_ids, custom_alpha=0.1
-        )
-        if verbose:
-            print(f"-->trial # {trial.number}/{n_trials}, MAE: {mae:10.0f}, params: {params}")
-        return mae  # Optuna minimizes, so return the MAE directly
+        try:
+            mae = _xgb_rolling_origin_cv(
+                X, y, params, num_boost_round, n_splits, random_state,
+                verbose_eval=False, sizes=sizes, he_ids=he_ids, custom_alpha=0.1
+            )
+            
+            # Force garbage collection after each trial
+            gc.collect()
+            
+            if verbose and trial.number % 5 == 0:  # Reduced logging frequency
+                print(f"-->trial # {trial.number}/{n_trials}, MAE: {mae:10.0f}, params: {params}")
+                
+            return mae
+            
+        except Exception as e:
+            print(f"Trial failed with error: {str(e)}")
+            return float('inf')  # Return infinity for failed trials
 
-    optuna.logging.set_verbosity(optuna.logging.WARNING)
-    study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=n_trials, n_jobs=-1, callbacks=[_plateau_callback])
+    # Set up study with more aggressive pruning
+    pruner = optuna.pruners.MedianPruner(
+        n_startup_trials=5,
+        n_warmup_steps=5,
+        interval_steps=1
+    )
+    
+    study = optuna.create_study(
+        direction="minimize",
+        pruner=pruner
+    )
+    
+    # Reduce number of parallel jobs and add timeout
+    study.optimize(
+        objective,
+        n_trials=n_trials,
+        n_jobs=1,  # Reduced from -1 to prevent memory issues
+        timeout=3600,  # 1 hour timeout
+        callbacks=[_plateau_callback]
+    )
+    
     if verbose:
         print(f"Best trial: {study.best_trial.number} with MAE: {study.best_trial.value:10.0f} and params: {study.best_trial.params}")
+    
+    # Force final garbage collection
+    gc.collect()
+    
     return study.best_params
 
 
@@ -270,17 +303,7 @@ def _xgb_rolling_origin_cv(
 ):
     """
     Performs rolling-origin cross-validation for XGBoost model evaluation.
-
-    Args:
-        X (array-like): Feature matrix.
-        y (array-like): Target vector.
-        params (dict): XGBoost hyperparameters.
-        n_splits (int): Number of folds for cross-validation. Default is 5.
-        random_state (int): Random seed for reproducibility. Default is 42.
-        verbose_eval (int|bool): Logging interval for XGBoost. Default is 50.
-
-    Returns:
-        float: Mean MAE score across all folds.
+    Memory efficient implementation with early stopping.
     """
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     mae_scores = []
@@ -293,32 +316,44 @@ def _xgb_rolling_origin_cv(
             X_train, X_val = X[train_idx], X[val_idx]
             y_train, y_val = y[train_idx], y[val_idx]
 
-        train_data = xgb.DMatrix(X_train, label=y_train)
-        val_data = xgb.DMatrix(X_val, label=y_val)
+        # Convert to DMatrix with memory efficient settings
+        train_data = xgb.DMatrix(
+            X_train, 
+            label=y_train,
+            enable_categorical=False,  # Disable if not needed
+            nthread=1  # Single thread to reduce memory
+        )
+        val_data = xgb.DMatrix(
+            X_val, 
+            label=y_val,
+            enable_categorical=False,
+            nthread=1
+        )
 
-        evals = [(val_data, "validation")]
+        # Add early stopping
+        early_stopping_rounds = max(50, int(num_boost_round * 0.1))  # 10% of total rounds
 
-        # If custom arrays are provided, subset them for training data and build custom objective
-        custom_obj = None
-        # TODO: enable this later
-        # if sizes is not None and he_ids is not None:
-        #     custom_obj = _xgb_custom_obj_variance_factory(size=sizes, cluster=he_ids, alpha=custom_alpha)
-
-        # Train XGBoost
+        # Train with early stopping
         model = xgb.train(
             params=params,
             dtrain=train_data,
             num_boost_round=num_boost_round,
-            evals=evals,
-            early_stopping_rounds=50,
-            verbose_eval=verbose_eval, # Ensure verbose_eval is enabled
-            obj=custom_obj
+            evals=[(val_data, "validation")],
+            early_stopping_rounds=early_stopping_rounds,
+            verbose_eval=verbose_eval
         )
 
-        # Predict and evaluate
-        y_pred = model.predict(val_data, iteration_range=(0, model.best_iteration))
+        # Get best iteration and predict
+        best_iteration = model.best_iteration if model.best_iteration > 0 else model.num_boosted_rounds()
+        y_pred = model.predict(val_data, iteration_range=(0, best_iteration))
+        
+        # Calculate MAE
         mae = mean_absolute_error(y_val, y_pred)
         mae_scores.append(mae)
+
+        # Clean up to free memory
+        del train_data, val_data, model, y_pred
+        gc.collect()
 
     mean_mae = np.mean(mae_scores)
     return mean_mae

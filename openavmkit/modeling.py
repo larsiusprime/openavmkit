@@ -550,77 +550,127 @@ class DataSplit:
     :rtype: DataSplit
     """
     if len(self.categorical_vars) == 0:
-      return self
+        return self
 
     ds = self.copy()
-
     ind_vars = self.ind_vars
-
     cat_vars = [col for col in ind_vars if col in self.categorical_vars]
 
-    old_cols = ds.df_universe.columns.values
-    sale_cols_not_in_univ = [col for col in ds.df_sales if (col not in ds.df_universe)]
+    # First, get all unique categories across all datasets
+    all_categories = {}
+    for col in cat_vars:
+        if col in ds.df_universe.columns:
+            all_categories[col] = set(ds.df_universe[col].unique())
+        if col in ds.df_sales.columns:
+            all_categories[col] = all_categories.get(col, set()) | set(ds.df_sales[col].unique())
+        if col in ds.df_train.columns:
+            all_categories[col] = all_categories.get(col, set()) | set(ds.df_train[col].unique())
+        if col in ds.df_test.columns:
+            all_categories[col] = all_categories.get(col, set()) | set(ds.df_test[col].unique())
+        if ds.df_multiverse is not None and col in ds.df_multiverse.columns:
+            all_categories[col] = all_categories.get(col, set()) | set(ds.df_multiverse[col].unique())
 
-    # One-hot encode the categorical variables, perform this on ds rather than self, do it for everything:
-    ds.df_universe = pd.get_dummies(ds.df_universe, columns=[col for col in cat_vars if col in ds.df_universe], drop_first=True)
-    ds.df_sales = pd.get_dummies(ds.df_sales, columns=[col for col in cat_vars if col in ds.df_sales], drop_first=True)
-    ds.df_train = pd.get_dummies(ds.df_train, columns=[col for col in cat_vars if col in ds.df_train], drop_first=True)
-    ds.df_test = pd.get_dummies(ds.df_test, columns=[col for col in cat_vars if col in ds.df_test], drop_first=True)
+    # Create dummy variables for each dataset using the complete set of categories
+    for col in cat_vars:
+        if col in ds.df_universe.columns:
+            dummy_univ = pd.get_dummies(ds.df_universe[col], prefix=col, drop_first=True)
+            # Add missing columns with zeros
+            for cat in all_categories[col]:
+                col_name = f"{col}_{cat}"
+                if col_name not in dummy_univ.columns:
+                    dummy_univ[col_name] = 0
+            ds.df_universe = pd.concat([ds.df_universe, dummy_univ], axis=1)
 
+        if col in ds.df_sales.columns:
+            dummy_sales = pd.get_dummies(ds.df_sales[col], prefix=col, drop_first=True)
+            for cat in all_categories[col]:
+                col_name = f"{col}_{cat}"
+                if col_name not in dummy_sales.columns:
+                    dummy_sales[col_name] = 0
+            ds.df_sales = pd.concat([ds.df_sales, dummy_sales], axis=1)
+
+        if col in ds.df_train.columns:
+            dummy_train = pd.get_dummies(ds.df_train[col], prefix=col, drop_first=True)
+            for cat in all_categories[col]:
+                col_name = f"{col}_{cat}"
+                if col_name not in dummy_train.columns:
+                    dummy_train[col_name] = 0
+            ds.df_train = pd.concat([ds.df_train, dummy_train], axis=1)
+
+        if col in ds.df_test.columns:
+            dummy_test = pd.get_dummies(ds.df_test[col], prefix=col, drop_first=True)
+            for cat in all_categories[col]:
+                col_name = f"{col}_{cat}"
+                if col_name not in dummy_test.columns:
+                    dummy_test[col_name] = 0
+            ds.df_test = pd.concat([ds.df_test, dummy_test], axis=1)
+
+        if ds.df_multiverse is not None and col in ds.df_multiverse.columns:
+            dummy_multi = pd.get_dummies(ds.df_multiverse[col], prefix=col, drop_first=True)
+            for cat in all_categories[col]:
+                col_name = f"{col}_{cat}"
+                if col_name not in dummy_multi.columns:
+                    dummy_multi[col_name] = 0
+            ds.df_multiverse = pd.concat([ds.df_multiverse, dummy_multi], axis=1)
+
+    # Clean column names
     ds.df_universe = clean_column_names(ds.df_universe)
     ds.df_sales = clean_column_names(ds.df_sales)
     ds.df_train = clean_column_names(ds.df_train)
     ds.df_test = clean_column_names(ds.df_test)
+    if ds.df_multiverse is not None:
+        ds.df_multiverse = clean_column_names(ds.df_multiverse)
 
-    # Remove the original categorical variables:
+    # Remove original categorical columns
     ds.df_universe = ds.df_universe.drop(columns=[col for col in cat_vars if col in ds.df_universe])
     ds.df_sales = ds.df_sales.drop(columns=[col for col in cat_vars if col in ds.df_sales])
     ds.df_train = ds.df_train.drop(columns=[col for col in cat_vars if col in ds.df_train])
     ds.df_test = ds.df_test.drop(columns=[col for col in cat_vars if col in ds.df_test])
-
     if ds.df_multiverse is not None:
-      ds.df_multiverse = pd.get_dummies(ds.df_multiverse, columns=[col for col in cat_vars if col in ds.df_multiverse], drop_first=True)
-      ds.df_multiverse = clean_column_names(ds.df_multiverse)
-      ds.df_multiverse = ds.df_multiverse.drop(columns=[col for col in cat_vars if col in ds.df_multiverse])
+        ds.df_multiverse = ds.df_multiverse.drop(columns=[col for col in cat_vars if col in ds.df_multiverse])
 
-    univ_cols = ds.df_universe.columns.values
+    # Update independent variables list
+    old_cols = ds.df_universe.columns.values
+    sale_cols_not_in_univ = [col for col in ds.df_sales if (col not in ds.df_universe)]
     new_cols = [col for col in ds.df_train.columns.values if col not in old_cols and col not in sale_cols_not_in_univ]
     ind_vars += new_cols
     ind_vars = [col for col in ind_vars if col in ds.df_train.columns]
     ds.ind_vars = ind_vars
 
-    # sort cat vars so the longest strings come first:
+    # Sort cat vars so the longest strings come first
     cat_vars = sorted(cat_vars, key=len, reverse=True)
 
+    # Update one_hot_descendants
     ds.one_hot_descendants = {}
     matched = []
     for col in new_cols:
-      for orig_col in cat_vars:
-        if col in matched:
-          continue
-        if orig_col in col:
-          if orig_col not in ds.one_hot_descendants:
-            ds.one_hot_descendants[orig_col] = []
-          ds.one_hot_descendants[orig_col].append(col)
-          matched.append(col)
+        for orig_col in cat_vars:
+            if col in matched:
+                continue
+            if orig_col in col:
+                if orig_col not in ds.one_hot_descendants:
+                    ds.one_hot_descendants[orig_col] = []
+                ds.one_hot_descendants[orig_col].append(col)
+                matched.append(col)
 
+    # Ensure consistent columns across all datasets
     train_cols = [col for col in ds.df_train.columns if col in ds.df_universe.columns]
     train_cols_univ = train_cols.copy()
     if "key_sale" not in train_cols:
-      train_cols = ["key_sale"] + train_cols
+        train_cols = ["key_sale"] + train_cols
 
     ds.df_universe = ds.df_universe[train_cols_univ]
     ds.df_sales = ds.df_sales[train_cols]
     if ds.df_multiverse is not None:
-      ds.df_multiverse = ds.df_multiverse[train_cols_univ]
+        ds.df_multiverse = ds.df_multiverse[train_cols_univ]
 
     test_cols = [col for col in train_cols if col in ds.df_test.columns]
     extra_cols = [col for col in train_cols if col not in test_cols]
 
     ds.df_test = ds.df_test[test_cols]
-    # add extra_cols, set them to zero:
+    # Add extra_cols, set them to zero
     for col in extra_cols:
-      ds.df_test[col] = 0.0
+        ds.df_test[col] = 0.0
 
     return ds
 
@@ -2073,7 +2123,8 @@ def run_lightgbm(ds: DataSplit, outpath: str, save_params: bool = False, use_sav
   timing.start("total")
 
   timing.start("setup")
-  ds = ds.encode_categoricals_as_categories()
+  # Use one-hot encoding instead of category encoding
+  ds = ds.encode_categoricals_with_one_hot()
   ds.split()
   timing.stop("setup")
 
@@ -2082,9 +2133,9 @@ def run_lightgbm(ds: DataSplit, outpath: str, save_params: bool = False, use_sav
   timing.stop("parameter_search")
 
   timing.start("train")
-  cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
-  lgb_train = lgb.Dataset(ds.X_train, ds.y_train, categorical_feature=cat_vars)
-  lgb_test = lgb.Dataset(ds.X_test, ds.y_test, categorical_feature=cat_vars, reference=lgb_train)
+  # No need to specify categorical features since they're one-hot encoded
+  lgb_train = lgb.Dataset(ds.X_train, ds.y_train)
+  lgb_test = lgb.Dataset(ds.X_test, ds.y_test, reference=lgb_train)
 
   params["verbosity"] = -1
 
