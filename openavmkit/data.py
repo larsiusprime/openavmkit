@@ -1297,7 +1297,6 @@ def _enrich_df_geometry(df_in: pd.DataFrame, s_enrich_this: dict, dataframes: di
 
 	return gdf_merged
 
-
 def _enrich_polar_coordinates(gdf_in: gpd.GeoDataFrame, settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
 	gdf = gdf_in[["key", "geometry"]].copy()
 
@@ -1772,7 +1771,9 @@ def _perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, datafr
         if _id is None:
             raise ValueError("No 'id' found in distance entry.")
         if _id not in dataframes:
-            raise ValueError(f"Distance table '{_id}' not found in dataframes.")
+            if verbose:
+                print(f"--> Skipping {_id} - not found in dataframes (likely disabled in settings)")
+            continue
             
         gdf = dataframes[_id]
         field = entry.get("field", None)
@@ -2604,3 +2605,4 @@ def _assign_modal_model_group_to_common_area(df_univ_in: gpd.GeoDataFrame, model
 	df_return = combine_dfs(df_return, df[["key", "model_group"]], df2_stomps=True, index="key")
 	df_return.to_parquet("out/look/common_area-3-return.parquet")
 	return df_return
+
