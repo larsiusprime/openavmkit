@@ -701,7 +701,7 @@ def write_notebook_output_sup(sup: SalesUniversePair, prefix="1-assemble"):
    print(f"...out/look/{prefix}-sales.parquet")
 
 
-def cloud_sync(locality: str, verbose: bool = False, env_path: str = "", settings: dict = None, dry_run: bool = False):
+def cloud_sync(locality: str, verbose: bool = False, env_path: str = "", settings: dict = None, dry_run: bool = False, ignore_paths: list = None):
    """
    Synchronize local files to the cloud storage.
 
@@ -713,6 +713,8 @@ def cloud_sync(locality: str, verbose: bool = False, env_path: str = "", setting
    :type verbose: bool, optional
    :param dry_run: If True, simulates the sync without performing any changes.
    :type dry_run: bool, optional
+   :param ignore_paths: List of file paths or patterns to ignore during sync.
+   :type ignore_paths: list, optional
    :returns: None
    """
    cloud_service = cloud.init(verbose, env_path = env_path, settings = settings)
@@ -721,7 +723,7 @@ def cloud_sync(locality: str, verbose: bool = False, env_path: str = "", setting
       return
 
    remote_path = locality.replace("-", "/") + "/"
-   cloud_service.sync_files(locality, "in", remote_path, dry_run=dry_run, verbose=verbose)
+   cloud_service.sync_files(locality, "in", remote_path, dry_run=dry_run, verbose=verbose, ignore_paths=ignore_paths)
 
 
 def read_pickle(path: str):

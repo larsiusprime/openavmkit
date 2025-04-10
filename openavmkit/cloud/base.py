@@ -59,7 +59,7 @@ class CloudService:
       raise ValueError(f"Remote path '{r}' does not match local path '{l}'.")
 
 
-  def sync_files(self, locality: str, local_folder: str, remote_folder: str, dry_run: bool = False, verbose: bool = False):
+  def sync_files(self, locality: str, local_folder: str, remote_folder: str, dry_run: bool = False, verbose: bool = False, ignore_paths: list = None):
     # Build a dictionary of remote files: {relative_path: file}
     remote_files = {}
     if verbose:
@@ -80,6 +80,20 @@ class CloudService:
         local_file_path = os.path.join(root, file)
         remote_file_path = _fix_path_slashes(remote_file_path)
         local_file_path = _fix_path_slashes(local_file_path)
+        
+        # Check if this file should be ignored
+        should_ignore = False
+        if ignore_paths:
+          for ignore_path in ignore_paths:
+            if ignore_path in rel_path or ignore_path in remote_file_path:
+              if verbose:
+                print(f"Ignoring file '{rel_path}' because it matches ignore pattern '{ignore_path}'")
+              should_ignore = True
+              break
+        
+        if should_ignore:
+          continue
+          
         entry = {
           "remote": remote_file_path,
           "local": local_file_path
@@ -92,6 +106,20 @@ class CloudService:
         loc_path = os.path.join("", *loc_bits)
         remote_file_path = os.path.join(loc_path, rel_path)
         remote_file_path = _fix_path_slashes(remote_file_path)
+        
+        # Check if this directory should be ignored
+        should_ignore = False
+        if ignore_paths:
+          for ignore_path in ignore_paths:
+            if ignore_path in rel_path or ignore_path in remote_file_path:
+              if verbose:
+                print(f"Ignoring directory '{rel_path}' because it matches ignore pattern '{ignore_path}'")
+              should_ignore = True
+              break
+        
+        if should_ignore:
+          continue
+          
         entry = {
           "remote": remote_file_path,
           "local": os.path.join(root, dir)
@@ -104,6 +132,18 @@ class CloudService:
 
     # Process files that exist remotely:
     for rel_path, file in remote_files.items():
+      # Check if this remote file should be ignored
+      should_ignore = False
+      if ignore_paths:
+        for ignore_path in ignore_paths:
+          if ignore_path in rel_path:
+            if verbose:
+              print(f"Ignoring remote file '{rel_path}' because it matches ignore pattern '{ignore_path}'")
+            should_ignore = True
+            break
+      
+      if should_ignore:
+        continue
 
       local_file_exists = False
 
@@ -111,9 +151,15 @@ class CloudService:
         local_file_path = remote_file_map[rel_path]["local"]
         local_file_exists = os.path.exists(local_file_path)
       else:
-        # remove "remote_folder" from the beginning of the path
-        local_file_path = rel_path[len(remote_folder)+1:]
-        local_file_path = _fix_path_slashes(os.path.join(local_folder, local_file_path))
+        # Construct the local file path properly
+        # First, check if the remote_folder is a prefix of the rel_path
+        if rel_path.startswith(remote_folder):
+          # Remove the remote_folder prefix and any leading slash
+          path_without_prefix = rel_path[len(remote_folder):].lstrip('/')
+          local_file_path = _fix_path_slashes(os.path.join(local_folder, path_without_prefix))
+        else:
+          # If remote_folder is not a prefix, just join the paths
+          local_file_path = _fix_path_slashes(os.path.join(local_folder, rel_path))
 
       if not local_file_exists:
         if local_file_path is not None:
@@ -123,6 +169,20 @@ class CloudService:
           # If the file IS just a directory, then we're done.
           if os.path.isdir(local_file_path):
             continue
+            
+          # Check if this file should be ignored before downloading
+          should_ignore = False
+          if ignore_paths:
+            for ignore_path in ignore_paths:
+              if ignore_path in rel_path or ignore_path in local_file_path:
+                if verbose:
+                  print(f"Ignoring download of '{rel_path}' because it matches ignore pattern '{ignore_path}'")
+                should_ignore = True
+                break
+          
+          if should_ignore:
+            continue
+            
         # File exists in remote only: download it
         if verbose:
           print(f"Local file '{local_file_path}' missing for remote file '{rel_path}'. Downloading...")
