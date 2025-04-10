@@ -35,9 +35,19 @@ class OpenStreetMapService:
         Returns:
             str: UTM CRS string
         """
+        if not all(isinstance(x, (int, float)) for x in bbox):
+            raise ValueError(f"Invalid bbox coordinates. All values must be numeric. Got: {bbox}")
+        
+        # Validate coordinate ranges
+        min_lon, min_lat, max_lon, max_lat = bbox
+        if not (-180 <= min_lon <= 180 and -180 <= max_lon <= 180):
+            raise ValueError(f"Invalid longitude values. Must be between -180 and 180. Got: min_lon={min_lon}, max_lon={max_lon}")
+        if not (-90 <= min_lat <= 90 and -90 <= max_lat <= 90):
+            raise ValueError(f"Invalid latitude values. Must be between -90 and 90. Got: min_lat={min_lat}, max_lat={max_lat}")
+        
         # Find the appropriate UTM zone based on the centroid of the bbox
-        centroid_lon = (bbox[0] + bbox[2]) / 2
-        centroid_lat = (bbox[1] + bbox[3]) / 2
+        centroid_lon = (min_lon + max_lon) / 2
+        centroid_lat = (min_lat + max_lat) / 2
         
         # Calculate UTM zone
         utm_zone = int((centroid_lon + 180) / 6) + 1
@@ -71,41 +81,48 @@ class OpenStreetMapService:
         # Create polygon from bbox
         polygon = box(bbox[0], bbox[1], bbox[2], bbox[3])
         
-        # Get water bodies from OSM
-        water_bodies = ox.features.features_from_polygon(
-            polygon,
-            tags=tags
-        )
-        
-        if water_bodies.empty:
+        try:
+            # Get water bodies from OSM
+            water_bodies = ox.features.features_from_polygon(
+                polygon,
+                tags=tags
+            )
+            
+            if water_bodies.empty:
+                return gpd.GeoDataFrame()
+            
+            # Project to UTM for accurate area calculation
+            utm_crs = self._get_utm_crs(bbox)
+            water_bodies_proj = water_bodies.to_crs(utm_crs)
+            
+            # Calculate areas and filter by minimum area
+            water_bodies_proj['area'] = water_bodies_proj.geometry.area
+            water_bodies_filtered = water_bodies_proj[water_bodies_proj['area'] >= min_area]
+            
+            if water_bodies_filtered.empty:
+                return gpd.GeoDataFrame()
+            
+            # Project back to WGS84
+            water_bodies_filtered = water_bodies_filtered.to_crs('EPSG:4326')
+            
+            # Clean up names
+            water_bodies_filtered['name'] = water_bodies_filtered['name'].fillna('unnamed_water_body')
+            water_bodies_filtered['name'] = water_bodies_filtered['name'].str.lower().str.replace(' ', '_')
+            
+            # Create a copy for top N features
+            water_bodies_top = water_bodies_filtered.nlargest(top_n, 'area').copy()
+            
+            # Store both dataframes
+            self.features['water_bodies'] = water_bodies_filtered
+            self.features['water_bodies_top'] = water_bodies_top
+            
+            return water_bodies_filtered
+            
+        except Exception as e:
+            print(f"ERROR in get_water_bodies: {str(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
             return gpd.GeoDataFrame()
-        
-        # Project to UTM for accurate area calculation
-        utm_crs = self._get_utm_crs(bbox)
-        water_bodies_proj = water_bodies.to_crs(utm_crs)
-        
-        # Calculate areas and filter by minimum area
-        water_bodies_proj['area'] = water_bodies_proj.geometry.area
-        water_bodies_filtered = water_bodies_proj[water_bodies_proj['area'] >= min_area]
-        
-        if water_bodies_filtered.empty:
-            return gpd.GeoDataFrame()
-        
-        # Project back to WGS84
-        water_bodies_filtered = water_bodies_filtered.to_crs('EPSG:4326')
-        
-        # Clean up names
-        water_bodies_filtered['name'] = water_bodies_filtered['name'].fillna('unnamed_water_body')
-        water_bodies_filtered['name'] = water_bodies_filtered['name'].str.lower().str.replace(' ', '_')
-        
-        # Create a copy for top N features
-        water_bodies_top = water_bodies_filtered.nlargest(top_n, 'area').copy()
-        
-        # Store both dataframes
-        self.features['water_bodies'] = water_bodies_filtered
-        self.features['water_bodies_top'] = water_bodies_top
-        
-        return water_bodies_filtered
 
     def get_transportation(self, bbox: Tuple[float, float, float, float], settings: dict) -> gpd.GeoDataFrame:
         """

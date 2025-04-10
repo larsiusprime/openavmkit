@@ -713,6 +713,18 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
             warnings.warn("DataFrame is not a GeoDataFrame, skipping OpenStreetMap enrichment")
             return df
             
+        # Ensure the GeoDataFrame is in WGS84 (EPSG:4326) before getting bounds
+        original_crs = df.crs
+        
+        if original_crs is None:
+            warnings.warn("GeoDataFrame has no CRS set, attempting to infer EPSG:4326")
+            if is_likely_epsg4326(df):
+                df.set_crs(epsg=4326, inplace=True)
+            else:
+                raise ValueError("Cannot determine CRS of input GeoDataFrame")
+        elif original_crs != "EPSG:4326":
+            df = df.to_crs(epsg=4326)
+            
         # Get the bounding box of all parcels
         bbox = df.total_bounds
         
@@ -737,7 +749,9 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
                     if 'water_bodies_top' in osm_service.features:
                         dataframes['water_bodies_top'] = osm_service.features['water_bodies_top']
             except Exception as e:
-                warnings.warn(f"Failed to get water bodies: {str(e)}")
+                print(f"ERROR getting water bodies: {str(e)}")
+                import traceback
+                print(f"Traceback: {traceback.format_exc()}")
                 
         if osm_settings.get('transportation', {}).get('enabled', False):
             if verbose:
