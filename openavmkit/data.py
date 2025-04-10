@@ -702,6 +702,11 @@ def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: 
         pd.DataFrame | gpd.GeoDataFrame: DataFrame enriched with OpenStreetMap data
     """
     try:
+        if not osm_settings.get('enabled', False):
+            if verbose:
+                print("OpenStreetMap enrichment disabled, skipping all OSM features")
+            return df
+            
         if verbose:
             print("Enriching with OpenStreetMap data...")
             
