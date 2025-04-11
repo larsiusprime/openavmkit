@@ -28,6 +28,7 @@ from openavmkit.utilities.settings import get_fields_categorical, get_fields_imp
 from openavmkit.utilities.census import get_creds_from_env_census, init_service_census, match_to_census_blockgroups
 from openavmkit.utilities.census import CensusService
 from openavmkit.utilities.openstreetmap import init_service_openstreetmap
+from openavmkit.inference import get_inference_model, perform_spatial_inference
 
 @dataclass
 class SalesUniversePair:
@@ -1263,31 +1264,29 @@ def _enrich_df_geometry(df_in: pd.DataFrame, s_enrich_this: dict, dataframes: di
   # distances
   gdf = _perform_distance_calculations(gdf, s_dist, dataframes, get_long_distance_unit(settings), verbose=verbose)
 
-  # TODO: gotta watch out for the universe/sales distinction here, probably should just only ever run this on universe?
+	# Merge everything together:
+	try_keys = ["key", "key2", "key3"]
+	success = False
+	gdf_merged: gpd.GeoDataFrame | None = None
+	for key in try_keys:
+		if key in gdf and key in df:
+			if verbose:
+				print(f"Using \"{key}\" to merge shapefiles onto df")
+			n_dupes_gdf = gdf.duplicated(subset=key).sum()
+			n_dupes_df = df.duplicated(subset=key).sum()
+			if n_dupes_gdf > 0 or n_dupes_df > 0:
+				raise ValueError(f"Found {n_dupes_gdf} duplicate keys in the geo_parcels dataframe, and {n_dupes_df} duplicate keys in the base dataframe. Cannot perform spatial join. De-duplicate your dataframes and try again.")
+			gdf_merged = gdf.merge(df, on=key, how="left", suffixes=("_spatial", "_data"))
+			gdf_merged = _finesse_columns(gdf_merged, "_spatial", "_data")
+			success = True
+			break
+	if not success:
+		raise ValueError(f"Could not find a common key between geo_parcels and base dataframe. Tried keys: {try_keys}")
+	#gdf_merged = _basic_geo_enrichment(gdf_merged, settings, verbose=verbose)
 
-  # Merge everything together:
-  try_keys = ["key", "key2", "key3"]
-  success = False
-  gdf_merged: gpd.GeoDataFrame | None = None
-  for key in try_keys:
-    if key in gdf and key in df:
-      if verbose:
-        print(f"Using \"{key}\" to merge shapefiles onto df")
-      n_dupes_gdf = gdf.duplicated(subset=key).sum()
-      n_dupes_df = df.duplicated(subset=key).sum()
-      if n_dupes_gdf > 0 or n_dupes_df > 0:
-        raise ValueError(f"Found {n_dupes_gdf} duplicate keys in the geo_parcels dataframe, and {n_dupes_df} duplicate keys in the base dataframe. Cannot perform spatial join. De-duplicate your dataframes and try again.")
-      gdf_merged = gdf.merge(df, on=key, how="left", suffixes=("_spatial", "_data"))
-      gdf_merged = _finesse_columns(gdf_merged, "_spatial", "_data")
-      success = True
-      break
-  if not success:
-    raise ValueError(f"Could not find a common key between geo_parcels and base dataframe. Tried keys: {try_keys}")
-  gdf_merged = _basic_geo_enrichment(gdf_merged, settings, verbose=verbose)
-
-  # spatially infer missing
-  if not is_sales:
-    gdf_merged = _perform_spatial_inference(gdf_merged, s_infer, "key", verbose=verbose)
+	# spatially infer missing
+	if not is_sales:
+		gdf_merged = perform_spatial_inference(gdf_merged, s_infer, "key", verbose=verbose)
 
   return gdf_merged
 
@@ -1516,338 +1515,96 @@ def _perform_spatial_join(gdf_in: gpd.GeoDataFrame, gdf_overlay: gpd.GeoDataFram
   gdf = gdf.drop(columns=["geometry_centroid", "__overlay_id__"], errors="ignore")
   return gdf
 
-
-def _perform_spatial_inference(df_in: gpd.GeoDataFrame, s_infer: dict, key: str, verbose: bool = False) -> gpd.GeoDataFrame:
-    # Suppress all numpy warnings for the entire inference process
-    with np.errstate(all='ignore'):
-        df = df_in.copy()
-        for field in s_infer:
-            entry = s_infer[field]
-            df = _do_perform_spatial_inference(df, entry, field, key, verbose=verbose)
-        return df
-
-
-def _do_perform_spatial_inference(df: gpd.GeoDataFrame, entry: dict, field: str, key: str, verbose: bool = False) -> gpd.GeoDataFrame:
-    # Suppress all numpy warnings for the entire inference process
-    with np.errstate(all='ignore'):
+def _do_perform_spatial_inference(df: pd.DataFrame, s_infer: dict, field: str, key_field: str, verbose: bool = False) -> pd.DataFrame:
+    """
+    Perform spatial inference using specified model
+    
+    Args:
+        df: DataFrame containing data
+        s_infer: Dictionary with inference settings
+        field: Field to infer
+        key_field: Primary key field
+        verbose: Whether to print detailed information
+        
+    Returns:
+        DataFrame with inferred values
+    """
+    if verbose:
         print(f"\n=== Starting inference for field '{field}' ===")
-        print(f"Total rows in dataset: {len(df)}")
+    
+    # Get model settings
+    proxies = s_infer.get("proxies", [])
+    locations = s_infer.get("locations", [])
+    group_by = s_infer.get("group_by", [])
+    
+    if not proxies:
+        raise ValueError(f"No proxy fields specified for inference of {field}")
+    
+    # Initialize model
+    model = get_inference_model("ratio_proxy")
+    
+    # Split data into training and inference sets
+    filters = s_infer.get("filters", [])
+    if filters:
+        inference_mask = select_filter(df, filters)
+        training_mask = ~inference_mask & df[field].notna()
+    else:
+        inference_mask = df[field].isna()
+        training_mask = ~inference_mask
         
+    df_train = df[training_mask].copy()
+    df_to_infer = df[inference_mask].copy()
+    
+    if verbose:
+        print(f"\nData split:")
+        print(f"--> {len(df_to_infer):,} rows need inference")
+        print(f"--> {len(df_train):,} rows available for training")
+
+    # First try direct fill from known sources
+    fill_fields = s_infer.get("fill", [])
+    if fill_fields:
         if verbose:
-            print(f"Performing spatial inference on field {field}...")
-
-        # First identify rows with zero/missing values that need to be filled
-        df.loc[df[field].le(0), field] = None
-        total_missing = df[field].isna().sum()
-        print(f"\nTotal rows needing values: {total_missing} ({total_missing/len(df)*100:.1f}% of total)")
-
-        # Apply filters to identify data needing inference (the "bad" data)
-        filters = entry.get("filters", None)
-        if (filters is not None) and isinstance(filters, list) and len(filters) > 0:
-            try:
-                filter_mask = select_filter(df, filters)
-                
-                # Handle case where filter_mask is a DataFrame
-                if isinstance(filter_mask, pd.DataFrame):
-                    if len(filter_mask.columns) > 0:
-                        filter_mask = filter_mask.iloc[:, 0]
-                    else:
-                        filter_mask = pd.Series(False, index=df.index)
-                
-                # Handle case where filter_mask is empty
-                if len(filter_mask) == 0:
-                    filter_mask = pd.Series(False, index=df.index)
-                
-                # Convert string values to boolean safely
-                if pd.api.types.is_string_dtype(filter_mask):
-                    filter_mask = filter_mask.map(lambda x: str(x).lower() == 'true' if pd.notna(x) else False)
-                elif not pd.api.types.is_bool_dtype(filter_mask):
-                    filter_mask = filter_mask.astype(bool)
-                
-                # Split into data to fill (matches filter) and training data (everything else)
-                df_to_fill = df[filter_mask].copy()
-                df_train = df[~filter_mask & df[field].notna()].copy()  # Use non-filtered data with valid values for training
-                
-                print(f"\nSplit results:")
-                print(f"--> {len(df_to_fill):,} rows need inference (match filter)")
-                print(f"--> {len(df_train):,} rows available for training model")
-            except Exception as e:
-                print(f"Warning: Filter application failed with error: {str(e)}")
-                print("Falling back to using all data...")
-                df_to_fill = df[df[field].isna()].copy()
-                df_train = df[df[field].notna()].copy()
-        else:
-            warnings.warn("No 'filters' found in data.process.enrich.<target>.infer, scope will be global -- make sure this is what you really want")
-            df_to_fill = df[df[field].isna()].copy()
-            df_train = df[df[field].notna()].copy()
-            print("\nNo filters specified - using all valid data for training")
-
-        # First try direct fill from known sources
-        fill_fields = entry.get("fill", [])
-        if fill_fields:
             print(f"\nFilling {field} with known values from: {fill_fields}")
-            for fill_field in fill_fields:
-                if fill_field not in df.columns:
-                    warnings.warn(f"Fill field '{fill_field}' not found in dataframe")
-                    continue
-                # Only fill where target is null and fill source exists and is > 0
-                mask = df[field].isna() & df[fill_field].notna() & df[fill_field].gt(0)
-                df.loc[mask, field] = df.loc[mask, fill_field]
+        for fill_field in fill_fields:
+            if fill_field not in df.columns:
+                warnings.warn(f"Fill field '{fill_field}' not found in dataframe")
+                continue
+            mask = df[field].isna() & df[fill_field].notna() & df[fill_field].gt(0)
+            df.loc[mask, field] = df.loc[mask, fill_field]
+            if verbose:
                 print(f"--> Filled {mask.sum():,} values from {fill_field}")
-                # Track which values were filled
-                fill_tracker = f"{field}_filled_from_{fill_field}"
-                df[fill_tracker] = False
-                df.loc[mask, fill_tracker] = True
+    
+    # Fit model
+    if verbose:
+        print("\nFitting model...")
+    model.fit(df_train, field, {"proxies": proxies, "locations": locations, "group_by": group_by})
+    
+    # Evaluate model
+    if verbose:
+        print("\nEvaluating model performance:")
+        metrics = model.evaluate(df_train, field)
+        for metric, value in metrics.items():
+            print(f"--> {metric}: {value:.4f}")
+    
+    # Make predictions
+    if verbose:
+        print("\nMaking predictions...")
+    predictions = model.predict(df_to_infer)
+    
+    # Update DataFrame
+    df = df.copy()
+    df.loc[inference_mask, field] = predictions
+    df[f"inferred_{field}"] = False
+    df.loc[inference_mask, f"inferred_{field}"] = True
 
-            remaining_missing = df[field].isna().sum()
-            filled_count = total_missing - remaining_missing
-            print(f"\nDirect fill results:")
-            print(f"--> Filled {filled_count:,} values from known sources")
-            print(f"--> {remaining_missing:,} values still need inference ({remaining_missing/len(df)*100:.1f}% of total)")
-
-        # Set up for inference
-        proxies = entry.get("proxies", [])
-        if not isinstance(proxies, list) or len(proxies) == 0:
-            raise ValueError("No 'proxies' found in data.process.enrich.<target>.infer")
-
-        locations = entry.get("locations", [])
-        if isinstance(locations, str):
-            locations = [locations]
-        if not isinstance(locations, list) or len(locations) == 0:
-            raise ValueError("No 'locations' found in data.process.enrich.<target>.infer")
-
-        locations.append("___everything___")
-        df["___everything___"] = "1"
-
-        group_by = entry.get("group_by", None)
-        if isinstance(group_by, str):
-            group_by = [group_by]
-        if not isinstance(group_by, list) or len(group_by) == 0:
-            warnings.warn("No 'group_by' found in data.process.enrich.<target>.infer, scope will be global.")
-
-        print(f"\nInference configuration:")
-        print(f"--> Proxies: {proxies}")
-        print(f"--> Locations: {locations}")
-        print(f"--> Group by: {group_by}")
-
-        # Calculate proxy ratios using training data
-        proxy_fields = []
-        for proxy in proxies:
-            proxy_field = f"__proxy__{proxy}"
-            
-            # Debug info about the proxy data
-            print(f"\nAnalyzing proxy {proxy}:")
-            print(f"--> {field} stats:")
-            print(f"    Non-null count: {df_train[field].notna().sum():,}")
-            print(f"    Positive count: {df_train[field].gt(0).sum():,}")
-            print(f"    Mean value: {df_train[field].mean():.2f}")
-            print(f"--> {proxy} stats:")
-            print(f"    Non-null count: {df_train[proxy].notna().sum():,}")
-            print(f"    Positive count: {df_train[proxy].gt(0).sum():,}")
-            print(f"    Mean value: {df_train[proxy].mean():.2f}")
-            
-            # Only calculate ratios where both field and proxy are valid and non-zero
-            valid_mask = (df_train[field].notna() & 
-                        df_train[proxy].notna() & 
-                        df_train[proxy].gt(0) &
-                        df_train[field].gt(0))  # Added check for field > 0
-            
-            valid_count = valid_mask.sum()
-            print(f"--> Valid pairs for ratio calculation: {valid_count:,}")
-            
-            if valid_count == 0:
-                print(f"\nWarning: No valid data for proxy {proxy}")
-                print(f"--> Both {field} and {proxy} must be non-null and greater than 0")
-                continue
-            
-            # Calculate ratios and show sample
-            df_train[proxy_field] = np.nan  # Initialize with NaN instead of None
-            df_train.loc[valid_mask, proxy_field] = df_train.loc[valid_mask, field] / df_train.loc[valid_mask, proxy]
-            
-            # Show sample of raw values and ratios
-            sample_size = min(5, valid_count)
-            if sample_size > 0:
-                sample_idx = df_train[valid_mask].sample(n=sample_size).index
-                print("\nSample of ratio calculations:")
-                for idx in sample_idx:
-                    print(f"    {field}: {df_train.loc[idx, field]:,.2f}")
-                    print(f"    {proxy}: {df_train.loc[idx, proxy]:,.2f}")
-                    print(f"    Ratio: {df_train.loc[idx, proxy_field]:,.4f}")
-                    print(f"    ---")
-            
-            # Remove extreme outliers (outside 1st and 99th percentiles)
-            with np.errstate(all='ignore'):
-                q1 = df_train[proxy_field].quantile(0.01)
-                q99 = df_train[proxy_field].quantile(0.99)
-                valid_range = (df_train[proxy_field] >= q1) & (df_train[proxy_field] <= q99)
-                outliers_removed = (~valid_range & df_train[proxy_field].notna()).sum()
-                print(f"\nOutlier removal:")
-                print(f"--> Removed {outliers_removed:,} outliers")
-                print(f"--> Range kept: {q1:.4f} to {q99:.4f}")
-                df_train.loc[~valid_range, proxy_field] = np.nan
-            
-            # Check if we have any valid ratios before adding to proxy_fields
-            valid_ratios = df_train[proxy_field].notna().sum()
-            if valid_ratios > 0:
-                proxy_fields.append(proxy_field)
-                print(f"\nProxy statistics for {proxy_field} (from training data):")
-                with np.errstate(all='ignore'):
-                    stats = df_train[proxy_field].describe(percentiles=[.05, .25, .5, .75, .95])
-                print(f"--> Count: {stats['count']:,.0f}")
-                print(f"--> Mean: {stats['mean']:.4f}")
-                print(f"--> Std: {stats['std']:.4f}")
-                print(f"--> Min: {stats['min']:.4f}")
-                print(f"--> 5th: {stats['5%']:.4f}")
-                print(f"--> 25th: {stats['25%']:.4f}")
-                print(f"--> Median: {stats['50%']:.4f}")
-                print(f"--> 75th: {stats['75%']:.4f}")
-                print(f"--> 95th: {stats['95%']:.4f}")
-                print(f"--> Max: {stats['max']:.4f}")
-            else:
-                print(f"\nWarning: No valid ratios calculated for proxy {proxy}")
-                print(f"--> Skipping this proxy for inference")
-                continue
-
-        if len(proxy_fields) == 0:
-            print("\nWarning: No valid proxy fields available for inference")
-            return df
-
-        # Initialize proxy value column and inference tracking
-        df["___proxy___"] = None
-        df[f"inferred_{field}"] = False  # Initialize inference flag
-        
-        print("\nProcessing by location:")
-        for location in locations:
-            print(f"\n--> Location: {location}")
-            empty_before_location = df[field].isna().sum()
-
-            # Special handling for the "everything" case
-            if location == "___everything___":
-                # For the everything case, we don't need grouping
-                df_agg = pd.DataFrame()
-                for proxy_field in proxy_fields:
-                    # Calculate global median ratio, ignoring NaN values
-                    with np.errstate(all='ignore'):
-                        median_ratio = df_train[proxy_field].median()
-                    if pd.notna(median_ratio):
-                        df_agg[proxy_field] = [median_ratio]
-                
-                # If we have no valid medians, skip this location
-                if df_agg.empty:
-                    print("    No valid global ratios found, skipping...")
-                    continue
-                
-                # Apply global ratios to missing values
-                for proxy in proxies:
-                    proxy_field = f"__proxy__{proxy}"
-                    if proxy_field in df_agg:
-                        ratio = df_agg[proxy_field].iloc[0]
-                        mask = df[field].isna() & df["___proxy___"].isna() & df[proxy].notna() & df[proxy].gt(0)
-                        if mask.sum() > 0:
-                            df.loc[mask, "___proxy___"] = ratio * df.loc[mask, proxy]
-                            df.loc[mask, f"inferred_{field}"] = True  # Mark as inferred
-                
-                empty_after_location = df[field].isna().sum()
-                filled_this_location = empty_before_location - empty_after_location
-                if filled_this_location > 0:
-                    print(f"    Filled {filled_this_location:,} values using global ratios")
-                    print(f"    ({filled_this_location/total_missing*100:.1f}% of total missing)")
-                continue
-
-            # For all other locations, use grouping
-            group_list = group_by.copy() if group_by else []
-            group_list.append(location)
-
-            # Skip if any group columns are missing
-            missing_cols = [col for col in group_list if col not in df_train.columns]
-            if missing_cols:
-                print(f"    Warning: Missing columns for grouping: {missing_cols}")
-                print("    Skipping this location...")
-                continue
-
-            # Set up temporary dataframes for grouping
-            df_temp = df_train.copy()
-            
-            # Create group key before any column renaming
-            df_temp["__group_key__"] = df_temp[group_list].astype(str).agg("_".join, axis=1)
-            df["__group_key__"] = df[group_list].astype(str).agg("_".join, axis=1)
-
-            # Calculate median ratios per group
-            try:
-                # Use numpy's errstate context manager to suppress warnings
-                with np.errstate(all='ignore'):
-                    df_group = df_temp.groupby("__group_key__")
-                    # Custom safe median to avoid warnings
-                    def safe_median(x):
-                        if len(x) == 0 or x.isna().all():
-                            return np.nan
-                        return float(x.median())
-                    
-                    # Calculate median ratios for each proxy
-                    df_agg = pd.DataFrame(index=df_group.groups.keys())
-                    df_agg.index.name = "__group_key__"
-                    
-                    for proxy_field in proxy_fields:
-                        # Get median ratios for this proxy
-                        ratios = df_group[proxy_field].agg(safe_median)
-                        if not ratios.empty and not ratios.isna().all():
-                            df_agg[proxy_field] = ratios
-                    
-                    df_agg = df_agg.reset_index()
-                    
-                    # Skip if we got no results or all results are NaN
-                    if df_agg.empty or df_agg[proxy_fields].isna().all().all():
-                        print("    No valid ratios found for this location, skipping...")
-                        continue
-
-                    # Apply ratios to missing values
-                    for proxy in proxies:
-                        proxy_field = f"__proxy__{proxy}"
-                        if proxy_field in df_agg.columns:
-                            # Merge ratios
-                            df_merged = df.merge(df_agg[["__group_key__", proxy_field]], on="__group_key__", how="left")
-                            # Calculate inferred values where proxy exists
-                            mask = df[field].isna() & df["___proxy___"].isna() & df[proxy].notna() & df[proxy].gt(0)
-                            if mask.sum() > 0:
-                                proxy_values = df_merged.loc[mask, proxy_field] * df.loc[mask, proxy]
-                                df.loc[mask, "___proxy___"] = proxy_values
-                                df.loc[mask, f"inferred_{field}"] = True  # Mark as inferred
-                                
-                                # Debug info
-                                print(f"    Filled {mask.sum():,} values using {proxy}")
-            except Exception as e:
-                print(f"    Warning: Error processing location {location}: {str(e)}")
-                print("    Skipping this location...")
-                continue
-
-            empty_after_location = df[field].isna().sum()
-            filled_this_location = empty_before_location - empty_after_location
-            if filled_this_location > 0:
-                print(f"    Filled {filled_this_location:,} values using {location} grouping")
-                print(f"    ({filled_this_location/total_missing*100:.1f}% of total missing)")
-            else:
-                print("    No values filled using this location")
-
-        # Apply inferred values
-        mask = df[field].isna() & df["___proxy___"].notna()
-        df.loc[mask, field] = df.loc[mask, "___proxy___"]
-        
-        # Clean up temporary columns
-        df = df.drop(columns=["___proxy___", "___everything___", "__group_key__"], errors="ignore")
-
-        # Final statistics
-        final_missing = df[field].isna().sum()
-        total_filled = total_missing - final_missing
-        total_inferred = df[f"inferred_{field}"].sum()
-        
-        print(f"\nFinal inference results for {field}:")
-        print(f"--> Started with {total_missing:,} missing values")
-        print(f"--> Filled {total_filled:,} values ({total_filled/total_missing*100:.1f}% of missing)")
-        print(f"--> {total_inferred:,} values were inferred using proxies")
+    # Final statistics
+    final_missing = df[field].isna().sum()
+    if verbose:
+        print(f"\nFinal results:")
+        print(f"--> {len(predictions):,} values inferred")
         print(f"--> {final_missing:,} values remain empty ({final_missing/len(df)*100:.1f}% of total)")
 
-        return df
-
+    return df
 
 def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDataFrame, _id: str, max_distance: float = None, unit: str = "km") -> pd.DataFrame:
     """
