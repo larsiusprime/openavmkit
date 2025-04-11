@@ -359,10 +359,11 @@ class RandomForestModel(InferenceModel):
         self.imputer = SimpleImputer(strategy='median')
         
     def fit(self, df: pd.DataFrame, target: str, settings: Dict[str, Any]) -> None:
-        """Fit model with cross-validation"""
+        """Fit model with proper categorical handling"""
         proxies = settings.get("proxies", [])
-        locations = settings.get("locations", [])
+        locations = settings.get("locations", []).copy()  # Make a copy
         
+        # Remove ___everything___ from locations if present
         if "___everything___" in locations:
             locations.remove("___everything___")
         
@@ -373,7 +374,7 @@ class RandomForestModel(InferenceModel):
         X = df[proxies].copy()
         y = df[target].values
         
-        # Handle missing values
+        # Handle missing values in proxy variables
         X = pd.DataFrame(self.imputer.fit_transform(X), 
                         columns=X.columns, index=X.index)
         
@@ -402,13 +403,6 @@ class RandomForestModel(InferenceModel):
         print("\nFeature importances:")
         for feat, imp in importances.items():
             print(f"--> {feat}: {imp:.4f}")
-            
-        # Print training metrics
-        train_pred = self.model.predict(X)
-        train_metrics = _calculate_metrics(y, train_pred)
-        print("\nTraining performance:")
-        for metric, value in train_metrics.items():
-            print(f"--> {metric}: {value:.4f}")
 
     def predict(self, df: pd.DataFrame) -> pd.Series:
         """Make predictions with universal handling of unknowns"""
@@ -504,25 +498,24 @@ def perform_spatial_inference(df: gpd.GeoDataFrame, s_infer: dict, key: str, ver
         return df_out
 
 def _do_perform_spatial_inference(df: pd.DataFrame, s_infer: dict, field: str, key_field: str, verbose: bool = False) -> pd.DataFrame:
-    """Perform spatial inference with improved validation"""
+    """Perform spatial inference with validation on filled values"""
     if verbose:
         print(f"\n=== Starting inference for field '{field}' ===")
     
-    # Get model settings
+    # Get model settings and create initial masks
     model_settings = s_infer.get("model", {})
+    model_type = model_settings.get("type")  # Get model type early
+    
     if not model_settings:
         raise ValueError(f"No model settings found for field {field}")
-        
-    model_type = model_settings.get("type")
     if not model_type:
         raise ValueError(f"No model type specified for field {field}")
-    
-    # Split data into training and inference sets
+        
     filters = s_infer.get("filters", [])
+    fill_fields = s_infer.get("fill", [])
     
-    # Create masks for training and inference
+    # Create masks properly as boolean Series
     if filters:
-        # Get filter result and ensure it's boolean
         inference_mask = pd.Series(False, index=df.index)
         filter_result = select_filter(df, filters)
         
@@ -538,26 +531,20 @@ def _do_perform_spatial_inference(df: pd.DataFrame, s_infer: dict, field: str, k
             else:
                 raise ValueError(f"Filter result length ({len(filter_result)}) does not match DataFrame length ({len(df)})")
         
-        # Create training mask (not in inference set and has valid value)
         training_mask = (~inference_mask) & df[field].notna()
     else:
-        # If no filters, inference mask is just missing values
         inference_mask = pd.Series(df[field].isna(), index=df.index)
         training_mask = pd.Series(df[field].notna(), index=df.index)
     
     if verbose:
-        print("\nMask statistics:")
+        print("\nInitial masks:")
         print(f"--> Total rows: {len(df)}")
         print(f"--> Inference mask True: {inference_mask.sum()}")
         print(f"--> Training mask True: {training_mask.sum()}")
-        
-        print("\nData split:")
-        print(f"--> {inference_mask.sum():,} rows need inference")
-        print(f"--> {training_mask.sum():,} rows available for training")
-
-    # First try direct fill from known sources
-    fill_fields = s_infer.get("fill", [])
+    
+    # First identify fill opportunities
     df_result = df.copy()
+    fill_validation_data = []
     
     if fill_fields:
         if verbose:
@@ -571,16 +558,7 @@ def _do_perform_spatial_inference(df: pd.DataFrame, s_infer: dict, field: str, k
             # Consider both NA and 0 as missing values
             is_missing = df[field].isna() | df[field].eq(0)
             
-            if verbose:
-                print(f"\nDebug info for {fill_field}:")
-                print(f"--> Total rows in DataFrame: {len(df)}")
-                print(f"--> Rows with {field} NA: {df[field].isna().sum()}")
-                print(f"--> Rows with {field} = 0: {df[field].eq(0).sum()}")
-                print(f"--> Total rows needing fill: {is_missing.sum()}")
-                print(f"--> Rows with {fill_field} present: {df[fill_field].notna().sum()}")
-                print(f"--> Rows with {fill_field} > 0: {df[fill_field].gt(0).sum()}")
-            
-            # Fill mask
+            # Create fill mask
             fill_mask = (
                 is_missing &
                 df[fill_field].notna() & 
@@ -588,38 +566,32 @@ def _do_perform_spatial_inference(df: pd.DataFrame, s_infer: dict, field: str, k
             )
             
             if fill_mask.sum() > 0:
+                # Store validation data
+                fill_validation_data.append({
+                    'name': fill_field,  # Changed 'field' to 'name'
+                    'mask': fill_mask,
+                    'true_values': df.loc[fill_mask, fill_field],
+                    'rows': df.loc[fill_mask],  # Store full rows for prediction
+                    'count': fill_mask.sum()
+                })
+                
+                # Apply fill
                 df_result.loc[fill_mask, field] = df.loc[fill_mask, fill_field]
                 if verbose:
                     print(f"--> Filled {fill_mask.sum():,} values from {fill_field}")
-                    
-                # Update inference mask to exclude filled values
-                inference_mask = inference_mask & ~fill_mask
                 
-        if verbose:
-            print(f"\nAfter fills:")
-            print(f"--> {inference_mask.sum():,} rows still need inference")
-
-    # Split data for inference
-    df_train = df_result[training_mask].copy()
-    df_to_infer = df_result[inference_mask].copy()
+                # Update inference mask
+                inference_mask = inference_mask & ~fill_mask
     
-    if len(df_train) == 0:
-        warnings.warn(f"No training data available for field {field}. Skipping inference.")
-        return df_result
-
-    # Split training data into train and validation sets
+    # Prepare training data
     df_train_full = df_result[training_mask].copy()
-    
-    # Ensure target variable is numeric and handle missing values
     df_train_full[field] = pd.to_numeric(df_train_full[field], errors='coerce')
-    
-    # Remove any rows where target is NA
     df_train_full = df_train_full.dropna(subset=[field])
     
-    # Create a small validation set for final comparison
+    # Split for initial validation
     df_train, df_val = train_test_split(
         df_train_full, 
-        test_size=0.1,  # Smaller validation set
+        test_size=0.1,
         random_state=42
     )
     
@@ -628,7 +600,7 @@ def _do_perform_spatial_inference(df: pd.DataFrame, s_infer: dict, field: str, k
         print(f"--> Full training samples: {len(df_train_full):,}")
         print(f"--> Training samples: {len(df_train):,}")
         print(f"--> Validation samples: {len(df_val):,}")
-
+    
     # Run experiments if enabled
     if model_settings.get("experiment", False):
         print("\n=== Running Model Experiments ===")
@@ -636,20 +608,19 @@ def _do_perform_spatial_inference(df: pd.DataFrame, s_infer: dict, field: str, k
         best_score = float('-inf')
         best_model_type = None
         validation_results = {}
+        fill_validation_results = {}
         
         for exp_type in experiment_models:
             print(f"\nTrying {exp_type} model:")
             try:
+                # First do regular validation
                 model = get_inference_model(exp_type)
-                
-                # Fit on training data
                 model.fit(df_train, field, model_settings)
                 
-                # Get predictions on validation set
+                # Regular validation metrics
                 val_predictions = model.predict(df_val)
                 train_predictions = model.predict(df_train)
                 
-                # Calculate metrics
                 val_metrics = _calculate_metrics(
                     df_val[field].values,
                     val_predictions.values
@@ -664,59 +635,89 @@ def _do_perform_spatial_inference(df: pd.DataFrame, s_infer: dict, field: str, k
                     'val': val_metrics
                 }
                 
-                print(f"\nTraining performance:")
+                print(f"\nRegular Validation Results:")
+                print("\nTraining performance:")
                 for metric, value in train_metrics.items():
                     print(f"--> {metric}: {value:.4f}")
-                    
-                print(f"\nValidation performance:")
+                print("\nValidation performance:")
                 for metric, value in val_metrics.items():
                     print(f"--> {metric}: {value:.4f}")
+                
+                # Now validate on filled data
+                if fill_validation_data:
+                    print("\nValidating on filled data:")
                     
+                    # Retrain on full training set
+                    model.fit(df_train_full, field, model_settings)
+                    
+                    fill_results = {}
+                    for fill_data in fill_validation_data:
+                        fill_name = fill_data['name']
+                        rows_to_predict = fill_data['rows']
+                        true_values = fill_data['true_values']
+                        
+                        # Make predictions on filled rows
+                        fill_predictions = model.predict(rows_to_predict)
+                        
+                        # Calculate metrics
+                        fill_metrics = _calculate_metrics(
+                            true_values.values,
+                            fill_predictions.values
+                        )
+                        
+                        fill_results[fill_name] = fill_metrics
+                        
+                        print(f"\nPerformance on {fill_name} ({fill_data['count']} rows):")
+                        for metric, value in fill_metrics.items():
+                            print(f"--> {metric}: {value:.4f}")
+                    
+                    fill_validation_results[exp_type] = fill_results
+                
                 if val_metrics['r2'] > best_score:
                     best_score = val_metrics['r2']
                     best_model_type = exp_type
                     
             except Exception as e:
                 print(f"Error with {exp_type} model: {str(e)}")
-                
-        print(f"\nBest performing model: {best_model_type} (R² = {best_score:.4f})")
-        print(f"Currently using: {model_type}")
+                continue  # Skip to next model if there's an error
         
-        # Print comparison table
-        print("\nModel Comparison:")
-        train_df = pd.DataFrame({k: v['train'] for k, v in validation_results.items()}).round(4)
-        val_df = pd.DataFrame({k: v['val'] for k, v in validation_results.items()}).round(4)
-        print("\nTraining Metrics:")
-        print(train_df)
-        print("\nValidation Metrics:")
-        print(val_df)
-
+        if best_model_type is not None:
+            print(f"\nBest performing model: {best_model_type} (R² = {best_score:.4f})")
+            print(f"Currently using: {model_type}")
+            
+            # Print comparison tables
+            print("\nRegular Validation Results:")
+            train_df = pd.DataFrame({k: v['train'] for k, v in validation_results.items()}).round(4)
+            val_df = pd.DataFrame({k: v['val'] for k, v in validation_results.items()}).round(4)
+            print("\nTraining Metrics:")
+            print(train_df)
+            print("\nValidation Metrics:")
+            print(val_df)
+            
+            if fill_validation_results:
+                print("\nFill Validation Results:")
+                for fill_data in fill_validation_data:
+                    fill_name = fill_data['name']
+                    print(f"\n{fill_name} Metrics:")
+                    fill_df = pd.DataFrame({
+                        k: v[fill_name] for k, v in fill_validation_results.items()
+                        if fill_name in v  # Only include models that have results for this fill
+                    }).round(4)
+                    print(fill_df)
+    
     # Fit final model on full training data
     if verbose:
         print("\nFitting final model on full training data...")
-        
+    
     model = get_inference_model(model_type)
     model.fit(df_train_full, field, model_settings)
     
-    # Make predictions on inference set
-    if verbose:
-        print("\nMaking predictions on inference set...")
-        
-    predictions = model.predict(df_to_infer)
+    # Make predictions
+    predictions = model.predict(df_result[inference_mask])
     
     # Update DataFrame
     df_result.loc[inference_mask, field] = predictions
-    
-    # Track which values were inferred
     df_result[f"inferred_{field}"] = False
     df_result.loc[inference_mask, f"inferred_{field}"] = True
-
-    # Final statistics
-    final_missing = df_result[field].isna().sum()
-    if verbose:
-        print(f"\nFinal results:")
-        print(f"--> {len(predictions):,} values inferred")
-        if final_missing > 0:
-            print(f"--> {final_missing:,} values remain empty ({final_missing/len(df)*100:.1f}% of total)")
-
+    
     return df_result
