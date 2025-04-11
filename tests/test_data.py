@@ -575,7 +575,6 @@ def test_spatial_inference():
 	# Create expected DataFrame - keep all rows
 	df_expected = df.copy()
 	
-	
 	# For rows that need inference:
 	# 1. hood != "x" (includes both regular values and "?")
 	# 2. size is None
@@ -588,9 +587,9 @@ def test_spatial_inference():
 	mask_infer = mask_eligible & mask_needs_inference & mask_has_proxy
 	df_expected.loc[mask_infer, "size"] = df_expected.loc[mask_infer, "true"]
 	
-	# Set up inference flags - NOTE: Changed column name to match implementation
-	df_expected["inferred_size"] = False
-	df_expected.loc[mask_infer, "inferred_size"] = True
+	# Set up inference flags
+	df_expected["size_inferred"] = False
+	df_expected.loc[mask_infer, "size_inferred"] = True
 
 	# Run inference
 	df = _do_perform_spatial_inference(df, s_infer, "size", "key", verbose=True)
@@ -601,9 +600,9 @@ def test_spatial_inference():
 
 	# Add debug prints
 	print("\nExpected DataFrame:")
-	print(df_expected[["hood", "size", "inferred_size"]])
+	print(df_expected[["hood", "size", "size_inferred"]])
 	print("\nActual DataFrame:")
-	print(df[["hood", "size", "inferred_size"]])
+	print(df[["hood", "size", "size_inferred"]])
 
 	assert dfs_are_equal(df, df_expected, primary_key="key")
 
