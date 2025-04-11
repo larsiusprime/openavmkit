@@ -1647,24 +1647,75 @@ def _do_perform_spatial_inference(df: gpd.GeoDataFrame, entry: dict, field: str,
         proxy_fields = []
         for proxy in proxies:
             proxy_field = f"__proxy__{proxy}"
-            # Only calculate ratios where both field and proxy are valid
-            valid_mask = df_train[field].notna() & df_train[proxy].notna() & df_train[proxy].gt(0)
-            df_train[proxy_field] = None
+            
+            # Debug info about the proxy data
+            print(f"\nAnalyzing proxy {proxy}:")
+            print(f"--> {field} stats:")
+            print(f"    Non-null count: {df_train[field].notna().sum():,}")
+            print(f"    Positive count: {df_train[field].gt(0).sum():,}")
+            print(f"    Mean value: {df_train[field].mean():.2f}")
+            print(f"--> {proxy} stats:")
+            print(f"    Non-null count: {df_train[proxy].notna().sum():,}")
+            print(f"    Positive count: {df_train[proxy].gt(0).sum():,}")
+            print(f"    Mean value: {df_train[proxy].mean():.2f}")
+            
+            # Only calculate ratios where both field and proxy are valid and non-zero
+            valid_mask = (df_train[field].notna() & 
+                        df_train[proxy].notna() & 
+                        df_train[proxy].gt(0) &
+                        df_train[field].gt(0))  # Added check for field > 0
+            
+            valid_count = valid_mask.sum()
+            print(f"--> Valid pairs for ratio calculation: {valid_count:,}")
+            
+            if valid_count == 0:
+                print(f"\nWarning: No valid data for proxy {proxy}")
+                print(f"--> Both {field} and {proxy} must be non-null and greater than 0")
+                continue
+            
+            # Calculate ratios and show sample
+            df_train[proxy_field] = np.nan  # Initialize with NaN instead of None
             df_train.loc[valid_mask, proxy_field] = df_train.loc[valid_mask, field] / df_train.loc[valid_mask, proxy]
             
+            # Show sample of raw values and ratios
+            sample_size = min(5, valid_count)
+            if sample_size > 0:
+                sample_idx = df_train[valid_mask].sample(n=sample_size).index
+                print("\nSample of ratio calculations:")
+                for idx in sample_idx:
+                    print(f"    {field}: {df_train.loc[idx, field]:,.2f}")
+                    print(f"    {proxy}: {df_train.loc[idx, proxy]:,.2f}")
+                    print(f"    Ratio: {df_train.loc[idx, proxy_field]:,.4f}")
+                    print(f"    ---")
+            
+            # Remove extreme outliers (outside 1st and 99th percentiles)
+            with np.errstate(all='ignore'):
+                q1 = df_train[proxy_field].quantile(0.01)
+                q99 = df_train[proxy_field].quantile(0.99)
+                valid_range = (df_train[proxy_field] >= q1) & (df_train[proxy_field] <= q99)
+                outliers_removed = (~valid_range & df_train[proxy_field].notna()).sum()
+                print(f"\nOutlier removal:")
+                print(f"--> Removed {outliers_removed:,} outliers")
+                print(f"--> Range kept: {q1:.4f} to {q99:.4f}")
+                df_train.loc[~valid_range, proxy_field] = np.nan
+            
             # Check if we have any valid ratios before adding to proxy_fields
-            if df_train[proxy_field].notna().sum() > 0:
+            valid_ratios = df_train[proxy_field].notna().sum()
+            if valid_ratios > 0:
                 proxy_fields.append(proxy_field)
                 print(f"\nProxy statistics for {proxy_field} (from training data):")
-                # Use numpy's errstate context manager to suppress warnings
                 with np.errstate(all='ignore'):
-                    stats = df_train[proxy_field].describe()
-                print(f"--> Count: {stats.get('count', 0):.0f}")
-                if stats.get('count', 0) > 0:
-                    print(f"--> Mean: {stats.get('mean', 0):.2f}")
-                    print(f"--> Std: {stats.get('std', 0):.2f}")
-                    print(f"--> Min: {stats.get('min', 0):.2f}")
-                    print(f"--> Max: {stats.get('max', 0):.2f}")
+                    stats = df_train[proxy_field].describe(percentiles=[.05, .25, .5, .75, .95])
+                print(f"--> Count: {stats['count']:,.0f}")
+                print(f"--> Mean: {stats['mean']:.4f}")
+                print(f"--> Std: {stats['std']:.4f}")
+                print(f"--> Min: {stats['min']:.4f}")
+                print(f"--> 5th: {stats['5%']:.4f}")
+                print(f"--> 25th: {stats['25%']:.4f}")
+                print(f"--> Median: {stats['50%']:.4f}")
+                print(f"--> 75th: {stats['75%']:.4f}")
+                print(f"--> 95th: {stats['95%']:.4f}")
+                print(f"--> Max: {stats['max']:.4f}")
             else:
                 print(f"\nWarning: No valid ratios calculated for proxy {proxy}")
                 print(f"--> Skipping this proxy for inference")
@@ -1694,27 +1745,29 @@ def _do_perform_spatial_inference(df: gpd.GeoDataFrame, entry: dict, field: str,
                     if pd.notna(median_ratio):
                         df_agg[proxy_field] = [median_ratio]
                 
-                    # If we have no valid medians, skip this location
-                    if df_agg.empty:
-                        print("    No valid global ratios found, skipping...")
-                        continue
-                    
-                    # Apply global ratios to missing values
-                    for proxy in proxies:
-                        proxy_field = f"__proxy__{proxy}"
-                        if proxy_field in df_agg:
-                            ratio = df_agg[proxy_field].iloc[0]
-                            mask = df[field].isna() & df["___proxy___"].isna() & df[proxy].notna() & df[proxy].gt(0)
+                # If we have no valid medians, skip this location
+                if df_agg.empty:
+                    print("    No valid global ratios found, skipping...")
+                    continue
+                
+                # Apply global ratios to missing values
+                for proxy in proxies:
+                    proxy_field = f"__proxy__{proxy}"
+                    if proxy_field in df_agg:
+                        ratio = df_agg[proxy_field].iloc[0]
+                        mask = df[field].isna() & df["___proxy___"].isna() & df[proxy].notna() & df[proxy].gt(0)
+                        if mask.sum() > 0:
                             df.loc[mask, "___proxy___"] = ratio * df.loc[mask, proxy]
                             df.loc[mask, f"inferred_{field}"] = True  # Mark as inferred
                 
                 empty_after_location = df[field].isna().sum()
                 filled_this_location = empty_before_location - empty_after_location
                 if filled_this_location > 0:
-                    print(f"    Filled {filled_this_location} values using global ratios")
+                    print(f"    Filled {filled_this_location:,} values using global ratios")
                     print(f"    ({filled_this_location/total_missing*100:.1f}% of total missing)")
                 continue
 
+            # For all other locations, use grouping
             group_list = group_by.copy() if group_by else []
             group_list.append(location)
 
@@ -1725,55 +1778,56 @@ def _do_perform_spatial_inference(df: gpd.GeoDataFrame, entry: dict, field: str,
                 print("    Skipping this location...")
                 continue
 
-            # Create unique names for grouping columns
-            group_cols = [f"__group__{i}_{col}" for i, col in enumerate(group_list)]
-            
             # Set up temporary dataframes for grouping
             df_temp = df_train.copy()
-            for old_col, new_col in zip(group_list, group_cols):
-                df_temp[new_col] = df_temp[old_col]
+            
+            # Create group key before any column renaming
+            df_temp["__group_key__"] = df_temp[group_list].astype(str).agg("_".join, axis=1)
+            df["__group_key__"] = df[group_list].astype(str).agg("_".join, axis=1)
 
             # Calculate median ratios per group
             try:
                 # Use numpy's errstate context manager to suppress warnings
                 with np.errstate(all='ignore'):
-                    df_group = df_temp.groupby(group_cols)
+                    df_group = df_temp.groupby("__group_key__")
                     # Custom safe median to avoid warnings
                     def safe_median(x):
                         if len(x) == 0 or x.isna().all():
                             return np.nan
                         return float(x.median())
-                    df_agg = df_group[proxy_fields].agg(safe_median).reset_index()
-                
-                # Skip if we got no results or all results are NaN
-                if df_agg.empty or df_agg[proxy_fields].isna().all().all():
-                    print("    No valid ratios found for this location, skipping...")
-                    continue
-                
-                # Remove any columns that are all NaN
-                nan_cols = df_agg[proxy_fields].isna().all()
-                cols_to_drop = nan_cols[nan_cols].index
-                if len(cols_to_drop) > 0:
-                    print(f"    Dropping columns with all NaN values: {list(cols_to_drop)}")
-                    df_agg = df_agg.drop(columns=cols_to_drop)
-                
-                # Create the group key for joining
-                df_temp["__group_key__"] = df_temp[group_list].astype(str).agg("_".join, axis=1)
-                df_agg["__group_key__"] = df_agg[group_cols].astype(str).agg("_".join, axis=1)
-                
-                # Create temporary key on main dataframe
-                df["__group_key__"] = df[group_list].astype(str).agg("_".join, axis=1)
+                    
+                    # Calculate median ratios for each proxy
+                    df_agg = pd.DataFrame(index=df_group.groups.keys())
+                    df_agg.index.name = "__group_key__"
+                    
+                    for proxy_field in proxy_fields:
+                        # Get median ratios for this proxy
+                        ratios = df_group[proxy_field].agg(safe_median)
+                        if not ratios.empty and not ratios.isna().all():
+                            df_agg[proxy_field] = ratios
+                    
+                    df_agg = df_agg.reset_index()
+                    
+                    # Skip if we got no results or all results are NaN
+                    if df_agg.empty or df_agg[proxy_fields].isna().all().all():
+                        print("    No valid ratios found for this location, skipping...")
+                        continue
 
-                # Apply ratios to missing values
-                for proxy in proxies:
-                    proxy_field = f"__proxy__{proxy}"
-                    if proxy_field in df_agg.columns:
-                        # Merge ratios
-                        df_merged = df.merge(df_agg[["__group_key__", proxy_field]], on="__group_key__", how="left")
-                        # Calculate inferred values where proxy exists
-                        mask = df[field].isna() & df["___proxy___"].isna() & df[proxy].notna() & df[proxy].gt(0)
-                        df.loc[mask, "___proxy___"] = df_merged.loc[mask, proxy_field] * df.loc[mask, proxy]
-                        df.loc[mask, f"inferred_{field}"] = True  # Mark as inferred
+                    # Apply ratios to missing values
+                    for proxy in proxies:
+                        proxy_field = f"__proxy__{proxy}"
+                        if proxy_field in df_agg.columns:
+                            # Merge ratios
+                            df_merged = df.merge(df_agg[["__group_key__", proxy_field]], on="__group_key__", how="left")
+                            # Calculate inferred values where proxy exists
+                            mask = df[field].isna() & df["___proxy___"].isna() & df[proxy].notna() & df[proxy].gt(0)
+                            if mask.sum() > 0:
+                                proxy_values = df_merged.loc[mask, proxy_field] * df.loc[mask, proxy]
+                                df.loc[mask, "___proxy___"] = proxy_values
+                                df.loc[mask, f"inferred_{field}"] = True  # Mark as inferred
+                                
+                                # Debug info
+                                print(f"    Filled {mask.sum():,} values using {proxy}")
             except Exception as e:
                 print(f"    Warning: Error processing location {location}: {str(e)}")
                 print("    Skipping this location...")
@@ -1782,7 +1836,7 @@ def _do_perform_spatial_inference(df: gpd.GeoDataFrame, entry: dict, field: str,
             empty_after_location = df[field].isna().sum()
             filled_this_location = empty_before_location - empty_after_location
             if filled_this_location > 0:
-                print(f"    Filled {filled_this_location} values using {location} grouping")
+                print(f"    Filled {filled_this_location:,} values using {location} grouping")
                 print(f"    ({filled_this_location/total_missing*100:.1f}% of total missing)")
             else:
                 print("    No values filled using this location")
