@@ -356,41 +356,78 @@ class RandomForestModel(InferenceModel):
         self.encoders = {}
         self.proxy_fields = None
         self.location_fields = None
+        self.interaction_fields = None
         self.imputer = SimpleImputer(strategy='median')
+        self.feature_order = None  # Store the order of features from training
+    
+    def _create_feature_matrix(self, df: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
+        """Create feature matrix with consistent feature order"""
+        # Start with proxy fields
+        X = df[self.proxy_fields].copy()
         
+        # Handle missing values in numeric variables
+        numeric_cols = X.select_dtypes(include=['float64', 'int64']).columns
+        if len(numeric_cols) > 0:
+            if fit:
+                X[numeric_cols] = self.imputer.fit_transform(X[numeric_cols])
+            else:
+                X[numeric_cols] = self.imputer.transform(X[numeric_cols])
+        
+        # Add individual location fields
+        for loc in self.location_fields:
+            if loc in df.columns:
+                if fit:
+                    self.encoders[loc] = CategoricalEncoder()
+                    X[loc] = self.encoders[loc].fit_transform(df[loc])
+                else:
+                    if loc in self.encoders:
+                        X[loc] = self.encoders[loc].transform(df[loc])
+        
+        # Add interaction features
+        if hasattr(self, 'interaction_fields') and self.interaction_fields:
+            for interaction in self.interaction_fields:
+                fields = interaction.split('_x_')
+                if all(field in df.columns for field in fields):
+                    # Create the interaction feature
+                    X[interaction] = df[fields].astype(str).agg('_'.join, axis=1)
+                    if fit:
+                        self.encoders[interaction] = CategoricalEncoder()
+                        X[interaction] = self.encoders[interaction].fit_transform(X[interaction])
+                    else:
+                        if interaction in self.encoders:
+                            X[interaction] = self.encoders[interaction].transform(X[interaction])
+        
+        # Ensure all features are numeric
+        X = X.astype(float)
+        
+        # Store feature order during fit
+        if fit:
+            self.feature_order = list(X.columns)
+        
+        # Ensure consistent feature order
+        if self.feature_order is not None:
+            X = X[self.feature_order]
+        
+        return X
+    
     def fit(self, df: pd.DataFrame, target: str, settings: Dict[str, Any]) -> None:
-        """Fit model with proper categorical handling"""
+        """Fit model with proper categorical handling and interactions"""
         proxies = settings.get("proxies", [])
-        # Filter out ___everything___ from locations
         locations = [loc for loc in settings.get("locations", []) 
                     if loc != "___everything___"]
+        interactions = settings.get("interactions", [])
         
         self.proxy_fields = proxies
         self.location_fields = locations
         
         # Create feature matrix
-        X = df[proxies].copy()
+        X = self._create_feature_matrix(df, fit=True)
         y = df[target].values
         
-        # Handle missing values in proxy variables
-        X = pd.DataFrame(self.imputer.fit_transform(X), 
-                        columns=X.columns, index=X.index)
-        
-        # Encode location variables
-        for loc in locations:
-            if loc in df.columns:  # Only encode if column exists
-                self.encoders[loc] = CategoricalEncoder()
-                X[loc] = self.encoders[loc].fit_transform(df[loc])
-        
         print("\nFitting Random Forest model:")
+        print(f"Features being used: {list(X.columns)}")
         
-        # Perform cross-validation
-        cv = KFold(n_splits=5, shuffle=True, random_state=42)
-        cv_scores = cross_val_score(self.model, X, y, cv=cv, scoring='r2')
-        print(f"\nCross-validation R² scores: {cv_scores}")
-        print(f"Mean CV R²: {cv_scores.mean():.4f} (+/- {cv_scores.std() * 2:.4f})")
-        
-        # Fit final model
+        # Fit model
         self.model.fit(X, y)
         
         # Print feature importances
@@ -402,20 +439,23 @@ class RandomForestModel(InferenceModel):
         print("\nFeature importances:")
         for feat, imp in importances.items():
             print(f"--> {feat}: {imp:.4f}")
-
+        
+        if self.interaction_fields:
+            print("\nInteraction feature importances:")
+            interaction_importances = importances[importances.index.isin(self.interaction_fields)]
+            for feat, imp in interaction_importances.items():
+                print(f"--> {feat}: {imp:.4f}")
+    
     def predict(self, df: pd.DataFrame) -> pd.Series:
-        """Make predictions with universal handling of unknowns"""
-        X = df[self.proxy_fields].copy()
+        """Make predictions with consistent feature handling"""
+        # Create feature matrix using same process as fit
+        X = self._create_feature_matrix(df, fit=False)
         
-        # Handle missing values
-        X = pd.DataFrame(self.imputer.transform(X), 
-                        columns=X.columns, index=X.index)
+        # Verify we have all features
+        missing_features = set(self.feature_order) - set(X.columns)
+        if missing_features:
+            raise ValueError(f"Missing features during prediction: {missing_features}")
         
-        # Add encoded location variables
-        for loc in self.location_fields:
-            if loc in df.columns:  # Only encode if column exists
-                X[loc] = self.encoders[loc].transform(df[loc])
-            
         return pd.Series(self.model.predict(X), index=df.index)
 
     def evaluate(self, df: pd.DataFrame, target: str) -> Dict[str, float]:
