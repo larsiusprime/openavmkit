@@ -575,6 +575,7 @@ def test_spatial_inference():
 	# Create expected DataFrame - keep all rows
 	df_expected = df.copy()
 	
+	
 	# For rows that need inference:
 	# 1. hood != "x" (includes both regular values and "?")
 	# 2. size is None
