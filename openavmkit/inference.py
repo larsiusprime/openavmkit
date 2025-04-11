@@ -351,7 +351,7 @@ class RandomForestModel(InferenceModel):
             min_samples_leaf=2,
             max_features='sqrt',
             random_state=42,
-            n_jobs=-1  # Use all cores
+            n_jobs=-1
         )
         self.encoders = {}
         self.proxy_fields = None
@@ -361,11 +361,9 @@ class RandomForestModel(InferenceModel):
     def fit(self, df: pd.DataFrame, target: str, settings: Dict[str, Any]) -> None:
         """Fit model with proper categorical handling"""
         proxies = settings.get("proxies", [])
-        locations = settings.get("locations", []).copy()  # Make a copy
-        
-        # Remove ___everything___ from locations if present
-        if "___everything___" in locations:
-            locations.remove("___everything___")
+        # Filter out ___everything___ from locations
+        locations = [loc for loc in settings.get("locations", []) 
+                    if loc != "___everything___"]
         
         self.proxy_fields = proxies
         self.location_fields = locations
@@ -380,8 +378,9 @@ class RandomForestModel(InferenceModel):
         
         # Encode location variables
         for loc in locations:
-            self.encoders[loc] = CategoricalEncoder()
-            X[loc] = self.encoders[loc].fit_transform(df[loc])
+            if loc in df.columns:  # Only encode if column exists
+                self.encoders[loc] = CategoricalEncoder()
+                X[loc] = self.encoders[loc].fit_transform(df[loc])
         
         print("\nFitting Random Forest model:")
         
@@ -414,7 +413,8 @@ class RandomForestModel(InferenceModel):
         
         # Add encoded location variables
         for loc in self.location_fields:
-            X[loc] = self.encoders[loc].transform(df[loc])
+            if loc in df.columns:  # Only encode if column exists
+                X[loc] = self.encoders[loc].transform(df[loc])
             
         return pd.Series(self.model.predict(X), index=df.index)
 
@@ -613,9 +613,15 @@ def _do_perform_spatial_inference(df: pd.DataFrame, s_infer: dict, field: str, k
         for exp_type in experiment_models:
             print(f"\nTrying {exp_type} model:")
             try:
+                # Create experiment-specific settings
+                exp_settings = model_settings.copy()
+                if exp_type == 'random_forest' and 'locations' in exp_settings:
+                    exp_settings['locations'] = [loc for loc in exp_settings['locations'] 
+                                               if loc != '___everything___']
+                
                 # First do regular validation
                 model = get_inference_model(exp_type)
-                model.fit(df_train, field, model_settings)
+                model.fit(df_train, field, exp_settings)
                 
                 # Regular validation metrics
                 val_predictions = model.predict(df_val)
