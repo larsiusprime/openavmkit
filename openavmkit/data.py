@@ -612,14 +612,7 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
 
       # Handle OpenStreetMap enrichment for universe if enabled
       if supkey == "universe" and "openstreetmap" in s_enrich_local:
-        df = _enrich_df_openstreetmap(
-          df,
-          s_enrich_local.get("openstreetmap", {}),
-          s_enrich_local,
-          dataframes,
-          verbose=verbose,
-          use_cache=True
-        )
+        df = _enrich_df_openstreetmap(df, s_enrich_local.get("openstreetmap", {}), s_enrich_local, dataframes, verbose=verbose, use_cache=True)
 
       df = _enrich_df_geometry(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
       df = _enrich_df_basic(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
@@ -629,7 +622,6 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
     #sup = _enrich_sup_spatial_lag(sup, settings, verbose=verbose)
 
   return sup
-
 
 def _enrich_df_census(df: pd.DataFrame | gpd.GeoDataFrame, census_settings: dict, verbose: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
   """
@@ -701,15 +693,7 @@ def _enrich_df_census(df: pd.DataFrame | gpd.GeoDataFrame, census_settings: dict
     warnings.warn(f"Failed to enrich with Census data: {str(e)}")
     return df
 
-
-def _enrich_df_openstreetmap(
-		df: pd.DataFrame | gpd.GeoDataFrame,
-		osm_settings: dict,
-		s_enrich_this: dict,
-		dataframes: dict,
-		verbose: bool = False,
-		use_cache: bool = True
-) -> pd.DataFrame | gpd.GeoDataFrame:
+def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: dict, s_enrich_this: dict, dataframes: dict, verbose: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
     """
     Enrich a DataFrame with OpenStreetMap data.
     
@@ -1264,29 +1248,29 @@ def _enrich_df_geometry(df_in: pd.DataFrame, s_enrich_this: dict, dataframes: di
   # distances
   gdf = _perform_distance_calculations(gdf, s_dist, dataframes, get_long_distance_unit(settings), verbose=verbose)
 
-	# Merge everything together:
-	try_keys = ["key", "key2", "key3"]
-	success = False
-	gdf_merged: gpd.GeoDataFrame | None = None
-	for key in try_keys:
-		if key in gdf and key in df:
-			if verbose:
-				print(f"Using \"{key}\" to merge shapefiles onto df")
-			n_dupes_gdf = gdf.duplicated(subset=key).sum()
-			n_dupes_df = df.duplicated(subset=key).sum()
-			if n_dupes_gdf > 0 or n_dupes_df > 0:
-				raise ValueError(f"Found {n_dupes_gdf} duplicate keys in the geo_parcels dataframe, and {n_dupes_df} duplicate keys in the base dataframe. Cannot perform spatial join. De-duplicate your dataframes and try again.")
-			gdf_merged = gdf.merge(df, on=key, how="left", suffixes=("_spatial", "_data"))
-			gdf_merged = _finesse_columns(gdf_merged, "_spatial", "_data")
-			success = True
-			break
-	if not success:
-		raise ValueError(f"Could not find a common key between geo_parcels and base dataframe. Tried keys: {try_keys}")
-	#gdf_merged = _basic_geo_enrichment(gdf_merged, settings, verbose=verbose)
+  # Merge everything together:
+  try_keys = ["key", "key2", "key3"]
+  success = False
+  gdf_merged: gpd.GeoDataFrame | None = None
+  for key in try_keys:
+    if key in gdf and key in df:
+      if verbose:
+        print(f"Using \"{key}\" to merge shapefiles onto df")
+      n_dupes_gdf = gdf.duplicated(subset=key).sum()
+      n_dupes_df = df.duplicated(subset=key).sum()
+      if n_dupes_gdf > 0 or n_dupes_df > 0:
+        raise ValueError(f"Found {n_dupes_gdf} duplicate keys in the geo_parcels dataframe, and {n_dupes_df} duplicate keys in the base dataframe. Cannot perform spatial join. De-duplicate your dataframes and try again.")
+      gdf_merged = gdf.merge(df, on=key, how="left", suffixes=("_spatial", "_data"))
+      gdf_merged = _finesse_columns(gdf_merged, "_spatial", "_data")
+      success = True
+      break
+  if not success:
+    raise ValueError(f"Could not find a common key between geo_parcels and base dataframe. Tried keys: {try_keys}")
+  #gdf_merged = _basic_geo_enrichment(gdf_merged, settings, verbose=verbose)
 
-	# spatially infer missing
-	if not is_sales:
-		gdf_merged = perform_spatial_inference(gdf_merged, s_infer, "key", verbose=verbose)
+  # spatially infer missing
+  if not is_sales:
+    gdf_merged = perform_spatial_inference(gdf_merged, s_infer, "key", verbose=verbose)
 
   return gdf_merged
 
