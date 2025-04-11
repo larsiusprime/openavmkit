@@ -71,7 +71,7 @@ class OpenStreetMapService:
             return gpd.GeoDataFrame()
 
         # check if we have already cached this data, AND the settings are the same
-        if use_cache and check_cache("osm/water_bodies", signature=settings):
+        if use_cache and check_cache("osm/water_bodies", signature=settings, filetype="gdf"):
             print("----> using cached water bodies")
             # if so return the cached version
             return read_cache("osm/water_bodies", "gdf")
@@ -152,7 +152,7 @@ class OpenStreetMapService:
             return gpd.GeoDataFrame()
 
         # check if we have already cached this data, AND the settings are the same
-        if use_cache and check_cache("osm/transportation", signature=settings):
+        if use_cache and check_cache("osm/transportation", signature=settings, filetype="gdf"):
             print("----> using cached transportation")
             # if so return the cached version
             return read_cache("osm/transportation", "gdf")
@@ -257,7 +257,7 @@ class OpenStreetMapService:
             return gpd.GeoDataFrame()
 
         # check if we have already cached this data, AND the settings are the same
-        if use_cache and check_cache("osm/educational_institutions", signature=settings):
+        if use_cache and check_cache("osm/educational_institutions", signature=settings, filetype="gdf"):
             print("----> using cached educational institutions")
             # if so return the cached version
             return read_cache("osm/educational_institutions", "gdf")
@@ -353,7 +353,7 @@ class OpenStreetMapService:
             return gpd.GeoDataFrame()
 
         # check if we have already cached this data, AND the settings are the same
-        if use_cache and check_cache("osm/parks", signature=settings):
+        if use_cache and check_cache("osm/parks", signature=settings, filetype="gdf"):
             print("----> using cached parks")
             # if so return the cached version
             return read_cache("osm/parks", "gdf")
@@ -427,7 +427,7 @@ class OpenStreetMapService:
             return gpd.GeoDataFrame()
 
         # check if we have already cached this data, AND the settings are the same
-        if use_cache and check_cache("osm/golf_courses", signature=settings):
+        if use_cache and check_cache("osm/golf_courses", signature=settings, filetype="gdf"):
             print("----> using cached golf courses")
             # if so return the cached version
             return read_cache("osm/golf_courses", "gdf")
@@ -559,7 +559,7 @@ class OpenStreetMapService:
             'feature_type': feature_type,
             'features': hash(features.to_json())
         }
-        if check_cache(f"osm/{feature_type}_distances", signature=signature):
+        if check_cache(f"osm/{feature_type}_distances", signature=signature, filetype="df"):
             print("----> using cached distances")
             # if so return the cached version
             return read_cache(f"osm/{feature_type}_distances", "df")

@@ -1890,7 +1890,7 @@ def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDa
       "gdf_hash": hash(gdf_in.geometry.to_wkb().sum()),
     }
     # check if we already have this distance calculation
-    if check_cache(f"osm/distance_{_id}", signature):
+    if check_cache(f"osm/distance_{_id}", signature, "df"):
       df_net_change = read_cache(f"osm/distance_{_id}", "df")
       df_out = df_in.merge(df_net_change, on="key", how="left")
       return df_out
@@ -2024,6 +2024,25 @@ def _perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, datafr
     
     # Collect all distance calculations to apply at once
     all_distance_dfs = []
+
+    # check for duplicate keys:
+    if df_in.duplicated(subset="key").sum() > 0:
+      # caching won't work if there's duplicate keys, and there shouldn't be any duplicate keys here anyways
+      raise ValueError(f"Duplicate keys found before distance calculation. This should not happen.")
+
+    signature = {
+      "unit": unit,
+      "crs": df_in.crs.name,
+      "df_in_len": len(df_in),
+      "df_cols": sorted(df_in.columns.tolist()),
+      "s_dist": s_dist,
+    }
+    # check if we already have this distance calculation
+    if check_cache(f"osm/distance_all", signature, "df"):
+      df_net_change = read_cache(f"osm/distance_all", "df")
+      df_out = df_in.merge(df_net_change, on="key", how="left")
+      display(df_out)
+      return df_out
     
     for entry in s_dist:
         if isinstance(entry, str):
@@ -2081,7 +2100,15 @@ def _perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, datafr
         combined_distances = pd.concat(all_distance_dfs, axis=1)
         # Combine with original DataFrame
         df = pd.concat([df, combined_distances], axis=1)
-                
+
+    new_cols = [col for col in df.columns if col not in df_in.columns]
+    df_net_change = df[["key"]+new_cols].copy()
+    # check for duplicate keys:
+    if df_net_change.duplicated(subset="key").sum() > 0:
+        raise ValueError(f"Duplicate keys found after distance calculation. This should not happen.")
+    # save to cache:
+    write_cache(f"osm/distance_all", df_net_change, signature, "df")
+
     return df
 
 

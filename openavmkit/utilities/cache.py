@@ -70,13 +70,17 @@ def read_cache(
 
 def check_cache(
     filename: str,
-    signature: dict | str
+    signature: dict | str,
+    filetype: str
 ):
+  ext = _get_extension(filetype)
   path = f"cache/{filename}"
   match = _match_signature(path, signature)
   print(f"Check cache match for '{filename}' = ? {match}")
   if match:
     return os.path.exists(path)
+    path_exists = os.path.exists(f"{path}.{ext}")
+    return path_exists
   return False
 
 
