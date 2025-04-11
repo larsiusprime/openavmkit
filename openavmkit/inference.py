@@ -15,6 +15,9 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+import lightgbm as lgb
+import xgboost as xgb
+from scipy.optimize import minimize
 
 class InferenceModel(ABC):
     """Base class for inference models"""
@@ -472,12 +475,427 @@ class RandomForestModel(InferenceModel):
         
         return metrics
 
+class LightGBMModel(InferenceModel):
+    """LightGBM model with improved validation and parameters"""
+    
+    def __init__(self):
+        self.model = lgb.LGBMRegressor(
+            n_estimators=200,
+            max_depth=-1,
+            num_leaves=31,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            reg_alpha=0.1,
+            reg_lambda=0.1,
+            random_state=42,
+            n_jobs=-1
+        )
+        self.encoders = {}
+        self.proxy_fields = None
+        self.location_fields = None
+        self.interaction_fields = None
+        self.imputer = SimpleImputer(strategy='median')
+        self.feature_order = None  # Store the order of features from training
+    
+    def _create_feature_matrix(self, df: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
+        """Create feature matrix with consistent feature order"""
+        # Start with proxy fields
+        X = df[self.proxy_fields].copy()
+        
+        # Handle missing values in numeric variables
+        numeric_cols = X.select_dtypes(include=['float64', 'int64']).columns
+        if len(numeric_cols) > 0:
+            if fit:
+                X[numeric_cols] = self.imputer.fit_transform(X[numeric_cols])
+            else:
+                X[numeric_cols] = self.imputer.transform(X[numeric_cols])
+        
+        # Add individual location fields
+        for loc in self.location_fields:
+            if loc in df.columns:
+                if fit:
+                    self.encoders[loc] = CategoricalEncoder()
+                    X[loc] = self.encoders[loc].fit_transform(df[loc])
+                else:
+                    if loc in self.encoders:
+                        X[loc] = self.encoders[loc].transform(df[loc])
+        
+        # Add interaction features
+        if hasattr(self, 'interaction_fields') and self.interaction_fields:
+            for interaction in self.interaction_fields:
+                fields = interaction.split('_x_')
+                if all(field in df.columns for field in fields):
+                    # Create the interaction feature
+                    X[interaction] = df[fields].astype(str).agg('_'.join, axis=1)
+                    if fit:
+                        self.encoders[interaction] = CategoricalEncoder()
+                        X[interaction] = self.encoders[interaction].fit_transform(X[interaction])
+                    else:
+                        if interaction in self.encoders:
+                            X[interaction] = self.encoders[interaction].transform(X[interaction])
+        
+        # Ensure all features are numeric
+        X = X.astype(float)
+        
+        # Store feature order during fit
+        if fit:
+            self.feature_order = list(X.columns)
+        
+        # Ensure consistent feature order
+        if self.feature_order is not None:
+            X = X[self.feature_order]
+        
+        return X
+    
+    def fit(self, df: pd.DataFrame, target: str, settings: Dict[str, Any]) -> None:
+        """Fit model with proper categorical handling and interactions"""
+        proxies = settings.get("proxies", [])
+        locations = [loc for loc in settings.get("locations", []) 
+                    if loc != "___everything___"]
+        interactions = settings.get("interactions", [])
+        
+        self.proxy_fields = proxies
+        self.location_fields = locations
+        
+        # Create feature matrix
+        X = self._create_feature_matrix(df, fit=True)
+        y = df[target].values.astype(float)  # Convert to numpy array and ensure float type
+        
+        print("\nFitting LightGBM model:")
+        print(f"Features being used: {list(X.columns)}")
+        
+        # Fit model
+        self.model.fit(X, y)
+        
+        # Print feature importances
+        importances = pd.Series(
+            self.model.feature_importances_,
+            index=X.columns
+        ).sort_values(ascending=False)
+        
+        print("\nFeature importances:")
+        for feat, imp in importances.items():
+            print(f"--> {feat}: {imp:.4f}")
+        
+        if self.interaction_fields:
+            print("\nInteraction feature importances:")
+            interaction_importances = importances[importances.index.isin(self.interaction_fields)]
+            for feat, imp in interaction_importances.items():
+                print(f"--> {feat}: {imp:.4f}")
+    
+    def predict(self, df: pd.DataFrame) -> pd.Series:
+        """Make predictions with consistent feature handling"""
+        # Create feature matrix using same process as fit
+        X = self._create_feature_matrix(df, fit=False)
+        
+        # Verify we have all features
+        missing_features = set(self.feature_order) - set(X.columns)
+        if missing_features:
+            raise ValueError(f"Missing features during prediction: {missing_features}")
+        
+        return pd.Series(self.model.predict(X), index=df.index)
+
+    def evaluate(self, df: pd.DataFrame, target: str) -> Dict[str, float]:
+        """Evaluate model performance"""
+        predictions = self.predict(df)
+        actuals = df[target]
+        
+        metrics = {
+            'mae': np.abs(predictions - actuals).mean(),
+            'mape': np.abs((predictions - actuals) / actuals).mean() * 100,
+            'rmse': np.sqrt(((predictions - actuals) ** 2).mean()),
+            'r2': 1 - ((predictions - actuals) ** 2).sum() / ((actuals - actuals.mean()) ** 2).sum()
+        }
+        
+        return metrics
+
+class XGBoostModel(InferenceModel):
+    """XGBoost model with improved validation and parameters"""
+    
+    def __init__(self):
+        self.model = xgb.XGBRegressor(
+            n_estimators=200,
+            max_depth=6,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            reg_alpha=0.1,
+            reg_lambda=0.1,
+            random_state=42,
+            n_jobs=-1
+        )
+        self.encoders = {}
+        self.proxy_fields = None
+        self.location_fields = None
+        self.interaction_fields = None
+        self.imputer = SimpleImputer(strategy='median')
+        self.feature_order = None  # Store the order of features from training
+    
+    def _create_feature_matrix(self, df: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
+        """Create feature matrix with consistent feature order"""
+        # Start with proxy fields
+        X = df[self.proxy_fields].copy()
+        
+        # Handle missing values in numeric variables
+        numeric_cols = X.select_dtypes(include=['float64', 'int64']).columns
+        if len(numeric_cols) > 0:
+            if fit:
+                X[numeric_cols] = self.imputer.fit_transform(X[numeric_cols])
+            else:
+                X[numeric_cols] = self.imputer.transform(X[numeric_cols])
+        
+        # Add individual location fields
+        for loc in self.location_fields:
+            if loc in df.columns:
+                if fit:
+                    self.encoders[loc] = CategoricalEncoder()
+                    X[loc] = self.encoders[loc].fit_transform(df[loc])
+                else:
+                    if loc in self.encoders:
+                        X[loc] = self.encoders[loc].transform(df[loc])
+        
+        # Add interaction features
+        if hasattr(self, 'interaction_fields') and self.interaction_fields:
+            for interaction in self.interaction_fields:
+                fields = interaction.split('_x_')
+                if all(field in df.columns for field in fields):
+                    # Create the interaction feature
+                    X[interaction] = df[fields].astype(str).agg('_'.join, axis=1)
+                    if fit:
+                        self.encoders[interaction] = CategoricalEncoder()
+                        X[interaction] = self.encoders[interaction].fit_transform(X[interaction])
+                    else:
+                        if interaction in self.encoders:
+                            X[interaction] = self.encoders[interaction].transform(X[interaction])
+        
+        # Ensure all features are numeric
+        X = X.astype(float)
+        
+        # Store feature order during fit
+        if fit:
+            self.feature_order = list(X.columns)
+        
+        # Ensure consistent feature order
+        if self.feature_order is not None:
+            X = X[self.feature_order]
+        
+        return X
+    
+    def fit(self, df: pd.DataFrame, target: str, settings: Dict[str, Any]) -> None:
+        """Fit model with proper categorical handling and interactions"""
+        proxies = settings.get("proxies", [])
+        locations = [loc for loc in settings.get("locations", []) 
+                    if loc != "___everything___"]
+        interactions = settings.get("interactions", [])
+        
+        self.proxy_fields = proxies
+        self.location_fields = locations
+        
+        # Create feature matrix
+        X = self._create_feature_matrix(df, fit=True)
+        y = df[target].values.astype(float)  # Convert to numpy array and ensure float type
+        
+        print("\nFitting XGBoost model:")
+        print(f"Features being used: {list(X.columns)}")
+        
+        # Fit model
+        self.model.fit(X, y)
+        
+        # Print feature importances
+        importances = pd.Series(
+            self.model.feature_importances_,
+            index=X.columns
+        ).sort_values(ascending=False)
+        
+        print("\nFeature importances:")
+        for feat, imp in importances.items():
+            print(f"--> {feat}: {imp:.4f}")
+        
+        if self.interaction_fields:
+            print("\nInteraction feature importances:")
+            interaction_importances = importances[importances.index.isin(self.interaction_fields)]
+            for feat, imp in interaction_importances.items():
+                print(f"--> {feat}: {imp:.4f}")
+    
+    def predict(self, df: pd.DataFrame) -> pd.Series:
+        """Make predictions with consistent feature handling"""
+        # Create feature matrix using same process as fit
+        X = self._create_feature_matrix(df, fit=False)
+        
+        # Verify we have all features
+        missing_features = set(self.feature_order) - set(X.columns)
+        if missing_features:
+            raise ValueError(f"Missing features during prediction: {missing_features}")
+        
+        return pd.Series(self.model.predict(X), index=df.index)
+
+    def evaluate(self, df: pd.DataFrame, target: str) -> Dict[str, float]:
+        """Evaluate model performance"""
+        predictions = self.predict(df)
+        actuals = df[target]
+        
+        metrics = {
+            'mae': np.abs(predictions - actuals).mean(),
+            'mape': np.abs((predictions - actuals) / actuals).mean() * 100,
+            'rmse': np.sqrt(((predictions - actuals) ** 2).mean()),
+            'r2': 1 - ((predictions - actuals) ** 2).sum() / ((actuals - actuals.mean()) ** 2).sum()
+        }
+        
+        return metrics
+
+class EnsembleModel(InferenceModel):
+    """Ensemble model combining LightGBM, XGBoost, and Random Forest"""
+    
+    def __init__(self):
+        self.lgb_model = LightGBMModel()
+        self.xgb_model = XGBoostModel()
+        self.rf_model = RandomForestModel()
+        self.weights = None
+        self.encoders = {}
+        self.proxy_fields = None
+        self.location_fields = None
+        self.interaction_fields = None
+        self.imputer = SimpleImputer(strategy='median')
+        self.feature_order = None
+    
+    def _create_feature_matrix(self, df: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
+        """Create feature matrix with consistent feature order"""
+        # Start with proxy fields
+        X = df[self.proxy_fields].copy()
+        
+        # Handle missing values in numeric variables
+        numeric_cols = X.select_dtypes(include=['float64', 'int64']).columns
+        if len(numeric_cols) > 0:
+            if fit:
+                X[numeric_cols] = self.imputer.fit_transform(X[numeric_cols])
+            else:
+                X[numeric_cols] = self.imputer.transform(X[numeric_cols])
+        
+        # Add individual location fields
+        for loc in self.location_fields:
+            if loc in df.columns:
+                if fit:
+                    self.encoders[loc] = CategoricalEncoder()
+                    X[loc] = self.encoders[loc].fit_transform(df[loc])
+                else:
+                    if loc in self.encoders:
+                        X[loc] = self.encoders[loc].transform(df[loc])
+        
+        # Add interaction features
+        if hasattr(self, 'interaction_fields') and self.interaction_fields:
+            for interaction in self.interaction_fields:
+                fields = interaction.split('_x_')
+                if all(field in df.columns for field in fields):
+                    # Create the interaction feature
+                    X[interaction] = df[fields].astype(str).agg('_'.join, axis=1)
+                    if fit:
+                        self.encoders[interaction] = CategoricalEncoder()
+                        X[interaction] = self.encoders[interaction].fit_transform(X[interaction])
+                    else:
+                        if interaction in self.encoders:
+                            X[interaction] = self.encoders[interaction].transform(X[interaction])
+        
+        # Ensure all features are numeric
+        X = X.astype(float)
+        
+        # Store feature order during fit
+        if fit:
+            self.feature_order = list(X.columns)
+        
+        # Ensure consistent feature order
+        if self.feature_order is not None:
+            X = X[self.feature_order]
+        
+        return X
+    
+    def fit(self, df: pd.DataFrame, target: str, settings: Dict[str, Any]) -> None:
+        """Fit ensemble model and determine optimal weights"""
+        proxies = settings.get("proxies", [])
+        locations = [loc for loc in settings.get("locations", []) 
+                    if loc != "___everything___"]
+        interactions = settings.get("interactions", [])
+        
+        self.proxy_fields = proxies
+        self.location_fields = locations
+        
+        # Split data for weight optimization
+        df_train, df_val = train_test_split(df, test_size=0.2, random_state=42)
+        
+        # Fit individual models
+        print("\nFitting LightGBM model...")
+        self.lgb_model.fit(df_train, target, settings)
+        print("\nFitting XGBoost model...")
+        self.xgb_model.fit(df_train, target, settings)
+        print("\nFitting Random Forest model...")
+        self.rf_model.fit(df_train, target, settings)
+        
+        # Get predictions on validation set
+        lgb_preds = self.lgb_model.predict(df_val)
+        xgb_preds = self.xgb_model.predict(df_val)
+        rf_preds = self.rf_model.predict(df_val)
+        actuals = df_val[target].values.astype(float)  # Convert to numpy array and ensure float type
+        
+        # Optimize weights to minimize RMSE
+        def objective(weights):
+            ensemble_preds = (weights[0] * lgb_preds + 
+                            weights[1] * xgb_preds + 
+                            weights[2] * rf_preds)
+            return np.sqrt(((ensemble_preds - actuals) ** 2).mean())
+        
+        initial_weights = np.array([1/3, 1/3, 1/3])
+        bounds = [(0, 1), (0, 1), (0, 1)]
+        constraints = {'type': 'eq', 'fun': lambda w: np.sum(w) - 1}
+        
+        result = minimize(objective, initial_weights, bounds=bounds, constraints=constraints)
+        self.weights = result.x
+        
+        print("\nEnsemble weights:")
+        print(f"--> LightGBM: {self.weights[0]:.4f}")
+        print(f"--> XGBoost: {self.weights[1]:.4f}")
+        print(f"--> Random Forest: {self.weights[2]:.4f}")
+        
+        # Fit final models on full data
+        self.lgb_model.fit(df, target, settings)
+        self.xgb_model.fit(df, target, settings)
+        self.rf_model.fit(df, target, settings)
+    
+    def predict(self, df: pd.DataFrame) -> pd.Series:
+        """Make predictions using weighted ensemble"""
+        lgb_preds = self.lgb_model.predict(df)
+        xgb_preds = self.xgb_model.predict(df)
+        rf_preds = self.rf_model.predict(df)
+        
+        return pd.Series(
+            self.weights[0] * lgb_preds + 
+            self.weights[1] * xgb_preds + 
+            self.weights[2] * rf_preds,
+            index=df.index
+        )
+    
+    def evaluate(self, df: pd.DataFrame, target: str) -> Dict[str, float]:
+        """Evaluate ensemble model performance"""
+        predictions = self.predict(df)
+        actuals = df[target]
+        
+        metrics = {
+            'mae': np.abs(predictions - actuals).mean(),
+            'mape': np.abs((predictions - actuals) / actuals).mean() * 100,
+            'rmse': np.sqrt(((predictions - actuals) ** 2).mean()),
+            'r2': 1 - ((predictions - actuals) ** 2).sum() / ((actuals - actuals.mean()) ** 2).sum()
+        }
+        
+        return metrics
+
 def get_inference_model(model_type: str) -> InferenceModel:
     """Factory function to get inference model by type"""
     models = {
         'ratio_proxy': RatioProxyModel,
         'smart_ols': SmartOLSModel,
-        'random_forest': RandomForestModel
+        'random_forest': RandomForestModel,
+        'lightgbm': LightGBMModel,
+        'xgboost': XGBoostModel,
+        'ensemble': EnsembleModel
     }
     
     if model_type not in models:
@@ -644,7 +1062,7 @@ def _do_perform_spatial_inference(df: pd.DataFrame, s_infer: dict, field: str, k
     # Run experiments if enabled
     if model_settings.get("experiment", False):
         print("\n=== Running Model Experiments ===")
-        experiment_models = ['ratio_proxy', 'smart_ols', 'random_forest']
+        experiment_models = ['ratio_proxy', 'smart_ols', 'random_forest', 'lightgbm', 'xgboost', 'ensemble']
         best_score = float('-inf')
         best_model_type = None
         validation_results = {}
