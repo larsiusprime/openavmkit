@@ -9,9 +9,10 @@ from openavmkit.utilities.assertions import objects_are_equal
 def write_cache(
     filename: str,
     payload: dict | str | pd.DataFrame | gpd.GeoDataFrame,
+    signature: dict | str,
     filetype: str
 ):
-  extension = get_extension(filetype)
+  extension = _get_extension(filetype)
   path = f"cache/{filename}.{extension}"
   base_path = os.path.dirname(path)
   os.makedirs(base_path, exist_ok=True)
@@ -31,12 +32,26 @@ def write_cache(
       else:
         raise TypeError("Payload must be a DataFrame for df type.")
 
+  if type(signature) is dict:
+    sig_ext = "json"
+  elif type(signature) is str:
+    sig_ext = "txt"
+  else:
+    raise TypeError(f"Unsupported type for signature value: {type(signature)} sig = {signature}")
+
+  signature_path = f"cache/{filename}.signature.{sig_ext}"
+  with open(signature_path, "w") as file:
+    if sig_ext == "json":
+      json.dump(signature, file)
+    else:
+      file.write(signature)
+
 
 def read_cache(
     filename: str,
     filetype: str
 ):
-  extension = get_extension(filetype)
+  extension = _get_extension(filetype)
   path = f"cache/{filename}.{extension}"
   if os.path.exists(path):
     with open(path, "r") as file:
@@ -53,37 +68,26 @@ def read_cache(
   return None
 
 
-def get_extension(filetype:str):
-  if filetype == "dict":
-    return "json"
-  elif filetype == "str":
-    return "txt"
-  elif filetype == "gdf":
-    return "parquet"
-  elif filetype == "df":
-    return "parquet"
-  raise ValueError(f"Unsupported filetype: {filetype}")
-
-
 def check_cache(
     filename: str,
     signature: dict | str
 ):
   path = f"cache/{filename}"
-  match = match_signature(path, signature)
+  match = _match_signature(path, signature)
+  print(f"Check cache match for '{filename}' = ? {match}")
   if match:
     return os.path.exists(path)
   return False
 
 
-def match_signature(
+def _match_signature(
     filename: str,
     signature: dict | str
 )->bool:
   if type(signature) is dict:
-    sig_ext = ".json"
+    sig_ext = "json"
   elif type(signature) is str:
-    sig_ext = ".txt"
+    sig_ext = "txt"
   else:
     raise TypeError(f"Unsupported type for signature value: {type(signature)}")
   sig_file = f"{filename}.signature.{sig_ext}"
@@ -97,3 +101,15 @@ def match_signature(
     else:
       match = signature == signature
   return match
+
+
+def _get_extension(filetype:str):
+  if filetype == "dict":
+    return "json"
+  elif filetype == "str":
+    return "txt"
+  elif filetype == "gdf":
+    return "parquet"
+  elif filetype == "df":
+    return "parquet"
+  raise ValueError(f"Unsupported filetype: {filetype}")

@@ -21,11 +21,39 @@ def clean_column_names(df: pd.DataFrame):
     "[": "_LBRKT_",
     "]": "_RBRKT_",
     "<NA>": "_NA_",
+    "/": "_SLASH_",
+    "\\": "_BSLASH_",
+    ":": "_COLON_",
+    "*": "_STAR_",
+    "?": "_QMARK_",
+    "\"": "_DQUOT_",
     "<": "_LT_",
+    ">": "_GT_",
+    "|": "_PIPE_"
   }
   for key in replace_map:
     df.columns = df.columns.str.replace(key, replace_map[key])
   return df
+
+
+def clean_series(series: pd.Series):
+  replace_map = {
+    "[": "_LBRKT_",
+    "]": "_RBRKT_",
+    "<NA>": "_NA_",
+    "/": "_SLASH_",
+    "\\": "_BSLASH_",
+    ":": "_COLON_",
+    "*": "_STAR_",
+    "?": "_QMARK_",
+    "\"": "_DQUOT_",
+    "<": "_LT_",
+    ">": "_GT_",
+    "|": "_PIPE_"
+  }
+
+  for key in replace_map:
+    series = series.str.replace(key, replace_map[key], regex=False)
 
 
 def div_field_z_safe(numerator: pd.Series | np.ndarray, denominator: pd.Series | np.ndarray):

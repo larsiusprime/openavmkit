@@ -18,6 +18,7 @@ import traceback
 
 from openavmkit.calculations import _crawl_calc_dict_for_fields, perform_calculations
 from openavmkit.filters import resolve_filter, select_filter
+from openavmkit.utilities.cache import check_cache, write_cache, read_cache
 from openavmkit.utilities.data import combine_dfs, div_field_z_safe, merge_and_stomp_dfs
 from openavmkit.utilities.geometry import get_crs, clean_geometry, identify_irregular_parcels, get_exterior_coords, \
 	geolocate_point_to_polygon, is_likely_epsg4326
@@ -286,6 +287,7 @@ def is_series_all_bools(series: pd.Series) -> bool:
       return False
   return True
 
+
 def get_vacant(df_in: pd.DataFrame, settings: dict, invert: bool = False) -> pd.DataFrame:
   """
   Filter the DataFrame based on the 'is_vacant' column.
@@ -551,6 +553,7 @@ def process_data(dataframes: dict[str, pd.DataFrame], settings: dict, verbose: b
 
   return sup
 
+
 def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd.DataFrame], settings: dict, verbose: bool = False) -> SalesUniversePair:
   """
   Enrich both sales and universe data based on enrichment instructions.
@@ -608,7 +611,14 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
 
       # Handle OpenStreetMap enrichment for universe if enabled
       if supkey == "universe" and "openstreetmap" in s_enrich_local:
-        df = _enrich_df_openstreetmap(df, s_enrich_local.get("openstreetmap", {}), s_enrich_local, dataframes, verbose=verbose)
+        df = _enrich_df_openstreetmap(
+          df,
+          s_enrich_local.get("openstreetmap", {}),
+          s_enrich_local,
+          dataframes,
+          verbose=verbose,
+          use_cache=True
+        )
 
       df = _enrich_df_geometry(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
       df = _enrich_df_basic(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
@@ -618,6 +628,7 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
     #sup = _enrich_sup_spatial_lag(sup, settings, verbose=verbose)
 
   return sup
+
 
 def _enrich_df_census(df: pd.DataFrame | gpd.GeoDataFrame, census_settings: dict, verbose: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
   """
@@ -689,6 +700,7 @@ def _enrich_df_census(df: pd.DataFrame | gpd.GeoDataFrame, census_settings: dict
     warnings.warn(f"Failed to enrich with Census data: {str(e)}")
     return df
 
+
 def _enrich_df_openstreetmap(
 		df: pd.DataFrame | gpd.GeoDataFrame,
 		osm_settings: dict,
@@ -747,30 +759,6 @@ def _enrich_df_openstreetmap(
           os.makedirs("cache/osm", exist_ok=True)
 
         # Process each feature based on settings
-        if osm_settings.get('water_bodies', {}).get('enabled', False):
-            if verbose:
-                print("--> Getting water bodies...")
-            try:
-                water_bodies = osm_service.get_water_bodies(
-                    bbox=bbox,
-                    settings=osm_settings['water_bodies'],
-										use_cache=use_cache
-                )
-                if verbose:
-                    if water_bodies.empty:
-                        print("    No water bodies found")
-                    else:
-                        print(f"--> Found {len(water_bodies)} water bodies")
-                if not water_bodies.empty:
-                    # Store only the base feature for general distance
-                    dataframes['water_bodies'] = water_bodies
-                    # Store top features separately for individual distances
-                    if 'water_bodies_top' in osm_service.features:
-                        dataframes['water_bodies_top'] = osm_service.features['water_bodies_top']
-            except Exception as e:
-                print(f"ERROR getting water bodies: {str(e)}")
-                import traceback
-                print(f"Traceback: {traceback.format_exc()}")
 
         # Define a dictionary to hold feature configurations
         features_config = {
@@ -867,6 +855,7 @@ def _enrich_df_openstreetmap(
     except Exception as e:
         warnings.warn(f"Failed to enrich with OpenStreetMap data: {str(e)}")
         return df
+
 
 def identify_parcels_with_holes(df: gpd.GeoDataFrame) -> (gpd.GeoDataFrame, gpd.GeoDataFrame):
   """
@@ -1302,6 +1291,7 @@ def _enrich_df_geometry(df_in: pd.DataFrame, s_enrich_this: dict, dataframes: di
 
   return gdf_merged
 
+
 def _enrich_polar_coordinates(gdf_in: gpd.GeoDataFrame, settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
   gdf = gdf_in[["key", "geometry"]].copy()
 
@@ -1527,7 +1517,6 @@ def _perform_spatial_join(gdf_in: gpd.GeoDataFrame, gdf_overlay: gpd.GeoDataFram
   return gdf
 
 
-
 def _perform_spatial_inference(df_in: gpd.GeoDataFrame, s_infer: dict, key: str, verbose: bool = False) -> gpd.GeoDataFrame:
     # Suppress all numpy warnings for the entire inference process
     with np.errstate(all='ignore'):
@@ -1536,6 +1525,7 @@ def _perform_spatial_inference(df_in: gpd.GeoDataFrame, s_infer: dict, key: str,
             entry = s_infer[field]
             df = _do_perform_spatial_inference(df, entry, field, key, verbose=verbose)
         return df
+
 
 def _do_perform_spatial_inference(df: gpd.GeoDataFrame, entry: dict, field: str, key: str, verbose: bool = False) -> gpd.GeoDataFrame:
     # Suppress all numpy warnings for the entire inference process
@@ -1880,8 +1870,31 @@ def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDa
     unit_factors = {"m": 1, "km": 0.001, "mile": 0.000621371, "ft": 3.28084}
     if unit not in unit_factors:
         raise ValueError(f"Unsupported unit '{unit}'")
-        
     crs = get_crs(df_in, "equal_distance")
+
+    # check for duplicate keys:
+    if df_in.duplicated(subset="key").sum() > 0:
+      # caching won't work if there's duplicate keys, and there shouldn't be any duplicate keys here anyways
+      raise ValueError(f"Duplicate keys found before distance calculation for '{_id}.' This should not happen.")
+
+    # construct a unique cache signature
+    signature = {
+      "crs": crs.name,
+      "_id": _id,
+      "max_distance": max_distance,
+      "unit": unit,
+      "df_in_len": len(df_in),
+      "gdf_in_len": len(gdf_in),
+      "df_cols": sorted(df_in.columns.tolist()),
+      "gdf_cols": sorted(gdf_in.columns.tolist()),
+      "gdf_hash": hash(gdf_in.geometry.to_wkb().sum()),
+    }
+    # check if we already have this distance calculation
+    if check_cache(f"osm/distance_{_id}", signature):
+      df_net_change = read_cache(f"osm/distance_{_id}", "df")
+      df_out = df_in.merge(df_net_change, on="key", how="left")
+      return df_out
+
     df_projected = df_in.to_crs(crs).copy()
     gdf_projected = gdf_in.to_crs(crs).copy()
     
@@ -1971,7 +1984,19 @@ def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDa
     
     # Combine original DataFrame with new columns using concat
     df_out = pd.concat([df_in, new_df], axis=1)
-    
+
+    # Figure out what the net change was and cache that
+    new_columns = [col for col in new_df.columns if col not in df_in.columns]
+    if len(new_columns) > 0:
+      df_net_change = df_out[["key"] + new_columns].copy()
+
+      # check for duplicate keys:
+      if df_net_change.duplicated(subset="key").sum() > 0:
+        raise ValueError(f"Duplicate keys found after distance calculation for '{_id}.' This should not happen.")
+
+      # save to cache:
+      write_cache(f"osm/distance_{_id}", df_net_change, signature, "df")
+
     return df_out
 
 

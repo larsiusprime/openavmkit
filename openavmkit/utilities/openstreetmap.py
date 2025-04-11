@@ -6,6 +6,8 @@ from shapely.geometry import box
 import osmnx as ox
 
 from openavmkit.utilities.cache import check_cache, read_cache, write_cache
+from openavmkit.utilities.data import clean_series
+
 
 class OpenStreetMapService:
     """
@@ -113,6 +115,7 @@ class OpenStreetMapService:
             # Clean up names
             water_bodies_filtered['name'] = water_bodies_filtered['name'].fillna('unnamed_water_body')
             water_bodies_filtered['name'] = water_bodies_filtered['name'].str.lower().str.replace(' ', '_')
+            water_bodies_filtered['name'] = clean_series(water_bodies_filtered['name'])
             
             # Create a copy for top N features
             water_bodies_top = water_bodies_filtered.nlargest(top_n, 'area').copy()
@@ -122,7 +125,7 @@ class OpenStreetMapService:
             self.features['water_bodies_top'] = water_bodies_top
 
             # write to cache so we can skip on next run
-            write_cache("osm/water_bodies", water_bodies_filtered, "gdf")
+            write_cache("osm/water_bodies", water_bodies_filtered, settings,"gdf")
 
             return water_bodies_filtered
             
@@ -194,6 +197,7 @@ class OpenStreetMapService:
         # Clean up names
         transportation_filtered['name'] = transportation_filtered['name'].fillna('unnamed_route')
         transportation_filtered['name'] = transportation_filtered['name'].str.lower().str.replace(' ', '_')
+        transportation_filtered['name'] = clean_series(transportation_filtered['name'])
         
         # Create a copy for top N features
         transportation_top = transportation_filtered.nlargest(top_n, 'length').copy()
@@ -203,7 +207,7 @@ class OpenStreetMapService:
         self.features['transportation_top'] = transportation_top
 
         # write to cache so we can skip on next run
-        write_cache("osm/transportation", transportation_filtered, "gdf")
+        write_cache("osm/transportation", transportation_filtered, settings,"gdf")
 
         return transportation_filtered
 
@@ -310,6 +314,7 @@ class OpenStreetMapService:
             
             # Clean up names
             institutions_filtered['name'] = institutions_filtered['name'].str.lower().str.replace(' ', '_')
+            institutions_filtered['name'] = clean_series(institutions_filtered['name'])
             
             # Create a copy for top N features
             institutions_top = institutions_filtered.nlargest(top_n, 'area').copy()
@@ -319,7 +324,7 @@ class OpenStreetMapService:
             self.features['educational_top'] = institutions_top
 
             # write to cache so we can skip on next run
-            write_cache("osm/educational_institutions", institutions_filtered, "gdf")
+            write_cache("osm/educational_institutions", institutions_filtered, settings,"gdf")
 
             return institutions_filtered
             
@@ -391,6 +396,7 @@ class OpenStreetMapService:
         # Clean up names
         parks_filtered['name'] = parks_filtered['name'].fillna('unnamed_park')
         parks_filtered['name'] = parks_filtered['name'].str.lower().str.replace(' ', '_')
+        parks_filtered['name'] = clean_series(parks_filtered['name'])
         
         # Create a copy for top N features
         parks_top = parks_filtered.nlargest(top_n, 'area').copy()
@@ -400,7 +406,7 @@ class OpenStreetMapService:
         self.features['parks_top'] = parks_top
 
         # write to cache so we can skip on next run
-        write_cache("osm/parks", parks_filtered, "gdf")
+        write_cache("osm/parks", parks_filtered, settings,"gdf")
 
         return parks_filtered
 
@@ -463,6 +469,7 @@ class OpenStreetMapService:
         # Clean up names
         golf_courses_filtered['name'] = golf_courses_filtered['name'].fillna('unnamed_golf_course')
         golf_courses_filtered['name'] = golf_courses_filtered['name'].str.lower().str.replace(' ', '_')
+        golf_courses_filtered['name'] = clean_series(golf_courses_filtered['name'])
         
         # Create a copy for top N features
         golf_courses_top = golf_courses_filtered.nlargest(top_n, 'area').copy()
@@ -472,7 +479,7 @@ class OpenStreetMapService:
         self.features['golf_courses_top'] = golf_courses_top
 
         # write to cache so we can skip on next run
-        write_cache("osm/golf_courses", golf_courses_filtered, "gdf")
+        write_cache("osm/golf_courses", golf_courses_filtered, settings,"gdf")
 
         return golf_courses_filtered
     
@@ -583,7 +590,7 @@ class OpenStreetMapService:
                 )
 
         # write to cache so we can skip on next run
-        write_cache(f"osm/{feature_type}_distances", distance_data, "df")
+        write_cache(f"osm/{feature_type}_distances", signature, distance_data, "df")
 
         # Create DataFrame from all collected distances at once
         return pd.DataFrame(distance_data, index=gdf.index)
