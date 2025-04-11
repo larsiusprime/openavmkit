@@ -391,14 +391,14 @@ class RandomForestModel(InferenceModel):
             for interaction in self.interaction_fields:
                 fields = interaction.split('_x_')
                 if all(field in df.columns for field in fields):
-                    # Create the interaction feature
-                    X[interaction] = df[fields].astype(str).agg('_'.join, axis=1)
+                    # Create the interaction feature by joining the field values
+                    interaction_values = df[fields].astype(str).agg('_'.join, axis=1)
                     if fit:
                         self.encoders[interaction] = CategoricalEncoder()
-                        X[interaction] = self.encoders[interaction].fit_transform(X[interaction])
+                        X[interaction] = self.encoders[interaction].fit_transform(interaction_values)
                     else:
                         if interaction in self.encoders:
-                            X[interaction] = self.encoders[interaction].transform(X[interaction])
+                            X[interaction] = self.encoders[interaction].transform(interaction_values)
         
         # Ensure all features are numeric
         X = X.astype(float)
@@ -420,15 +420,25 @@ class RandomForestModel(InferenceModel):
                     if loc != "___everything___"]
         interactions = settings.get("interactions", [])
         
+        # Format interaction fields
+        self.interaction_fields = []
+        for interaction in interactions:
+            if isinstance(interaction, list):
+                self.interaction_fields.append('_x_'.join(interaction))
+            else:
+                self.interaction_fields.append(interaction)
+        
         self.proxy_fields = proxies
         self.location_fields = locations
         
         # Create feature matrix
         X = self._create_feature_matrix(df, fit=True)
-        y = df[target].values
+        y = df[target].values.astype(float)  # Convert to numpy array and ensure float type
         
         print("\nFitting Random Forest model:")
         print(f"Features being used: {list(X.columns)}")
+        if self.interaction_fields:
+            print(f"Interaction features: {self.interaction_fields}")
         
         # Fit model
         self.model.fit(X, y)
@@ -526,14 +536,14 @@ class LightGBMModel(InferenceModel):
             for interaction in self.interaction_fields:
                 fields = interaction.split('_x_')
                 if all(field in df.columns for field in fields):
-                    # Create the interaction feature
-                    X[interaction] = df[fields].astype(str).agg('_'.join, axis=1)
+                    # Create the interaction feature by joining the field values
+                    interaction_values = df[fields].astype(str).agg('_'.join, axis=1)
                     if fit:
                         self.encoders[interaction] = CategoricalEncoder()
-                        X[interaction] = self.encoders[interaction].fit_transform(X[interaction])
+                        X[interaction] = self.encoders[interaction].fit_transform(interaction_values)
                     else:
                         if interaction in self.encoders:
-                            X[interaction] = self.encoders[interaction].transform(X[interaction])
+                            X[interaction] = self.encoders[interaction].transform(interaction_values)
         
         # Ensure all features are numeric
         X = X.astype(float)
@@ -555,6 +565,14 @@ class LightGBMModel(InferenceModel):
                     if loc != "___everything___"]
         interactions = settings.get("interactions", [])
         
+        # Format interaction fields
+        self.interaction_fields = []
+        for interaction in interactions:
+            if isinstance(interaction, list):
+                self.interaction_fields.append('_x_'.join(interaction))
+            else:
+                self.interaction_fields.append(interaction)
+        
         self.proxy_fields = proxies
         self.location_fields = locations
         
@@ -564,6 +582,8 @@ class LightGBMModel(InferenceModel):
         
         print("\nFitting LightGBM model:")
         print(f"Features being used: {list(X.columns)}")
+        if self.interaction_fields:
+            print(f"Interaction features: {self.interaction_fields}")
         
         # Fit model
         self.model.fit(X, y)
@@ -660,14 +680,14 @@ class XGBoostModel(InferenceModel):
             for interaction in self.interaction_fields:
                 fields = interaction.split('_x_')
                 if all(field in df.columns for field in fields):
-                    # Create the interaction feature
-                    X[interaction] = df[fields].astype(str).agg('_'.join, axis=1)
+                    # Create the interaction feature by joining the field values
+                    interaction_values = df[fields].astype(str).agg('_'.join, axis=1)
                     if fit:
                         self.encoders[interaction] = CategoricalEncoder()
-                        X[interaction] = self.encoders[interaction].fit_transform(X[interaction])
+                        X[interaction] = self.encoders[interaction].fit_transform(interaction_values)
                     else:
                         if interaction in self.encoders:
-                            X[interaction] = self.encoders[interaction].transform(X[interaction])
+                            X[interaction] = self.encoders[interaction].transform(interaction_values)
         
         # Ensure all features are numeric
         X = X.astype(float)
@@ -689,6 +709,14 @@ class XGBoostModel(InferenceModel):
                     if loc != "___everything___"]
         interactions = settings.get("interactions", [])
         
+        # Format interaction fields
+        self.interaction_fields = []
+        for interaction in interactions:
+            if isinstance(interaction, list):
+                self.interaction_fields.append('_x_'.join(interaction))
+            else:
+                self.interaction_fields.append(interaction)
+        
         self.proxy_fields = proxies
         self.location_fields = locations
         
@@ -698,6 +726,8 @@ class XGBoostModel(InferenceModel):
         
         print("\nFitting XGBoost model:")
         print(f"Features being used: {list(X.columns)}")
+        if self.interaction_fields:
+            print(f"Interaction features: {self.interaction_fields}")
         
         # Fit model
         self.model.fit(X, y)
@@ -787,14 +817,14 @@ class EnsembleModel(InferenceModel):
             for interaction in self.interaction_fields:
                 fields = interaction.split('_x_')
                 if all(field in df.columns for field in fields):
-                    # Create the interaction feature
-                    X[interaction] = df[fields].astype(str).agg('_'.join, axis=1)
+                    # Create the interaction feature by joining the field values
+                    interaction_values = df[fields].astype(str).agg('_'.join, axis=1)
                     if fit:
                         self.encoders[interaction] = CategoricalEncoder()
-                        X[interaction] = self.encoders[interaction].fit_transform(X[interaction])
+                        X[interaction] = self.encoders[interaction].fit_transform(interaction_values)
                     else:
                         if interaction in self.encoders:
-                            X[interaction] = self.encoders[interaction].transform(X[interaction])
+                            X[interaction] = self.encoders[interaction].transform(interaction_values)
         
         # Ensure all features are numeric
         X = X.astype(float)
@@ -815,6 +845,14 @@ class EnsembleModel(InferenceModel):
         locations = [loc for loc in settings.get("locations", []) 
                     if loc != "___everything___"]
         interactions = settings.get("interactions", [])
+        
+        # Format interaction fields
+        self.interaction_fields = []
+        for interaction in interactions:
+            if isinstance(interaction, list):
+                self.interaction_fields.append('_x_'.join(interaction))
+            else:
+                self.interaction_fields.append(interaction)
         
         self.proxy_fields = proxies
         self.location_fields = locations
