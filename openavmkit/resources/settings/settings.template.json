@@ -142,6 +142,11 @@
 				"dist_to_universities",
 				"dist_to_greenspace",
 				"dist_to_airport",
+				"dist_to_educational",
+				"dist_to_golf_courses",
+				"dist_to_parks",
+				"dist_to_transportation",
+				"dist_to_water_bodies",
 				"land_area_median_sqft",
 				"land_area_delta_from_median_sqft",
 				"geom_rectangularity_num",
@@ -153,7 +158,9 @@
 				"spatial_lag_sale_price_land_sqft",
 				"spatial_lag_sale_price_time_adj",
 				"spatial_lag_sale_price_time_adj_impr_sqft",
-				"spatial_lag_sale_price_time_adj_land_sqft"
+				"spatial_lag_sale_price_time_adj_land_sqft",
+				"polar_angle",
+				"polar_radius"
 			],
 			"+categorical": [
 				"land_class",
@@ -195,7 +202,12 @@
 				"osm_on_golf_course",
 				"osm_on_park",
 				"osm_on_playground",
-				"osm_on_swimming_pool"
+				"osm_on_swimming_pool",
+				"within_educational",
+				"within_golf_courses",
+				"within_parks",
+				"within_transportation",
+				"within_water_bodies"
 			]
 		},
 		"+impr": {
@@ -220,6 +232,7 @@
 				"bldg_rooms_bath_full",
 				"bldg_rooms_bath_half",
 				"bldg_area_footprint_sqft",
+				"bldg_area_finished_sqft_inferred",
 				"assr_impr_value",
 				"assr_impr_value_impr_sqft",
 				"true_impr_value",

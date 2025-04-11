@@ -301,6 +301,7 @@ def _get_fields(s: dict, type: str, df: pd.DataFrame = None):
   cats = s.get("field_classification", {}).get(type, {}).get("categorical", [])
   nums = s.get("field_classification", {}).get(type, {}).get("numeric", [])
   bools = s.get("field_classification", {}).get(type, {}).get("boolean", [])
+
   if df is not None:
     cats = [c for c in cats if c in df]
     nums = [n for n in nums if n in df]
