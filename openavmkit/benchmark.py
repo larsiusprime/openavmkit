@@ -148,14 +148,7 @@ def try_variables(
 	):
 		bests = {}
 
-		if verbose:
-			print("")
-			print(f"*** MODEL GROUP: {model_group} ***")
-
 		for vacant_only in [False, True]:
-			if verbose:
-				print("")
-				print(f"--> vacant_only: {vacant_only}")
 
 			if vacant_only:
 				if df_in["vacant_sale"].sum() == 0:
@@ -180,34 +173,23 @@ def try_variables(
 				settings,
 				model_group,
 				variables_to_use=variables_to_use,
-				skip_vif=True,
+				tests_to_run=["corr", "r2"],
+				do_report=False,
 				verbose=verbose
 			)
+
 			best_variables = var_recs["variables"]
-			var_report = var_recs["report"]
-			var_report_md = var_report.render()
-
-			report_path = f"{outpath}/{model_group}"
-
-			os.makedirs(report_path, exist_ok=True)
-			with open(f"{report_path}/variable_report.md", "w", encoding="utf-8") as f:
-				f.write(var_report_md)
-			pdf_path = f"{report_path}/variable_report.pdf"
-			formats = settings.get("analysis", {}).get("report", {}).get("formats", None)
-			_markdown_to_pdf(var_report_md, pdf_path, css_file="variable", formats=formats)
+			df_results = var_recs["df_results"]
 
 			if vacant_only:
-				bests["vacant_only"] = best_variables
+				bests["vacant_only"] = df_results
 			else:
-				bests["main"] = best_variables
+				bests["main"] = df_results
 
 		results[model_group] = bests
 
 	do_per_model_group(df_hydrated, settings, _try_variables, params={"settings": settings, "df_univ": sup.universe, "outpath":base_path, "verbose": verbose, "results": all_best_variables}, key="key_sale")
 
-	variables_to_use = settings.get("modeling", {}).get("experiment", {}).get("variables", [])
-
-	variables_used = []
 
 	print("")
 	print("********** BEST VARIABLES ***********")
@@ -216,51 +198,16 @@ def try_variables(
 		for vacant_status in entry:
 			print("")
 			print(f"model group: {model_group} / {vacant_status}")
-			best_vars = entry[vacant_status]
-			i = 1
-			for var in best_vars:
-				print(f"{i}. {var}")
-				if var not in variables_used:
-					variables_used.append(var)
-				i += 1
+			results = entry[vacant_status]
+			display(results)
 
-	worst_variables = []
-	for var in variables_to_use:
-		found = False
-		for used_variable in variables_used:
-			if var == used_variable or f"{var}_" in used_variable:
-				found = True
-				break
-		if not found:
-			worst_variables.append(var)
+			# i = 1
+			# for var in best_vars:
+			# 	print(f"{i}. {var}")
+			# 	if var not in variables_used:
+			# 		variables_used.append(var)
+			# 	i += 1
 
-	print("")
-	print("************* WORST VARIABLES ***********")
-	for var in worst_variables:
-		print(var)
-
-	#
-	# var_recs = openavmkit.get_variable_recommendations(
-	#    df_sales,
-	#    df_univ,
-	#    vacant_only,
-	#    settings,
-	#    model_group,
-	#    verbose=True,
-	# )
-	# best_variables = var_recs["variables"]
-	#
-	# # var_report = var_recs["report"]
-	# # var_report_md = var_report.render()
-	# #
-	# # os.makedirs(f"{outpath}/reports", exist_ok=True)
-	# # with open(f"{outpath}/reports/variable_report.md", "w", encoding="utf-8") as f:
-	# # 	f.write(var_report_md)
-	# #
-	# # pdf_path = f"{outpath}/reports/variable_report.pdf"
-	# # formats = settings.get("analysis", {}).get("report", {}).get("formats", None)
-	# # _markdown_to_pdf(var_report_md, pdf_path, css_file="variable", formats=formats)
-	# # t.stop("var_recs")
 
 
 
@@ -271,7 +218,8 @@ def get_variable_recommendations(
 		settings: dict,
 		model_group: str,
 		variables_to_use: list[str] | None = None,
-		skip_vif: bool = False,
+		tests_to_run: list[str] | None = None,
+		do_report: bool = False,
 		verbose: bool = False
 ):
 	"""
@@ -293,29 +241,28 @@ def get_variable_recommendations(
   :type model_group: str
   :param variables_to_use: A list of variables to use for feature selection. If None, variables are pulled from modeling section
   :type variables_to_use: list[str] | None
-  :param skip_vif: If True, skips VIF calculation (which takes the longest time).
-  :type skip_vif: bool
+  :param tests_to_run: A list of tests to run. If None, all tests are run. Legal values are "corr", "r2", "p_value", "t_value", "enr", and "vif"
+  :type tests_to_run: list[str] | None
+  :param do_report: If True, generates a report of the variable selection process.
+  :type do_report: bool
   :param verbose: If True, prints additional debugging information.
-  :type verbose: bool, optional	
+  :type verbose: bool, optional
   :returns: A dictionary with keys "variables" (the best variables list) and "report" (the generated report).
   :rtype: dict
   """
-	if verbose:
-		print("")
 
 	report = MarkdownReport("variables")
+
+	if tests_to_run is None:
+		tests_to_run = ["corr", "r2", "p_value", "t_value", "enr", "vif"]
 
 	if "sale_price_time_adj" not in df_sales:
 		warnings.warn("Time adjustment was not found in sales data. Calculating now...")
 		df_sales = enrich_time_adjustment(df_sales, settings, verbose=verbose)
 
-	if verbose:
-		print("------> PREPARING")
 	ds = _prepare_ds(df_sales, df_universe, model_group, vacant_only, settings, variables_to_use)
 	ds = ds.encode_categoricals_with_one_hot()
 
-	if verbose:
-		print("------> SPLITTING")
 	ds.split()
 
 	feature_selection = settings.get("modeling", {}).get("instructions", {}).get("feature_selection", {})
@@ -324,50 +271,51 @@ def get_variable_recommendations(
 	X_sales = ds.X_sales[ds.ind_vars]
 	y_sales = ds.y_sales
 
-	if verbose:
-		print("------> CORRELATING")
-	# Correlation
-	X_corr = ds.df_sales[[ds.dep_var] + ds.ind_vars]
-	corr_results = calc_correlations(X_corr, thresh.get("correlation", 0.1))
+	if "corr" in tests_to_run:
+		# Correlation
+		X_corr = ds.df_sales[[ds.dep_var] + ds.ind_vars]
+		corr_results = calc_correlations(X_corr, thresh.get("correlation", 0.1))
+	else:
+		corr_results = None
 
-	if verbose:
-		print("------> ENR")
-	# Elastic net regularization
-	try:
-		enr_coefs = calc_elastic_net_regularization(X_sales, y_sales, thresh.get("enr", 0.01))
-	except ValueError as e:
-		nulls_in_X = X_sales[X_sales.isna().any(axis=1)]
-		print(f"Found {len(nulls_in_X)} rows with nulls in X:")
-		# identify columns with nulls in them:
-		cols_with_null = nulls_in_X.columns[nulls_in_X.isna().any()].tolist()
-		print(f"Columns with nulls: {cols_with_null}")
-		raise e
+	if "enr" in tests_to_run:
+		# Elastic net regularization
+		try:
+			enr_coefs = calc_elastic_net_regularization(X_sales, y_sales, thresh.get("enr", 0.01))
+		except ValueError as e:
+			nulls_in_X = X_sales[X_sales.isna().any(axis=1)]
+			print(f"Found {len(nulls_in_X)} rows with nulls in X:")
+			# identify columns with nulls in them:
+			cols_with_null = nulls_in_X.columns[nulls_in_X.isna().any()].tolist()
+			print(f"Columns with nulls: {cols_with_null}")
+			raise e
+	else:
+		enr_coefs = None
 
-	if verbose:
-		print("------> R2")
-	# R² values
-	r2_values = calc_r2(ds.df_sales, ds.ind_vars, y_sales)
+	if "r2" in tests_to_run:
+		# R² values
+		r2_values = calc_r2(ds.df_sales, ds.ind_vars, y_sales)
+	else:
+		r2_values = None
 
-	if verbose:
-		print("------> P VALUES")
-	# P Values
-	p_values = calc_p_values_recursive_drop(X_sales, y_sales, thresh.get("p_value", 0.05))
+	if "p_value" in tests_to_run:
+		# P Values
+		p_values = calc_p_values_recursive_drop(X_sales, y_sales, thresh.get("p_value", 0.05))
+	else:
+		p_values = None
 
-	if verbose:
-		print("------> T VALUES")
-	# T Values
-	t_values = calc_t_values_recursive_drop(X_sales, y_sales, thresh.get("t_value", 2))
+	if "t_value" in tests_to_run:
+		# T Values
+		t_values = calc_t_values_recursive_drop(X_sales, y_sales, thresh.get("t_value", 2))
+	else:
+		t_values = None
 
 	# VIF
-	if skip_vif:
-		vif = None
-	else:
-		if verbose:
-			print("------> VIF")
+	if "vif" in tests_to_run:
 		vif = calc_vif_recursive_drop(X_sales, thresh.get("vif", 10))
+	else:
+		vif = None
 
-	if verbose:
-		print("------> CALC RECS")
 	# Generate final results & recommendations
 	df_results = _calc_variable_recommendations(
 		ds=ds,
@@ -381,15 +329,11 @@ def get_variable_recommendations(
 		report=report
 	)
 
-	if verbose:
-		display(df_results)
-
 	curr_variables = df_results["variable"].tolist()
 	best_variables = curr_variables.copy()
 	best_score = float('inf')
 
-	if verbose:
-		print("------> CROSS VALIDATING")
+	df_cross = df_results.copy()
 	y = ds.y_sales
 	while len(curr_variables) > 0:
 		X = ds.df_sales[curr_variables]
@@ -397,14 +341,12 @@ def get_variable_recommendations(
 		if cv_score < best_score:
 			best_score = cv_score
 			best_variables = curr_variables.copy()
-		worst_idx = df_results["weighted_score"].idxmin()
-		worst_variable = df_results.loc[worst_idx, "variable"]
+		worst_idx = df_cross["weighted_score"].idxmin()
+		worst_variable = df_cross.loc[worst_idx, "variable"]
 		curr_variables.remove(worst_variable)
 		# Remove the variable from the results dataframe.
-		df_results = df_results[df_results["variable"].ne(worst_variable)]
+		df_cross = df_cross[df_cross["variable"].ne(worst_variable)]
 
-	if verbose:
-		print("------> TABLE")
 	# Create a table from the list of best variables.
 	df_best = pd.DataFrame(best_variables, columns=["Variable"])
 	df_best["Rank"] = range(1, len(df_best) + 1)
@@ -417,15 +359,17 @@ def get_variable_recommendations(
 		"Description"
 	] = ""
 	df_best.set_index("Rank", inplace=True)
-	report.set_var("summary_table", df_best.to_markdown())
 
-	if verbose:
-		print("------> REPORT")
-	report = generate_variable_report(report, settings, model_group, best_variables)
+	if do_report:
+		report.set_var("summary_table", df_best.to_markdown())
+		report = generate_variable_report(report, settings, model_group, best_variables)
+	else:
+		report = None
 
 	return {
 		"variables": best_variables,
-		"report": report
+		"report": report,
+		"df_results": df_results
 	}
 
 
@@ -2061,12 +2005,26 @@ def _calc_variable_recommendations(
 	thresh = feature_selection.get("thresholds", {})
 	weights = feature_selection.get("weights", {})
 
-	df = pd.merge(correlation_results["final"], enr_results["final"], on="variable", how="outer")
-	df = pd.merge(df, r2_values_results, on="variable", how="outer")
-	df = pd.merge(df, p_values_results["final"], on="variable", how="outer")
-	df = pd.merge(df, t_values_results["final"], on="variable", how="outer")
-	if vif_results is not None:
-		df = pd.merge(df, vif_results["final"], on="variable", how="outer")
+	stuff_to_merge = [
+		correlation_results,
+		{"final": r2_values_results},
+		enr_results,
+		p_values_results,
+		t_values_results,
+		vif_results
+	]
+
+	df: pd.DataFrame | None = None
+	for thing in stuff_to_merge:
+		if thing is None:
+			continue
+		if df is None:
+			df = thing["final"]
+		else:
+			df = pd.merge(df, thing["final"], on="variable", how="outer")
+
+	if df is None:
+		raise ValueError("df is None, no data to merge")
 
 	df["weighted_score"] = 0
 
@@ -2083,21 +2041,26 @@ def _calc_variable_recommendations(
 	weight_vif = weights.get("vif", 1)
 	weight_coef_sign = weights.get("coef_sign", 1)
 
-	df.loc[df["corr_score"].notna(), "weighted_score"] += weight_corr_score
-	df.loc[df["enr_coef"].notna(), "weighted_score"] += weight_enr_coef
-	df.loc[df["p_value"].notna(), "weighted_score"] += weight_p_value
-	df.loc[df["t_value"].notna(), "weighted_score"] += weight_t_value
+	if correlation_results is not None:
+		df.loc[df["corr_score"].notna(), "weighted_score"] += weight_corr_score
+	if enr_results is not None:
+		df.loc[df["enr_coef"].notna(), "weighted_score"] += weight_enr_coef
+	if p_values_results is not None:
+		df.loc[df["p_value"].notna(), "weighted_score"] += weight_p_value
+	if t_values_results is not None:
+		df.loc[df["t_value"].notna(), "weighted_score"] += weight_t_value
 	if vif_results is not None:
 		df.loc[df["vif"].notna(), "weighted_score"] += weight_vif
 
-	# check if "enr_coefficient", "t_value", and "coef_sign" are pointing in the same direction:
-	df.loc[
-		df["enr_coef_sign"].eq(df["t_value_sign"]) &
-		df["enr_coef_sign"].eq(df["coef_sign"]),
-		"signs_match"
-	] = 1
+	if t_values_results is not None and enr_results is not None:
+		# check if "enr_coefficient", "t_value", and "coef_sign" are pointing in the same direction:
+		df.loc[
+			df["enr_coef_sign"].eq(df["t_value_sign"]) &
+			df["enr_coef_sign"].eq(df["coef_sign"]),
+			"signs_match"
+		] = 1
+		df.loc[df["signs_match"].eq(1), "weighted_score"] += weight_coef_sign
 
-	df.loc[df["signs_match"].eq(1), "weighted_score"] += weight_coef_sign
 	df = df.sort_values(by="weighted_score", ascending=False)
 
 	if report is not None:
@@ -2203,87 +2166,91 @@ def _calc_variable_recommendations(
 			else:
 				report.set_var(f"table_vif_{state}", "N/A")
 
-			# P-value:
-			dfr_p_value = p_values_results[state][["variable", "p_value"]].copy()
-			dfr_p_value = dfr_p_value[dfr_p_value["variable"].ne("const")]
-			dfr_p_value = dfr_p_value.sort_values(by="p_value", ascending=True)
-			dfr_p_value["Pass/Fail"] = dfr_p_value["p_value"].apply(lambda x: "✅" if x < thresh_p_value else "❌")
-			dfr_p_value["p_value"] = dfr_p_value["p_value"].apply(lambda x: f"{x:.3f}").astype("string")
-			dfr_p_value = dfr_p_value.rename(columns=p_value_renames)
-			dfr_p_value["Rank"] = range(1, len(dfr_p_value) + 1)
-			dfr_p_value = dfr_p_value[["Rank", "Variable", "P-value", "Pass/Fail"]]
-			dfr_p_value.set_index("Rank", inplace=True)
-			dfr_p_value = apply_dd_to_df_rows(dfr_p_value, "Variable", settings, ds.one_hot_descendants)
-			report.set_var(f"table_p_value_{state}", dataframe_to_markdown(dfr_p_value))
+			if p_values_results is not None:
+				# P-value:
+				dfr_p_value = p_values_results[state][["variable", "p_value"]].copy()
+				dfr_p_value = dfr_p_value[dfr_p_value["variable"].ne("const")]
+				dfr_p_value = dfr_p_value.sort_values(by="p_value", ascending=True)
+				dfr_p_value["Pass/Fail"] = dfr_p_value["p_value"].apply(lambda x: "✅" if x < thresh_p_value else "❌")
+				dfr_p_value["p_value"] = dfr_p_value["p_value"].apply(lambda x: f"{x:.3f}").astype("string")
+				dfr_p_value = dfr_p_value.rename(columns=p_value_renames)
+				dfr_p_value["Rank"] = range(1, len(dfr_p_value) + 1)
+				dfr_p_value = dfr_p_value[["Rank", "Variable", "P-value", "Pass/Fail"]]
+				dfr_p_value.set_index("Rank", inplace=True)
+				dfr_p_value = apply_dd_to_df_rows(dfr_p_value, "Variable", settings, ds.one_hot_descendants)
+				report.set_var(f"table_p_value_{state}", dataframe_to_markdown(dfr_p_value))
 
-			# T-value:
-			dfr_t_value = t_values_results[state][["variable", "t_value"]].copy()
-			dfr_t_value = dfr_t_value[dfr_t_value["variable"].ne("const")]
-			dfr_t_value = dfr_t_value.sort_values(by="t_value", ascending=False, key=abs)
-			dfr_t_value["Pass/Fail"] = dfr_t_value["t_value"].apply(lambda x: "✅" if abs(x) > thresh_t_value else "❌")
-			dfr_t_value["t_value"] = dfr_t_value["t_value"].apply(lambda x: f"{x:.2f}").astype("string")
-			dfr_t_value = dfr_t_value.rename(columns=t_value_renames)
-			dfr_t_value["Rank"] = range(1, len(dfr_t_value) + 1)
-			dfr_t_value = dfr_t_value[["Rank", "Variable", "T-value", "Pass/Fail"]]
-			dfr_t_value.set_index("Rank", inplace=True)
-			dfr_t_value = apply_dd_to_df_rows(dfr_t_value, "Variable", settings, ds.one_hot_descendants)
-			report.set_var(f"table_t_value_{state}", dataframe_to_markdown(dfr_t_value))
+			if t_values_results is not None:
+				# T-value:
+				dfr_t_value = t_values_results[state][["variable", "t_value"]].copy()
+				dfr_t_value = dfr_t_value[dfr_t_value["variable"].ne("const")]
+				dfr_t_value = dfr_t_value.sort_values(by="t_value", ascending=False, key=abs)
+				dfr_t_value["Pass/Fail"] = dfr_t_value["t_value"].apply(lambda x: "✅" if abs(x) > thresh_t_value else "❌")
+				dfr_t_value["t_value"] = dfr_t_value["t_value"].apply(lambda x: f"{x:.2f}").astype("string")
+				dfr_t_value = dfr_t_value.rename(columns=t_value_renames)
+				dfr_t_value["Rank"] = range(1, len(dfr_t_value) + 1)
+				dfr_t_value = dfr_t_value[["Rank", "Variable", "T-value", "Pass/Fail"]]
+				dfr_t_value.set_index("Rank", inplace=True)
+				dfr_t_value = apply_dd_to_df_rows(dfr_t_value, "Variable", settings, ds.one_hot_descendants)
+				report.set_var(f"table_t_value_{state}", dataframe_to_markdown(dfr_t_value))
 
-			# ENR:
-			dfr_enr = enr_results[state][["variable", "enr_coef"]].copy()
-			dfr_enr = dfr_enr.sort_values(by="enr_coef", ascending=False, key=abs)
-			dfr_enr["Pass/Fail"] = dfr_enr["enr_coef"].apply(lambda x: "✅" if abs(x) > thresh_enr else "❌")
-			dfr_enr["enr_coef"] = dfr_enr["enr_coef"].apply(lambda x: f"{x:.2f}" if abs(x) < 100 else f"{x:,.0f}").astype("string")
-			dfr_enr = dfr_enr.rename(columns=enr_renames)
-			dfr_enr["Rank"] = range(1, len(dfr_enr) + 1)
-			dfr_enr = dfr_enr[["Rank", "Variable", "Coefficient", "Pass/Fail"]]
-			dfr_enr.set_index("Rank", inplace=True)
-			dfr_enr = apply_dd_to_df_rows(dfr_enr, "Variable", settings, ds.one_hot_descendants)
-			report.set_var(f"table_enr_{state}", dataframe_to_markdown(dfr_enr))
+			if enr_results is not None:
+				# ENR:
+				dfr_enr = enr_results[state][["variable", "enr_coef"]].copy()
+				dfr_enr = dfr_enr.sort_values(by="enr_coef", ascending=False, key=abs)
+				dfr_enr["Pass/Fail"] = dfr_enr["enr_coef"].apply(lambda x: "✅" if abs(x) > thresh_enr else "❌")
+				dfr_enr["enr_coef"] = dfr_enr["enr_coef"].apply(lambda x: f"{x:.2f}" if abs(x) < 100 else f"{x:,.0f}").astype("string")
+				dfr_enr = dfr_enr.rename(columns=enr_renames)
+				dfr_enr["Rank"] = range(1, len(dfr_enr) + 1)
+				dfr_enr = dfr_enr[["Rank", "Variable", "Coefficient", "Pass/Fail"]]
+				dfr_enr.set_index("Rank", inplace=True)
+				dfr_enr = apply_dd_to_df_rows(dfr_enr, "Variable", settings, ds.one_hot_descendants)
+				report.set_var(f"table_enr_{state}", dataframe_to_markdown(dfr_enr))
 
-			# R-squared
-			dfr_r2 = r2_values_results.copy()
-			dfr_r2 = dfr_r2.sort_values(by="adj_r2", ascending=False)
-			dfr_r2["Pass/Fail"] = dfr_r2["adj_r2"].apply(lambda x: "✅" if x > thresh_r2 else "❌")
-			dfr_r2["adj_r2"] = dfr_r2["adj_r2"].apply(lambda x: f"{x:.2f}").astype("string")
-			dfr_r2 = dfr_r2.rename(columns=r2_renames)
-			dfr_r2["Rank"] = range(1, len(dfr_r2) + 1)
-			dfr_r2 = dfr_r2[["Rank", "Variable", "R-squared", "Pass/Fail"]]
-			dfr_r2.set_index("Rank", inplace=True)
-			dfr_r2 = apply_dd_to_df_rows(dfr_r2, "Variable", settings, ds.one_hot_descendants)
-			if state == "final":
-				dfr_r2 = dfr_r2[dfr_r2["Pass/Fail"].eq("✅")]
-			report.set_var(f"table_adj_r2_{state}", dataframe_to_markdown(dfr_r2))
+			if r2_values_results is not None:
+				# R-squared
+				dfr_r2 = r2_values_results.copy()
+				dfr_r2 = dfr_r2.sort_values(by="adj_r2", ascending=False)
+				dfr_r2["Pass/Fail"] = dfr_r2["adj_r2"].apply(lambda x: "✅" if x > thresh_r2 else "❌")
+				dfr_r2["adj_r2"] = dfr_r2["adj_r2"].apply(lambda x: f"{x:.2f}").astype("string")
+				dfr_r2 = dfr_r2.rename(columns=r2_renames)
+				dfr_r2["Rank"] = range(1, len(dfr_r2) + 1)
+				dfr_r2 = dfr_r2[["Rank", "Variable", "R-squared", "Pass/Fail"]]
+				dfr_r2.set_index("Rank", inplace=True)
+				dfr_r2 = apply_dd_to_df_rows(dfr_r2, "Variable", settings, ds.one_hot_descendants)
+				if state == "final":
+					dfr_r2 = dfr_r2[dfr_r2["Pass/Fail"].eq("✅")]
+				report.set_var(f"table_adj_r2_{state}", dataframe_to_markdown(dfr_r2))
 
-			# Coef sign:
-			dfr_coef_sign = enr_results[state][["variable", "enr_coef_sign"]].copy()
-			dfr_coef_sign = dfr_coef_sign.merge(t_values_results[state][["variable", "t_value_sign"]], on="variable", how="outer")
-			dfr_coef_sign = dfr_coef_sign.merge(r2_values_results[["variable", "coef_sign"]], on="variable", how="outer")
-			dfr_coef_sign["signs_match"] = False
-			dfr_coef_sign.loc[
-				dfr_coef_sign["enr_coef_sign"].eq(dfr_coef_sign["t_value_sign"]) &
-				dfr_coef_sign["enr_coef_sign"].eq(dfr_coef_sign["coef_sign"]),
-				"signs_match"
-			] = True
-			dfr_coef_sign["Pass/Fail"] = dfr_coef_sign["signs_match"].apply(lambda x: "✅" if x else "❌")
-			dfr_coef_sign = dfr_coef_sign.sort_values(by="signs_match", ascending=False)
-			dfr_coef_sign = dfr_coef_sign[dfr_coef_sign["variable"].ne("const")]
-			dfr_coef_sign = dfr_coef_sign.rename(columns=coef_sign_renames)
-			dfr_coef_sign = dfr_coef_sign[["Variable", "ENR sign", "T-value sign", "Coef. sign", "Pass/Fail"]]
-			for field in ["ENR sign", "T-value sign", "Coef. sign"]:
-				dfr_coef_sign[field] = dfr_coef_sign[field].apply(lambda x: f"{x:.0f}").astype("string")
-			dfr_coef_sign = apply_dd_to_df_rows(dfr_coef_sign, "Variable", settings, ds.one_hot_descendants)
-			if state == "final":
-				dfr_coef_sign = dfr_coef_sign[dfr_coef_sign["Pass/Fail"].eq("✅")]
-			report.set_var(f"table_coef_sign_{state}", dataframe_to_markdown(dfr_coef_sign))
+			if enr_results is not None and t_values_results is not None:
+				# Coef sign:
+				dfr_coef_sign = enr_results[state][["variable", "enr_coef_sign"]].copy()
+				dfr_coef_sign = dfr_coef_sign.merge(t_values_results[state][["variable", "t_value_sign"]], on="variable", how="outer")
+				dfr_coef_sign = dfr_coef_sign.merge(r2_values_results[["variable", "coef_sign"]], on="variable", how="outer")
+				dfr_coef_sign["signs_match"] = False
+				dfr_coef_sign.loc[
+					dfr_coef_sign["enr_coef_sign"].eq(dfr_coef_sign["t_value_sign"]) &
+					dfr_coef_sign["enr_coef_sign"].eq(dfr_coef_sign["coef_sign"]),
+					"signs_match"
+				] = True
+				dfr_coef_sign["Pass/Fail"] = dfr_coef_sign["signs_match"].apply(lambda x: "✅" if x else "❌")
+				dfr_coef_sign = dfr_coef_sign.sort_values(by="signs_match", ascending=False)
+				dfr_coef_sign = dfr_coef_sign[dfr_coef_sign["variable"].ne("const")]
+				dfr_coef_sign = dfr_coef_sign.rename(columns=coef_sign_renames)
+				dfr_coef_sign = dfr_coef_sign[["Variable", "ENR sign", "T-value sign", "Coef. sign", "Pass/Fail"]]
+				for field in ["ENR sign", "T-value sign", "Coef. sign"]:
+					dfr_coef_sign[field] = dfr_coef_sign[field].apply(lambda x: f"{x:.0f}").astype("string")
+				dfr_coef_sign = apply_dd_to_df_rows(dfr_coef_sign, "Variable", settings, ds.one_hot_descendants)
+				if state == "final":
+					dfr_coef_sign = dfr_coef_sign[dfr_coef_sign["Pass/Fail"].eq("✅")]
+				report.set_var(f"table_coef_sign_{state}", dataframe_to_markdown(dfr_coef_sign))
 
 
 		dfr["Rank"] = range(1, len(dfr) + 1)
 		dfr = apply_dd_to_df_rows(dfr, "Variable", settings, ds.one_hot_descendants)
 
 		the_cols = ["Rank", "Weighted Score", "Variable", "VIF", "P Value", "T Value", "ENR", "Correlation", "Coef. sign", "R-squared"]
-		if vif_results is None:
-			the_cols.remove("VIF")
+		the_cols = [col for col in the_cols if col in dfr]
 
 		dfr = dfr[the_cols]
 		dfr.set_index("Rank", inplace=True)
@@ -2532,6 +2499,7 @@ def _run_models(
 		vacant_only,
 		settings,
 		model_group,
+		do_report=True,
 		verbose=True,
 	)
 	best_variables = var_recs["variables"]
