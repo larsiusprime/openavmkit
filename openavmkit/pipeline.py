@@ -694,8 +694,29 @@ def write_notebook_output_sup(sup: SalesUniversePair, prefix="1-assemble"):
    with open(f"out/{prefix}-sup.pickle", "wb") as file:
       pickle.dump(sup, file)
    os.makedirs("out/look", exist_ok=True)
-   sup["universe"].to_parquet(f"out/look/{prefix}-universe.parquet")
-   sup["sales"].to_parquet(f"out/look/{prefix}-sales.parquet")
+
+   # Handle geometry columns for both universe and sales
+   def prepare_df_for_parquet(df):
+      if "geometry" in df.columns:
+         # Convert geometry to WKB for storage
+         df = df.copy()
+         if hasattr(df, 'to_wkb'):
+            # If it's a GeoDataFrame, use to_wkb() method
+            df["geometry"] = df.geometry.to_wkb()
+         else:
+            # If it's a regular DataFrame with geometry column
+            import shapely.wkb
+            df["geometry"] = df["geometry"].apply(lambda geom: geom.wkb if geom is not None else None)
+      return df
+
+   # Prepare and write universe DataFrame
+   df_universe = prepare_df_for_parquet(sup["universe"])
+   df_universe.to_parquet(f"out/look/{prefix}-universe.parquet")
+
+   # Prepare and write sales DataFrame
+   df_sales = prepare_df_for_parquet(sup["sales"])
+   df_sales.to_parquet(f"out/look/{prefix}-sales.parquet")
+
    print("Results written to:")
    print(f"...out/{prefix}-sup.pickle")
    print(f"...out/look/{prefix}-universe.parquet")

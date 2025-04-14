@@ -35,8 +35,8 @@ class SalesUniversePair:
   """
   A container for the sales and universe DataFrames, many functions operate on this data structure. This data structure
   is necessary because the sales and universe DataFrames are often used together and need to be passed around together.
-  The sales represent transactions and any known data at the time of the transaction, while the universe represents the
-  current state of all parcels. The sales dataframe specifically allows for duplicate primary parcel keys, since an
+  The sales represent transactions and any known data at the time of the transaction, while the universe represents
+  the current state of all parcels. The sales dataframe specifically allows for duplicate primary parcel keys, since an
   individual parcel may have sold multiple times. The universe dataframe should have no duplicate primary parcel keys.
 
   Attributes:
@@ -612,7 +612,7 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
 
       # Handle OpenStreetMap enrichment for universe if enabled
       if supkey == "universe" and "openstreetmap" in s_enrich_local:
-        df = _enrich_df_openstreetmap(df, s_enrich_local.get("openstreetmap", {}), s_enrich_local, dataframes, verbose=verbose, use_cache=True)
+        df = _enrich_df_openstreetmap(df, s_enrich_local.get("openstreetmap", {}), s_enrich_local, dataframes, verbose=verbose)
 
       df = _enrich_df_geometry(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
       df = _enrich_df_basic(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
@@ -2195,6 +2195,8 @@ def _merge_dict_of_dfs(dataframes: dict[str, pd.DataFrame], merge_list: list, se
     df_id = None
     how = "left"
     on = "key"
+    left_on = None
+    right_on = None
 
     payload = {}
 
@@ -2206,8 +2208,10 @@ def _merge_dict_of_dfs(dataframes: dict[str, pd.DataFrame], merge_list: list, se
       df_id = entry.get("id", None)
       how = entry.get("how", how)
       on = entry.get("on", on)
+      left_on = entry.get("left_on", left_on)
+      right_on = entry.get("right_on", right_on)
       for key in entry:
-        if key not in ["id", "df", "how", "on"]:
+        if key not in ["id", "df", "how", "on", "left_on", "right_on"]:
           payload[key] = entry[key]
     if df_id is None:
       raise ValueError("Merge entry must be either a string or a dictionary with an 'id' key.")
@@ -2218,6 +2222,8 @@ def _merge_dict_of_dfs(dataframes: dict[str, pd.DataFrame], merge_list: list, se
     payload["df"] = dataframes[df_id]
     payload["how"] = how
     payload["on"] = on
+    payload["left_on"] = left_on
+    payload["right_on"] = right_on
 
     merges.append(payload)
 
@@ -2230,9 +2236,17 @@ def _merge_dict_of_dfs(dataframes: dict[str, pd.DataFrame], merge_list: list, se
   for merge in merges:
     df = merge["df"]
     on = merge["on"]
+    left_on = merge["left_on"]
+    right_on = merge["right_on"]
+    merge_keys = []
+    if on is not None:
+      merge_keys = [on] if not isinstance(on, list) else on
+    if right_on is not None:
+      merge_keys = right_on if isinstance(right_on, list) else [right_on]
+    
     suffixes = {}
     for col in df.columns.values:
-      if col == on:
+      if col in merge_keys:
         continue
       if col not in all_cols:
         all_cols.append(col)
@@ -2252,6 +2266,8 @@ def _merge_dict_of_dfs(dataframes: dict[str, pd.DataFrame], merge_list: list, se
     df = merge.get("df", None)
     how = merge.get("how", "left")
     on = merge.get("on", "key")
+    left_on = merge.get("left_on", None)
+    right_on = merge.get("right_on", None)
     dupes = merge.get("dupes", None)
 
     if df_merged is None:
@@ -2268,19 +2284,44 @@ def _merge_dict_of_dfs(dataframes: dict[str, pd.DataFrame], merge_list: list, se
       if "longitude" not in df.columns:
         raise ValueError("No 'longitude' field found in dataframe being merged with 'lat_long'")
       # use geolocation to get the right keys
-      df_with_key = geolocate_point_to_polygon(df_merged, df, lat_field="latitude", lon_field="longitude", parcel_id_field=on)
+      parcel_id_field = on if on is not None else "key"
+      df_with_key = geolocate_point_to_polygon(df_merged, df, lat_field="latitude", lon_field="longitude", parcel_id_field=parcel_id_field)
 
       # de-duplicate
-      dupe_rows = df_with_key[df_with_key.duplicated(subset=[on], keep=False)]
+      dupe_rows = df_with_key[df_with_key.duplicated(subset=[parcel_id_field], keep=False)]
       if len(dupe_rows) > 0:
         if dupes is None:
-          raise ValueError(f"Found {len(dupe_rows)} duplicates in geolocation merge '{_id}' on field '{on}'. But, you have no 'dupes' policy to deal with them. If you're okay with duplicates (such as in a sales dataset), set dupes='allow' in the merge instructions.")
+          raise ValueError(f"Found {len(dupe_rows)} duplicates in geolocation merge '{_id}' on field '{parcel_id_field}'. But, you have no 'dupes' policy to deal with them. If you're okay with duplicates (such as in a sales dataset), set dupes='allow' in the merge instructions.")
         df_with_key = _handle_duplicated_rows(df_with_key, dupes, verbose=True)
 
       # merge the dataframes the conventional way
-      df_merged = pd.merge(df_merged, df_with_key, how="left", on=on, suffixes=("", f"_{_id}"))
+      df_merged = pd.merge(df_merged, df_with_key, how="left", on=parcel_id_field, suffixes=("", f"_{_id}"))
     else:
-      df_merged = pd.merge(df_merged, df, how=how, on=on, suffixes=("", f"_{_id}"))
+      if left_on is not None and right_on is not None:
+        # Verify that both columns exist before attempting merge
+        if isinstance(left_on, list):
+          for col in left_on:
+            if col not in df_merged.columns:
+              raise ValueError(f"Left merge column '{col}' not found in left dataframe. Available columns: {df_merged.columns.tolist()}")
+        else:
+          if left_on not in df_merged.columns:
+            raise ValueError(f"Left merge column '{left_on}' not found in left dataframe. Available columns: {df_merged.columns.tolist()}")
+            
+        if isinstance(right_on, list):
+          for col in right_on:
+            if col not in df.columns:
+              raise ValueError(f"Right merge column '{col}' not found in right dataframe. Available columns: {df.columns.tolist()}")
+        else:
+          if right_on not in df.columns:
+            raise ValueError(f"Right merge column '{right_on}' not found in right dataframe. Available columns: {df.columns.tolist()}")
+            
+        df_merged = pd.merge(df_merged, df, how=how, left_on=left_on, right_on=right_on, suffixes=("", f"_{_id}"))
+      else:
+        if on not in df_merged.columns:
+          raise ValueError(f"Merge column '{on}' not found in left dataframe. Available columns: {df_merged.columns.tolist()}")
+        if on not in df.columns:
+          raise ValueError(f"Merge column '{on}' not found in right dataframe. Available columns: {df.columns.tolist()}")
+        df_merged = pd.merge(df_merged, df, how=how, on=on, suffixes=("", f"_{_id}"))
 
     # General case de-duplication
     if on in df_merged:
