@@ -2195,6 +2195,8 @@ def _merge_dict_of_dfs(dataframes: dict[str, pd.DataFrame], merge_list: list, se
     df_id = None
     how = "left"
     on = "key"
+    left_on = None
+    right_on = None
 
     payload = {}
 
@@ -2206,8 +2208,10 @@ def _merge_dict_of_dfs(dataframes: dict[str, pd.DataFrame], merge_list: list, se
       df_id = entry.get("id", None)
       how = entry.get("how", how)
       on = entry.get("on", on)
+      left_on = entry.get("left_on", left_on)
+      right_on = entry.get("right_on", right_on)
       for key in entry:
-        if key not in ["id", "df", "how", "on"]:
+        if key not in ["id", "df", "how", "on", "left_on", "right_on"]:
           payload[key] = entry[key]
     if df_id is None:
       raise ValueError("Merge entry must be either a string or a dictionary with an 'id' key.")
@@ -2218,6 +2222,8 @@ def _merge_dict_of_dfs(dataframes: dict[str, pd.DataFrame], merge_list: list, se
     payload["df"] = dataframes[df_id]
     payload["how"] = how
     payload["on"] = on
+    payload["left_on"] = left_on
+    payload["right_on"] = right_on
 
     merges.append(payload)
 
@@ -2230,9 +2236,11 @@ def _merge_dict_of_dfs(dataframes: dict[str, pd.DataFrame], merge_list: list, se
   for merge in merges:
     df = merge["df"]
     on = merge["on"]
+    left_on = merge["left_on"]
+    right_on = merge["right_on"]
     suffixes = {}
     for col in df.columns.values:
-      if col == on:
+      if col == on or col == left_on or col == right_on:
         continue
       if col not in all_cols:
         all_cols.append(col)
@@ -2252,6 +2260,8 @@ def _merge_dict_of_dfs(dataframes: dict[str, pd.DataFrame], merge_list: list, se
     df = merge.get("df", None)
     how = merge.get("how", "left")
     on = merge.get("on", "key")
+    left_on = merge.get("left_on", None)
+    right_on = merge.get("right_on", None)
     dupes = merge.get("dupes", None)
 
     if df_merged is None:
@@ -2280,7 +2290,10 @@ def _merge_dict_of_dfs(dataframes: dict[str, pd.DataFrame], merge_list: list, se
       # merge the dataframes the conventional way
       df_merged = pd.merge(df_merged, df_with_key, how="left", on=on, suffixes=("", f"_{_id}"))
     else:
-      df_merged = pd.merge(df_merged, df, how=how, on=on, suffixes=("", f"_{_id}"))
+      if left_on is not None and right_on is not None:
+        df_merged = pd.merge(df_merged, df, how=how, left_on=left_on, right_on=right_on, suffixes=("", f"_{_id}"))
+      else:
+        df_merged = pd.merge(df_merged, df, how=how, on=on, suffixes=("", f"_{_id}"))
 
     # General case de-duplication
     if on in df_merged:
