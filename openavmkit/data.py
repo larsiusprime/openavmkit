@@ -612,7 +612,7 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
 
       # Handle OpenStreetMap enrichment for universe if enabled
       if supkey == "universe" and "openstreetmap" in s_enrich_local:
-        df = _enrich_df_openstreetmap(df, s_enrich_local.get("openstreetmap", {}), s_enrich_local, dataframes, verbose=verbose)
+        df = _enrich_df_openstreetmap(df, s_enrich_local.get("openstreetmap", {}), s_enrich_local, dataframes, verbose=verbose, use_cache = False)
 
       df = _enrich_df_geometry(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
       df = _enrich_df_basic(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
@@ -693,7 +693,7 @@ def _enrich_df_census(df: pd.DataFrame | gpd.GeoDataFrame, census_settings: dict
     warnings.warn(f"Failed to enrich with Census data: {str(e)}")
     return df
 
-def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: dict, s_enrich_this: dict, dataframes: dict, verbose: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
+def _enrich_df_openstreetmap(df: pd.DataFrame | gpd.GeoDataFrame, osm_settings: dict, s_enrich_this: dict, dataframes: dict, verbose: bool = False, use_cache: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
     """
     Enrich a DataFrame with OpenStreetMap data.
     
