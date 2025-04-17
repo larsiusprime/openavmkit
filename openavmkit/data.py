@@ -542,7 +542,11 @@ def process_data(dataframes: dict[str, pd.DataFrame], settings: dict, verbose: b
     raise ValueError("The 'valid_sale' column is required in the sales data.")
   if "vacant_sale" not in df_sales:
     raise ValueError("The 'vacant_sale' column is required in the sales data.")
-
+  # Print number and percentage of valid sales
+  valid_count = df_sales["valid_sale"].sum()
+  total_count = len(df_sales)
+  valid_percent = (valid_count / total_count * 100) if total_count > 0 else 0
+  print(f"Valid sales: {valid_count} ({valid_percent:.1f}% of {total_count} total)")
   df_sales = df_sales[df_sales["valid_sale"].eq(True)].copy().reset_index(drop=True)
 
   sup: SalesUniversePair = SalesUniversePair(universe=df_univ, sales=df_sales)
@@ -2186,6 +2190,7 @@ def _load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_c
 
   e_load = entry.get("load", {})
   e_calc = entry.get("calc", {})
+  e_tweak = entry.get("tweak", {})
 
   if verbose:
     print(f"Loading \"{filename}\"...")
@@ -2213,7 +2218,9 @@ def _load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_c
       cols_to_load += [original]
       rename_map[original] = rename_key
 
+  # Only include fields from calc that exist in the source data
   fields_in_calc = _crawl_calc_dict_for_fields(entry.get("calc", {}))
+  fields_in_calc = [f for f in fields_in_calc if f in column_names]
   cols_to_load += fields_in_calc
   cols_to_load = list(set(cols_to_load))
 
@@ -2238,8 +2245,14 @@ def _load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_c
   else:
     raise ValueError(f"Unsupported file extension: {ext}")
 
+  # Perform calculations
   df = perform_calculations(df, e_calc)
+  
+  # Rename columns
   df = df.rename(columns=rename_map)
+
+  # Apply tweaks after renaming
+  df = perform_tweaks(df, e_tweak)
 
   if fields_cat is None:
     fields_cat = get_fields_categorical(settings, include_boolean=False)

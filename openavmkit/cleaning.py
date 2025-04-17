@@ -43,6 +43,29 @@ def clean_valid_sales(sup: SalesUniversePair, settings : dict):
 		"valid_sale"
 	] = False
 
+	# scrub sales info from invalid sales
+	idx_invalid = df_sales["valid_sale"].eq(False)
+	fields_to_scrub = [
+		"sale_date",
+		"sale_price",
+		"sale_year",
+		"sale_month",
+		"sale_day",
+		"sale_quarter",
+		"sale_year_quarter",
+		"sale_year_month",
+		"sale_age_days",
+		"sale_price_per_land_sqft",
+		"sale_price_per_impr_sqft",
+		"sale_price_time_adj",
+		"sale_price_time_adj_per_land_sqft",
+		"sale_price_time_adj_per_impr_sqft"
+	]
+
+	for field in fields_to_scrub:
+		if field in df_sales:
+			df_sales.loc[idx_invalid, field] = None
+
 	# drop all invalid sales:
 	df_sales = df_sales[df_sales["valid_sale"].eq(True)].copy()
 
@@ -71,24 +94,6 @@ def clean_valid_sales(sup: SalesUniversePair, settings : dict):
 		"valid_for_land_ratio_study"
 	] = True
 
-	# scrub sales info from invalid sales
-	idx_invalid = df_sales["valid_sale"].eq(False)
-	fields_to_scrub = [
-		"sale_date",
-		"sale_price",
-		"sale_year",
-		"sale_month",
-		"sale_day",
-		"sale_quarter",
-		"sale_year_quarter",
-		"sale_year_month",
-		"sale_age_days"
-	]
-
-	for field in fields_to_scrub:
-		if field in df_sales:
-			df_sales.loc[idx_invalid, field] = None
-
 	print(f"Using {len(df_sales[df_sales['valid_sale'].eq(True)])} sales...")
 	print(f"--> {len(df_sales[df_sales['vacant_sale'].eq(True)])} vacant sales")
 	print(f"--> {len(df_sales[df_sales['vacant_sale'].eq(False)])} improved sales")
@@ -98,7 +103,7 @@ def clean_valid_sales(sup: SalesUniversePair, settings : dict):
 	df_sales = df_sales.drop(columns=["univ_is_vacant"])
 
 	# enforce some booleans:
-	bool_fields = ["valid_sale", "vacant_sale", "valid_for_ratio-study", "valid_for_land_ratio_study"]
+	bool_fields = ["valid_sale", "vacant_sale", "valid_for_ratio_study", "valid_for_land_ratio_study"]
 	for b in bool_fields:
 		if b in df_sales:
 			dtype = df_sales[b].dtype

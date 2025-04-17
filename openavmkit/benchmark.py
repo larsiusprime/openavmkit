@@ -567,6 +567,19 @@ def write_out_all_results(sup:SalesUniversePair, all_results:dict):
 		t.start(f"model group: {model_group}")
 		t.start("read")
 		mm_results:MultiModelResults = all_results[model_group]
+		
+		# Skip if no results for this model group
+		if mm_results is None:
+			t.stop("read")
+			t.stop(f"model group: {model_group}")
+			continue
+			
+		# Skip if no ensemble results
+		if "ensemble" not in mm_results.model_results:
+			t.stop("read")
+			t.stop(f"model group: {model_group}")
+			continue
+			
 		ensemble:SingleModelResults = mm_results.model_results["ensemble"]
 		t.stop("read")
 
@@ -585,23 +598,25 @@ def write_out_all_results(sup:SalesUniversePair, all_results:dict):
 
 		t.stop(f"model group: {model_group}")
 
-	t.start("copy")
-	df_univ = sup.universe.copy()
-	t.stop("copy")
-	t.start("merge")
-	df_univ = df_univ.merge(df_all, on="key", how="left")
-	t.stop("merge")
+	# Only proceed with writing if we have results
+	if df_all is not None:
+		t.start("copy")
+		df_univ = sup.universe.copy()
+		t.stop("copy")
+		t.start("merge")
+		df_univ = df_univ.merge(df_all, on="key", how="left")
+		t.stop("merge")
 
-	outpath = "out/models/all_model_groups"
-	if not os.path.exists(outpath):
-		os.makedirs(outpath)
+		outpath = "out/models/all_model_groups"
+		if not os.path.exists(outpath):
+			os.makedirs(outpath)
 
-	t.start("csv")
-	df_univ.to_csv(f"{outpath}/universe.csv", index=False)
-	t.stop("csv")
-	t.start("parquet")
-	df_univ.to_parquet(f"{outpath}/universe.parquet", index=False)
-	t.stop("parquet")
+		t.start("csv")
+		df_univ.to_csv(f"{outpath}/universe.csv", index=False)
+		t.stop("csv")
+		t.start("parquet")
+		df_univ.to_parquet(f"{outpath}/universe.parquet", index=False)
+		t.stop("parquet")
 
 	print("")
 	print("**********TIMING FOR WRITE OUT ALL RESULTS***********")

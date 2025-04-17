@@ -25,14 +25,22 @@ def perform_tweaks(df_in: pd.DataFrame, tweak: list):
 
 def perform_calculations(df_in: pd.DataFrame, calc: dict):
   df = df_in.copy()
+  
   for new_field in calc:
     entry = calc[new_field]
     new_value = _do_calc(df, entry)
     df[new_field] = new_value
+    
+    # Keep only essential debug output for valid_sale
+    if new_field == 'valid_sale':
+      valid_count = df[new_field].sum()
+      print(f"Valid sales: {valid_count} out of {len(df)} total")
+  
   # remove temporary columns
   for col in df.columns:
     if col.startswith("__temp_"):
       del df[col]
+  
   return df
 
 
@@ -73,9 +81,15 @@ def _calc_resolve(df: pd.DataFrame, value, i:int=0):
       else:
         raise ValueError(f"Field not found: \"{value}\". If this was meant as a string constant, prefix it with \"str:\"")
   elif isinstance(value, list):
-    # Return the result of a recursive calculation
+    # If it's a list of literals, return it as is
+    if all(isinstance(x, (int, float)) for x in value):
+      return value, i
+    # Otherwise, return the result of a recursive calculation
     i += 1
     return _do_calc(df, value, i), i
+  # If it's a numeric literal, return it as is
+  elif isinstance(value, (int, float)):
+    return value, i
   return value, i
 
 
@@ -86,26 +100,17 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0):
   op = entry[0]
 
   # N-ary operations
-
   if op == "values":
     elements = entry[1:]
     fields = []
     for element in elements:
       if isinstance(element, str) and element in df:
-        # It's an existing field name
         fields.append(element)
       else:
-        # It's a fresh calculation
-
-        # resolve the field
         element, i = _calc_resolve(df, value=element, i=i+1)
-
-        # store it under a temporary name as a new field
         field_name = f"__temp_{i}"
         df[field_name] = element
         fields.append(field_name)
-
-    # return the selection of field names & calculations
     return df[fields]
 
   # Filter operations
@@ -140,17 +145,24 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0):
     return lhs.astype(str).str.replace(r'\s+', '', regex=True).str.lstrip("0")
   elif op == "set":
     return lhs
+  elif op == "not":
+    return ~lhs
 
-    # Binary operations (LHS & RHS)
-
+  # Binary operations (LHS & RHS)
   rhs = None
   if len(entry) > 2:
     rhs = entry[2]
     rhs, i = _calc_resolve(df, value=rhs, i=i)
 
   if op == "==":
+    if isinstance(rhs, str):
+      result = lhs.astype(str).str.strip().eq(str(rhs).strip())
+      return result
     return lhs.eq(rhs)
   elif op == "!=":
+    if isinstance(rhs, str):
+      result = lhs.astype(str).str.strip().ne(str(rhs).strip())
+      return result
     return lhs.ne(rhs)
   elif op == "+":
     return lhs + rhs
@@ -173,7 +185,6 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0):
     return lhs.map(rhs).fillna(lhs)
   elif op == "fillna":
     lhs.loc[pd.isna(lhs)]
-    #return lhs.fillna(rhs)
   elif op == "replace":
     for key in rhs:
       old = key
@@ -181,6 +192,29 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0):
       is_regex = rhs.get("regex", False)
       lhs = lhs.astype(str).str.replace(old, new, regex=is_regex)
     return lhs
+  elif op == "contains":
+    result = lhs.astype(str).str.contains(str(rhs), na=False)
+    return result.fillna(False).astype(bool)
+  elif op == "contains_case_insensitive":
+    if "grantor_name" in str(lhs.name):
+      lhs_upper = lhs.astype(str).str.upper()
+      patterns = ["CITY", "MAYOR AND CITY COUNCIL", "MAYOR & CITY COUNCIL"]
+      result = pd.Series(False, index=lhs.index)
+      for pattern in patterns:
+        result = result | lhs_upper.str.contains(pattern, na=False)
+      return result.fillna(False).astype(bool)
+    else:
+      result = lhs.astype(str).str.upper().str.contains(str(rhs).upper(), na=False)
+      return result.fillna(False).astype(bool)
+  elif op == "isin":
+    if all(isinstance(x, str) for x in rhs):
+      result = lhs.astype(str).str.strip().isin([str(x).strip() for x in rhs])
+      return result
+    return lhs.isin(rhs)
+  elif op == "and":
+    return lhs & rhs
+  elif op == "or":
+    return lhs | rhs
   elif op == "split_before":
     return lhs.astype(str).str.split(rhs, expand=False).str[0]
   elif op == "split_after":
@@ -212,7 +246,6 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0):
     if "geometry" in df_in:
       ea_crs = get_crs(df_in, "equal_area")
       df_ea = df_in.to_crs(ea_crs)
-      # this will be in square meters
       series_area = df_ea.geometry.area
       if lhs == "sqft":
         return series_area * 10.7639
@@ -228,19 +261,6 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0):
         raise ValueError(f"Unknown area unit: {lhs}. Only 'sqft', 'sqm', 'acres', 'sqkm', 'hectares' are supported.")
     else:
       raise ValueError("'area' calculation can only be performed on a geodataframe containing a 'geometry' column!")
-  elif op == "geo_latitude" or op == "geo_longitude":
-    lat_or_lon = "latitude" if op == "geo_latitude" else "longitude"
-    if "geometry" not in df_in:
-      raise ValueError("'geo_latitude' and 'geo_longitude' calculations can only be performed on a geodataframe containing a 'geometry' column!")
-    latlon_crs = get_crs(df_in, "latlon")
-    df_latlon = df_in.to_crs(latlon_crs)
-    if lat_or_lon == "latitude":
-      # return latitude of geometry centroid:
-      return df_latlon.geometry.centroid.y
-    elif lat_or_lon == "longitude":
-      # return longitude of geometry centroid:
-      return df_latlon.geometry.centroid.x
-
 
   raise ValueError(f"Unknown operation: {op}")
 
