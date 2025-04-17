@@ -8,27 +8,80 @@ from openavmkit.utilities.data import div_field_z_safe
 from openavmkit.utilities.geometry import get_crs
 
 
-def perform_tweaks(df_in: pd.DataFrame, tweak: list):
+def perform_tweaks(df_in: pd.DataFrame, tweak: list, rename_map: dict = None):
+  """
+  Perform tweaks on a DataFrame based on a list of tweak instructions.
+  Will try both original and renamed column names if rename_map is provided.
+
+  :param df_in: Input DataFrame.
+  :type df_in: pandas.DataFrame
+  :param tweak: List of tweak instructions.
+  :type tweak: list
+  :param rename_map: Optional mapping of original to renamed columns.
+  :type rename_map: dict, optional
+  :returns: DataFrame with tweaks applied.
+  :rtype: pandas.DataFrame
+  """
   df = df_in.copy()
+  
+  # Create reverse rename map for looking up original names
+  reverse_map = {}
+  if rename_map:
+    reverse_map = {v: k for k, v in rename_map.items()}
+  
   for entry in tweak:
     field = entry.get("field")
     key_field = entry.get("key")
     values = entry.get("values", {})
-    if field not in df:
-      raise ValueError(f"Field not found: \"{field}\"")
-    if key_field not in df:
-      raise ValueError(f"Key not found: \"{key_field}\"")
+    
+    # Try both original and renamed field names
+    field_to_use = None
+    if field in df:
+      field_to_use = field
+    elif rename_map and field in reverse_map and reverse_map[field] in df:
+      field_to_use = reverse_map[field]
+    elif rename_map and field in rename_map and rename_map[field] in df:
+      field_to_use = rename_map[field]
+    
+    if field_to_use is None:
+      raise ValueError(f"Field not found: \"{field}\" (also tried looking up original/renamed versions)")
+      
+    # Try both original and renamed key field names  
+    key_field_to_use = None
+    if key_field in df:
+      key_field_to_use = key_field
+    elif rename_map and key_field in reverse_map and reverse_map[key_field] in df:
+      key_field_to_use = reverse_map[key_field]
+    elif rename_map and key_field in rename_map and rename_map[key_field] in df:
+      key_field_to_use = rename_map[key_field]
+      
+    if key_field_to_use is None:
+      raise ValueError(f"Key not found: \"{key_field}\" (also tried looking up original/renamed versions)")
+
     for key in values:
       value = values[key]
-      df.loc[df[key_field].eq(key), field] = value
+      df.loc[df[key_field_to_use].eq(key), field_to_use] = value
+  
   return df
 
-def perform_calculations(df_in: pd.DataFrame, calc: dict):
+def perform_calculations(df_in: pd.DataFrame, calc: dict, rename_map: dict = None):
+  """
+  Perform calculations on a DataFrame based on a dictionary of calculation instructions.
+
+  :param df_in: Input DataFrame.
+  :type df_in: pandas.DataFrame
+  :param calc: Dictionary of calculation instructions.
+  :type calc: dict
+  :param rename_map: Optional mapping of original to renamed columns.
+  :type rename_map: dict, optional
+  :returns: DataFrame with calculations applied.
+  :rtype: pandas.DataFrame
+  """
   df = df_in.copy()
   
   for new_field in calc:
     entry = calc[new_field]
-    new_value = _do_calc(df, entry)
+    new_value = _do_calc(df, entry, rename_map=rename_map)
     df[new_field] = new_value
     
     # Keep only essential debug output for valid_sale
@@ -65,7 +118,21 @@ def _crawl_calc_list_for_fields(calc_list: list):
   return list(set(fields))
 
 
-def _calc_resolve(df: pd.DataFrame, value, i:int=0):
+def _calc_resolve(df: pd.DataFrame, value, i:int=0, rename_map: dict = None):
+  """
+  Resolve a calculation value, handling both original and renamed column names.
+
+  :param df: Input DataFrame.
+  :type df: pandas.DataFrame
+  :param value: Value to resolve.
+  :type value: Any
+  :param i: Counter for temporary columns.
+  :type i: int
+  :param rename_map: Optional mapping of original to renamed columns.
+  :type rename_map: dict, optional
+  :returns: Tuple of (resolved value, counter).
+  :rtype: tuple
+  """
   if isinstance(value, str):
     # If it's a string, two possibilities:
     # 1. It's prepended with "str:" --> interpret as a string literal
@@ -75,25 +142,50 @@ def _calc_resolve(df: pd.DataFrame, value, i:int=0):
       # Return a constant value as a series
       return text, i
     else:
+      # Try both original and renamed column names
+      field_to_use = None
       if value in df:
-        # Return a matching column
-        return df[value], i
+        field_to_use = value
+      elif rename_map:
+        # Create reverse map for looking up original names
+        reverse_map = {v: k for k, v in rename_map.items()}
+        if value in reverse_map and reverse_map[value] in df:
+          field_to_use = reverse_map[value]
+        elif value in rename_map and rename_map[value] in df:
+          field_to_use = rename_map[value]
+      
+      if field_to_use is not None:
+        return df[field_to_use], i
       else:
-        raise ValueError(f"Field not found: \"{value}\". If this was meant as a string constant, prefix it with \"str:\"")
+        raise ValueError(f"Field not found: \"{value}\" (also tried looking up original/renamed versions). If this was meant as a string constant, prefix it with \"str:\"")
   elif isinstance(value, list):
     # If it's a list of literals, return it as is
     if all(isinstance(x, (int, float)) for x in value):
       return value, i
     # Otherwise, return the result of a recursive calculation
     i += 1
-    return _do_calc(df, value, i), i
+    return _do_calc(df, value, i, rename_map), i
   # If it's a numeric literal, return it as is
   elif isinstance(value, (int, float)):
     return value, i
   return value, i
 
 
-def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0):
+def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0, rename_map: dict = None):
+  """
+  Perform a calculation based on an entry list.
+
+  :param df_in: Input DataFrame.
+  :type df_in: pandas.DataFrame
+  :param entry: List of calculation instructions.
+  :type entry: list
+  :param i: Counter for temporary columns.
+  :type i: int
+  :param rename_map: Optional mapping of original to renamed columns.
+  :type rename_map: dict, optional
+  :returns: Result of calculation.
+  :rtype: Any
+  """
   df = df_in
   if entry is None or len(entry) == 0:
     raise ValueError("Empty calculation entry")
@@ -107,7 +199,7 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0):
       if isinstance(element, str) and element in df:
         fields.append(element)
       else:
-        element, i = _calc_resolve(df, value=element, i=i+1)
+        element, i = _calc_resolve(df, value=element, i=i+1, rename_map=rename_map)
         field_name = f"__temp_{i}"
         df[field_name] = element
         fields.append(field_name)
@@ -115,13 +207,13 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0):
 
   # Filter operations
   if op == "?":
-    return resolve_filter(df, entry[1])
+    return resolve_filter(df, entry[1], rename_map)
 
   # Unary operations (LHS only)
   lhs = None
   if len(entry) > 1:
     lhs = entry[1]
-    lhs, i = _calc_resolve(df, value=lhs, i=i)
+    lhs, i = _calc_resolve(df, value=lhs, i=i, rename_map=rename_map)
 
   if op == "asint":
     return (lhs.astype("Float64")).astype("Int64")
@@ -152,7 +244,7 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0):
   rhs = None
   if len(entry) > 2:
     rhs = entry[2]
-    rhs, i = _calc_resolve(df, value=rhs, i=i)
+    rhs, i = _calc_resolve(df, value=rhs, i=i, rename_map=rename_map)
 
   if op == "==":
     if isinstance(rhs, str):

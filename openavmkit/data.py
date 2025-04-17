@@ -2189,8 +2189,13 @@ def _load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_c
   column_names = _snoop_column_names(filename)
 
   e_load = entry.get("load", {})
-  e_calc = entry.get("calc", {})
-  e_tweak = entry.get("tweak", {})
+
+  # Get all calc and tweak operations in order they appear
+  operation_order = []
+  for key in entry:
+    if "calc" in key or "tweak" in key:  # Match any key containing calc or tweak
+      op_type = "calc" if "calc" in key else "tweak"
+      operation_order.append({"type": op_type, "operations": entry[key]})
 
   if verbose:
     print(f"Loading \"{filename}\"...")
@@ -2218,8 +2223,11 @@ def _load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_c
       cols_to_load += [original]
       rename_map[original] = rename_key
 
-  # Only include fields from calc that exist in the source data
-  fields_in_calc = _crawl_calc_dict_for_fields(entry.get("calc", {}))
+  # Only include fields from calcs that exist in the source data
+  fields_in_calc = []
+  for operation in operation_order:
+    if operation["type"] == "calc":
+      fields_in_calc.extend(_crawl_calc_dict_for_fields(operation["operations"]))
   fields_in_calc = [f for f in fields_in_calc if f in column_names]
   cols_to_load += fields_in_calc
   cols_to_load = list(set(cols_to_load))
@@ -2245,14 +2253,16 @@ def _load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_c
   else:
     raise ValueError(f"Unsupported file extension: {ext}")
 
-  # Perform calculations
-  df = perform_calculations(df, e_calc)
-  
   # Rename columns
   df = df.rename(columns=rename_map)
 
-  # Apply tweaks after renaming
-  df = perform_tweaks(df, e_tweak)
+  # Perform operations in order they appear in settings
+  for operation in operation_order:
+    op_type = operation["type"]
+    if op_type == "calc":
+      df = perform_calculations(df, operation["operations"], rename_map)
+    elif op_type == "tweak":
+      df = perform_tweaks(df, operation["operations"], rename_map)
 
   if fields_cat is None:
     fields_cat = get_fields_categorical(settings, include_boolean=False)
