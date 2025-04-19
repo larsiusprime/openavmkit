@@ -736,10 +736,11 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
 
     if verbose:
         print("Enriching with OpenStreetMap data...")
-
-    df_out = get_cached_df(df, "osm/all", "key", osm_settings)
-    if df_out is not None:
-      return df_out
+    
+    if use_cache:
+      df_out = get_cached_df(df, "osm/all", "key", osm_settings)
+      if df_out is not None:
+        return df_out
 
     try:
         if not osm_settings.get('enabled', False):
