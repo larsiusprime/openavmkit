@@ -1,8 +1,11 @@
 import pandas as pd
+import numpy as np
+from sklearn.ensemble import IsolationForest
 
 from openavmkit.data import SalesUniversePair, get_field_classifications, is_series_all_bools
 from openavmkit.utilities.settings import get_valuation_date, get_fields_categorical, get_fields_boolean, \
 	get_grouped_fields_from_data_dictionary, get_data_dictionary, get_model_group_ids
+from openavmkit.utilities.cache import write_cache, read_cache, check_cache
 
 
 
@@ -399,3 +402,161 @@ def _fill_unknown_values(df, settings: dict):
 				df[field] = df[field].fillna(False).astype(bool)
 
 	return df
+
+
+def validate_arms_length_sales(sup: SalesUniversePair, settings: dict, verbose: bool = False) -> SalesUniversePair:
+	"""
+	Validate arms-length sales using outlier detection to identify suspicious transactions.
+	Uses Isolation Forest to detect anomalies in each model group.
+
+	:param sup: Sales and universe data
+	:type sup: SalesUniversePair
+	:param settings: Settings dictionary
+	:type settings: dict
+	:param verbose: Whether to print verbose output
+	:type verbose: bool, optional
+	:returns: Updated SalesUniversePair with suspicious sales marked as invalid
+	:rtype: SalesUniversePair
+	"""
+	s_data = settings.get("data", {})
+	s_process = s_data.get("process", {})
+	s_validation = s_process.get("arms_length_validation", {})
+	
+	if not s_validation.get("enabled", False):
+		if verbose:
+			print("Arms length validation disabled, skipping...")
+		return sup
+
+	min_sales = s_validation.get("min_sales_per_group", 30)
+	max_threshold = s_validation.get("max_threshold", None)
+	contamination = s_validation.get("contamination", 0.01)  # Conservative default
+
+	# Get experiment variables from settings
+	variables = settings.get("modeling", {}).get("experiment", {}).get("variables", [])
+	if not variables:
+		raise ValueError("No variables defined for outlier detection. Please check settings `modeling.experiment.variables`")
+
+	# Get sales and ensure model_group is present
+	df_sales = sup["sales"].copy()
+	df_univ = sup["universe"].copy()
+
+	# Get model groups and variables from universe and merge to sales
+	merge_cols = ["key", "model_group"] + variables
+	df_sales = df_sales.merge(
+		df_univ[merge_cols],
+		on="key",
+		how="left"
+	)
+
+	model_groups = df_sales["model_group"].unique()
+
+	excluded_sales = []
+	total_excluded = 0
+	total_sales = len(df_sales)
+
+	if verbose:
+		print("\nValidating arms-length sales...")
+		print(f"Using {len(variables)} variables for outlier detection")
+		print(f"Minimum sales per group: {min_sales}")
+		print(f"Maximum price threshold: {max_threshold if max_threshold else 'None'}")
+		print(f"Contamination factor: {contamination}")
+		print(f"\nFound {len(model_groups)} model groups")
+		print("\nProcessing by model group:")
+
+	for group in model_groups:
+		if pd.isna(group):
+			if verbose:
+				print("\nSkipping sales with no model group")
+			continue
+
+		df_group = df_sales[df_sales["model_group"].eq(group)].copy()
+		n_sales = len(df_group)
+		
+		if n_sales < min_sales:
+			if verbose:
+				print(f"\n{group}: Skipping - insufficient sales ({n_sales} < {min_sales})")
+			continue
+
+		if verbose:
+			print(f"\n{group}: Processing {n_sales} sales...")
+
+		# Prepare features for outlier detection
+		features = df_group[variables].copy()
+		
+		# Handle missing values
+		features = features.fillna(features.mean())
+		
+		# Normalize features
+		for col in features.columns:
+			if features[col].std() > 0:
+				features[col] = (features[col] - features[col].mean()) / features[col].std()
+
+		# Run Isolation Forest on ALL sales
+		clf = IsolationForest(
+			contamination=contamination,
+			random_state=42,
+			n_jobs=-1
+		)
+		
+		predictions = clf.fit_predict(features)
+		outliers = predictions == -1
+		
+		# Get all outlier keys
+		outlier_keys = df_group[outliers]["key_sale"].tolist()
+		
+		# If we have a threshold, only exclude outliers below it
+		excluded_keys = []
+		if max_threshold:
+			price_mask = df_group["sale_price"] <= max_threshold
+			excluded_keys = df_group[outliers & price_mask]["key_sale"].tolist()
+			if verbose:
+				n_outliers = len(outlier_keys)
+				n_excluded = len(excluded_keys)
+				n_high_price = n_outliers - n_excluded
+				print(f"--> Found {n_outliers} statistical outliers")
+				print(f"--> {n_high_price} were above price threshold")
+				print(f"--> Excluding {n_excluded} outliers below threshold")
+		else:
+			excluded_keys = outlier_keys
+			if verbose:
+				print(f"--> Excluding {len(excluded_keys)} statistical outliers")
+		
+		if excluded_keys:
+			excluded_info = {
+				"model_group": group,
+				"key_sales": excluded_keys,
+				"total_sales": n_sales,
+				"outliers": len(outlier_keys),
+				"excluded": len(excluded_keys)
+			}
+			excluded_sales.append(excluded_info)
+			total_excluded += len(excluded_keys)
+			
+			# Mark these sales as invalid
+			df_sales.loc[df_sales["key_sale"].isin(excluded_keys), "valid_sale"] = False
+			
+			if verbose:
+				print(f"--> Total excluded: {len(excluded_keys)} ({len(excluded_keys)/n_sales*100:.1f}%)")
+
+	if verbose:
+		print(f"\nOverall summary:")
+		print(f"--> Total sales processed: {total_sales}")
+		print(f"--> Total sales excluded: {total_excluded} ({total_excluded/total_sales*100:.1f}%)")
+
+	# Cache the excluded sales info
+	if excluded_sales:
+		cache_data = {
+			"excluded_sales": excluded_sales,
+			"total_sales": total_sales,
+			"total_excluded": total_excluded,
+			"settings": s_validation
+		}
+		write_cache("arms_length_validation", cache_data, cache_data, "dict")
+
+	# Drop the columns we added
+	cols_to_drop = ["model_group"] + variables
+	df_sales = df_sales.drop(columns=cols_to_drop)
+
+	# Update the SalesUniversePair
+	sup.update_sales(df_sales)
+	return sup

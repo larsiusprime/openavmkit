@@ -28,7 +28,7 @@ import openavmkit.horizontal_equity_study
 import openavmkit.cleaning
 from openavmkit.benchmark import get_variable_recommendations
 
-from openavmkit.cleaning import clean_valid_sales
+from openavmkit.cleaning import clean_valid_sales, validate_arms_length_sales
 from openavmkit.cloud import cloud
 from openavmkit.data import _load_dataframe, process_data, SalesUniversePair, get_hydrated_sales_from_sup
 from openavmkit.sales_scrutiny_study import run_sales_scrutiny_per_model_group, mark_ss_ids_per_model_group
@@ -542,7 +542,17 @@ def process_sales(sup: SalesUniversePair, settings: dict, verbose: bool = False)
    # select only valid sales
    sup = clean_valid_sales(sup, settings)
 
-   print(f"len before hydrate = {len(sup['sales'])}")
+   print(f"len before tag = {len(sup['sales'])}")
+
+   # tag model groups before validation
+   sup = tag_model_groups_sup(sup, settings, verbose)
+
+   print(f"len before validate = {len(sup['sales'])}")
+
+   # validate arms length sales using outlier detection
+   sup = validate_arms_length_sales(sup, settings, verbose)
+
+   print(f"len after validate = {len(sup['sales'])}")
 
    # make sure sales field has necessary fields for the next step
    df_sales_hydrated = get_hydrated_sales_from_sup(sup)
@@ -891,7 +901,7 @@ def finalize_models(
    :param verbose: If True, enables verbose output.
    :type verbose: bool, optional
    """
-
+   print("OAIJSDOISAK")
    openavmkit.benchmark.run_models(
       sup,
       settings,
