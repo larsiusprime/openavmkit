@@ -1943,6 +1943,12 @@ def run_xgboost(ds: DataSplit, outpath: str, save_params: bool = False, use_save
   xgboost_model.fit(ds.X_train, ds.y_train)
   timing.stop("train")
 
+  # Print timing information for XGBoost model
+  if verbose:
+    print("\n***** XGBoost Model Timing *****")
+    print(timing.print())
+    print("*********************************\n")
+
   return predict_xgboost(ds, xgboost_model, timing, verbose)
 
 

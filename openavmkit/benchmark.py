@@ -8,6 +8,7 @@ from lightgbm import Booster
 from statsmodels.nonparametric.kernel_regression import KernelReg
 from xgboost import XGBRegressor
 from IPython.display import display
+import numpy as np
 
 from openavmkit.data import get_important_field, get_locations, _read_split_keys, SalesUniversePair, \
 	get_hydrated_sales_from_sup, get_report_locations, get_sales, get_sale_field, simulate_removed_buildings
@@ -441,12 +442,12 @@ def generate_variable_report(
 	feature_selection = instructions.get("feature_selection", {})
 	thresh = feature_selection.get("thresholds", {})
 
-	report.set_var("thresh_correlation", thresh.get("correlation"), fmt=".2f")
-	report.set_var("thresh_enr_coef", thresh.get("enr_coef"), fmt=".2f")
-	report.set_var("thresh_vif", thresh.get("vif"), fmt=".2f")
-	report.set_var("thresh_p_value", thresh.get("p_value"), fmt=".2f")
-	report.set_var("thresh_t_value", thresh.get("t_value"), fmt=".2f")
-	report.set_var("thresh_adj_r2", thresh.get("adj_r2"), fmt=".2f")
+	report.set_var("thresh_correlation", thresh.get("correlation", ".2f"))
+	report.set_var("thresh_enr_coef", thresh.get("enr_coef", ".2f"))
+	report.set_var("thresh_vif", thresh.get("vif", ".2f"))
+	report.set_var("thresh_p_value", thresh.get("p_value", ".2f"))
+	report.set_var("thresh_t_value", thresh.get("t_value", ".2f"))
+	report.set_var("thresh_adj_r2", thresh.get("adj_r2", ".2f"))
 
 	weights = feature_selection.get("weights", {})
 	df_weights = pd.DataFrame(weights.items(), columns=["Statistic", "Weight"])
@@ -472,9 +473,9 @@ def generate_variable_report(
 def run_models(
 		sup: SalesUniversePair,
 		settings: dict,
-		save_params: bool = True,
+		save_params: bool = False,
 		use_saved_params: bool = True,
-		save_results: bool = True,
+		save_results: bool = False,
 		verbose: bool = False,
 		run_main: bool = True,
 		run_vacant: bool = True,
@@ -521,7 +522,6 @@ def run_models(
 	s_model = s.get("modeling", {})
 	s_inst = s_model.get("instructions", {})
 	model_groups = s_inst.get("model_groups", [])
-
 	df_univ = sup["universe"]
 
 	if len(model_groups) == 0:
@@ -1791,7 +1791,13 @@ def _optimize_ensemble_iteration(
 	timing.stop("total")
 
 	score = results.utility
-
+	
+	# Add early exit if score is nan
+	if pd.isna(score):
+		print("Warning: Got NaN score, stopping ensemble optimization")
+		ensemble_list.clear()  # Clear the list to force the loop to end
+		return float('inf'), []
+	
 	if verbose:
 		print(f"score = {score:5.0f}, best = {best_score:5.0f}, ensemble = {ensemble_list}...")
 
@@ -2656,6 +2662,40 @@ def _run_models(
 	else:
 		print(f"MAIN BENCHMARK")
 	print(all_results.benchmark.print())
+
+	# Add performance metrics table
+	print(f"\nModel Performance Metrics for {model_group}:")
+	print("=" * 80)
+	
+	metrics_data = {
+		"Model": [],
+		"R²": [],
+		"Slope": []
+	}
+	
+	for model_name, model_result in all_results.model_results.items():
+		# Get test set predictions and actuals
+		y_pred = model_result.pred_test.y_pred
+		y_true = model_result.pred_test.y
+		
+		# Calculate R²
+		r2 = model_result.pred_test.r2
+		
+		# Calculate slope using numpy polyfit
+		slope, _ = np.polyfit(y_true, y_pred, 1)
+		
+		metrics_data["Model"].append(model_name)
+		metrics_data["R²"].append(r2)
+		metrics_data["Slope"].append(slope)
+	
+	# Create and display metrics DataFrame
+	metrics_df = pd.DataFrame(metrics_data)
+	metrics_df.set_index("Model", inplace=True)
+	metrics_df["R²"] = metrics_df["R²"].apply(lambda x: f"{x:.4f}")
+	metrics_df["Slope"] = metrics_df["Slope"].apply(lambda x: f"{x:.4f}")
+	print(metrics_df.to_string())
+	print("=" * 80)
+	print("")
 
 	if not vacant_only and run_hedonic:
 		t.start("run hedonic models")
