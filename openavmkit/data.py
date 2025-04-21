@@ -741,6 +741,16 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
       print("Checking cache for OpenStreetMap data...")
       df_out = get_cached_df(df, "osm/all", "key", osm_settings)
       if df_out is not None:
+        # Load cached features into dataframes dictionary
+        for feature in ['water_bodies', 'transportation', 'educational', 'parks', 'golf_courses']:
+          feature_cache = get_cached_df(df, f"osm/{feature}", "key", osm_settings)
+          if feature_cache is not None:
+            dataframes[feature] = feature_cache
+            # Also check for top features
+            top_feature = f"{feature}_top"
+            top_cache = get_cached_df(df, f"osm/{top_feature}", "key", osm_settings)
+            if top_cache is not None:
+              dataframes[top_feature] = top_cache
         return df_out
 
     try:
