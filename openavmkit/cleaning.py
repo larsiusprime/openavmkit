@@ -488,7 +488,8 @@ def validate_arms_length_sales(sup: SalesUniversePair, settings: dict, verbose: 
 		features = df_group[variables].copy()
 		
 		# Handle missing values - using recommended approach to avoid FutureWarning
-		features = features.fillna(features.mean()).infer_objects(copy=False)
+		features = features.fillna(features.mean())
+		features = features.infer_objects(copy=False)
 
 		# Split into training and prediction sets
 		# Use only valid sales for training
