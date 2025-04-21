@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.ensemble import IsolationForest
 from sklearn.linear_model import LinearRegression
-from xgboost import XGBRegressor
+import lightgbm as lgb
 
 from openavmkit.data import SalesUniversePair, get_field_classifications, is_series_all_bools
 from openavmkit.utilities.settings import get_valuation_date, get_fields_categorical, get_fields_boolean, \
@@ -408,7 +408,7 @@ def _fill_unknown_values(df, settings: dict):
 
 def validate_arms_length_sales(sup: SalesUniversePair, settings: dict, verbose: bool = False) -> SalesUniversePair:
 	"""
-	Validate arms-length sales by identifying suspiciously low sale prices using XGBoost.
+	Validate arms-length sales by identifying suspiciously low sale prices using LightGBM.
 	Only marks sales as invalid if they are both:
 	1. Significantly below their predicted value (ratio < min_ratio_threshold)
 	2. Below the max_threshold price (default 10000)
@@ -497,17 +497,27 @@ def validate_arms_length_sales(sup: SalesUniversePair, settings: dict, verbose: 
 		y_train = df_group[valid_mask]["sale_price"]
 		X_pred = features
 
-		# Train XGBoost model
-		model = XGBRegressor(
-			n_estimators=100,
-			learning_rate=0.1,
-			max_depth=3,
-			min_child_weight=1,
-			subsample=0.8,
-			colsample_bytree=0.8,
-			random_state=42
+		# Create LightGBM datasets
+		train_data = lgb.Dataset(X_train, label=y_train)
+		
+		# Set LightGBM parameters
+		params = {
+			'objective': 'regression',
+			'metric': 'rmse',
+			'num_leaves': 31,
+			'learning_rate': 0.1,
+			'feature_fraction': 0.8,
+			'bagging_fraction': 0.8,
+			'bagging_freq': 5,
+			'verbose': -1
+		}
+		
+		# Train LightGBM model
+		model = lgb.train(
+			params,
+			train_data,
+			num_boost_round=100
 		)
-		model.fit(X_train, y_train)
 		
 		# Get predicted values
 		predicted_values = model.predict(X_pred)
