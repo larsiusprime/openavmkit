@@ -906,7 +906,7 @@ def finalize_models(
    :param verbose: If True, enables verbose output.
    :type verbose: bool, optional
    """
-   print("OAIJSDOISAK")
+
    openavmkit.benchmark.run_models(
       sup,
       settings,
