@@ -1,7 +1,5 @@
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import IsolationForest
-from sklearn.linear_model import LinearRegression
 import lightgbm as lgb
 
 from openavmkit.data import SalesUniversePair, get_field_classifications, is_series_all_bools
