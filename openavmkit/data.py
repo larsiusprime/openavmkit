@@ -759,11 +759,6 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
                 print("OpenStreetMap enrichment disabled, skipping all OSM features")
             return df
             
-        if verbose:
-            print("Enriching with OpenStreetMap data...")
-            print("OSM settings: ", osm_settings)
-        
-
         # Initialize OpenStreetMap service
         osm_service = init_service_openstreetmap(osm_settings)
         
@@ -775,13 +770,6 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
         # Ensure the GeoDataFrame is in WGS84 (EPSG:4326) before getting bounds
         original_crs = df.crs
 
-        if verbose:
-            print(f"Original CRS: {original_crs}")
-            print(f"Geometry column name: {df.geometry.name}")
-            print(f"First few geometries:")
-            for i, geom in enumerate(df.geometry.head()):
-                print(f"  {i}: {geom.wkt[:100]}...")
-        
         if original_crs is None:
             warnings.warn("GeoDataFrame has no CRS set, attempting to infer EPSG:4326")
             if is_likely_epsg4326(df):
@@ -795,16 +783,6 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
         # This ensures we get the full extent of all geometries
         all_geoms = df.geometry.unary_union
         bbox = all_geoms.bounds
-
-        if verbose:
-            print(f"Bounding box for OSM queries: {bbox}")
-            print(f"Min lon: {bbox[0]}, Min lat: {bbox[1]}")
-            print(f"Max lon: {bbox[2]}, Max lat: {bbox[3]}")
-
-        if use_cache:
-            print("Checking cache for OpenStreetMap data...")
-            os.makedirs("cache/osm", exist_ok=True)
-
         # Process each feature based on settings
 
         # Define a dictionary to hold feature configurations
