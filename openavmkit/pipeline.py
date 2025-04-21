@@ -554,6 +554,11 @@ def process_sales(sup: SalesUniversePair, settings: dict, verbose: bool = False)
 
    print(f"len after validate = {len(sup['sales'])}")
 
+   # clean again to remove newly marked invalid sales
+   sup = clean_valid_sales(sup, settings)
+
+   print(f"len after final clean = {len(sup['sales'])}")
+
    # make sure sales field has necessary fields for the next step
    df_sales_hydrated = get_hydrated_sales_from_sup(sup)
 

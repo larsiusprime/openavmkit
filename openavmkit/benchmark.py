@@ -513,8 +513,6 @@ def run_models(
   :rtype: MultiModelResults
   """
 
-	print("YO")
-
 	t = TimingData()
 
 	t.start("setup")
