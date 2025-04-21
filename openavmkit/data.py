@@ -619,7 +619,7 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
         if "census" in s_enrich_local:
           df = _enrich_df_census(df, s_enrich_local.get("census", {}), verbose=verbose)
         if "openstreetmap" in s_enrich_local:
-          df = _enrich_df_openstreetmap(df, s_enrich_local.get("openstreetmap", {}), s_enrich_local, dataframes, verbose=verbose, use_cache = False)
+          df = _enrich_df_openstreetmap(df, s_enrich_local.get("openstreetmap", {}), s_enrich_local, dataframes, verbose=verbose, use_cache = True)
 
         df = _enrich_df_geometry(df, s_enrich_local, dataframes, settings, verbose=verbose)
 
