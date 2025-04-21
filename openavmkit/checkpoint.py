@@ -9,8 +9,8 @@ from shapely import wkb
 from openavmkit.utilities.geometry import is_likely_epsg4326
 
 
-def from_checkpoint(path: str, func: callable, params: dict)->pd.DataFrame:
-  if exists_checkpoint(path):
+def from_checkpoint(path: str, func: callable, params: dict, use_checkpoint: bool = True)->pd.DataFrame:
+  if use_checkpoint and exists_checkpoint(path):
     return read_checkpoint(path)
   else:
     result = func(**params)
