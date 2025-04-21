@@ -2546,8 +2546,8 @@ def predict_local_sqft(ds: DataSplit, sqft_model: LocalSqftModel, timing: Timing
   df_impr = ds.df_universe[["key"] + location_fields].copy()
 
   # start with zero
-  df_land["per_land_sqft"] = 0
-  df_impr["per_impr_sqft"] = 0
+  df_land["per_land_sqft"] = 0.0  # Initialize as float
+  df_impr["per_impr_sqft"] = 0.0  # Initialize as float
 
   # go from most specific to the least specific location (first to last)
   for location_field in location_fields:
@@ -2680,8 +2680,8 @@ def _prepredict_lars_sqft(ds: DataSplit, sqft_model: LocalSqftModel, timing: Tim
   df_impr = ds.df_universe[["key"] + location_fields].copy()
 
   # start with zero
-  df_land["per_land_sqft"] = 0
-  df_impr["per_impr_sqft"] = 0
+  df_land["per_land_sqft"] = 0.0  # Initialize as float
+  df_impr["per_impr_sqft"] = 0.0  # Initialize as float
   df_land["prediction_land"] = 0.0
   df_impr["prediction"] = 0.0
 
