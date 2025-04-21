@@ -90,6 +90,7 @@ class OpenStreetMapService:
         
         try:
             # Get water bodies from OSM
+            print("Getting water bodies from OSM...")
             water_bodies = ox.features.features_from_polygon(
                 polygon,
                 tags=tags
@@ -658,3 +659,11 @@ def init_service_openstreetmap(settings: Dict = None) -> OpenStreetMapService:
         OpenStreetMapService: Initialized OpenStreetMap service
     """
     return OpenStreetMapService(settings) 
+
+def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_settings: dict, s_enrich_this: dict, dataframes: dict, verbose: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
+    # ...
+    bbox = df.total_bounds
+    if verbose:
+        print(f"Bounding box for OSM queries: {bbox}")
+        print(f"Min lon: {bbox[0]}, Min lat: {bbox[1]}")
+        print(f"Max lon: {bbox[2]}, Max lat: {bbox[3]}")

@@ -2049,6 +2049,12 @@ def run_lightgbm(ds: DataSplit, outpath: str, save_params: bool = False, use_sav
   )
   timing.stop("train")
 
+  # Print timing information for LightGBM model
+  if verbose:
+    print("\n***** LightGBM Model Timing *****")
+    print(timing.print())
+    print("*********************************\n")
+  
   return predict_lightgbm(ds, gbm, timing, verbose)
 
 

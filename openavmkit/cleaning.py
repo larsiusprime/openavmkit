@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import IsolationForest
+from sklearn.linear_model import LinearRegression
+from xgboost import XGBRegressor
 
 from openavmkit.data import SalesUniversePair, get_field_classifications, is_series_all_bools
 from openavmkit.utilities.settings import get_valuation_date, get_fields_categorical, get_fields_boolean, \
@@ -406,8 +408,10 @@ def _fill_unknown_values(df, settings: dict):
 
 def validate_arms_length_sales(sup: SalesUniversePair, settings: dict, verbose: bool = False) -> SalesUniversePair:
 	"""
-	Validate arms-length sales using outlier detection to identify suspicious transactions.
-	Uses Isolation Forest to detect anomalies in each model group.
+	Validate arms-length sales by identifying suspiciously low sale prices using XGBoost.
+	Only marks sales as invalid if they are both:
+	1. Significantly below their predicted value (ratio < min_ratio_threshold)
+	2. Below the max_threshold price (default 10000)
 
 	:param sup: Sales and universe data
 	:type sup: SalesUniversePair
@@ -428,8 +432,8 @@ def validate_arms_length_sales(sup: SalesUniversePair, settings: dict, verbose: 
 		return sup
 
 	min_sales = s_validation.get("min_sales_per_group", 30)
-	max_threshold = s_validation.get("max_threshold", None)
-	contamination = s_validation.get("contamination", 0.01)  # Conservative default
+	min_ratio_threshold = s_validation.get("min_ratio_threshold", 0.5)  # Default: flag sales below 50% of predicted value
+	max_threshold = s_validation.get("max_threshold", 10000)  # Default: only consider sales below $10k
 
 	# Get experiment variables from settings
 	variables = settings.get("modeling", {}).get("experiment", {}).get("variables", [])
@@ -456,10 +460,10 @@ def validate_arms_length_sales(sup: SalesUniversePair, settings: dict, verbose: 
 
 	if verbose:
 		print("\nValidating arms-length sales...")
-		print(f"Using {len(variables)} variables for outlier detection")
+		print(f"Using {len(variables)} variables for value prediction")
 		print(f"Minimum sales per group: {min_sales}")
-		print(f"Maximum price threshold: {max_threshold if max_threshold else 'None'}")
-		print(f"Contamination factor: {contamination}")
+		print(f"Maximum price threshold: ${max_threshold:,}")
+		print(f"Minimum ratio threshold: {min_ratio_threshold}")
 		print(f"\nFound {len(model_groups)} model groups")
 		print("\nProcessing by model group:")
 
@@ -480,63 +484,67 @@ def validate_arms_length_sales(sup: SalesUniversePair, settings: dict, verbose: 
 		if verbose:
 			print(f"\n{group}: Processing {n_sales} sales...")
 
-		# Prepare features for outlier detection
+		# Prepare features for prediction
 		features = df_group[variables].copy()
 		
-		# Handle missing values
-		features = features.fillna(features.mean())
-		
-		# Normalize features
-		for col in features.columns:
-			if features[col].std() > 0:
-				features[col] = (features[col] - features[col].mean()) / features[col].std()
+		# Handle missing values - using recommended approach to avoid FutureWarning
+		features = features.fillna(features.mean()).infer_objects(copy=False)
 
-		# Run Isolation Forest on ALL sales
-		clf = IsolationForest(
-			contamination=contamination,
-			random_state=42,
-			n_jobs=-1
+		# Split into training and prediction sets
+		# Use only valid sales for training
+		valid_mask = df_group["valid_sale"].eq(True)
+		X_train = features[valid_mask]
+		y_train = df_group[valid_mask]["sale_price"]
+		X_pred = features
+
+		# Train XGBoost model
+		model = XGBRegressor(
+			n_estimators=100,
+			learning_rate=0.1,
+			max_depth=3,
+			min_child_weight=1,
+			subsample=0.8,
+			colsample_bytree=0.8,
+			random_state=42
+		)
+		model.fit(X_train, y_train)
+		
+		# Get predicted values
+		predicted_values = model.predict(X_pred)
+		
+		# Calculate ratio of actual to predicted value
+		ratios = df_group["sale_price"] / predicted_values
+		
+		# Identify suspicious sales - those that are:
+		# 1. Below the max_threshold price AND
+		# 2. Have a ratio significantly below predicted value
+		suspicious_mask = (
+			(df_group["sale_price"] <= max_threshold) & 
+			(ratios < min_ratio_threshold)
 		)
 		
-		predictions = clf.fit_predict(features)
-		outliers = predictions == -1
+		# Get suspicious sale keys
+		suspicious_keys = df_group[suspicious_mask]["key_sale"].tolist()
 		
-		# Get all outlier keys
-		outlier_keys = df_group[outliers]["key_sale"].tolist()
-		
-		# If we have a threshold, only exclude outliers below it
-		excluded_keys = []
-		if max_threshold:
-			price_mask = df_group["sale_price"] <= max_threshold
-			excluded_keys = df_group[outliers & price_mask]["key_sale"].tolist()
-			if verbose:
-				n_outliers = len(outlier_keys)
-				n_excluded = len(excluded_keys)
-				n_high_price = n_outliers - n_excluded
-				print(f"--> Found {n_outliers} statistical outliers")
-				print(f"--> {n_high_price} were above price threshold")
-				print(f"--> Excluding {n_excluded} outliers below threshold")
-		else:
-			excluded_keys = outlier_keys
-			if verbose:
-				print(f"--> Excluding {len(excluded_keys)} statistical outliers")
-		
-		if excluded_keys:
+		if suspicious_keys:
 			excluded_info = {
 				"model_group": group,
-				"key_sales": excluded_keys,
+				"key_sales": suspicious_keys,
 				"total_sales": n_sales,
-				"outliers": len(outlier_keys),
-				"excluded": len(excluded_keys)
+				"excluded": len(suspicious_keys),
+				"min_ratio": ratios[suspicious_mask].min(),
+				"max_ratio": ratios[suspicious_mask].max()
 			}
 			excluded_sales.append(excluded_info)
-			total_excluded += len(excluded_keys)
+			total_excluded += len(suspicious_keys)
 			
 			# Mark these sales as invalid
-			df_sales.loc[df_sales["key_sale"].isin(excluded_keys), "valid_sale"] = False
+			df_sales.loc[df_sales["key_sale"].isin(suspicious_keys), "valid_sale"] = False
 			
 			if verbose:
-				print(f"--> Total excluded: {len(excluded_keys)} ({len(excluded_keys)/n_sales*100:.1f}%)")
+				print(f"--> Found {len(suspicious_keys)} suspiciously low sales")
+				print(f"--> Ratio range: {ratios[suspicious_mask].min():.2f} to {ratios[suspicious_mask].max():.2f}")
+				print(f"--> All below ${max_threshold:,} and {min_ratio_threshold*100:.0f}% of predicted value")
 
 	if verbose:
 		print(f"\nOverall summary:")
@@ -552,10 +560,6 @@ def validate_arms_length_sales(sup: SalesUniversePair, settings: dict, verbose: 
 			"settings": s_validation
 		}
 		write_cache("arms_length_validation", cache_data, cache_data, "dict")
-
-	# Drop the columns we added
-	cols_to_drop = ["model_group"] + variables
-	df_sales = df_sales.drop(columns=cols_to_drop)
 
 	# Update the SalesUniversePair
 	sup.update_sales(df_sales)

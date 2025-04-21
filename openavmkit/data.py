@@ -32,6 +32,7 @@ from openavmkit.utilities.openstreetmap import init_service_openstreetmap
 from openavmkit.utilities.overture import init_service_overture
 from openavmkit.inference import get_inference_model, perform_spatial_inference
 from openavmkit.utilities.timing import TimingData
+from pyproj import CRS
 
 
 @dataclass
@@ -614,11 +615,13 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
       # Handle Census enrichment for universe if enabled
       if supkey == "universe":
         df = _basic_geo_enrichment(df, settings, verbose=verbose)
-        df = _enrich_df_geometry(df, s_enrich_local, dataframes, settings, verbose=verbose)
+
         if "census" in s_enrich_local:
           df = _enrich_df_census(df, s_enrich_local.get("census", {}), verbose=verbose)
         if "openstreetmap" in s_enrich_local:
           df = _enrich_df_openstreetmap(df, s_enrich_local.get("openstreetmap", {}), s_enrich_local, dataframes, verbose=verbose, use_cache = False)
+
+        df = _enrich_df_geometry(df, s_enrich_local, dataframes, settings, verbose=verbose)
 
       df = _enrich_df_basic(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
 
@@ -725,8 +728,8 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
         osm_settings (dict): Settings for OpenStreetMap enrichment
         s_enrich_this (dict): Enrichment settings to update with distances configuration
         dataframes (dict): Dictionary of all dataframes, will be updated with OSM features
-        verbose (bool): If True, prints progress information
-        use_cache (bool): If True, uses cached data if available
+        verbose (bool): Whether to print detailed information
+        use_cache (bool): Whether to use cached data if available
         
     Returns:
         pd.DataFrame | gpd.GeoDataFrame: DataFrame enriched with OpenStreetMap data
@@ -734,10 +737,8 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
 
     df = df_in.copy()
 
-    if verbose:
-        print("Enriching with OpenStreetMap data...")
-    
     if use_cache:
+      print("Checking cache for OpenStreetMap data...")
       df_out = get_cached_df(df, "osm/all", "key", osm_settings)
       if df_out is not None:
         return df_out
@@ -750,7 +751,9 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
             
         if verbose:
             print("Enriching with OpenStreetMap data...")
-            
+            print("OSM settings: ", osm_settings)
+        
+
         # Initialize OpenStreetMap service
         osm_service = init_service_openstreetmap(osm_settings)
         
@@ -761,6 +764,13 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
             
         # Ensure the GeoDataFrame is in WGS84 (EPSG:4326) before getting bounds
         original_crs = df.crs
+
+        if verbose:
+            print(f"Original CRS: {original_crs}")
+            print(f"Geometry column name: {df.geometry.name}")
+            print(f"First few geometries:")
+            for i, geom in enumerate(df.geometry.head()):
+                print(f"  {i}: {geom.wkt[:100]}...")
         
         if original_crs is None:
             warnings.warn("GeoDataFrame has no CRS set, attempting to infer EPSG:4326")
@@ -768,14 +778,22 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
                 df.set_crs(epsg=4326, inplace=True)
             else:
                 raise ValueError("Cannot determine CRS of input GeoDataFrame")
-        elif original_crs != "EPSG:4326":
+        elif not original_crs.equals(CRS.from_epsg(4326)):
             df = df.to_crs(epsg=4326)
             
-        # Get the bounding box of all parcels
-        bbox = df.total_bounds
+        # Calculate the bounding box by unioning all geometries first
+        # This ensures we get the full extent of all geometries
+        all_geoms = df.geometry.unary_union
+        bbox = all_geoms.bounds
+
+        if verbose:
+            print(f"Bounding box for OSM queries: {bbox}")
+            print(f"Min lon: {bbox[0]}, Min lat: {bbox[1]}")
+            print(f"Max lon: {bbox[2]}, Max lat: {bbox[3]}")
 
         if use_cache:
-          os.makedirs("cache/osm", exist_ok=True)
+            print("Checking cache for OpenStreetMap data...")
+            os.makedirs("cache/osm", exist_ok=True)
 
         # Process each feature based on settings
 
