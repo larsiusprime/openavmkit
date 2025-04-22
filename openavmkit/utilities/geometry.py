@@ -198,11 +198,13 @@ def stamp_geo_field_onto_df(df_in: gpd.GeoDataFrame, gdf: gpd.GeoDataFrame, fiel
     joined = joined.drop(columns=["centroid", "geometry_y", "area", "index_right"])
 
     # Restore original geometry
+    joined = joined.drop(columns=["centroid"])
     joined = joined.set_geometry(df_in.geometry.name)
   else:
     # No matches, so just drop the temporary centroid column
     df = df.drop(columns=["centroid"])
-    return df  # Return original dataframe with field unmodified (all NaN)
+    df = df.set_geometry(df_in.geometry.name)
+    joined = df
 
   return joined
 
