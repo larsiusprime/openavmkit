@@ -1,5 +1,7 @@
 import os
 import json
+import pickle
+
 import pandas as pd
 import geopandas as gpd
 
@@ -9,7 +11,7 @@ from openavmkit.utilities.geometry import ensure_geometries
 
 def write_cache(
     filename: str,
-    payload: dict | str | pd.DataFrame | gpd.GeoDataFrame,
+    payload: dict | str | pd.DataFrame | gpd.GeoDataFrame | bytes,
     signature: dict | str,
     filetype: str
 ):
@@ -17,19 +19,23 @@ def write_cache(
   path = f"cache/{filename}.{extension}"
   base_path = os.path.dirname(path)
   os.makedirs(base_path, exist_ok=True)
-  with open(path, "w") as file:
-    if filetype == "dict":
+  if filetype == "dict":
+    with open(path, "w") as file:
       json.dump(payload, file)
-    elif filetype == "str":
+  elif filetype == "str":
+    with open(path, "w") as file:
       file.write(payload)
-    elif filetype == "df":
-      if isinstance(payload, pd.DataFrame):
-        if isinstance(payload, gpd.GeoDataFrame):
-          payload.to_parquet(path, engine="pyarrow")
-        else:
-          payload.to_parquet(path)
+  elif filetype == "pickle":
+    with open(path, "wb") as file:
+      pickle.dump(payload, file)
+  elif filetype == "df":
+    if isinstance(payload, pd.DataFrame):
+      if isinstance(payload, gpd.GeoDataFrame):
+        payload.to_parquet(path, engine="pyarrow")
       else:
-        raise TypeError("Payload must be a DataFrame for df type.")
+        payload.to_parquet(path)
+    else:
+      raise TypeError("Payload must be a DataFrame for df type.")
 
   if type(signature) is dict:
     sig_ext = "json"
@@ -53,21 +59,24 @@ def read_cache(
   extension = _get_extension(filetype)
   path = f"cache/{filename}.{extension}"
   if os.path.exists(path):
-    with open(path, "r") as file:
-      if filetype == "dict":
+    if filetype == "dict":
+      with open(path, "r") as file:
         return json.load(file)
-      elif filetype == "str":
+    elif filetype == "str":
+      with open(path, "r") as file:
         return file.read()
-      elif filetype == "df":
-        import pandas as pd
-        try:
-          df = gpd.read_parquet(path)
-          if "geometry" in df:
-            df = gpd.GeoDataFrame(df, geometry="geometry")
-            ensure_geometries(df, "geometry", df.crs)
-        except ValueError:
-          df = pd.read_parquet(path)
-        return df
+    elif filetype == "pickle":
+      with open(path, "rb") as file:
+        return pickle.load(file)
+    elif filetype == "df":
+      try:
+        df = gpd.read_parquet(path)
+        if "geometry" in df:
+          df = gpd.GeoDataFrame(df, geometry="geometry")
+          ensure_geometries(df, "geometry", df.crs)
+      except ValueError:
+        df = pd.read_parquet(path)
+      return df
   return None
 
 
@@ -226,6 +235,8 @@ def _get_extension(filetype:str):
     return "txt"
   elif filetype == "df":
     return "parquet"
+  elif filetype == "pickle":
+    return "pickle"
   elif filetype == "json":
     raise ValueError(f"Filetype 'json' is unsupported, did you mean 'dict'?")
   elif filetype == "txt" or filetype == "text":
