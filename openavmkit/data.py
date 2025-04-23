@@ -6,10 +6,16 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Dict, Any, Optional
 
+import pygeos
+from pygeos import set_operations
+
 from networkx import MultiDiGraph
+from pydantic.json import custom_pydantic_encoder
 from shapely.geometry import Point
-import osmnx as ox
 from osmnx import settings
+from joblib import Parallel, delayed
+
+import osmnx as ox
 
 import numpy as np
 import pandas as pd
@@ -19,6 +25,7 @@ from pandas import Series
 from scipy.spatial._ckdtree import cKDTree
 from shapely.geometry import Polygon
 from shapely.geometry import LineString
+from shapely.lib import segmentize
 from shapely.ops import unary_union, nearest_points
 import warnings
 import traceback
@@ -896,423 +903,284 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
         return df
 
 
-def enrich_df_streets(df_in: pd.DataFrame | gpd.GeoDataFrame, verbose: bool = False):
-
-  print(f"Starting CRS = {df_in.crs}")
+def enrich_df_streets(
+    df_in: gpd.GeoDataFrame,
+    spacing: float = 1,            # 1 meter
+    max_ray_length: float = 25.0,  # meters to shoot rays
+    network_buffer: float = 500.0, # buffer for street network
+    verbose: bool = False
+) -> gpd.GeoDataFrame:
+  """
+  Inverted frontage algorithm:
+  1. Load street network edges around parcels.
+  2. Sample points along each street at 1-meter spacing.
+  3. At each sample, shoot two perpendicular rays (both sides).
+  4. Ray is blocked by first parcel it intersects.
+  5. Aggregate rays per (parcel, road):
+     - frontage = count_rays * spacing
+     - distance = min(ray distance to parcel edge)
+  6. Compute depth (approx. area / frontage).
+  7. Pivot up to 4 frontages, add direction & corner flag.
+  """
+  # ---- setup parcels ----
 
   t = TimingData()
 
-  ##### Setup
+  t.start("all")
+
   t.start("setup")
+  df = df_in[['key', 'geometry']].copy()
+  # drop invalid
+  df = df[df.geometry.notna() & df.geometry.area.gt(0)]
+  # project to equal-distance CRS
+  crs_eq = df.crs if df.crs.is_projected else get_crs(df, 'equal_distance')
+  df = df.to_crs(crs_eq)
+  t.stop("setup")
+  print(f"T setup = {t.get('setup'):.0f}s")
 
-  os.makedirs("out/temp", exist_ok=True)
-
-  # some constants, in meters
-  NETWORK_BUFFER = 500  # area around the bounding box
-  RAY_LENGTH = 50      # length rays extend from each parcel centroid
-
-  # helper functions
-  def _base_angle(poly: Polygon):
-    mrr : Polygon = poly.minimum_rotated_rectangle
-    if mrr.is_empty or mrr.area == 0:
-      return 0
-    xs, ys = mrr.exterior.coords.xy
-    return math.atan2(ys[1] - ys[0], xs[1] - xs[0])
-
-  def _rect_dims(poly: Polygon):
-    mrr : Polygon = poly.minimum_rotated_rectangle
-    if mrr.is_empty or mrr.area == 0:
-      return 0, 0
-    coords = list(mrr.exterior.coords)[:4]
-    d1 = LineString([coords[0], coords[1]]).length
-    d2 = LineString([coords[1], coords[2]]).length
+  # compute dims via minimum rotated rectangle
+  def _rect_dims(poly):
+    mrr = poly.minimum_rotated_rectangle
+    x, y = zip(*list(mrr.exterior.coords)[:4])
+    d1 = LineString([(x[0], y[0]), (x[1], y[1])]).length
+    d2 = LineString([(x[1], y[1]), (x[2], y[2])]).length
     return d1, d2
 
-  # get our working dataframe
-  df = df_in[["key", "geometry"]].copy()
+  t.start("dims")
+  dims = df.geometry.apply(_rect_dims).tolist()
+  df[['dim1','dim2']] = pd.DataFrame(dims, index=df.index)
+  t.stop("dims")
+  print(f"T dims = {t.get('dims'):.0f}s")
 
-  df.to_file("out/temp/osm_0_df.gpkg", driver="GPKG")
-
-  # drop degenerate geometry:
-  len_before = len(df)
-  df = df[df.geometry.notna() & df.geometry.area.gt(0) & df.geometry.apply(lambda g: g.geom_type in ["Polygon", "MultiPolygon"])]
-  len_diff = len_before - len(df)
-  print(f"--> dropped {len_diff} degenerate geometries")
-
-  df = df.set_geometry("geometry")
-
-  # ensure we're in equal-distance CRS, and also that we have a lat-lon projection to use too
-  crs_aeqd = get_crs(df_in, "equal_distance")
-  df = df.to_crs(crs_aeqd)
-
-  # calculate centroid
-  t.start("centroid")
-  df["centroid"] = df.apply(lambda row: row["geometry"].centroid, axis=1)
-  t.stop("centroid")
-
-  # DEBUG:
-  dfc = gpd.GeoDataFrame(
-    df[["key"]],
-    geometry=df["centroid"],
-    crs=crs_aeqd
-  )
-  dfc.to_file("out/temp/osm_0_centroids.gpkg", layer="centroids", driver="GPKG")
-
-  # calculate boundaries of our parcels
-  minx = df_in["longitude"].min()
-  miny = df_in["latitude"].min()
-  maxx = df_in["longitude"].max()
-  maxy = df_in["latitude"].max()
-
-  # invalidate cache when bounding box or # of parcels changes
-  signature = {
-    "bounds": [minx, miny, maxx, maxy],
-    "count": len(df)
-  }
-
-  t.stop("setup")
-  print(f"--> T setup = {t.get('setup'):.0f}s")
-
-  ##### Prepare the street network
-
+  # ---- load street edges ----
+  # compute bbox buffer
   t.start("prepare")
-
-  lat_buffer = NETWORK_BUFFER / 111_000
-  center_lat = (miny + maxy) / 2
-  lon_buffer = NETWORK_BUFFER / (111_000 * np.cos(np.deg2rad(center_lat)))
-
-  north = maxy + lat_buffer
-  south = miny - lat_buffer
-  east = maxx + lon_buffer
-  west = minx - lon_buffer
-
-  print(f"using bounds: {north, south, east, west}")
-
-  # 0. Load the street network (either from cache or from the internet)
-  t.start("load graph")
-  print("Loading street graph...")
+  bounds = df_in.to_crs(epsg=4326).total_bounds
+  minx, miny, maxx, maxy = bounds
+  lat_buf = network_buffer / 111000
+  lon_buf = network_buffer / (111000 * math.cos(math.radians((miny+maxy)/2)))
+  north, south = maxy + lat_buf, miny - lat_buf
+  east, west   = maxx + lon_buf, minx - lon_buf
 
   wanted = ["motorway", "trunk", "primary", "secondary", "tertiary", "residential", "service", "unclassified"]
   highway_regex = "|".join(wanted)
-  custom_filter = f"['highway'~'{highway_regex}']"
+  custom_filter = f'["highway"~"{highway_regex}"]'
+  t.stop("prepare")
+  print(f"T prepare = {t.get('prepare'):.0f}s")
+
+  if verbose:
+    print(f"Loading network within ({south},{west}) -> ({north},{east})")
 
   ox.settings.use_cache = True
+  t.start("load street")
+  G = ox.graph_from_bbox(
+    bbox=(west, south, east, north),
+    network_type='all',
+    custom_filter=custom_filter
+  )
+  t.stop("load street")
+  print(f"T load street = {t.get('load street'):.0f}s")
 
+  t.start("edges")
+  edges = ox.graph_to_gdfs(G, nodes=False, edges=True)[['geometry','name','highway']]
+  edges = edges.explode(index_parts=False).dropna(subset=['geometry']).to_crs(crs_eq).reset_index(drop=True)
+
+  # unwrap lists to single values to avoid ArrowTypeError
+  edges['road_name'] = edges['name'].apply(lambda v: v[0] if isinstance(v, (list, tuple)) else v)
+  edges['road_type'] = edges['highway'].apply(lambda v: v[0] if isinstance(v, (list, tuple)) else v)
+  edges['road_idx'] = edges.index
+  t.stop("edges")
+  print(f"T edges = {t.get('edges'):.0f}s")
+
+  # ---- helper for single-edge rays ----
+  def _rays_from_edge(args):
+    geom, rid, rname, rtype = args
+    out = []
+    dens = segmentize(geom, spacing)
+    coords = list(dens.coords)
+    L = len(coords)
+    if L < 3:
+      return out
+    for i in range(1, L-1):
+      x0,y0 = coords[i-1]
+      x1,y1 = coords[i+1]
+      ox_pt, oy_pt = coords[i]
+      dx, dy = x1 - x0, y1 - y0
+      norm = math.hypot(dx, dy)
+      if norm == 0:
+        continue
+      perp_x, perp_y = -dy/norm, dx/norm
+      for sign in (1, -1):
+        ex = ox_pt + sign * perp_x * max_ray_length
+        ey = oy_pt + sign * perp_y * max_ray_length
+        out.append({
+          'road_idx':  rid,
+          'road_name': rname,
+          'road_type': rtype,
+          'origin':    Point(ox_pt, oy_pt),
+          'geometry':  LineString([(ox_pt, oy_pt), (ex, ey)])
+        })
+    return out
+
+  # ---- parallel ray generation ----
+  t.start('rays_parallel')
+  args = list(zip(
+    edges.geometry.values,
+    edges.road_idx.values,
+    edges.road_name.values,
+    edges.road_type.values
+  ))
+  n_jobs = 4
   if verbose:
-    # show OSMnx INFO logs on the console
-    logging.basicConfig(level=logging.INFO)
-    logging.getLogger("osmnx").setLevel(logging.INFO)
+    print(f"Generating rays for {len(args)} edges with {n_jobs} jobs...")
+  results = Parallel(n_jobs=n_jobs, verbose=10 if verbose else 0)(delayed(_rays_from_edge)(a) for a in args)
+  # flatten
+  rays = [r for sublist in results for r in sublist]
+  rays_gdf = gpd.GeoDataFrame(rays, geometry='geometry', crs=crs_eq)
+  rays_gdf = rays_gdf.drop(columns=['origin'], errors="ignore")
+  rays_gdf["road_name"] = rays_gdf["road_name"].astype(str)
+  rays_gdf["road_type"] = rays_gdf["road_type"].astype(str)
 
-    ox.settings.log_console = True
-    ox.settings.log_file = True
+  t.stop('rays_parallel')
+  print(f"--> T rays_parallel = {t.get('rays_parallel'):.0f}s")
 
-  if check_cache("osm/street_network", signature, "pickle"):
-    G = read_cache("osm/street_network", "pickle")
-  else:
-    G = ox.graph_from_bbox(
-      bbox=(west, south, east, north),
-      network_type="all",
-      custom_filter=custom_filter
-    )
-    print("done")
-    write_cache("osm/street_network", G, signature, "pickle")
-  t.stop("load graph")
+  # DEBUG
+  #rays_gdf.to_parquet("out/temp/1_rays.parquet")
 
-  if verbose:
-    # turn off the logs:
-    logging.getLogger("osmnx").setLevel(logging.WARNING)
-    logging.basicConfig(level=logging.WARNING)
+  # ---- block by first parcel ----
+  t.start("block")
+  # spatial join rays -> parcels
+  gdf = df[['key','geometry']].rename(columns={'geometry':'parcel_geom'})
+  gdf = gpd.GeoDataFrame(gdf, geometry='parcel_geom', crs=crs_eq)
 
-  # 1. Get street network edges
-  edges = ox.graph_to_gdfs(G, nodes=False, edges=True)[["geometry", "name", "highway"]]
-  edges = edges.explode(index_parts=False).dropna(subset=['geometry'])
-  edges = edges.to_crs(df.crs).reset_index(drop=True)
-  edges["highway"] = edges["highway"].apply(
-    lambda v: v[0] if isinstance(v, (list, tuple)) else v
-  )
-  edges["name"] = edges["name"].apply(
-    lambda v: v[0] if isinstance(v, (list, tuple)) else v
-  )
-
-  # 2. Measure length of each parcel's minimum rotated rectangle edge
-  dims = df.geometry.apply(_rect_dims).tolist()
-  df[["dim1", "dim2"]] = pd.DataFrame(dims, index=df.index)
-
-  t.stop("prepare")
-  print(f"--> T prepare = {t.get('prepare'):.0f}s")
-
-  # DEBUG:
-  df.to_crs(epsg=4326).to_parquet("out/temp/osm_0_dims.parquet", index=False)
-
-  ##### Generate rays protruding from each parcel's centroid
-
-  t.start("rays")
-
-  # 0. Define the base angle based on the parcel's orientation
-  df["base_angle"] = [_base_angle(poly) for poly in df.geometry]
-
-  # 1. Define four 90-degree angle offsets
-
-  offsets = [0, math.pi/2, math.pi, 3*math.pi/2]
-  # give each a numeric ID so we can pivot later:
-  df_offsets = pd.DataFrame({
-    "offset_id": range(len(offsets)),
-    "offset": offsets
-  })
-
-  # 2. cross-join parcels with offsets (so we get all combinations, 4 entries per parcel id)
-  df = df.merge(df_offsets, how="cross")
-
-  # 3. vectorized add -- calculate each individual angle
-  df["angle"] = df["base_angle"] + df["offset"]
-
-  # 4. drop the temporary column, we don't need it anymore:
-  df.drop(columns=["offset"], inplace=True)
-
-  # 5. Calculate the half-length of the parcel in the direction of the ray
-  df["half"] = np.where(df["offset_id"] % 2 == 0,
-    df["dim1"] / 2.0,
-    df["dim2"] / 2.0
-  )
-  df["sign"] = np.where(df["offset_id"] < 2, 1.0, -1.0)
-
-  # 6. Vectorize the trig
-  angles = df["angle"].to_numpy()
-  cx = df["centroid"].x.to_numpy()
-  cy = df["centroid"].y.to_numpy()
-  half = df["half"].to_numpy()
-
-  # 7. Compute the "face center" (ray origin)
-  #    = centroid + sign * half * unit_vector(angle)
-
-  origin_x = cx + half * np.cos(angles)
-  origin_y = cy + half * np.sin(angles)
-
-  # 8. Compute the ray tip
-  tx = origin_x + RAY_LENGTH * np.cos(angles)
-  ty = origin_y + RAY_LENGTH * np.sin(angles)
-
-  # 9. Build the LineStrings
-  df["geometry_rays"] = [
-    LineString([(x0, y0), (x1, y1)])
-    for x0, y0, x1, y1 in zip(origin_x, origin_y, tx, ty)
-  ]
-
-  # Now we have a dataframe with 4 rows per parcel, each with a different angle in four 90-degree offsets from the base orientation
-
-  # 10. Create a new GeoDataFrame for the rays
-  df_rays = gpd.GeoDataFrame(
-    df[["key", "offset_id", "centroid", "base_angle", "dim1", "dim2", "angle", "geometry_rays"]],
-    geometry="geometry_rays",
-    crs=df.crs
-  )
-
-  # 11. Set the ray_id to the row number for each ray so that each has a unique value
-  df_rays["ray_id"] = df_rays.index
-
-  t.stop("rays")
-  print(f"--> T rays = {t.get('rays'):.0f}s")
-
-  # DEBUG:
-  gpd.GeoDataFrame(
-    df[["key", "offset_id", "geometry_rays", "base_angle", "dim1", "dim2", "angle"]],
-    geometry="geometry_rays",
-    crs=df.crs
-  ).rename_geometry("geometry").to_crs(epsg=4326).to_parquet("out/temp/osm_1_rays.parquet", index=False)
-
-  ##### Calculate blocked rays
-
-  t.start("blocked")
-
-  # 0. Build GeoDataFrames for the join
-  rays = df_rays[["ray_id", "key", "geometry_rays"]].copy().rename(columns={"geometry_rays":"geometry"})
-  rays.set_geometry("geometry", inplace=True)
-
-  parcels = df_in[["key", "geometry"]].copy().rename(columns={"key":"pkey", "geometry":"pgeom"})
-  parcels.set_geometry("pgeom", inplace=True)
-
-  # 1. Join rays -> parcels
-  blocked = gpd.sjoin(
-    rays,
-    parcels,
-    how="inner",
-    predicate="intersects"
-  )
-
-  # 2. Filter out self-intersections
-  blocked = blocked[blocked["key"].ne(blocked["pkey"])]
-
-  # 3. Drop any ray_id that shows up here
-  to_drop = blocked["ray_id"].unique()
-  df_rays = df_rays[~df_rays["ray_id"].isin(to_drop)]
-
-  t.stop("blocked")
-  print(f"--> T blocked = {t.get('blocked'):.0f}s")
-
-  dfp = df_rays.drop(columns="centroid", errors="ignore")
-  dfp.to_crs(epsg=4326).to_parquet("out/temp/osm_2_rays_filtered.parquet", index=False)
-
-  # Now we have a nice GeoDataFrame with 4 rays per parcel, each with a unique ray_id
-  # We can use this to intersect with the street network to find the closest road to each parcel, and also know which direction it's in
-  # Once we have those intersections, we can trace them back to the parcel the rays belong to
-
-  ##### Perform spatial join with the street network
-
-  t.start("join")
-
-  # 0. Spatial join rays against edges -- this will give us potentially multiple intersections per ray
-  rxe = gpd.sjoin(df_rays, edges, how="inner", predicate="intersects")
-
-  # 1. Compute all intersection *points* along the ray
-  hit_pts = [
-    nearest_points(ray, street)[1]
-    for ray, street in zip(rxe.geometry, rxe.geometry_right)
-  ]
-  rxe["hit_point"] = hit_pts
-
-  # 2. Compute all distances along the ray
-  dists = [
-    ray.project(pt)
-    for ray, pt in zip(rxe.geometry, rxe.hit_point)
-  ]
-  rxe["distance"] = dists
-
-  # 3. Select only the closest intersection per ray and throw away the other intersections
-  nearest = rxe.loc[rxe.groupby("ray_id")["distance"].idxmin()]
-
-  # Now we have, for every ray that intersects any street, the closest street that ray intersects, and its distance
-
-  t.stop("join")
-  print(f"--> T join = {t.get('join'):.0f}s")
-
-  nearest.to_parquet("out/temp/osm_3_nearest.parquet", index=False)
-
-  ##### Calculate the frontage and depth
-
-  t.start("orient")
-
-  # 0. Figure out how far the angle is from the base angle
-  delta = (nearest["angle"] - nearest["base_angle"]) % math.pi
-
-  # 1. If dimension 1 is the same as the base angle, that's the frontage and dimension 2 is the depth
-  nearest["frontage"] = np.where(
-    np.isclose(delta, rtol=1e-3),
-    nearest["dim1"],
-    nearest["dim2"]
-  )
-
-  # 2. If dimension 2 is the same as the base angle, that's the frontage and dimension 1 is the depth
-  nearest["depth"] = np.where(
-    np.isclose(delta, rtol=1e-3),
-    nearest["dim2"],
-    nearest["dim1"]
-  )
-
-  # 3. Clean up column names
-  long = nearest.rename(columns={
-    "name":     "road_front",
-    "highway":  "road_type",
-    "distance": "distance",
-    "angle":    "angle",
-    "frontage": "frontage",
-    "depth":    "depth"
-  })
-
-  # 4. Drop any rows where there was no intersection
-  long = long[long["road_type"].notna()]
-
-  # 5. Assign a type rank for sorting
-  road_type_rank_map = {
-    "motorway": 0,
-    "trunk": 1,
-    "primary": 2,
-    "secondary": 3,
-    "tertiary": 4,
-    "residential": 5,
-    "service": 6,
-    "unclassified": 7
-  }
-  last_place = 8
-  long["road_type_rank"] = long["road_type"].map(road_type_rank_map)
-  long["road_type_rank"] = long["road_type_rank"].fillna(last_place).astype(int)
-
-  # 6. Sort by road type rank and distance to decide which road frontage gets the primary "slot"
-  long = long.sort_values(["key", "road_type_rank", "distance"])
-  long["slot"] = long.groupby("key").cumcount() + 1
-
-  if long.empty:
-    # If there are no road frontages, return the original dataframe
-    warnings.warn("No road frontages found, returning original dataframe")
+  ray_par = gpd.sjoin(rays_gdf, gdf,
+    how='inner', predicate='intersects')
+  # drop self if occurs
+  ray_par = ray_par[ray_par.road_idx.notna()]
+  t.stop("block")
+  print(f"T block = {t.get('block'):.0f}s")
+  if ray_par.empty:
     return df_in
 
-  max_slots = long["slot"].max()
+  t.start("ray_par")
+  # bring back the parcel geometry for distance calculations
+  ray_par = ray_par.merge(
+    gdf[['parcel_geom']],
+    left_on='index_right',
+    right_index=True,
+    how='left'
+  )
+  t.stop("ray_par")
+  print(f"T ray_par = {t.get('ray_par'):.0f}s")
 
-  # 7. Pivot back into _1/_2/etc columns
-  final = long.pivot(
+  t.start("dist")
+  # grab the raw Shapely geometries as simple arrays
+  rays    = ray_par.geometry.values
+  parcels = ray_par.parcel_geom.values
+  n       = len(ray_par)
+
+  # pre‐allocate the result array
+  distances = np.empty(n, dtype=float)
+  chunk_size = 100_000
+  for start in range(0, n, chunk_size):
+    end = min(start + chunk_size, n)
+    # for each (ray, parcel) in this slice, do nearest_points + project
+    distances[start:end] = [
+      r.project(nearest_points(r, p)[1])
+      for r, p in zip(rays[start:end], parcels[start:end])
+    ]
+    # progress printout
+    perc = (end/n)
+    print(f" {perc:4.1%} → processed {end}/{n} rays")
+
+  # stick it back on your GeoDataFrame
+  ray_par["distance"] = distances
+
+  # make sure we have an explicit "ray_id" to group on
+  ray_par = ray_par.reset_index().rename(columns={"index": "ray_id"})
+
+  # keep only the closest-hit per ray
+  first_hits = ray_par.loc[
+    ray_par.groupby("ray_id")["distance"].idxmin()
+  ].copy()
+
+  # now 'first_hits' has at most one row per ray (the nearest parcel)
+  first_hits = first_hits.drop(columns=["ray_id"])
+
+  ray_par = first_hits
+
+  t.stop("dist")
+
+  print(f"T dist = {t.get('dist'):.0f}s")
+
+  # ---- aggregate frontages ----
+  t.start('agg')
+  agg = ray_par.groupby(['key','road_idx','road_name','road_type']).agg(
+    count_rays=('distance','count'),
+    min_distance=('distance','min')
+  ).reset_index()
+  agg['frontage'] = agg['count_rays'] * spacing
+  # approximate depth via area/frontage
+  areas = df[['key']].copy()
+  areas['area'] = df.geometry.area
+  agg = agg.merge(areas, on='key', how='left')
+  agg['depth'] = agg['area'] / agg['frontage']
+  t.stop('agg')
+  print(f"T agg = {t.get('agg'):.0f}s")
+
+  # ---- rank, dedupe, slot & pivot up to 4 frontages ----
+  t.start("pivot")
+
+  # 1) assign type_rank once
+  priority = {
+    "motorway": 0, "trunk": 1, "primary": 2, "secondary": 3,
+    "tertiary": 4, "residential": 5, "service": 6, "unclassified": 7
+  }
+  agg["type_rank"] = agg["road_type"].map(priority).fillna(99).astype(int)
+
+  # 2) sort then drop duplicates by (key,road_name), keeping best
+  agg = (
+    agg
+    .sort_values(["key","road_name","type_rank","min_distance"])
+    .drop_duplicates(subset=["key","road_name"], keep="first")
+  )
+
+  # 3) now sort by overall priority & distance, assign slots, cap at 4
+  agg = agg.sort_values(["key","type_rank","min_distance"])
+  agg["slot"] = agg.groupby("key").cumcount() + 1
+  agg = agg[agg["slot"] <= 4]
+
+  # 4) pivot into the _1 … _4 columns
+  final = agg.pivot(
     index="key",
     columns="slot",
-    values=["road_front", "road_type", "road_type_rank", "angle", "frontage", "depth", "distance"]
-  )
-  final.columns = [f"{field}_{i}" for field, i in final.columns]
-
-  # 8. Drop any columns that are entirely NaN (i.e. slots that don't exist)
-  final = final.dropna(axis=1, how="all").reset_index()
-
-  # 9. Merge back into the original dataframe
-  df_final = df_in.copy()
-  df_final = df_final.drop(columns=["centroid", "base_angle", "dim1", "dim2", "offset_id", "ray_id"], errors="ignore")
-
-  df_final = df_final.merge(final, on="key", how="left")
-  df_final = gpd.GeoDataFrame(
-    df_final,
-    geometry="geometry",
-    crs=df_in.crs
+    values=["road_name","road_type","frontage","depth","min_distance"]
   )
 
-  t.stop("orient")
-  print(f"--> T orient = {t.get('orient'):.0f}s")
+  # 5) flatten the MultiIndex and drop any all‑null columns
+  final.columns = [f"{field}_{i}" for field,i in final.columns]
+  final = final.reset_index().dropna(axis=1, how="all")
 
-  df_final.to_parquet("out/temp/osm_4_merged.parquet", index=False)
+  t.stop("pivot")
+  print(f"T pivot = {t.get('pivot'):.0f}s")
 
-  ##### Add compass directions and corner lot flag
+  # ---- merge back and add directions ----
+  t.start("merge")
+  out = df_in.merge(final, on='key', how='left')
+  # compute compass dir for each angle if needed...
+  out['is_corner'] = out['road_name_1'].notna() & out['road_name_2'].notna()
+  t.stop("merge")
+  print(f"T merge = {t.get('merge'):.0f}s")
 
-  t.start("compass")
+  out.to_parquet("out/temp/4_out.parquet")
 
-  # 1. List of cardinal and intermediate directions
-  directions = ["E", "NE", "N", "NW", "W", "SW", "S", "SE"]
+  t.stop("all")
 
-  bins = np.linspace(-22.5, 360+22.5, 9) # edges every 45 degrees
-  labels = directions
-
-  # 2. Compute the direction to the road by using the angle
-  for i in range(1, max_slots+1):
-    col = f"angle_{i}"
-    out = f"road_dir_{i}"
-
-    # compute degrees in [0, 360)
-    deg = np.degrees(df_final[col]) % 360
-
-    valid = df_final[col].notna()
-    idx = np.zeros(len(df_final), dtype=int)
-    idx[valid] = np.floor((deg[valid] + 22.5) / 45).astype(int) % 8
-    df_final[out] = None
-    df_final.loc[valid, out] = np.array(directions)[idx[valid]]
-
-  # 3. Flag any parcel with at least two frontages as a corner lot
-  df_final["is_corner"] = df_final["road_front_1"].notna() & df_final["road_front_2"].notna()
-
-  df_final.to_parquet("out/temp/osm_5_final.parquet", index=False)
-
-  t.stop("compass")
-  print(f"--> T compass = {t.get('compass'):.0f}s")
-
-  print(f"################")
-  print("OSM timings:")
+  print("***ALL TIMING***")
   print(t.print())
-  print(f"################")
+  print("****************")
 
-  # Return the enriched GeoDataFrame
-  return df_final
+  return gpd.GeoDataFrame(out, geometry='geometry', crs=df_in.crs)
 
 
 
