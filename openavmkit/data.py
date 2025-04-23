@@ -90,7 +90,7 @@ class SalesUniversePair:
     else:
       raise ValueError(f"Invalid key: {key}")
 
-  def update_sales(self, new_sales: pd.DataFrame):
+  def update_sales(self, new_sales: pd.DataFrame, allow_remove_rows: bool = False):
     """
     Update the sales DataFrame with new information as an overlay without redundancy.
 
@@ -105,6 +105,8 @@ class SalesUniversePair:
 
     :param new_sales: New sales DataFrame with updates.
     :type new_sales: pd.DataFrame
+    :param allow_remove_rows: If True, allows the update to remove rows from sales. If False, preserves all original rows.
+    :type allow_remove_rows: bool
     :returns: None
     """
     old_fields = self.sales.columns.values
@@ -117,10 +119,11 @@ class SalesUniversePair:
 
     old_sales = self.sales.copy()
     return_keys = new_sales["key_sale"].values
-    if len(return_keys) > len(old_sales):
+    if not allow_remove_rows and len(return_keys) > len(old_sales):
       raise ValueError("The new sales DataFrame contains more keys than the old sales DataFrame. update_sales() may only be used to shrink the dataframe or keep it the same size. Use set() if you intend to replace the sales dataframe.")
 
-    old_sales = old_sales[old_sales["key_sale"].isin(return_keys)].reset_index(drop=True)
+    if allow_remove_rows:
+      old_sales = old_sales[old_sales["key_sale"].isin(return_keys)].reset_index(drop=True)
     reconciled = combine_dfs(old_sales, new_sales[["key_sale"] + new_fields].copy().reset_index(drop=True), index="key_sale")
     self.sales = reconciled
 

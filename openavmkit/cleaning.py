@@ -117,7 +117,7 @@ def clean_valid_sales(sup: SalesUniversePair, settings : dict):
 				else:
 					raise ValueError(f"Field '{b}' contains non-boolean values that cannot be coerced to boolean. Unique values = {df_sales[b].unique()}")
 
-	sup.update_sales(df_sales)
+	sup.update_sales(df_sales, allow_remove_rows=True)
 
 	return sup
 
@@ -605,6 +605,7 @@ def validate_arms_length_sales(sup: SalesUniversePair, settings: dict, verbose: 
 		}
 		write_cache("arms_length_validation", cache_data, cache_data, "dict")
 
-	# Update the SalesUniversePair
-	sup.update_sales(df_sales)
+	# Filter out invalid sales and update the SalesUniversePair
+	df_sales = df_sales[df_sales["valid_sale"].eq(True)].copy()
+	sup.set("sales", df_sales)
 	return sup
