@@ -1,16 +1,13 @@
 import logging
 import math
 import os
+import sys
 import warnings
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Dict, Any, Optional
+from typing import Literal
 
-import pygeos
-from pygeos import set_operations
 
-from networkx import MultiDiGraph
-from pydantic.json import custom_pydantic_encoder
 from shapely.geometry import Point
 from osmnx import settings
 from joblib import Parallel, delayed
@@ -25,23 +22,21 @@ from pandas import Series
 from scipy.spatial._ckdtree import cKDTree
 from shapely.geometry import Polygon
 from shapely.geometry import LineString
-from shapely.lib import segmentize
+from shapely import segmentize
 from shapely.ops import unary_union, nearest_points
 import warnings
 import traceback
 
 from openavmkit.calculations import _crawl_calc_dict_for_fields, perform_calculations, perform_tweaks
 from openavmkit.filters import resolve_filter, select_filter
-from openavmkit.utilities.assertions import dfs_are_equal
 from openavmkit.utilities.cache import check_cache, write_cache, read_cache, get_cached_df, write_cached_df
 from openavmkit.utilities.data import combine_dfs, div_field_z_safe, merge_and_stomp_dfs
-from openavmkit.utilities.geometry import get_crs, clean_geometry, identify_irregular_parcels, get_exterior_coords, \
-	geolocate_point_to_polygon, is_likely_epsg4326
+from openavmkit.utilities.geometry import get_crs, clean_geometry, identify_irregular_parcels, \
+  geolocate_point_to_polygon, is_likely_epsg4326
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
   get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit, get_valuation_date, get_center
 
 from openavmkit.utilities.census import get_creds_from_env_census, init_service_census, match_to_census_blockgroups
-from openavmkit.utilities.census import CensusService
 from openavmkit.utilities.openstreetmap import init_service_openstreetmap
 from openavmkit.utilities.overture import init_service_overture
 from openavmkit.inference import get_inference_model, perform_spatial_inference
@@ -930,6 +925,9 @@ def enrich_df_streets(
 
   t.start("setup")
   df = df_in[['key', 'geometry']].copy()
+
+
+
   # drop invalid
   df = df[df.geometry.notna() & df.geometry.area.gt(0)]
   # project to equal-distance CRS
@@ -956,9 +954,19 @@ def enrich_df_streets(
   # compute bbox buffer
   t.start("prepare")
   bounds = df_in.to_crs(epsg=4326).total_bounds
+
   minx, miny, maxx, maxy = bounds
   lat_buf = network_buffer / 111000
   lon_buf = network_buffer / (111000 * math.cos(math.radians((miny+maxy)/2)))
+
+  # -76.692141771°, 39.349034096°
+  # -76.65168346°, 39.31289413°
+
+  minx = -76.692141771
+  maxx = -76.65168346
+  miny = 39.31289413
+  maxy = 39.349034096
+
   north, south = maxy + lat_buf, miny - lat_buf
   east, west   = maxx + lon_buf, minx - lon_buf
 
@@ -1018,22 +1026,23 @@ def enrich_df_streets(
           'road_name': rname,
           'road_type': rtype,
           'origin':    Point(ox_pt, oy_pt),
-          'geometry':  LineString([(ox_pt, oy_pt), (ex, ey)])
+          'geometry':  LineString([(ox_pt, oy_pt), (ex, ey)]),
+          'angle': math.atan2(ey - oy_pt, ex - ox_pt)
         })
     return out
 
   # ---- parallel ray generation ----
   t.start('rays_parallel')
+  n_jobs = 8
   args = list(zip(
-    edges.geometry.values,
-    edges.road_idx.values,
-    edges.road_name.values,
-    edges.road_type.values
+    edges.geometry.to_list(),
+    edges.road_idx.to_list(),
+    edges.road_name.to_list(),
+    edges.road_type.to_list()
   ))
-  n_jobs = 4
   if verbose:
     print(f"Generating rays for {len(args)} edges with {n_jobs} jobs...")
-  results = Parallel(n_jobs=n_jobs, verbose=10 if verbose else 0)(delayed(_rays_from_edge)(a) for a in args)
+  results = Parallel(n_jobs=n_jobs, backend="threading", verbose=10 if verbose else 0)(delayed(_rays_from_edge)(a) for a in args)
   # flatten
   rays = [r for sublist in results for r in sublist]
   rays_gdf = gpd.GeoDataFrame(rays, geometry='geometry', crs=crs_eq)
@@ -1045,7 +1054,7 @@ def enrich_df_streets(
   print(f"--> T rays_parallel = {t.get('rays_parallel'):.0f}s")
 
   # DEBUG
-  #rays_gdf.to_parquet("out/temp/1_rays.parquet")
+  # rays_gdf.to_parquet("out/temp/1_rays.parquet")
 
   # ---- block by first parcel ----
   t.start("block")
@@ -1055,6 +1064,10 @@ def enrich_df_streets(
 
   ray_par = gpd.sjoin(rays_gdf, gdf,
     how='inner', predicate='intersects')
+
+  # DEBUG:
+  # ray_par.to_parquet("out/temp/1_ray_par.parquet")
+
   # drop self if occurs
   ray_par = ray_par[ray_par.road_idx.notna()]
   t.stop("block")
@@ -1082,19 +1095,50 @@ def enrich_df_streets(
   # pre‐allocate the result array
   distances = np.empty(n, dtype=float)
   chunk_size = 100_000
+
   for start in range(0, n, chunk_size):
     end = min(start + chunk_size, n)
-    # for each (ray, parcel) in this slice, do nearest_points + project
-    distances[start:end] = [
-      r.project(nearest_points(r, p)[1])
-      for r, p in zip(rays[start:end], parcels[start:end])
-    ]
-    # progress printout
-    perc = (end/n)
-    print(f" {perc:4.1%} → processed {end}/{n} rays")
+
+    # Get a parallel matching set of rays and parcels
+    subr = rays[start:end]
+    subp = parcels[start:end]
+
+    # 1 GEOS call per pair
+    segs = [r.intersection(p) for r,p in zip(subr, subp)]
+    origins = np.array([r.coords[0] for r in subr])
+    entries = []
+    for r, seg in zip(subr, segs):
+      if seg.is_empty:
+        entries.append((np.nan, np.nan))
+      elif isinstance(seg, LineString):
+        entries.append(seg.coords[0]) # first point of the clipped line
+      else:
+        # MultiLineString: pick the first-hit subsegment
+        x0,y0 = r.coords[0]         # origin of the ray
+
+        # Find the best (lowest) distance to the origin
+        best = float('inf')
+        best_pt = (np.nan, np.nan)
+
+        # Loop through each subsegment and find the closest point to the ray origin
+        for part in seg.geoms:
+          xe,ye = part.coords[0]
+          d2 = (xe-x0)**2 + (ye-y0)**2
+          if d2 < best:
+            best, best_pt = d2, (xe,ye)
+        entries.append(best_pt)
+
+    entries = np.array(entries)
+    diffs = entries - origins
+    distances[start:end] = np.hypot(diffs[:,0], diffs[:,1])
+
 
   # stick it back on your GeoDataFrame
   ray_par["distance"] = distances
+
+  # ray_par_out = ray_par.copy()
+  # ray_par_out.drop(columns="parcel_geom")
+  # ray_par.to_parquet("out/temp/1_ray_par.parquet")
 
   # make sure we have an explicit "ray_id" to group on
   ray_par = ray_par.reset_index().rename(columns={"index": "ray_id"})
@@ -1109,6 +1153,10 @@ def enrich_df_streets(
 
   ray_par = first_hits
 
+  # # DEBUG:
+  # ray_hits = ray_par.drop(columns="parcel_geom")
+  # ray_hits.to_parquet("out/temp/2_ray_hits.parquet")
+
   t.stop("dist")
 
   print(f"T dist = {t.get('dist'):.0f}s")
@@ -1117,7 +1165,8 @@ def enrich_df_streets(
   t.start('agg')
   agg = ray_par.groupby(['key','road_idx','road_name','road_type']).agg(
     count_rays=('distance','count'),
-    min_distance=('distance','min')
+    min_distance=('distance','min'),
+    mean_angle=('angle','mean')
   ).reset_index()
   agg['frontage'] = agg['count_rays'] * spacing
   # approximate depth via area/frontage
@@ -1141,12 +1190,18 @@ def enrich_df_streets(
   # 2) sort then drop duplicates by (key,road_name), keeping best
   agg = (
     agg
-    .sort_values(["key","road_name","type_rank","min_distance"])
+    .sort_values(["key","road_name","type_rank","frontage","min_distance"])
     .drop_duplicates(subset=["key","road_name"], keep="first")
   )
 
+  distance_score = 1.0 - (agg["min_distance"] / max_ray_length)
+  agg["sort_score"] = agg["frontage"] * distance_score
+
   # 3) now sort by overall priority & distance, assign slots, cap at 4
-  agg = agg.sort_values(["key","type_rank","min_distance"])
+  agg = agg.sort_values(
+    ["key", "sort_score", "type_rank", "frontage", "min_distance"],
+    ascending=[True, False, True, False, True]
+  )
   agg["slot"] = agg.groupby("key").cumcount() + 1
   agg = agg[agg["slot"] <= 4]
 
@@ -1154,7 +1209,7 @@ def enrich_df_streets(
   final = agg.pivot(
     index="key",
     columns="slot",
-    values=["road_name","road_type","frontage","depth","min_distance"]
+    values=["road_name","frontage","road_type","mean_angle","depth","min_distance"]
   )
 
   # 5) flatten the MultiIndex and drop any all‑null columns
@@ -1168,7 +1223,15 @@ def enrich_df_streets(
   t.start("merge")
   out = df_in.merge(final, on='key', how='left')
   # compute compass dir for each angle if needed...
-  out['is_corner'] = out['road_name_1'].notna() & out['road_name_2'].notna()
+
+  out["is_corner"] = False
+
+  out["is_corner"] = \
+    out["road_type_1"].isin(["motorway", "trunk", "primary", "secondary", "tertiary", "residential"]) & \
+    out["road_type_2"].isin(["motorway", "trunk", "primary", "secondary", "tertiary", "residential"])
+
+  #out['is_corner'] = out['road_name_1'].notna() & out['road_name_2'].notna()
+
   t.stop("merge")
   print(f"T merge = {t.get('merge'):.0f}s")
 
