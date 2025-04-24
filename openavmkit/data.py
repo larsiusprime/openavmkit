@@ -1054,7 +1054,7 @@ def enrich_df_streets(
   print(f"--> T rays_parallel = {t.get('rays_parallel'):.0f}s")
 
   # DEBUG
-  # rays_gdf.to_parquet("out/temp/1_rays.parquet")
+  rays_gdf.to_parquet("out/temp/1_rays.parquet")
 
   # ---- block by first parcel ----
   t.start("block")
@@ -1066,7 +1066,7 @@ def enrich_df_streets(
     how='inner', predicate='intersects')
 
   # DEBUG:
-  # ray_par.to_parquet("out/temp/1_ray_par.parquet")
+  ray_par.to_parquet("out/temp/1_ray_par.parquet")
 
   # drop self if occurs
   ray_par = ray_par[ray_par.road_idx.notna()]
@@ -1136,9 +1136,10 @@ def enrich_df_streets(
   # stick it back on your GeoDataFrame
   ray_par["distance"] = distances
 
-  # ray_par_out = ray_par.copy()
-  # ray_par_out.drop(columns="parcel_geom")
-  # ray_par.to_parquet("out/temp/1_ray_par.parquet")
+  # DEBUG:
+  ray_par_out = ray_par.copy()
+  ray_par_out.drop(columns="parcel_geom")
+  ray_par.to_parquet("out/temp/1_ray_par.parquet")
 
   # make sure we have an explicit "ray_id" to group on
   ray_par = ray_par.reset_index().rename(columns={"index": "ray_id"})
@@ -1154,8 +1155,8 @@ def enrich_df_streets(
   ray_par = first_hits
 
   # # DEBUG:
-  # ray_hits = ray_par.drop(columns="parcel_geom")
-  # ray_hits.to_parquet("out/temp/2_ray_hits.parquet")
+  ray_hits = ray_par.drop(columns="parcel_geom")
+  ray_hits.to_parquet("out/temp/2_ray_hits.parquet")
 
   t.stop("dist")
 
@@ -1169,6 +1170,11 @@ def enrich_df_streets(
     mean_angle=('angle','mean')
   ).reset_index()
   agg['frontage'] = agg['count_rays'] * spacing
+
+  print("MAKE IT MAKE SENSE")
+  import IPython
+  IPython.display.display(agg[agg['key'].eq('3100P033')])
+
   # approximate depth via area/frontage
   areas = df[['key']].copy()
   areas['area'] = df.geometry.area
@@ -1188,19 +1194,54 @@ def enrich_df_streets(
   agg["type_rank"] = agg["road_type"].map(priority).fillna(99).astype(int)
 
   # 2) sort then drop duplicates by (key,road_name), keeping best
+  # NOTE: since we were aggregating on key/road_idx/road_name/road_type, but here only on key/road_name, we have to be careful
+  # because it's possible that OTHER SEGMENTS of the same road that "front" on our parcel are still hanging around
+  # we make sure to de-duplicate correctly here by sorting on the highest frontage for cases of the identical road names/types
   agg = (
-    agg
-    .sort_values(["key","road_name","type_rank","frontage","min_distance"])
+    agg.sort_values(
+      ["key","road_name","type_rank","frontage","min_distance"],
+      ascending=[True, True, True, False, True]
+    )
     .drop_duplicates(subset=["key","road_name"], keep="first")
   )
+
+  # per key, aggregate the min distance and the max frontage:
+  agg2 = agg.groupby("key").agg(
+    hits=('min_distance', 'count'),
+    max_distance=('min_distance', 'max'),
+    med_frontage=('frontage','median')
+  ).reset_index()
+
+  agg = agg.merge(agg2, on="key", how="left")
+
+  ######## Remove spurious hits: #######
+  # Heuristic:
+  # - For any parcel with more than two street hits
+  # - If this hit's distance is the maximum distance of all hits, and is more than 10 meters away
+  # - If this hit's frontage is less than half the median frontage of all hits
+  agg["spurious"] = False
+
+  agg.loc[
+    agg["hits"].gt(2) &
+    agg["max_distance"].gt(10) &
+    abs(agg["min_distance"] - agg["max_distance"]).lt(1e-6) &
+    agg["frontage"].lt(agg["med_frontage"] / 2)
+  , "spurious"] = True
+
+  # drop spurious hits:
+  agg = agg[agg["spurious"].eq(False)]
+
+  agg = agg.drop(columns=["hits", "max_distance", "med_frontage"], errors="ignore")
+
+  ######
 
   distance_score = 1.0 - (agg["min_distance"] / max_ray_length)
   agg["sort_score"] = agg["frontage"] * distance_score
 
   # 3) now sort by overall priority & distance, assign slots, cap at 4
   agg = agg.sort_values(
-    ["key", "sort_score", "type_rank", "frontage", "min_distance"],
-    ascending=[True, False, True, False, True]
+    ["key", "type_rank", "sort_score", "frontage", "min_distance"],
+    ascending=[True, True, False, False, True]
   )
   agg["slot"] = agg.groupby("key").cumcount() + 1
   agg = agg[agg["slot"] <= 4]
@@ -1209,7 +1250,7 @@ def enrich_df_streets(
   final = agg.pivot(
     index="key",
     columns="slot",
-    values=["road_name","frontage","road_type","mean_angle","depth","min_distance"]
+    values=["road_name","frontage","road_type","mean_angle","depth","min_distance","spurious"]
   )
 
   # 5) flatten the MultiIndex and drop any all‑null columns
@@ -1224,7 +1265,7 @@ def enrich_df_streets(
   out = df_in.merge(final, on='key', how='left')
   # compute compass dir for each angle if needed...
 
-  out["is_corner"] = False
+  out["is_corner"] = 0
 
   out["is_corner"] = \
     out["road_type_1"].isin(["motorway", "trunk", "primary", "secondary", "tertiary", "residential"]) & \
@@ -1244,7 +1285,6 @@ def enrich_df_streets(
   print("****************")
 
   return gpd.GeoDataFrame(out, geometry='geometry', crs=df_in.crs)
-
 
 
 
