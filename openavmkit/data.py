@@ -959,13 +959,10 @@ def enrich_df_streets(
   lat_buf = network_buffer / 111000
   lon_buf = network_buffer / (111000 * math.cos(math.radians((miny+maxy)/2)))
 
-  # -76.692141771°, 39.349034096°
-  # -76.65168346°, 39.31289413°
-
-  minx = -76.692141771
-  maxx = -76.65168346
-  miny = 39.31289413
-  maxy = 39.349034096
+  # minx = -76.692141771
+  # maxx = -76.65168346
+  # miny = 39.31289413
+  # maxy = 39.349034096
 
   north, south = maxy + lat_buf, miny - lat_buf
   east, west   = maxx + lon_buf, minx - lon_buf
@@ -1053,8 +1050,8 @@ def enrich_df_streets(
   t.stop('rays_parallel')
   print(f"--> T rays_parallel = {t.get('rays_parallel'):.0f}s")
 
-  # DEBUG
-  rays_gdf.to_parquet("out/temp/1_rays.parquet")
+  # # DEBUG
+  # rays_gdf.to_parquet("out/temp/1_rays.parquet")
 
   # ---- block by first parcel ----
   t.start("block")
@@ -1066,7 +1063,7 @@ def enrich_df_streets(
     how='inner', predicate='intersects')
 
   # DEBUG:
-  ray_par.to_parquet("out/temp/1_ray_par.parquet")
+  # ray_par.to_parquet("out/temp/1_ray_par.parquet")
 
   # drop self if occurs
   ray_par = ray_par[ray_par.road_idx.notna()]
@@ -1137,9 +1134,9 @@ def enrich_df_streets(
   ray_par["distance"] = distances
 
   # DEBUG:
-  ray_par_out = ray_par.copy()
-  ray_par_out.drop(columns="parcel_geom")
-  ray_par.to_parquet("out/temp/1_ray_par.parquet")
+  # ray_par_out = ray_par.copy()
+  # ray_par_out.drop(columns="parcel_geom")
+  # ray_par.to_parquet("out/temp/1_ray_par.parquet")
 
   # make sure we have an explicit "ray_id" to group on
   ray_par = ray_par.reset_index().rename(columns={"index": "ray_id"})
@@ -1155,25 +1152,24 @@ def enrich_df_streets(
   ray_par = first_hits
 
   # # DEBUG:
-  ray_hits = ray_par.drop(columns="parcel_geom")
-  ray_hits.to_parquet("out/temp/2_ray_hits.parquet")
+  # ray_hits = ray_par.drop(columns="parcel_geom")
+  # ray_hits.to_parquet("out/temp/2_ray_hits.parquet")
 
   t.stop("dist")
 
   print(f"T dist = {t.get('dist'):.0f}s")
 
+  # Fill road name with road_idx if none
+  ray_par['road_name'] = ray_par['road_name'].fillna(f"Unknown Road, ID: " + ray_par['road_idx'].astype(str))
+
   # ---- aggregate frontages ----
   t.start('agg')
-  agg = ray_par.groupby(['key','road_idx','road_name','road_type']).agg(
+  agg = ray_par.groupby(['key','road_name','road_type']).agg(
     count_rays=('distance','count'),
     min_distance=('distance','min'),
     mean_angle=('angle','mean')
   ).reset_index()
   agg['frontage'] = agg['count_rays'] * spacing
-
-  print("MAKE IT MAKE SENSE")
-  import IPython
-  IPython.display.display(agg[agg['key'].eq('3100P033')])
 
   # approximate depth via area/frontage
   areas = df[['key']].copy()
