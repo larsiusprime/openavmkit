@@ -1242,11 +1242,22 @@ def enrich_df_streets(
   agg["slot"] = agg.groupby("key").cumcount() + 1
   agg = agg[agg["slot"] <= 4]
 
+  agg = agg.rename({
+    "mean_angle": "road_angle",
+    "min_distance": "dist_to_road"
+  })
+
+  directions = ["N", "NW", "W", "SW", "S", "SE", "E", "NE"]
+
+  agg["road_face"] = agg["mean_angle"].apply(
+    lambda x: directions[int((x + math.pi) / (2 * math.pi) * 8) % 8]
+  )
+
   # 4) pivot into the _1 … _4 columns
   final = agg.pivot(
     index="key",
     columns="slot",
-    values=["road_name","frontage","road_type","mean_angle","depth","min_distance","spurious"]
+    values=["road_name", "frontage", "road_type", "road_angle", "road_face", "depth", "dist_to_road"]
   )
 
   # 5) flatten the MultiIndex and drop any all‑null columns
@@ -1260,14 +1271,6 @@ def enrich_df_streets(
   t.start("merge")
   out = df_in.merge(final, on='key', how='left')
   # compute compass dir for each angle if needed...
-
-  out["is_corner"] = 0
-
-  out["is_corner"] = \
-    out["road_type_1"].isin(["motorway", "trunk", "primary", "secondary", "tertiary", "residential"]) & \
-    out["road_type_2"].isin(["motorway", "trunk", "primary", "secondary", "tertiary", "residential"])
-
-  #out['is_corner'] = out['road_name_1'].notna() & out['road_name_2'].notna()
 
   t.stop("merge")
   print(f"T merge = {t.get('merge'):.0f}s")
