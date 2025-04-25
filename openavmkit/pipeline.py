@@ -572,6 +572,13 @@ def enrich_sup_spatial_lag(sup: SalesUniversePair, settings: dict, verbose: bool
    return openavmkit.data.enrich_sup_spatial_lag(sup, settings, verbose)
 
 
+def enrich_sup_streets(sup: SalesUniversePair, settings: dict, verbose: bool=False):
+   df_univ = sup.universe
+   df_univ = openavmkit.data.enrich_df_streets(df_univ, verbose=verbose)
+   sup.universe = df_univ
+   return sup
+
+
 def fill_unknown_values_sup(sup: SalesUniversePair, settings: dict) -> SalesUniversePair:
    """
    Fill unknown or missing values in a SalesUniversePair.

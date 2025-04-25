@@ -897,7 +897,6 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
         warnings.warn(f"Failed to enrich with OpenStreetMap data: {str(e)}")
         return df
 
-
 def enrich_df_streets(
     df_in: gpd.GeoDataFrame,
     spacing: float = 1,            # 1 meter
@@ -958,11 +957,6 @@ def enrich_df_streets(
   minx, miny, maxx, maxy = bounds
   lat_buf = network_buffer / 111000
   lon_buf = network_buffer / (111000 * math.cos(math.radians((miny+maxy)/2)))
-
-  # minx = -76.692141771
-  # maxx = -76.65168346
-  # miny = 39.31289413
-  # maxy = 39.349034096
 
   north, south = maxy + lat_buf, miny - lat_buf
   east, west   = maxx + lon_buf, minx - lon_buf
@@ -1084,6 +1078,8 @@ def enrich_df_streets(
   print(f"T ray_par = {t.get('ray_par'):.0f}s")
 
   t.start("dist")
+
+  t.start("dist_0")
   # grab the raw Shapely geometries as simple arrays
   rays    = ray_par.geometry.values
   parcels = ray_par.parcel_geom.values
@@ -1092,23 +1088,34 @@ def enrich_df_streets(
   # pre‐allocate the result array
   distances = np.empty(n, dtype=float)
   chunk_size = 100_000
+  t.stop("dist_0")
 
   for start in range(0, n, chunk_size):
+
+    t.start("dist_1")
     end = min(start + chunk_size, n)
 
     # Get a parallel matching set of rays and parcels
     subr = rays[start:end]
     subp = parcels[start:end]
+    t.stop("dist_1")
 
     # 1 GEOS call per pair
+    t.start("dist_2")
     segs = [r.intersection(p) for r,p in zip(subr, subp)]
     origins = np.array([r.coords[0] for r in subr])
     entries = []
+    t.stop("dist_2")
+
     for r, seg in zip(subr, segs):
       if seg.is_empty:
+        t.start("dist_append")
         entries.append((np.nan, np.nan))
+        t.stop("dist_append")
       elif isinstance(seg, LineString):
+        t.start("dist_append")
         entries.append(seg.coords[0]) # first point of the clipped line
+        t.stop("dist_append")
       else:
         # MultiLineString: pick the first-hit subsegment
         x0,y0 = r.coords[0]         # origin of the ray
@@ -1117,17 +1124,26 @@ def enrich_df_streets(
         best = float('inf')
         best_pt = (np.nan, np.nan)
 
+        t.start("dist_best")
         # Loop through each subsegment and find the closest point to the ray origin
         for part in seg.geoms:
           xe,ye = part.coords[0]
           d2 = (xe-x0)**2 + (ye-y0)**2
           if d2 < best:
             best, best_pt = d2, (xe,ye)
-        entries.append(best_pt)
+        t.stop("dist_best")
 
+        t.start("dist_append")
+        entries.append(best_pt)
+        t.stop("dist_append")
+
+    t.start("dist_3")
     entries = np.array(entries)
     diffs = entries - origins
+    t.stop("dist_3")
+    t.start("dist_hypot")
     distances[start:end] = np.hypot(diffs[:,0], diffs[:,1])
+    t.stop("dist_hypot")
 
 
   # stick it back on your GeoDataFrame
@@ -1242,14 +1258,14 @@ def enrich_df_streets(
   agg["slot"] = agg.groupby("key").cumcount() + 1
   agg = agg[agg["slot"] <= 4]
 
-  agg = agg.rename({
+  agg = agg.rename(columns={
     "mean_angle": "road_angle",
     "min_distance": "dist_to_road"
   })
 
   directions = ["N", "NW", "W", "SW", "S", "SE", "E", "NE"]
 
-  agg["road_face"] = agg["mean_angle"].apply(
+  agg["road_face"] = agg["road_angle"].apply(
     lambda x: directions[int((x + math.pi) / (2 * math.pi) * 8) % 8]
   )
 
