@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Literal
 
 import pygeos
+import shapely
 
 from shapely.geometry import Point
 from osmnx import settings
@@ -972,9 +973,9 @@ def enrich_df_streets(
   # maxy = 39.349034096
 
   minx = -76.68
-  maxx = -76.67
+  maxx = -76.66
   miny = 39.32
-  maxy = 39.33
+  maxy = 39.36
 
   north, south = maxy + lat_buf, miny - lat_buf
   east, west   = maxx + lon_buf, minx - lon_buf
@@ -1139,71 +1140,46 @@ def enrich_df_streets(
   distances = np.empty(n, dtype=float)
   chunk_size = 100_000
   t.stop("dist_0")
-
-  # Convert all Shapely lists into PyGEOS arrays
-  rg_all = pygeos.from_shapely(rays)
-  pg_all = pygeos.from_shapely(parcels)
-
-  # Also pull out all origins once
-  origins_all = np.array([r.coords[0] for r in rays])
-
-  #pre-allocate the full output
-  entries_all = np.full((len(rays), 2), np.nan, dtype=float)
+  print(f"T dist_0 = {t.get('dist_0'):.0f}s")
 
   for start in range(0, n, chunk_size):
 
-    print(f"--> Processing rays {start} to {start + chunk_size} of {n}...")
-
+    print(f"Processing rays {start} to {start + chunk_size} of {n}...")
     t.start("dist_1")
     end = min(start + chunk_size, n)
+
+    # Get a parallel matching set of rays and parcels
+    subr = rays[start:end]
+    subp = parcels[start:end]
     t.stop("dist_1")
-    print(f"--> T dist_1  so far = {t.get('dist_1'):.0f}s")
+    print(f"T dist_1 = {t.get('dist_1'):.0f}s")
 
-    # 1. one‐time: convert to PyGEOS arrays
-    t.start("dist_2_before")
-    # slice the pre-built PyGEOS arrays
-    rg = rg_all[start:end]
-    pg = pg_all[start:end]
-    t.stop("dist_2_before")
-
-    # 2. C‐level batch intersection of all pairs
     t.start("dist_2")
-    # batch‐intersection in C
-    segs_arr = pygeos.intersection(rg, pg)
+    segs = shapely.intersection(subr, subp)
     t.stop("dist_2")
-    print(f"--> T dist_2  so far = {t.get('dist_2'):.0f}s")
+    print(f"T dist_2 = {t.get('dist_2'):.0f}s")
 
-    # 3. back to Shapely geometries (if your downstream code expects them)
-    t.start("dist_2_after")
-    segs = pygeos.to_shapely(segs_arr)
+    t.start("origins")
+    origins = np.vstack([r.coords[0] for r in subr])
+    t.stop("origins")
+    print(f"T origins = {t.get('origins'):.0f}s")
 
-    # 2. Origins as (N,2) array
-    # slice origins & entries for this chunk
-    origins = origins_all[start:end]
-    entries = entries_all[start:end]
-    t.stop("dist_2_after")
-
-    # 3. Preallocate 'entries' array
     t.start("dist_loop")
-
-    # Now use simple indexing instead of appending
-    for i, seg in enumerate(segs):
-      if seg.is_empty: continue
-
-      origin_pt = Point(origins[i])
-
+    def first_hit_point(ray, seg):
+      if seg.is_empty:
+        return (np.nan, np.nan)
       if isinstance(seg, LineString):
-        entries[i] = seg.coords[0]
-      else:
-        _, nearest = nearest_points(origin_pt, seg)
-        entries[i] = nearest.coords[0]
-        # coords = np.array([part.coords[0] for part in seg.geoms])
-        # diffs = coords - origin
-        # idx = np.argmin((diffs*diffs).sum(axis=1))
-        # entries[i] = coords[idx]
+        return seg.coords[0]
+      origin = Point(ray.coords[0])
+      _, proj = nearest_points(origin, seg)
+      return proj.x, proj.y
 
+    entries = [
+      first_hit_point(r, seg)
+      for r, seg in zip(subr, segs)
+    ]
     t.stop("dist_loop")
-    print(f"--> T dist_loop so far = {t.get('dist_loop'):.0f}s")
+    print(f"T dist_loop = {t.get('dist_loop'):.0f}s")
 
     t.start("dist_3")
     entries = np.array(entries)
@@ -1212,7 +1188,6 @@ def enrich_df_streets(
     t.start("dist_hypot")
     distances[start:end] = np.hypot(diffs[:,0], diffs[:,1])
     t.stop("dist_hypot")
-
 
   # stick it back on your GeoDataFrame
   ray_par["distance"] = distances
