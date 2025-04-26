@@ -1142,6 +1142,20 @@ def enrich_df_streets(
   t.stop("dist_0")
   print(f"T dist_0 = {t.get('dist_0'):.0f}s")
 
+  t.start("origins setup")
+  # flat list of all coordinates (shape (total_pts, 2))
+  coords = shapely.get_coordinates(rays)
+  # get # of points in each LineString (shape (n_rays,))
+  counts = shapely.get_num_coordinates(rays)
+  # compute index of *first* point in each geometry
+  offsets = np.empty_like(counts)
+  offsets[0] = 0
+  offsets[1:] = np.cumsum(counts)[:-1]
+  # index directly into coords to get the origins array (shape (n_rays, 2))
+  origins_all = coords[offsets]
+  t.stop("origins setup")
+  print(f"T origins setup = {t.get('origins setup'):.0f}s")
+
   for start in range(0, n, chunk_size):
 
     print(f"Processing rays {start} to {start + chunk_size} of {n}...")
@@ -1160,7 +1174,7 @@ def enrich_df_streets(
     print(f"T dist_2 = {t.get('dist_2'):.0f}s")
 
     t.start("origins")
-    origins = np.vstack([r.coords[0] for r in subr])
+    origins = origins_all[start:end]
     t.stop("origins")
     print(f"T origins = {t.get('origins'):.0f}s")
 
