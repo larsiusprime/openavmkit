@@ -964,18 +964,18 @@ def enrich_df_streets(
   lat_buf = network_buffer / 111000
   lon_buf = network_buffer / (111000 * math.cos(math.radians((miny+maxy)/2)))
 
-  lat_buf = 0
-  lon_buf = 0
+  # lat_buf = 0
+  # lon_buf = 0
 
   # minx = -76.692141771
   # maxx = -76.65168346
   # miny = 39.31289413
   # maxy = 39.349034096
 
-  minx = -76.68
-  maxx = -76.66
-  miny = 39.32
-  maxy = 39.36
+  # minx = -76.68
+  # maxx = -76.66
+  # miny = 39.32
+  # maxy = 39.36
 
   north, south = maxy + lat_buf, miny - lat_buf
   east, west   = maxx + lon_buf, minx - lon_buf
@@ -1063,7 +1063,7 @@ def enrich_df_streets(
         'road_idx':  rid,
         'road_name': rname,
         'road_type': rtype,
-        'geometry':  LineString([(_ox,_ox),(ex,ey)]),
+        'geometry':  LineString([(_ox,_oy),(ex,ey)]),
         'angle':     np.arctan2(ey-_oy, ex-_ox)
       })
 
@@ -1095,7 +1095,7 @@ def enrich_df_streets(
   t.stop('rays_parallel')
   print(f"--> T rays_parallel = {t.get('rays_parallel'):.0f}s")
 
-  # # DEBUG
+  # DEBUG
   # rays_gdf.to_parquet("out/temp/1_rays.parquet")
 
   # ---- block by first parcel ----
@@ -1104,8 +1104,7 @@ def enrich_df_streets(
   gdf = df[['key','geometry']].rename(columns={'geometry':'parcel_geom'})
   gdf = gpd.GeoDataFrame(gdf, geometry='parcel_geom', crs=crs_eq)
 
-  ray_par = gpd.sjoin(rays_gdf, gdf,
-    how='inner', predicate='intersects')
+  ray_par = gpd.sjoin(rays_gdf, gdf, how='inner', predicate='intersects')
 
   # DEBUG:
   # ray_par.to_parquet("out/temp/1_ray_par.parquet")
@@ -1136,9 +1135,6 @@ def enrich_df_streets(
   parcels = ray_par.parcel_geom.values
   n       = len(ray_par)
 
-  # pre‐allocate the result array
-  distances = np.empty(n, dtype=float)
-  chunk_size = 100_000
   t.stop("dist_0")
   print(f"T dist_0 = {t.get('dist_0'):.0f}s")
 
@@ -1156,52 +1152,29 @@ def enrich_df_streets(
   t.stop("origins setup")
   print(f"T origins setup = {t.get('origins setup'):.0f}s")
 
-  for start in range(0, n, chunk_size):
+  t.start("intersect")
+  segs = shapely.intersection(rays, parcels)
+  t.stop("intersect")
+  print(f"T intersect = {t.get('intersect'):.0f}s")
 
-    print(f"Processing rays {start} to {start + chunk_size} of {n}...")
-    t.start("dist_1")
-    end = min(start + chunk_size, n)
+  t.start("coords_counts")
+  coords = shapely.get_coordinates(segs)
+  counts = shapely.get_num_coordinates(segs)
+  offsets = np.empty_like(counts)
+  offsets[0] = 0
+  offsets[1:] = np.cumsum(counts)[:-1]
+  t.stop("coords_counts")
+  print(f"T coords_counts = {t.get('coords_counts'):.0f}s")
 
-    # Get a parallel matching set of rays and parcels
-    subr = rays[start:end]
-    subp = parcels[start:end]
-    t.stop("dist_1")
-    print(f"T dist_1 = {t.get('dist_1'):.0f}s")
+  t.start("entries")
+  entries = coords[offsets]
+  t.stop("entries")
+  print(f"T entries = {t.get('entries'):.0f}s")
 
-    t.start("dist_2")
-    segs = shapely.intersection(subr, subp)
-    t.stop("dist_2")
-    print(f"T dist_2 = {t.get('dist_2'):.0f}s")
-
-    t.start("origins")
-    origins = origins_all[start:end]
-    t.stop("origins")
-    print(f"T origins = {t.get('origins'):.0f}s")
-
-    t.start("dist_loop")
-    def first_hit_point(ray, seg):
-      if seg.is_empty:
-        return (np.nan, np.nan)
-      if isinstance(seg, LineString):
-        return seg.coords[0]
-      origin = Point(ray.coords[0])
-      _, proj = nearest_points(origin, seg)
-      return proj.x, proj.y
-
-    entries = [
-      first_hit_point(r, seg)
-      for r, seg in zip(subr, segs)
-    ]
-    t.stop("dist_loop")
-    print(f"T dist_loop = {t.get('dist_loop'):.0f}s")
-
-    t.start("dist_3")
-    entries = np.array(entries)
-    diffs = entries - origins
-    t.stop("dist_3")
-    t.start("dist_hypot")
-    distances[start:end] = np.hypot(diffs[:,0], diffs[:,1])
-    t.stop("dist_hypot")
+  t.start("distances")
+  diffs = entries - origins_all
+  distances = np.hypot(diffs[:,0], diffs[:,1])
+  t.stop("distances")
 
   # stick it back on your GeoDataFrame
   ray_par["distance"] = distances
@@ -1224,7 +1197,7 @@ def enrich_df_streets(
 
   ray_par = first_hits
 
-  # # DEBUG:
+  # DEBUG:
   # ray_hits = ray_par.drop(columns="parcel_geom")
   # ray_hits.to_parquet("out/temp/2_ray_hits.parquet")
 
