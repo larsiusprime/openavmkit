@@ -1,12 +1,11 @@
-import logging
 import math
 import os
-import sys
-import warnings
+
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
+import pygeos
 
 from shapely.geometry import Point
 from osmnx import settings
@@ -18,14 +17,17 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import geopandas as gpd
+
 from pandas import Series
 from scipy.spatial._ckdtree import cKDTree
 from shapely.geometry import Polygon
 from shapely.geometry import LineString
-from shapely import segmentize
 from shapely.ops import unary_union, nearest_points
 import warnings
 import traceback
+
+from shapely.prepared import prep
+from shapely.strtree import STRtree
 
 from openavmkit.calculations import _crawl_calc_dict_for_fields, perform_calculations, perform_tweaks
 from openavmkit.filters import resolve_filter, select_filter
@@ -923,7 +925,7 @@ def enrich_df_streets(
   t.start("all")
 
   t.start("setup")
-  df = df_in[['key', 'geometry']].copy()
+  df = df_in[['key', 'geometry', 'latitude', 'longitude']].copy()
 
 
 
@@ -938,13 +940,16 @@ def enrich_df_streets(
   # compute dims via minimum rotated rectangle
   def _rect_dims(poly):
     mrr = poly.minimum_rotated_rectangle
-    x, y = zip(*list(mrr.exterior.coords)[:4])
-    d1 = LineString([(x[0], y[0]), (x[1], y[1])]).length
-    d2 = LineString([(x[1], y[1]), (x[2], y[2])]).length
+    coords = list(mrr.exterior.coords)[:4]
+    d1 = LineString(coords[:2]).length
+    d2 = LineString(coords[1:3]).length
     return d1, d2
 
   t.start("dims")
-  dims = df.geometry.apply(_rect_dims).tolist()
+  # use 8 worker processes to slice the work
+  dims = Parallel(n_jobs=8, backend="loky")(
+    delayed(_rect_dims)(poly) for poly in df.geometry
+  )
   df[['dim1','dim2']] = pd.DataFrame(dims, index=df.index)
   t.stop("dims")
   print(f"T dims = {t.get('dims'):.0f}s")
@@ -958,8 +963,28 @@ def enrich_df_streets(
   lat_buf = network_buffer / 111000
   lon_buf = network_buffer / (111000 * math.cos(math.radians((miny+maxy)/2)))
 
+  lat_buf = 0
+  lon_buf = 0
+
+  # minx = -76.692141771
+  # maxx = -76.65168346
+  # miny = 39.31289413
+  # maxy = 39.349034096
+
+  minx = -76.68
+  maxx = -76.67
+  miny = 39.32
+  maxy = 39.33
+
   north, south = maxy + lat_buf, miny - lat_buf
   east, west   = maxx + lon_buf, minx - lon_buf
+
+  df = df.loc[
+    df["latitude"].ge(south) &
+    df["latitude"].le(north) &
+    df["longitude"].ge(west) &
+    df["longitude"].le(east)
+  ].drop(columns=["latitude","longitude"]).copy()
 
   wanted = ["motorway", "trunk", "primary", "secondary", "tertiary", "residential", "service", "unclassified"]
   highway_regex = "|".join(wanted)
@@ -992,50 +1017,75 @@ def enrich_df_streets(
   print(f"T edges = {t.get('edges'):.0f}s")
 
   # ---- helper for single-edge rays ----
-  def _rays_from_edge(args):
-    geom, rid, rname, rtype = args
+  def _rays_from_edge(geom, rid, rname, rtype):
+    length = geom.length
+    n_pts = max(0, int(np.floor(length / spacing)) - 1)
+    if n_pts <= 0:
+      return []
+
+    # 1) C‐level interpolation of origins
+    dists = np.linspace(spacing, length - spacing, n_pts)
+    origins = [geom.interpolate(d) for d in dists]
+
+    # 2) finite‐difference tangents in C
+    delta = spacing * 0.1
+    tangents = [
+      (
+        geom.interpolate(min(d+delta, length)).x - geom.interpolate(max(d-delta, 0)).x,
+        geom.interpolate(min(d+delta, length)).y - geom.interpolate(max(d-delta, 0)).y
+      )
+      for d in dists
+    ]
+    norms = np.hypot(*zip(*tangents))
+    dirs  = [(dx/n, dy/n) for (dx,dy),n in zip(tangents, norms)]
+
+    # 3) vectorize perpendicular endpoints
+    perp       = np.array([(-dy, dx) for dx,dy in dirs])
+    origins_xy = np.array([[pt.x, pt.y] for pt in origins])
+    ends_pos   = origins_xy + perp * max_ray_length
+    ends_neg   = origins_xy - perp * max_ray_length
+
+    # 4) build LineStrings in two simple loops
     out = []
-    dens = segmentize(geom, spacing)
-    coords = list(dens.coords)
-    L = len(coords)
-    if L < 3:
-      return out
-    for i in range(1, L-1):
-      x0,y0 = coords[i-1]
-      x1,y1 = coords[i+1]
-      ox_pt, oy_pt = coords[i]
-      dx, dy = x1 - x0, y1 - y0
-      norm = math.hypot(dx, dy)
-      if norm == 0:
-        continue
-      perp_x, perp_y = -dy/norm, dx/norm
-      for sign in (1, -1):
-        ex = ox_pt + sign * perp_x * max_ray_length
-        ey = oy_pt + sign * perp_y * max_ray_length
-        out.append({
-          'road_idx':  rid,
-          'road_name': rname,
-          'road_type': rtype,
-          'origin':    Point(ox_pt, oy_pt),
-          'geometry':  LineString([(ox_pt, oy_pt), (ex, ey)]),
-          'angle': math.atan2(ey - oy_pt, ex - ox_pt)
-        })
+    # positive side
+    for (_ox,_oy), (ex,ey) in zip(origins_xy, ends_pos):
+      out.append({
+        'road_idx':  rid,
+        'road_name': rname,
+        'road_type': rtype,
+        'geometry':  LineString([(_ox,_oy),(ex,ey)]),
+        'angle':     np.arctan2(ey-_oy, ex-_ox)
+      })
+    # negative side
+    for (_ox,_oy), (ex,ey) in zip(origins_xy, ends_neg):
+      out.append({
+        'road_idx':  rid,
+        'road_name': rname,
+        'road_type': rtype,
+        'geometry':  LineString([(_ox,_ox),(ex,ey)]),
+        'angle':     np.arctan2(ey-_oy, ex-_ox)
+      })
+
     return out
 
   # ---- parallel ray generation ----
+  args = list(zip(
+    edges.geometry, edges.road_idx,
+    edges.road_name, edges.road_type
+  ))
   t.start('rays_parallel')
   n_jobs = 8
-  args = list(zip(
-    edges.geometry.to_list(),
-    edges.road_idx.to_list(),
-    edges.road_name.to_list(),
-    edges.road_type.to_list()
-  ))
   if verbose:
     print(f"Generating rays for {len(args)} edges with {n_jobs} jobs...")
-  results = Parallel(n_jobs=n_jobs, backend="threading", verbose=10 if verbose else 0)(delayed(_rays_from_edge)(a) for a in args)
-  # flatten
-  rays = [r for sublist in results for r in sublist]
+  results = Parallel(
+    n_jobs=n_jobs,
+    backend="loky",
+    verbose=10 if verbose else 0
+  )(
+    delayed(_rays_from_edge)(*a) for a in args
+  )
+  # flatten & continue exactly as before
+  rays = [r for sub in results for r in sub]
   rays_gdf = gpd.GeoDataFrame(rays, geometry='geometry', crs=crs_eq)
   rays_gdf = rays_gdf.drop(columns=['origin'], errors="ignore")
   rays_gdf["road_name"] = rays_gdf["road_name"].astype(str)
@@ -1090,52 +1140,70 @@ def enrich_df_streets(
   chunk_size = 100_000
   t.stop("dist_0")
 
+  # Convert all Shapely lists into PyGEOS arrays
+  rg_all = pygeos.from_shapely(rays)
+  pg_all = pygeos.from_shapely(parcels)
+
+  # Also pull out all origins once
+  origins_all = np.array([r.coords[0] for r in rays])
+
+  #pre-allocate the full output
+  entries_all = np.full((len(rays), 2), np.nan, dtype=float)
+
   for start in range(0, n, chunk_size):
+
+    print(f"--> Processing rays {start} to {start + chunk_size} of {n}...")
 
     t.start("dist_1")
     end = min(start + chunk_size, n)
-
-    # Get a parallel matching set of rays and parcels
-    subr = rays[start:end]
-    subp = parcels[start:end]
     t.stop("dist_1")
+    print(f"--> T dist_1  so far = {t.get('dist_1'):.0f}s")
 
-    # 1 GEOS call per pair
+    # 1. one‐time: convert to PyGEOS arrays
+    t.start("dist_2_before")
+    # slice the pre-built PyGEOS arrays
+    rg = rg_all[start:end]
+    pg = pg_all[start:end]
+    t.stop("dist_2_before")
+
+    # 2. C‐level batch intersection of all pairs
     t.start("dist_2")
-    segs = [r.intersection(p) for r,p in zip(subr, subp)]
-    origins = np.array([r.coords[0] for r in subr])
-    entries = []
+    # batch‐intersection in C
+    segs_arr = pygeos.intersection(rg, pg)
     t.stop("dist_2")
+    print(f"--> T dist_2  so far = {t.get('dist_2'):.0f}s")
 
-    for r, seg in zip(subr, segs):
-      if seg.is_empty:
-        t.start("dist_append")
-        entries.append((np.nan, np.nan))
-        t.stop("dist_append")
-      elif isinstance(seg, LineString):
-        t.start("dist_append")
-        entries.append(seg.coords[0]) # first point of the clipped line
-        t.stop("dist_append")
+    # 3. back to Shapely geometries (if your downstream code expects them)
+    t.start("dist_2_after")
+    segs = pygeos.to_shapely(segs_arr)
+
+    # 2. Origins as (N,2) array
+    # slice origins & entries for this chunk
+    origins = origins_all[start:end]
+    entries = entries_all[start:end]
+    t.stop("dist_2_after")
+
+    # 3. Preallocate 'entries' array
+    t.start("dist_loop")
+
+    # Now use simple indexing instead of appending
+    for i, seg in enumerate(segs):
+      if seg.is_empty: continue
+
+      origin_pt = Point(origins[i])
+
+      if isinstance(seg, LineString):
+        entries[i] = seg.coords[0]
       else:
-        # MultiLineString: pick the first-hit subsegment
-        x0,y0 = r.coords[0]         # origin of the ray
+        _, nearest = nearest_points(origin_pt, seg)
+        entries[i] = nearest.coords[0]
+        # coords = np.array([part.coords[0] for part in seg.geoms])
+        # diffs = coords - origin
+        # idx = np.argmin((diffs*diffs).sum(axis=1))
+        # entries[i] = coords[idx]
 
-        # Find the best (lowest) distance to the origin
-        best = float('inf')
-        best_pt = (np.nan, np.nan)
-
-        t.start("dist_best")
-        # Loop through each subsegment and find the closest point to the ray origin
-        for part in seg.geoms:
-          xe,ye = part.coords[0]
-          d2 = (xe-x0)**2 + (ye-y0)**2
-          if d2 < best:
-            best, best_pt = d2, (xe,ye)
-        t.stop("dist_best")
-
-        t.start("dist_append")
-        entries.append(best_pt)
-        t.stop("dist_append")
+    t.stop("dist_loop")
+    print(f"--> T dist_loop so far = {t.get('dist_loop'):.0f}s")
 
     t.start("dist_3")
     entries = np.array(entries)
