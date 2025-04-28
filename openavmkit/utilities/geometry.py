@@ -42,25 +42,35 @@ def get_crs(gdf, projection_type):
 
 
 def get_crs_from_lat_lon(lat, lon, projection_type, units="m"):
-
+  """
+  Return a CRS suitable for:
+    - 'latlon'       : geographic (EPSG:4326)
+    - 'equal_area'   : local azimuthal equal-area (LAEA)
+    - 'equal_distance': azimuthal equidistant (AEQD)
+    - 'conformal'    : local UTM zone (minimal distortion in shape/angle)
+  """
   if projection_type == 'latlon':
-    # Return WGS 84 (EPSG:4326)
     return CRS.from_epsg(4326)
 
   elif projection_type == 'equal_area':
-    # Return an equal-area projection centered on the centroid
+    # Lambert Azimuthal Equal‐Area about your centroid
     return CRS.from_proj4(
-      f"+proj=aea +lat_1={lat-5} +lat_2={lat+5} +lat_0={lat} +lon_0={lon} +datum=WGS84 +units={units}"
+      f"+proj=laea +lat_0={lat} +lon_0={lon} +datum=WGS84 +units={units}"
     )
 
   elif projection_type == 'equal_distance':
-    # Return an Azimuthal Equidistant projection centered on the centroid
+    # Azimuthal Equidistant about your centroid
     return CRS.from_proj4(
       f"+proj=aeqd +lat_0={lat} +lon_0={lon} +datum=WGS84 +units={units}"
     )
 
+  elif projection_type == 'conformal':
+    # Use the UTM zone for minimal scale error over a small area
+    # pyproj can detect the right UTM zone automatically:
+    return CRS.from_user_input(f"+proj=utm +zone={int((lon+180)/6)+1} +datum=WGS84 +units={units}")
+
   else:
-    raise ValueError("Invalid projection_type. Choose 'latlon', 'equal_area', or 'equal_distance'.")
+    raise ValueError(f"Unknown projection_type: {projection_type}")
 
 
 def is_likely_epsg4326(gdf: gpd.GeoDataFrame) -> bool:

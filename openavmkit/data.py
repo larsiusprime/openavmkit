@@ -37,7 +37,8 @@ from openavmkit.utilities.data import combine_dfs, div_field_z_safe, merge_and_s
 from openavmkit.utilities.geometry import get_crs, clean_geometry, identify_irregular_parcels, \
   geolocate_point_to_polygon, is_likely_epsg4326
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
-  get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit, get_valuation_date, get_center
+  get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit, get_valuation_date, get_center, \
+  get_short_distance_unit
 
 from openavmkit.utilities.census import get_creds_from_env_census, init_service_census, match_to_census_blockgroups
 from openavmkit.utilities.openstreetmap import init_service_openstreetmap
@@ -920,7 +921,7 @@ def enrich_df_streets(
   # drop invalid
   df = df[df.geometry.notna() & df.geometry.area.gt(0)]
   # project to equal-distance CRS
-  crs_eq = df.crs if df.crs.is_projected else get_crs(df, 'equal_distance')
+  crs_eq = get_crs(df, 'conformal')
   df = df.to_crs(crs_eq)
   t.stop("setup")
   if verbose:
@@ -996,57 +997,46 @@ def enrich_df_streets(
   if verbose:
     print(f"T edges = {t.get('edges'):.0f}s")
 
+  # fill missing road names with the OSM id field:
+  edges['road_name'] = edges['road_name'].fillna(edges['osmid'])
+
+  # flatten lists
+  edges['road_name'] = edges['road_name'].apply(
+    lambda v: v if isinstance(v, str) else str(v)
+  )
   # ---- helper for single-edge rays ----
-  def _rays_from_edge(geom, rid, rname, rtype):
-    length = geom.length
-    n_pts = max(0, int(np.floor(length / spacing)) - 1)
-    if n_pts <= 0:
+  def _rays_from_edge(geom, rid, rname, rtype,
+    spacing=spacing, max_ray_length=25.0):
+
+    # 1) inject new vertices every `spacing` metres
+    dens = shapely.segmentize(geom, spacing)
+
+    # 2) pull out coords
+    coords = list(dens.coords)
+    if len(coords) < 3:
       return []
 
-    # 1) C‐level interpolation of origins
-    dists = np.linspace(spacing, length - spacing, n_pts)
-    origins = [geom.interpolate(d) for d in dists]
+    _out = []
+    # skip first & last point, so i in [1 .. len(coords)-2]
+    for i in range(1, len(coords) - 1):
+      (_ox, _oy) = coords[i]
+      (x0, y0), (x1, y1) = coords[i - 1], coords[i + 1]
+      # estimate tangent from prev->next
+      dx, dy = x1 - x0, y1 - y0
+      norm = math.hypot(dx, dy)
+      nx, ny = -dy / norm, dx / norm  # unit-normal
 
-    # 2) finite‐difference tangents in C
-    delta = spacing * 0.1
-    tangents = [
-      (
-        geom.interpolate(min(d+delta, length)).x - geom.interpolate(max(d-delta, 0)).x,
-        geom.interpolate(min(d+delta, length)).y - geom.interpolate(max(d-delta, 0)).y
-      )
-      for d in dists
-    ]
-    norms = np.hypot(*zip(*tangents))
-    dirs  = [(dx/n, dy/n) for (dx,dy),n in zip(tangents, norms)]
-
-    # 3) vectorize perpendicular endpoints
-    perp       = np.array([(-dy, dx) for dx,dy in dirs])
-    origins_xy = np.array([[pt.x, pt.y] for pt in origins])
-    ends_pos   = origins_xy + perp * max_ray_length
-    ends_neg   = origins_xy - perp * max_ray_length
-
-    # 4) build LineStrings in two simple loops
-    out = []
-    # positive side
-    for (_ox,_oy), (ex,ey) in zip(origins_xy, ends_pos):
-      out.append({
-        'road_idx':  rid,
-        'road_name': rname,
-        'road_type': rtype,
-        'geometry':  LineString([(_ox,_oy),(ex,ey)]),
-        'angle':     np.arctan2(ey-_oy, ex-_ox)
-      })
-    # negative side
-    for (_ox,_oy), (ex,ey) in zip(origins_xy, ends_neg):
-      out.append({
-        'road_idx':  rid,
-        'road_name': rname,
-        'road_type': rtype,
-        'geometry':  LineString([(_ox,_oy),(ex,ey)]),
-        'angle':     np.arctan2(ey-_oy, ex-_ox)
-      })
-
-    return out
+      for sign in (+1, -1):
+        ex = _ox + sign * nx * max_ray_length
+        ey = _oy + sign * ny * max_ray_length
+        _out.append({
+          'road_idx':     rid,
+          'road_name':    rname,
+          'road_type':    rtype,
+          'geometry':     LineString([(_ox, _oy), (ex, ey)]),
+          'angle':        math.atan2(ey - _oy, ex - _ox)
+        })
+    return _out
 
   # ---- parallel ray generation ----
   args = list(zip(
@@ -1297,8 +1287,6 @@ def enrich_df_streets(
   if verbose:
     print(f"T merge = {t.get('merge'):.0f}s")
 
-  out.to_parquet("out/temp/4_out.parquet")
-
   t.stop("all")
 
   if verbose:
@@ -1306,9 +1294,59 @@ def enrich_df_streets(
     print(t.print())
     print("****************")
 
-  return gpd.GeoDataFrame(out, geometry='geometry', crs=df_in.crs)
+  df_out = gpd.GeoDataFrame(out, geometry='geometry', crs=df_in.crs)
+  df_out = _finish_df_streets(df_out, settings)
+  return df_out
 
 
+def _finish_df_streets(df: gpd.GeoDataFrame, settings: dict) -> gpd.GeoDataFrame:
+  units = get_short_distance_unit(settings)
+
+  if units == "ft":
+    conversion_mult = 3.28084
+    suffix = "_ft"
+  else:
+    conversion_mult = 1.0
+    suffix = "_m"
+
+  stubs = ["frontage", "depth", "dist_to_road"]
+  for stub in stubs:
+    for i in range(1, 5):
+      col = f"{stub}_{i}"
+      if col in df:
+        df[col] = df[col].fillna(0.0) * conversion_mult
+        df.rename(columns={col: f"{stub}{suffix}_{i}"}, inplace=True)
+        print(f"renaming FROM: ({col}) TO: ({stub}{suffix}_{i})")
+
+
+  df[f"osm_total_frontage{suffix}"] = (df[f"frontage{suffix}_1"].fillna(0.0) +
+                              df[f"frontage{suffix}_2"].fillna(0.0) +
+                              df[f"frontage{suffix}_3"].fillna(0.0) +
+                              df[f"frontage{suffix}_4"].fillna(0.0))
+
+  for road_type in ["motorway", "trunk", "primary", "secondary", "tertiary", "residential", "service", "unclassified"]:
+    df[f"osm_frontage_{road_type}{suffix}"] = 0.0
+    for i in range(1, 5):
+      df[f"osm_frontage_{road_type}{suffix}"] += df[f"frontage{suffix}_{i}"].where(df[f"road_type_{i}"] == road_type, 0.0)
+
+  stubs_to_prefix = [
+    "frontage",
+    "road_name",
+    "road_type",
+    "road_face",
+    "depth",
+    "dist_to_road",
+    "road_angle"
+  ]
+
+  renames = {}
+  for stub in stubs_to_prefix:
+    for i in range(1, 5):
+      renames[f"{stub}_{i}"] = f"osm_{stub}_{i}"
+
+  df = df.rename(columns=renames)
+
+  return df
 
 def identify_parcels_with_holes(df: gpd.GeoDataFrame) -> (gpd.GeoDataFrame, gpd.GeoDataFrame):
   """
