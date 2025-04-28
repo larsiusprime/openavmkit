@@ -903,7 +903,8 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
 
 def enrich_df_streets(
     df_in: gpd.GeoDataFrame,
-    spacing: float = 1,            # 1 meter
+    settings: dict,
+    spacing: float = 1.0,          # in meters
     max_ray_length: float = 25.0,  # meters to shoot rays
     network_buffer: float = 500.0, # buffer for street network
     verbose: bool = False

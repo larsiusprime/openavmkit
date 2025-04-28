@@ -574,7 +574,7 @@ def enrich_sup_spatial_lag(sup: SalesUniversePair, settings: dict, verbose: bool
 
 def enrich_sup_streets(sup: SalesUniversePair, settings: dict, verbose: bool=False):
    df_univ = sup.universe
-   df_univ = openavmkit.data.enrich_df_streets(df_univ, verbose=verbose)
+   df_univ = openavmkit.data.enrich_df_streets(df_univ, settings, verbose=verbose)
    sup.universe = df_univ
    return sup
 
