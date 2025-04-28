@@ -907,18 +907,7 @@ def enrich_df_streets(
     network_buffer: float = 500.0, # buffer for street network
     verbose: bool = False
 ) -> gpd.GeoDataFrame:
-  """
-  Inverted frontage algorithm:
-  1. Load street network edges around parcels.
-  2. Sample points along each street at 1-meter spacing.
-  3. At each sample, shoot two perpendicular rays (both sides).
-  4. Ray is blocked by first parcel it intersects.
-  5. Aggregate rays per (parcel, road):
-     - frontage = count_rays * spacing
-     - distance = min(ray distance to parcel edge)
-  6. Compute depth (approx. area / frontage).
-  7. Pivot up to 4 frontages, add direction & corner flag.
-  """
+
   # ---- setup parcels ----
 
   t = TimingData()
@@ -928,15 +917,14 @@ def enrich_df_streets(
   t.start("setup")
   df = df_in[['key', 'geometry', 'latitude', 'longitude']].copy()
 
-
-
   # drop invalid
   df = df[df.geometry.notna() & df.geometry.area.gt(0)]
   # project to equal-distance CRS
   crs_eq = df.crs if df.crs.is_projected else get_crs(df, 'equal_distance')
   df = df.to_crs(crs_eq)
   t.stop("setup")
-  print(f"T setup = {t.get('setup'):.0f}s")
+  if verbose:
+    print(f"T setup = {t.get('setup'):.0f}s")
 
   # compute dims via minimum rotated rectangle
   def _rect_dims(poly):
@@ -953,7 +941,8 @@ def enrich_df_streets(
   )
   df[['dim1','dim2']] = pd.DataFrame(dims, index=df.index)
   t.stop("dims")
-  print(f"T dims = {t.get('dims'):.0f}s")
+  if verbose:
+    print(f"T dims = {t.get('dims'):.0f}s")
 
   # ---- load street edges ----
   # compute bbox buffer
@@ -963,19 +952,6 @@ def enrich_df_streets(
   minx, miny, maxx, maxy = bounds
   lat_buf = network_buffer / 111000
   lon_buf = network_buffer / (111000 * math.cos(math.radians((miny+maxy)/2)))
-
-  # lat_buf = 0
-  # lon_buf = 0
-
-  # minx = -76.692141771
-  # maxx = -76.65168346
-  # miny = 39.31289413
-  # maxy = 39.349034096
-
-  # minx = -76.68
-  # maxx = -76.66
-  # miny = 39.32
-  # maxy = 39.36
 
   north, south = maxy + lat_buf, miny - lat_buf
   east, west   = maxx + lon_buf, minx - lon_buf
@@ -991,7 +967,8 @@ def enrich_df_streets(
   highway_regex = "|".join(wanted)
   custom_filter = f'["highway"~"{highway_regex}"]'
   t.stop("prepare")
-  print(f"T prepare = {t.get('prepare'):.0f}s")
+  if verbose:
+    print(f"T prepare = {t.get('prepare'):.0f}s")
 
   if verbose:
     print(f"Loading network within ({south},{west}) -> ({north},{east})")
@@ -1004,7 +981,8 @@ def enrich_df_streets(
     custom_filter=custom_filter
   )
   t.stop("load street")
-  print(f"T load street = {t.get('load street'):.0f}s")
+  if verbose:
+    print(f"T load street = {t.get('load street'):.0f}s")
 
   t.start("edges")
   edges = ox.graph_to_gdfs(G, nodes=False, edges=True)[['geometry','name','highway']]
@@ -1015,7 +993,8 @@ def enrich_df_streets(
   edges['road_type'] = edges['highway'].apply(lambda v: v[0] if isinstance(v, (list, tuple)) else v)
   edges['road_idx'] = edges.index
   t.stop("edges")
-  print(f"T edges = {t.get('edges'):.0f}s")
+  if verbose:
+    print(f"T edges = {t.get('edges'):.0f}s")
 
   # ---- helper for single-edge rays ----
   def _rays_from_edge(geom, rid, rname, rtype):
@@ -1093,10 +1072,8 @@ def enrich_df_streets(
   rays_gdf["road_type"] = rays_gdf["road_type"].astype(str)
 
   t.stop('rays_parallel')
-  print(f"--> T rays_parallel = {t.get('rays_parallel'):.0f}s")
-
-  # DEBUG
-  # rays_gdf.to_parquet("out/temp/1_rays.parquet")
+  if verbose:
+    print(f"--> T rays_parallel = {t.get('rays_parallel'):.0f}s")
 
   # ---- block by first parcel ----
   t.start("block")
@@ -1106,13 +1083,11 @@ def enrich_df_streets(
 
   ray_par = gpd.sjoin(rays_gdf, gdf, how='inner', predicate='intersects')
 
-  # DEBUG:
-  # ray_par.to_parquet("out/temp/1_ray_par.parquet")
-
   # drop self if occurs
   ray_par = ray_par[ray_par.road_idx.notna()]
   t.stop("block")
-  print(f"T block = {t.get('block'):.0f}s")
+  if verbose:
+    print(f"T block = {t.get('block'):.0f}s")
   if ray_par.empty:
     return df_in
 
@@ -1125,7 +1100,8 @@ def enrich_df_streets(
     how='left'
   )
   t.stop("ray_par")
-  print(f"T ray_par = {t.get('ray_par'):.0f}s")
+  if verbose:
+    print(f"T ray_par = {t.get('ray_par'):.0f}s")
 
   t.start("dist")
 
@@ -1136,7 +1112,8 @@ def enrich_df_streets(
   n       = len(ray_par)
 
   t.stop("dist_0")
-  print(f"T dist_0 = {t.get('dist_0'):.0f}s")
+  if verbose:
+    print(f"T dist_0 = {t.get('dist_0'):.0f}s")
 
   t.start("origins setup")
   # flat list of all coordinates (shape (total_pts, 2))
@@ -1150,12 +1127,14 @@ def enrich_df_streets(
   # index directly into coords to get the origins array (shape (n_rays, 2))
   origins_all = coords[offsets]
   t.stop("origins setup")
-  print(f"T origins setup = {t.get('origins setup'):.0f}s")
+  if verbose:
+    print(f"T origins setup = {t.get('origins setup'):.0f}s")
 
   t.start("intersect")
   segs = shapely.intersection(rays, parcels)
   t.stop("intersect")
-  print(f"T intersect = {t.get('intersect'):.0f}s")
+  if verbose:
+    print(f"T intersect = {t.get('intersect'):.0f}s")
 
   t.start("coords_counts")
   coords = shapely.get_coordinates(segs)
@@ -1164,12 +1143,14 @@ def enrich_df_streets(
   offsets[0] = 0
   offsets[1:] = np.cumsum(counts)[:-1]
   t.stop("coords_counts")
-  print(f"T coords_counts = {t.get('coords_counts'):.0f}s")
+  if verbose:
+    print(f"T coords_counts = {t.get('coords_counts'):.0f}s")
 
   t.start("entries")
   entries = coords[offsets]
   t.stop("entries")
-  print(f"T entries = {t.get('entries'):.0f}s")
+  if verbose:
+    print(f"T entries = {t.get('entries'):.0f}s")
 
   t.start("distances")
   diffs = entries - origins_all
@@ -1178,11 +1159,6 @@ def enrich_df_streets(
 
   # stick it back on your GeoDataFrame
   ray_par["distance"] = distances
-
-  # DEBUG:
-  # ray_par_out = ray_par.copy()
-  # ray_par_out.drop(columns="parcel_geom")
-  # ray_par.to_parquet("out/temp/1_ray_par.parquet")
 
   # make sure we have an explicit "ray_id" to group on
   ray_par = ray_par.reset_index().rename(columns={"index": "ray_id"})
@@ -1197,13 +1173,10 @@ def enrich_df_streets(
 
   ray_par = first_hits
 
-  # DEBUG:
-  # ray_hits = ray_par.drop(columns="parcel_geom")
-  # ray_hits.to_parquet("out/temp/2_ray_hits.parquet")
-
   t.stop("dist")
 
-  print(f"T dist = {t.get('dist'):.0f}s")
+  if verbose:
+    print(f"T dist = {t.get('dist'):.0f}s")
 
   # Fill road name with road_idx if none
   ray_par['road_name'] = ray_par['road_name'].fillna(f"Unknown Road, ID: " + ray_par['road_idx'].astype(str))
@@ -1223,7 +1196,8 @@ def enrich_df_streets(
   agg = agg.merge(areas, on='key', how='left')
   agg['depth'] = agg['area'] / agg['frontage']
   t.stop('agg')
-  print(f"T agg = {t.get('agg'):.0f}s")
+  if verbose:
+    print(f"T agg = {t.get('agg'):.0f}s")
 
   # ---- rank, dedupe, slot & pivot up to 4 frontages ----
   t.start("pivot")
@@ -1311,7 +1285,8 @@ def enrich_df_streets(
   final = final.reset_index().dropna(axis=1, how="all")
 
   t.stop("pivot")
-  print(f"T pivot = {t.get('pivot'):.0f}s")
+  if verbose:
+    print(f"T pivot = {t.get('pivot'):.0f}s")
 
   # ---- merge back and add directions ----
   t.start("merge")
@@ -1319,15 +1294,17 @@ def enrich_df_streets(
   # compute compass dir for each angle if needed...
 
   t.stop("merge")
-  print(f"T merge = {t.get('merge'):.0f}s")
+  if verbose:
+    print(f"T merge = {t.get('merge'):.0f}s")
 
   out.to_parquet("out/temp/4_out.parquet")
 
   t.stop("all")
 
-  print("***ALL TIMING***")
-  print(t.print())
-  print("****************")
+  if verbose:
+    print("***ALL TIMING***")
+    print(t.print())
+    print("****************")
 
   return gpd.GeoDataFrame(out, geometry='geometry', crs=df_in.crs)
 
