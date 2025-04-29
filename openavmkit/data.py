@@ -1058,31 +1058,40 @@ def _enrich_time_field(df: pd.DataFrame, prefix: str, add_year_month: bool = Tru
 
 
 def _boolify_series(series: pd.Series, na_handling: str = None):
-  """
-  Convert a series with potential string representations of booleans into actual booleans.
+    """
+    Convert a series with potential string representations of booleans into actual booleans.
 
-  :param series: Input series.
-  :type series: pandas.Series
-  :param na_handling: How to handle NA values. Can be "true", "false", or None.
-  :type na_handling: str, optional
-  :returns: Boolean series.
-  :rtype: pandas.Series
-  """
-  if series.dtype in ["object", "string", "str"]:
-    series = series.astype(str).str.lower().str.strip()
-    series = series.replace(["true", "t", "1", "y"], 1)
-    series = series.replace(["false", "f", "0", "n"], 0)
-  
-  # Handle NA values based on na_handling parameter
-  if na_handling == "true":
-    series = series.fillna(1)
-  elif na_handling == "false":
-    series = series.fillna(0)
-  else:
-    series = series.fillna(0)  # Default behavior for regular boolean fields
-  
-  series = series.astype(bool)
-  return series
+    :param series: Input series.
+    :type series: pandas.Series
+    :param na_handling: How to handle NA values. Can be "true", "false", or None.
+    :type na_handling: str, optional
+    :returns: Boolean series.
+    :rtype: pandas.Series
+    """
+    # Convert to string and clean
+    series = pd.Series(series, dtype=str).str.lower().str.strip()
+    
+    # Create a boolean mask for True values
+    true_mask = series.isin(['true', 't', '1', 'y', 'yes'])
+    
+    # Create a boolean mask for False values
+    false_mask = series.isin(['false', 'f', '0', 'n', 'no', 'nan', 'none'])
+    
+    # Initialize result series with None/NA
+    result = pd.Series(None, index=series.index, dtype='boolean')
+    
+    # Set True and False values
+    result[true_mask] = True
+    result[false_mask] = False
+    
+    # Handle NA values based on na_handling parameter
+    if na_handling == "true":
+        result = result.fillna(True)
+    elif na_handling == "false":
+        result = result.fillna(False)
+    else:
+        result = result.fillna(False)  # Default be
+    return result
 
 
 def _boolify_column_in_df(df: pd.DataFrame, field: str, settings: dict = None):
@@ -1107,7 +1116,9 @@ def _boolify_column_in_df(df: pd.DataFrame, field: str, settings: dict = None):
       na_handling = "true"
     elif field in get_fields_boolean_na_false(settings):
       na_handling = "false"
+      print(f"Field {field} is boolean_na_false")
   
+  print(f"Converting {field} with na_handling={na_handling}")
   series = _boolify_series(series, na_handling)
   df[field] = series
   return df
