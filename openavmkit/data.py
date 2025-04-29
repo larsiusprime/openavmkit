@@ -2202,9 +2202,12 @@ def _perform_spatial_joins(s_geom: list, dataframes: dict[str, pd.DataFrame], ve
           raise ValueError(f"Field to tag '{field}' not found in geometry dataframe '{_id}'.")
     gdf_merged = _perform_spatial_join(gdf_merged, gdf, predicate, fields_to_tag)
 
-    n_keys = gdf_merged.columns.str.equals("key").sum()
+    n_keys = 0
+    for col in gdf_merged.columns:
+      if col == "key":
+        n_keys += 1
     if n_keys > 1:
-      print(f"B Found {n_keys} columns with \"key\" in the name. This may be a problem.")
+      print(f"Found {n_keys} columns with \"key\" in the name. This may be a problem.")
       print(f"Columns = {gdf_merged.columns}")
 
   gdf_no_geometry = gdf_merged[gdf_merged["geometry"].isna()]
