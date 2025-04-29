@@ -44,7 +44,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install pipdeptree
           pip install -r requirements.txt
-          pipdeptree --warn conflict
+          pipdeptree --warn fail
 
       - name: Run tests
         run: python -m pytest tests/ --junitxml=report.xml
