@@ -27,7 +27,24 @@ def objects_are_equal(a, b, epsilon:float = 1e-6):
 		a_is_num = (not a_other) and (isinstance(a, (int, float)) or np.isreal(a))
 		b_is_num = (not b_other) and (isinstance(b, (int, float)) or np.isreal(b))
 
+		if a is None and b is None:
+			return True
+		elif a is None or b is None:
+				return False
+
 		if a_is_num and b_is_num:
+			a_is_float = isinstance(a, float)
+			b_is_float = isinstance(b, float)
+
+			if a_is_float and b_is_float:
+				a_is_nan = np.isnan(a)
+				b_is_nan = np.isnan(b)
+
+				if a_is_nan and b_is_nan:
+					return True
+				if a_is_nan or b_is_nan:
+					return False
+
 			# compare floats with epsilon:
 			return abs(a - b) < epsilon
 

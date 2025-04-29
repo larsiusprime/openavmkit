@@ -630,20 +630,32 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
     if s_enrich_local is not None:
       # Handle Census enrichment for universe if enabled
       if supkey == "universe":
+
+        # do spatial joins on user data
+        df = _enrich_df_spatial_joins(df, s_enrich_local, dataframes, settings, verbose=verbose)
+
+        # add building footprints
+        df = _enrich_df_overture(df, s_enrich_local, dataframes, settings, verbose=verbose)
+
+        # add lat/lon/rectangularity etc.
         df = _basic_geo_enrichment(df, settings, verbose=verbose)
 
         if "census" in s_enrich_local:
           df = _enrich_df_census(df, s_enrich_local.get("census", {}), verbose=verbose)
         if "openstreetmap" in s_enrich_local:
-          df = _enrich_df_openstreetmap(df, s_enrich_local.get("openstreetmap", {}), s_enrich_local, dataframes, verbose=verbose, use_cache = True)
+          df = _enrich_df_openstreetmap(df, s_enrich_local.get("openstreetmap", {}), s_enrich_local, verbose=verbose, use_cache = True)
 
-        df = _enrich_df_geometry(df, s_enrich_local, dataframes, settings, verbose=verbose)
+        # add distances to user-defined locations
+        df = _enrich_df_user_distances(df, s_enrich_local, dataframes, settings, verbose=verbose)
 
       df = _enrich_df_basic(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
 
-      # if supkey == "universe":
-      #   # enrich universe spatial lag fields
-      #   df = _enrich_universe_spatial_lag(df, settings, verbose=verbose)
+      if supkey == "universe":
+        # fill in missing data based on geospatial patterns (should happen after all other enrichments have been done)
+        df = _enrich_spatial_inference(df, s_enrich_local, dataframes, settings, verbose=verbose)
+
+        # enrich universe spatial lag fields
+        # df = _enrich_universe_spatial_lag(df, settings, verbose=verbose)
 
     # stuff to enrich whether the user has settings or not
     df = _enrich_vacant(df, settings)
@@ -737,7 +749,7 @@ def _enrich_df_census(df_in: pd.DataFrame | gpd.GeoDataFrame, census_settings: d
     return df
 
 
-def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_settings: dict, s_enrich_this: dict, dataframes: dict, verbose: bool = False, use_cache: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
+def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_settings: dict, s_enrich_this: dict, verbose: bool = False, use_cache: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
     """
     Enrich a DataFrame with OpenStreetMap data.
     
@@ -745,7 +757,6 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
         df (pd.DataFrame | gpd.GeoDataFrame): DataFrame to enrich
         osm_settings (dict): Settings for OpenStreetMap enrichment
         s_enrich_this (dict): Enrichment settings to update with distances configuration
-        dataframes (dict): Dictionary of all dataframes, will be updated with OSM features
         verbose (bool): Whether to print detailed information
         use_cache (bool): Whether to use cached data if available
         
@@ -753,23 +764,18 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
         pd.DataFrame | gpd.GeoDataFrame: DataFrame enriched with OpenStreetMap data
     """
 
-    df = df_in.copy()
+    if verbose:
+      print("Enriching with OpenStreetMap data...")
 
     if use_cache:
-      print("Checking cache for OpenStreetMap data...")
-      df_out = get_cached_df(df, "osm/all", "key", osm_settings)
+      df_out = get_cached_df(df_in, "osm/all", "key", osm_settings)
       if df_out is not None:
-        # Load cached features into dataframes dictionary
-        for feature in ['water_bodies', 'transportation', 'educational', 'parks', 'golf_courses']:
-          feature_cache = get_cached_df(df, f"osm/{feature}", "key", osm_settings)
-          if feature_cache is not None:
-            dataframes[feature] = feature_cache
-            # Also check for top features
-            top_feature = f"{feature}_top"
-            top_cache = get_cached_df(df, f"osm/{top_feature}", "key", osm_settings)
-            if top_cache is not None:
-              dataframes[top_feature] = top_cache
+        if verbose:
+          print("--> found cached data")
         return df_out
+
+    df = df_in.copy()
+    dataframes: dict[str, pd.DataFrame] = {}
 
     try:
         if not osm_settings.get('enabled', False):
@@ -797,10 +803,29 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
         elif not original_crs.equals(CRS.from_epsg(4326)):
             df = df.to_crs(epsg=4326)
             
-        # Calculate the bounding box by unioning all geometries first
-        # This ensures we get the full extent of all geometries
-        all_geoms = df.geometry.unary_union
-        bbox = all_geoms.bounds
+        if "latitude" not in df or "longitude" not in df:
+            raise ValueError("DataFrame must contain 'latitude' and 'longitude' columns for OpenStreetMap enrichment")
+
+        north = df["latitude"].max()
+        south = df["latitude"].min()
+        east = df["longitude"].max()
+        west = df["longitude"].min()
+
+        #DEBUG:
+        shrink_size = 0.125
+
+        north_south = north - south
+        east_west = east - west
+
+        # Shrink the bounding box by a percentage
+        north = north - (north_south * shrink_size)
+        south = south + (north_south * shrink_size)
+        east = east - (east_west * shrink_size)
+        west = west + (east_west * shrink_size)
+
+
+        bbox = [west, south, east, north]
+
         # Process each feature based on settings
 
         # Define a dictionary to hold feature configurations
@@ -857,7 +882,7 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
                   print(f"--> Found {len(result)} {config['verbose_label']}")
               if not result.empty:
                 # Save the primary result
-                dataframes[feature] = result
+                dataframes[f"osm_{feature}"] = result
                 # Save top features if applicable
                 if config["store_top"]:
                   top_key = feature + "_top"
@@ -876,22 +901,29 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
         
         # Get the distances configuration from settings
         distances_config = s_enrich_this.get('distances', [])
-        distances_by_id = {d.get('id'): d for d in distances_config if isinstance(d, dict)}
-        
-        for feature_name in ['water_bodies', 'transportation', 'educational', 'parks', 'golf_courses']:
-            if feature_name in dataframes:
-                # Add base feature with its settings from the config
-                if feature_name in distances_by_id:
-                    distances.append(distances_by_id[feature_name])
-                
-                # Add top features for individual distances if available
-                top_feature_name = f"{feature_name}_top"
-                if top_feature_name in dataframes and top_feature_name in distances_by_id:
-                    distances.append(distances_by_id[top_feature_name])
-        
-        # Add the distances configuration to the enrichment settings
+
+        legal_features = ['osm_water_bodies', 'osm_transportation', 'osm_educational', 'osm_parks', 'osm_golf_courses']
+
+        for entry in distances_config:
+          if isinstance(entry, dict):
+            source = entry.get("source", entry.get("id"))
+          elif isinstance(entry, str):
+            source = entry
+            entry = {
+              "id": source,
+              "source": source
+            }
+          if source in legal_features and source in dataframes:
+            distances.append(entry)
+          else:
+            print(f"----> {source} not found in legal features, skipping distance calculation")
+
+        print(f"distances = {distances}")
+
         if distances:
-            s_enrich_this['distances'] = distances
+          print("Enrich OSM distances")
+          print(f"distances = {distances}")
+          df = _perform_distance_calculations(df, distances, dataframes, verbose=verbose, cache_key="osm/distance")
 
         write_cached_df(df_in, df, "osm/all", "key", osm_settings)
 
@@ -928,30 +960,13 @@ def enrich_df_streets(
   if verbose:
     print(f"T setup = {t.get('setup'):.0f}s")
 
-  # compute dims via minimum rotated rectangle
-  def _rect_dims(poly):
-    mrr = poly.minimum_rotated_rectangle
-    coords = list(mrr.exterior.coords)[:4]
-    d1 = LineString(coords[:2]).length
-    d2 = LineString(coords[1:3]).length
-    return d1, d2
-
-  t.start("dims")
-  # use 8 worker processes to slice the work
-  dims = Parallel(n_jobs=8, backend="loky")(
-    delayed(_rect_dims)(poly) for poly in df.geometry
-  )
-  df[['dim1','dim2']] = pd.DataFrame(dims, index=df.index)
-  t.stop("dims")
-  if verbose:
-    print(f"T dims = {t.get('dims'):.0f}s")
-
-  # ---- load street edges ----
-  # compute bbox buffer
   t.start("prepare")
-  bounds = df_in.to_crs(epsg=4326).total_bounds
 
-  minx, miny, maxx, maxy = bounds
+  minx = df['longitude'].min()
+  miny = df['latitude'].min()
+  maxx = df['longitude'].max()
+  maxy = df['latitude'].max()
+
   lat_buf = network_buffer / 111000
   lon_buf = network_buffer / (111000 * math.cos(math.radians((miny+maxy)/2)))
 
@@ -987,7 +1002,7 @@ def enrich_df_streets(
     print(f"T load street = {t.get('load street'):.0f}s")
 
   t.start("edges")
-  edges = ox.graph_to_gdfs(G, nodes=False, edges=True)[['geometry','name','highway']]
+  edges = ox.graph_to_gdfs(G, nodes=False, edges=True)[['geometry','name','highway','osmid']]
   edges = edges.explode(index_parts=False).dropna(subset=['geometry']).to_crs(crs_eq).reset_index(drop=True)
 
   # unwrap lists to single values to avoid ArrowTypeError
@@ -1816,7 +1831,7 @@ def _enrich_vacant(df_in: pd.DataFrame, settings:dict) -> pd.DataFrame:
   return df
 
 
-def _enrich_df_geometry(df_in: pd.DataFrame, s_enrich_this: dict, dataframes: dict[str, pd.DataFrame], settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
+def _enrich_df_spatial_joins(df_in: pd.DataFrame, s_enrich_this: dict, dataframes: dict[str, pd.DataFrame], settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
   """
   Perform basic geometric enrichment on a DataFrame by adding spatial features.
 
@@ -1836,11 +1851,7 @@ def _enrich_df_geometry(df_in: pd.DataFrame, s_enrich_this: dict, dataframes: di
 
   df = df_in.copy()
   s_geom = s_enrich_this.get("geometry", [])
-  s_dist = s_enrich_this.get("distances", {})
-  s_infer = s_enrich_this.get("infer", {})
-  s_overture = s_enrich_this.get("overture", {})
-
-  gdf_out = get_cached_df(df_in, "geom/enrich", "key", s_enrich_this)
+  gdf_out = get_cached_df(df_in, "geom/spatial_joins", "key", s_enrich_this)
   if gdf_out is not None:
     if verbose:
       print("--> found cached data...")
@@ -1850,42 +1861,6 @@ def _enrich_df_geometry(df_in: pd.DataFrame, s_enrich_this: dict, dataframes: di
 
   # geometry
   gdf = _perform_spatial_joins(s_geom, dataframes, verbose=verbose)
-
-  # Enrich with Overture building data if enabled
-  if s_overture.get("enabled", False):
-
-    if verbose:
-      print("Enriching with Overture building data...")
-    
-    # Initialize Overture service with the correct settings path
-    overture_settings = {
-      "overture": s_overture  # Pass the overture settings directly
-    }
-    overture_service = init_service_overture(overture_settings)
-    
-    # Get bounding box from data
-    bbox = gdf.to_crs("EPSG:4326").total_bounds
-    
-    # Fetch building data
-    buildings = overture_service.get_buildings(bbox, use_cache=s_overture.get("cache", True), verbose=verbose)
-    
-    if not buildings.empty:
-      # Calculate building footprints
-      s_footprint = s_overture.get("footprint", {})
-      footprint_units = s_footprint.get("units", None)
-      if footprint_units is None:
-        warnings.warn("`process.enrich.overture.footprint.units` not specified, defaulting to 'sqft'")
-        footprint_units = "sqft"
-      footprint_field = s_footprint.get("field", None)
-      if footprint_field is None:
-        warnings.warn("`process.enrich.overture.footprint.field` not specified, defaulting to 'bldg_area_footprint_sqft'")
-        footprint_field = "bldg_area_footprint_sqft"
-      gdf = overture_service.calculate_building_footprints(gdf, buildings, footprint_units, footprint_field, verbose=verbose)
-    elif verbose:
-      print("--> No buildings found in the area")
-
-  # distances
-  gdf = _perform_distance_calculations(gdf, s_dist, dataframes, get_long_distance_unit(settings), verbose=verbose)
 
   # Merge everything together:
   try_keys = ["key", "key2", "key3"]
@@ -1906,12 +1881,74 @@ def _enrich_df_geometry(df_in: pd.DataFrame, s_enrich_this: dict, dataframes: di
   if not success:
     raise ValueError(f"Could not find a common key between geo_parcels and base dataframe. Tried keys: {try_keys}")
 
-  # spatially infer missing
-  gdf_merged = perform_spatial_inference(gdf_merged, s_infer, "key", verbose=verbose)
-
-  write_cached_df(df_in, gdf_merged, "geom/enrich", "key", s_enrich_this)
+  write_cached_df(df_in, gdf_merged, "geom/spatial_joins", "key", s_enrich_this)
 
   return gdf_merged
+
+
+def _enrich_df_overture(gdf_in: gpd.GeoDataFrame, s_enrich_this: dict, dataframes: dict[str, pd.DataFrame], settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
+  gdf_out = get_cached_df(gdf_in, "geom/overture", "key", s_enrich_this)
+  if gdf_out is not None:
+    if verbose:
+      print("--> found cached data...")
+    return gdf_out
+
+  gdf = gdf_in.copy()
+
+  s_overture = s_enrich_this.get("overture", {})
+  # Enrich with Overture building data if enabled
+  if s_overture.get("enabled", False):
+
+    if verbose:
+      print("Enriching with Overture building data...")
+
+    # Initialize Overture service with the correct settings path
+    overture_settings = {
+      "overture": s_overture  # Pass the overture settings directly
+    }
+    overture_service = init_service_overture(overture_settings)
+
+    # Get bounding box from data
+    bbox = gdf.to_crs("EPSG:4326").total_bounds
+
+    # Fetch building data
+    buildings = overture_service.get_buildings(bbox, use_cache=s_overture.get("cache", True), verbose=verbose)
+
+    if not buildings.empty:
+      # Calculate building footprints
+      s_footprint = s_overture.get("footprint", {})
+      footprint_units = s_footprint.get("units", None)
+      if footprint_units is None:
+        warnings.warn("`process.enrich.overture.footprint.units` not specified, defaulting to 'sqft'")
+        footprint_units = "sqft"
+      footprint_field = s_footprint.get("field", None)
+      if footprint_field is None:
+        warnings.warn("`process.enrich.overture.footprint.field` not specified, defaulting to 'bldg_area_footprint_sqft'")
+        footprint_field = "bldg_area_footprint_sqft"
+      gdf = overture_service.calculate_building_footprints(gdf, buildings, footprint_units, footprint_field, verbose=verbose)
+    elif verbose:
+      print("--> No buildings found in the area")
+
+    write_cached_df(gdf_in, gdf, "geom/overture", "key", s_enrich_this)
+
+  return gdf
+
+
+def _enrich_spatial_inference(gdf_in: gpd.GeoDataFrame, s_enrich_this: dict, dataframes: dict[str, pd.DataFrame], settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
+  gdf = gdf_in.copy()
+  s_infer = s_enrich_this.get("infer", {})
+  gdf = perform_spatial_inference(gdf, s_infer, "key", verbose=verbose)
+  return gdf
+
+
+def _enrich_df_user_distances(gdf_in: gpd.GeoDataFrame, s_enrich_this: dict, dataframes: dict[str, pd.DataFrame], settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
+  print("Enrich df user distances")
+  s_dist = s_enrich_this.get("distances", [])
+  # Filter out OSM distances
+  # These are handled directly within the open street map enrichment call
+  s_dist_no_osm = [d for d in s_dist if d.get("id", "").startswith("osm_") == False]
+  print(f"s_dist_no_osm: {s_dist_no_osm}")
+  return _perform_distance_calculations(gdf_in, s_dist_no_osm, dataframes, get_long_distance_unit(settings), verbose=verbose, cache_key="geom/distance")
 
 
 def _enrich_polar_coordinates(gdf_in: gpd.GeoDataFrame, settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
@@ -2015,11 +2052,9 @@ def _calc_geom_stuff(gdf_in: gpd.GeoDataFrame, verbose: bool = False) -> gpd.Geo
   :rtype: geopandas.GeoDataFrame
   """
 
-  print("HO")
   gdf = get_cached_df(gdf_in, "geom/stuff", "key")
   if gdf is not None:
     return gdf
-  print("YO")
 
   t = TimingData()
   t.start("rectangularity")
@@ -2175,96 +2210,6 @@ def _perform_spatial_join(gdf_in: gpd.GeoDataFrame, gdf_overlay: gpd.GeoDataFram
   gdf = gdf.drop(columns=["geometry_centroid", "__overlay_id__"], errors="ignore")
   return gdf
 
-def _do_perform_spatial_inference(df: pd.DataFrame, s_infer: dict, field: str, key_field: str, verbose: bool = False) -> pd.DataFrame:
-    """
-    Perform spatial inference using specified model
-    
-    Args:
-        df: DataFrame containing data
-        s_infer: Dictionary with inference settings
-        field: Field to infer
-        key_field: Primary key field
-        verbose: Whether to print detailed information
-        
-    Returns:
-        DataFrame with inferred values
-    """
-    if verbose:
-        print(f"\n=== Starting inference for field '{field}' ===")
-    
-    # Get model settings
-    proxies = s_infer.get("proxies", [])
-    locations = s_infer.get("locations", [])
-    group_by = s_infer.get("group_by", [])
-    
-    if not proxies:
-        raise ValueError(f"No proxy fields specified for inference of {field}")
-    
-    # Initialize model
-    model = get_inference_model("ratio_proxy")
-    
-    # Split data into training and inference sets
-    filters = s_infer.get("filters", [])
-    if filters:
-        inference_mask = select_filter(df, filters)
-        training_mask = ~inference_mask & df[field].notna()
-    else:
-        inference_mask = df[field].isna()
-        training_mask = ~inference_mask
-        
-    df_train = df[training_mask].copy()
-    df_to_infer = df[inference_mask].copy()
-    
-    if verbose:
-        print(f"\nData split:")
-        print(f"--> {len(df_to_infer):,} rows need inference")
-        print(f"--> {len(df_train):,} rows available for training")
-
-    # First try direct fill from known sources
-    fill_fields = s_infer.get("fill", [])
-    if fill_fields:
-        if verbose:
-            print(f"\nFilling {field} with known values from: {fill_fields}")
-        for fill_field in fill_fields:
-            if fill_field not in df.columns:
-                warnings.warn(f"Fill field '{fill_field}' not found in dataframe")
-                continue
-            mask = df[field].isna() & df[fill_field].notna() & df[fill_field].gt(0)
-            df.loc[mask, field] = df.loc[mask, fill_field]
-            if verbose:
-                print(f"--> Filled {mask.sum():,} values from {fill_field}")
-    
-    # Fit model
-    if verbose:
-        print("\nFitting model...")
-    model.fit(df_train, field, {"proxies": proxies, "locations": locations, "group_by": group_by})
-    
-    # Evaluate model
-    if verbose:
-        print("\nEvaluating model performance:")
-        metrics = model.evaluate(df_train, field)
-        for metric, value in metrics.items():
-            print(f"--> {metric}: {value:.4f}")
-    
-    # Make predictions
-    if verbose:
-        print("\nMaking predictions...")
-    predictions = model.predict(df_to_infer)
-    
-    # Update DataFrame
-    df = df.copy()
-    df.loc[inference_mask, field] = predictions
-    df[f"inferred_{field}"] = False
-    df.loc[inference_mask, f"inferred_{field}"] = True
-
-    # Final statistics
-    final_missing = df[field].isna().sum()
-    if verbose:
-        print(f"\nFinal results:")
-        print(f"--> {len(predictions):,} values inferred")
-        print(f"--> {final_missing:,} values remain empty ({final_missing/len(df)*100:.1f}% of total)")
-
-    return df
 
 def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDataFrame, _id: str, max_distance: float = None, unit: str = "km") -> pd.DataFrame:
     """
@@ -2306,10 +2251,10 @@ def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDa
       "gdf_cols": sorted(gdf_in.columns.tolist()),
       "gdf_hash": hash(gdf_in.geometry.to_wkb().sum()),
     }
+
     # check if we already have this distance calculation
-    if check_cache(f"osm/distance_{_id}", signature, "df"):
-      df_net_change = read_cache(f"osm/distance_{_id}", "df")
-      df_out = df_in.merge(df_net_change, on="key", how="left")
+    df_out = get_cached_df(df_in, f"osm/do_distance_{_id}", "key", signature)
+    if df_out is not None:
       return df_out
 
     df_projected = df_in.to_crs(crs).copy()
@@ -2411,20 +2356,29 @@ def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDa
       if df_net_change.duplicated(subset="key").sum() > 0:
         raise ValueError(f"Duplicate keys found after distance calculation for '{_id}.' This should not happen.")
 
-      # save to cache:
-      write_cache(f"osm/distance_{_id}", df_net_change, signature, "df")
+      # # save to cache:
+      # write_cache(f"osm/distance_{_id}", df_net_change, signature, "df")
+
+    write_cached_df(df_in, df_out, f"osm/do_distance_{_id}", "key", signature)
 
     return df_out
 
 
-def _perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, dataframes: dict[str, pd.DataFrame], unit: str = "km", verbose: bool = False) -> gpd.GeoDataFrame:
+def _perform_distance_calculations(
+    df_in: gpd.GeoDataFrame,
+    s_dist: list,
+    dataframes: dict[str, pd.DataFrame],
+    unit: str = "km",
+    verbose: bool = False,
+    cache_key: str = "geom/distance"
+) -> gpd.GeoDataFrame:
     """
     Perform distance calculations based on enrichment instructions.
 
     :param df_in: Base GeoDataFrame.
     :type df_in: geopandas.GeoDataFrame
     :param s_dist: Distance calculation instructions.
-    :type s_dist: dict
+    :type s_dist: list
     :param dataframes: Dictionary of additional DataFrames.
     :type dataframes: dict[str, pd.DataFrame]
     :param unit: Unit for distance conversion (default "km").
@@ -2437,8 +2391,10 @@ def _perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, datafr
     """
     df = df_in.copy()
     if verbose:
-        print(f"Performing distance calculations...")
-    
+      print(f"Performing distance calculations {cache_key}...")
+
+    print(f"s_dist = {s_dist}")
+
     # Collect all distance calculations to apply at once
     all_distance_dfs = []
 
@@ -2454,12 +2410,13 @@ def _perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, datafr
       "df_cols": sorted(df_in.columns.tolist()),
       "s_dist": s_dist,
     }
-    # check if we already have this distance calculation
-    if check_cache(f"osm/distance_all", signature, "df"):
-      df_net_change = read_cache(f"osm/distance_all", "df")
-      df_out = df_in.merge(df_net_change, on="key", how="left")
-      return df_out
-    
+
+    gdf_out = get_cached_df(df_in, cache_key, "key", signature)
+    if gdf_out is not None:
+      if verbose:
+        print("--> found cached data...")
+      return gdf_out
+
     for entry in s_dist:
         if isinstance(entry, str):
             entry = {"id": str(entry)}
@@ -2467,63 +2424,81 @@ def _perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, datafr
             raise ValueError(f"Invalid distance entry: {entry}")
             
         _id = entry.get("id")
+
+        print(entry)
+
+        source = entry.get("source", _id)
+
         max_distance = entry.get("max_distance")  # Get max_distance from settings
         entry_unit = entry.get("unit", unit)  # Allow overriding unit per feature
         
         if _id is None:
             raise ValueError("No 'id' found in distance entry.")
-        if _id not in dataframes:
+        if source not in dataframes:
             if verbose:
                 print(f"--> Skipping {_id} - not found in dataframes (likely disabled in settings)")
             continue
-            
-        gdf = dataframes[_id]
+
+        gdf = dataframes[source]
         field = entry.get("field", None)
         
         if verbose:
             print(f"--> {_id}")
             if max_distance is not None:
                 print(f"    max_distance: {max_distance} {entry_unit}")
+
         if field is None:
-            if verbose:
-                print(f"--> {_id} field is None")
-            # Calculate distances for this feature
-            distance_df = _do_perform_distance_calculations(df, gdf, _id, max_distance, entry_unit)
-            # Extract only the new columns
-            new_cols = [col for col in distance_df.columns if col not in df.columns]
-            all_distance_dfs.append(distance_df[new_cols])
-            if verbose:
-                print(f"--> {_id} done")
+          if verbose:
+              print(f"--> {_id} field is None")
+
+          # Calculate distances for this feature
+          distance_df = _do_perform_distance_calculations(df, gdf, _id, max_distance, entry_unit)
+
+          # Extract only the new columns
+          new_cols = [col for col in distance_df.columns if col not in df.columns]
+
+          all_distance_dfs.append(distance_df[new_cols])
+          if verbose:
+              print(f"--> {_id} done")
         else:
-            if verbose:
-                print(f"--> {_id} field is {field}")
-            uniques = gdf[field].unique()
-            for unique in uniques:
-                if pd.isna(unique):
-                    continue
-                gdf_subset = gdf[gdf[field].eq(unique)]
-                # Calculate distances for this subset
-                distance_df = _do_perform_distance_calculations(df, gdf_subset, f"{_id}_{unique}", max_distance, entry_unit)
-                # Extract only the new columns
-                new_cols = [col for col in distance_df.columns if col not in df.columns]
-                all_distance_dfs.append(distance_df[new_cols])
-            if verbose:
-                print(f"--> {_id} done")
-    
+          if verbose:
+              print(f"--> {_id} field is {field}")
+          uniques = gdf[field].unique()
+          print(f"uniques = {uniques}")
+          for unique in uniques:
+              if pd.isna(unique):
+                  continue
+              gdf_subset = gdf[gdf[field].eq(unique)]
+              # Calculate distances for this subset
+              distance_df = _do_perform_distance_calculations(df, gdf_subset, f"{_id}_{unique}", max_distance, entry_unit)
+              # Extract only the new columns
+              new_cols = [col for col in distance_df.columns if col not in df.columns]
+
+              print(f"B distance_df rows = {len(distance_df)}")
+              print(f"B new cols = {new_cols}")
+
+              all_distance_dfs.append(distance_df[new_cols])
+          if verbose:
+              print(f"--> {_id} done")
+
+    print(f"all_distance_dfs = {all_distance_dfs}")
+
     # Apply all distance calculations at once
-    if all_distance_dfs:
-        # Combine all distance DataFrames
-        combined_distances = pd.concat(all_distance_dfs, axis=1)
-        # Combine with original DataFrame
-        df = pd.concat([df, combined_distances], axis=1)
+    if len(all_distance_dfs):
+      # Combine all distance DataFrames
+      combined_distances = pd.concat(all_distance_dfs, axis=1)
+      # Combine with original DataFrame
+      df = pd.concat([df, combined_distances], axis=1)
 
     new_cols = [col for col in df.columns if col not in df_in.columns]
     df_net_change = df[["key"]+new_cols].copy()
     # check for duplicate keys:
+
     if df_net_change.duplicated(subset="key").sum() > 0:
         raise ValueError(f"Duplicate keys found after distance calculation. This should not happen.")
+
     # save to cache:
-    write_cache(f"osm/distance_all", df_net_change, signature, "df")
+    write_cached_df(df_in, df, cache_key, "key", signature)
 
     return df
 

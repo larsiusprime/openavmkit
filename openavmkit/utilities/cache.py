@@ -120,10 +120,14 @@ def write_cached_df(
 
   modified = []
   for c in common:
-    # nan‑safe check: True if ANY value differs
-    neq = ~(df_new[c].eq(df_orig[c]) | (df_new[c].isna() & df_orig[c].isna()))
-    if neq.any():
+    col_new = df_new[c]
+    col_orig = df_orig[c]
+
+    are_equal = (col_new == col_orig) | (col_new.isna() & col_orig.isna())
+
+    if not are_equal.all():
       modified.append(c)
+      continue
 
   changed_cols = new_cols + modified
   if not changed_cols:
