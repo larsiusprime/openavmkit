@@ -1535,8 +1535,6 @@ def _enrich_time_field(df: pd.DataFrame, prefix: str, add_year_month: bool = Tru
             n_diff = df[f"{prefix}{check}"].ne(date_value).sum()
             raise ValueError(f"Derived field '{prefix}{check}' does not match the date field '{prefix}_date' in {n_diff} rows.")
   return df
-
-
 def _boolify_series(series: pd.Series, na_handling: str = None):
     """
     Convert a series with potential string representations of booleans into actual booleans.
@@ -1553,18 +1551,20 @@ def _boolify_series(series: pd.Series, na_handling: str = None):
         series = series.astype(str).str.lower().str.strip()
         series = series.replace(["true", "t", "1", "y", "yes"], 1)
         series = series.replace(["false", "f", "0", "n", "no"], 0)
+        # Convert common string representations of missing values to NaN
+        none_patterns = ["none", "nan", "null", "na", "n/a", "-", "unknown"]
+        series = series.replace(none_patterns, pd.NA)
     
-    # Handle NA values
+    # Handle NA values before boolean conversion
     if na_handling == "true":
         series = series.fillna(1)
     elif na_handling == "false":
         series = series.fillna(0)
     else:
-        series = series.fillna(0)  # Default behavior
+        series = series.fillna(0)
     
     # Convert to non-nullable boolean
     series = series.astype(bool)
-    
     return series
 
 
