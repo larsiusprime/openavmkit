@@ -1067,10 +1067,12 @@ def _boolify_series(series: pd.Series):
   """
   if series.dtype in ["object", "string", "str"]:
     series = series.astype(str).str.lower().str.strip()
-    series = series.replace(["true", "t", "1"], 1)
-    series = series.replace(["false", "f", "0"], 0)
-  series = series.fillna(0)
-  series = series.astype(bool)
+    series = series.replace(["true", "t", "1", "y"], True)
+    series = series.replace(["false", "f", "0", "n"], False)
+    # Convert any remaining non-matching strings to NA
+    series = series.replace(["", "nan", "none", "null", "na"], pd.NA)
+  # Convert to boolean type, preserving NA values
+  series = series.astype("boolean")
   return series
 
 
