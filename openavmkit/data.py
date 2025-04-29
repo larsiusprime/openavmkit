@@ -1596,9 +1596,7 @@ def _boolify_column_in_df(df: pd.DataFrame, field: str, settings: dict = None):
       na_handling = "true"
     elif field in get_fields_boolean_na_false(settings):
       na_handling = "false"
-      print(f"Field {field} is boolean_na_false")
   
-  print(f"Converting {field} with na_handling={na_handling}")
   series = _boolify_series(series, na_handling)
   df[field] = series
   return df
