@@ -21,8 +21,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install patched configparser
-        run: pip install configparser==5.0.0
+      - name: Install updated configparser
+        run: pip install configparser
 
       - name: Install main dependencies
         run: |
@@ -35,6 +35,16 @@ jobs:
         run: |
           # Install tabulate without dependency resolution
           pip install --no-deps tabulate==0.9.0
+
+      - name: Install pygeos
+        run: pip install pygeos
+
+      - name: Check Dependency Conflicts
+        run: |
+          python -m pip install --upgrade pip
+          pip install pipdeptree
+          pip install -r requirements.txt
+          pipdeptree --warn conflict
 
       - name: Run tests
         run: python -m pytest tests/ --junitxml=report.xml
