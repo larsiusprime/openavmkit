@@ -1,6 +1,7 @@
 import warnings
 
 import polars as pl
+import statsmodels
 import statsmodels.api as sm
 import pandas as pd
 import numpy as np
@@ -12,7 +13,7 @@ from sklearn.preprocessing import StandardScaler
 from matplotlib import pyplot as plt
 from sklearn.linear_model import ElasticNet, LinearRegression
 from statsmodels.stats.outliers_influence import variance_inflation_factor
-
+from statsmodels.tools.sm_exceptions import MissingDataError
 
 
 def calc_chds(df_in: pd.DataFrame, field_cluster: str, field_value: str):
@@ -517,7 +518,17 @@ def calc_r2(df: pd.DataFrame, variables: list[str], y: pd.Series):
 		X = df[var].copy()
 		X = sm.add_constant(X)
 		X = X.astype(np.float64)
-		model = sm.OLS(y, X).fit()
+		try:
+			model = sm.OLS(y, X).fit()
+		except MissingDataError as e:
+			print(f"Error fitting model for variable {var}: {e}")
+			for var in variables:
+				# check for missing/null/nan values:
+				if df[var].isna().any():
+					n = df[var].isna().sum()
+					print(f"Variable \"{var}\" has {n} missing values.")
+			raise e
+
 		results["variable"].append(var)
 		results["r2"].append(model.rsquared)
 		results["adj_r2"].append(model.rsquared_adj)
