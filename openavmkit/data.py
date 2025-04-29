@@ -1559,7 +1559,7 @@ def _boolify_series(series: pd.Series, na_handling: str = None):
     true_mask = series.isin(['true', 't', '1', 'y', 'yes'])
     
     # Create a boolean mask for False values
-    false_mask = series.isin(['false', 'f', '0', 'n', 'no', 'nan', 'none'])
+    false_mask = series.isin(['false', 'f', '0', 'n', 'no'])
     
     # Initialize result series with None/NA
     result = pd.Series(None, index=series.index, dtype='boolean')
