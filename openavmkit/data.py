@@ -555,11 +555,6 @@ def process_data(dataframes: dict[str, pd.DataFrame], settings: dict, verbose: b
   df_univ = _merge_dict_of_dfs(dataframes, merge_univ, settings, required_key="key")
   df_sales = _merge_dict_of_dfs(dataframes, merge_sales, settings, required_key="key_sale")
 
-  n_dupes_df = df_univ.duplicated(subset="key").sum()
-  n_dupes_sales = df_sales.duplicated(subset="key_sale").sum()
-  print(f"Process Dupes in input univ: {n_dupes_df}")
-  print(f"Process Dupes in input sales: {n_dupes_sales}")
-
   if "valid_sale" not in df_sales:
     raise ValueError("The 'valid_sale' column is required in the sales data.")
   if "vacant_sale" not in df_sales:
@@ -605,9 +600,6 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
   :rtype: SalesUniversePair
   """
   supkeys: list[SUPKey] = ["universe", "sales"]
-
-  n_dupes_df = sup.universe.duplicated(subset="key").sum()
-  print(f"Enrich Dupes in input: {n_dupes_df}")
 
   # Add the "both" entries to both "universe" and "sales" and delete the "both" entry afterward.
   if "both" in s_enrich:
@@ -913,11 +905,7 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
           else:
             print(f"----> {source} not found in legal features, skipping distance calculation")
 
-        print(f"distances = {distances}")
-
         if distances:
-          print("Enrich OSM distances")
-          print(f"distances = {distances}")
           df = _perform_distance_calculations(df, distances, dataframes, verbose=verbose, cache_key="osm/distance")
 
         write_cached_df(df_in, df, "osm/all", "key", osm_settings)
@@ -945,9 +933,6 @@ def enrich_df_streets(
 
   t.start("setup")
 
-  print("▶️ INPUT df_in CRS:", df_in.crs)
-  print("▶️ INPUT df_in bounds:", df_in.geometry.total_bounds)
-
   df = df_in[['key', 'geometry', 'latitude', 'longitude']].copy()
 
   # drop invalid
@@ -955,9 +940,6 @@ def enrich_df_streets(
   # project to equal-distance CRS
   crs_eq = get_crs(df, 'conformal')
   df = df.to_crs(crs_eq)
-
-  print("▶ df after to_crs:", df.crs)
-  print("  df.bounds (m):", df.geometry.total_bounds)
 
   t.stop("setup")
   if verbose:
@@ -2192,7 +2174,6 @@ def _perform_spatial_joins(s_geom: list, dataframes: dict[str, pd.DataFrame], ve
       else:
         print(f"--> {_id}")
     gdf = dataframes[_id]
-    print(f"Merging {_id} with {gdf_merged.shape[0]} parcels")
     fields_to_tag = entry.get("fields", None)
     if fields_to_tag is None:
       fields_to_tag = [field for field in gdf.columns if field != "geometry"]
@@ -2466,8 +2447,6 @@ def _perform_distance_calculations(
     if verbose:
       print(f"Performing distance calculations {cache_key}...")
 
-    print(f"s_dist = {s_dist}")
-
     # Collect all distance calculations to apply at once
     all_distance_dfs = []
 
@@ -2497,8 +2476,6 @@ def _perform_distance_calculations(
             raise ValueError(f"Invalid distance entry: {entry}")
             
         _id = entry.get("id")
-
-        print(entry)
 
         source = entry.get("source", _id)
 
@@ -2537,24 +2514,18 @@ def _perform_distance_calculations(
           if verbose:
               print(f"--> {_id} field is {field}")
           uniques = gdf[field].unique()
-          print(f"uniques = {uniques}")
           for unique in uniques:
-              if pd.isna(unique):
-                  continue
-              gdf_subset = gdf[gdf[field].eq(unique)]
-              # Calculate distances for this subset
-              distance_df = _do_perform_distance_calculations(df, gdf_subset, f"{_id}_{unique}", max_distance, entry_unit)
-              # Extract only the new columns
-              new_cols = [col for col in distance_df.columns if col not in df.columns]
+            if pd.isna(unique):
+                continue
+            gdf_subset = gdf[gdf[field].eq(unique)]
+            # Calculate distances for this subset
+            distance_df = _do_perform_distance_calculations(df, gdf_subset, f"{_id}_{unique}", max_distance, entry_unit)
+            # Extract only the new columns
+            new_cols = [col for col in distance_df.columns if col not in df.columns]
 
-              print(f"B distance_df rows = {len(distance_df)}")
-              print(f"B new cols = {new_cols}")
-
-              all_distance_dfs.append(distance_df[new_cols])
+            all_distance_dfs.append(distance_df[new_cols])
           if verbose:
-              print(f"--> {_id} done")
-
-    print(f"all_distance_dfs = {all_distance_dfs}")
+            print(f"--> {_id} done")
 
     # Apply all distance calculations at once
     if len(all_distance_dfs):
@@ -2568,7 +2539,7 @@ def _perform_distance_calculations(
     # check for duplicate keys:
 
     if df_net_change.duplicated(subset="key").sum() > 0:
-        raise ValueError(f"Duplicate keys found after distance calculation. This should not happen.")
+      raise ValueError(f"Duplicate keys found after distance calculation. This should not happen.")
 
     # save to cache:
     write_cached_df(df_in, df, cache_key, "key", signature)
