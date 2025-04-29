@@ -21,6 +21,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install patched configparser
+        run: pip install configparser==5.0.0
+
       - name: Install main dependencies
         run: |
           python -m pip install --upgrade pip
