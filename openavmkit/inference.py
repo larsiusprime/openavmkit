@@ -19,6 +19,9 @@ import lightgbm as lgb
 import xgboost as xgb
 from scipy.optimize import minimize
 
+from openavmkit.utilities.cache import get_cached_df, write_cached_df
+
+
 class InferenceModel(ABC):
     """Base class for inference models"""
     
@@ -993,11 +996,20 @@ def perform_spatial_inference(df: gpd.GeoDataFrame, s_infer: dict, key: str, ver
             df_out = _do_perform_spatial_inference(df_out, entry, field, key, verbose=verbose)
         return df_out
 
-def _do_perform_spatial_inference(df: pd.DataFrame, s_infer: dict, field: str, key_field: str, verbose: bool = False) -> pd.DataFrame:
+
+def _do_perform_spatial_inference(df_in: pd.DataFrame, s_infer: dict, field: str, key_field: str, verbose: bool = False) -> pd.DataFrame:
     """Perform spatial inference with validation on filled values"""
     if verbose:
         print(f"\n=== Starting inference for field '{field}' ===")
-    
+
+    df_out = get_cached_df(df_in, f"geom/infer_{field}", key_field)
+    if df_out is not None:
+        if verbose:
+            print(f"--> Found cached DataFrame for field '{field}'")
+        return df_out
+
+    df = df_in.copy()
+
     # Get model settings and create initial masks
     model_settings = s_infer.get("model", {})
     model_type = model_settings.get("type")  # Get model type early
@@ -1221,5 +1233,7 @@ def _do_perform_spatial_inference(df: pd.DataFrame, s_infer: dict, field: str, k
     df_result.loc[inference_mask, field] = predictions
     df_result[f"inferred_{field}"] = False
     df_result.loc[inference_mask, f"inferred_{field}"] = True
-    
+
+    write_cached_df(df_in, df_result, f"geom/infer_{field}", key_field)
+
     return df_result

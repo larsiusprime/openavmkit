@@ -37,7 +37,7 @@ def test_crs_convert():
     if projection_type == 'latlon':
       return "EPSG:4326"
     elif projection_type == 'equal_area':
-      return f"+proj=aea +lat_1={lat-5} +lat_2={lat+5} +lat_0={lat} +lon_0={lon} +datum=WGS84 +units=m +type=crs"
+      return f"+proj=laea +lat_0={lat} +lon_0={lon} +datum=WGS84 +units=m +type=crs"
     elif projection_type == 'equal_distance':
       return f"+proj=aeqd +lat_0={lat} +lon_0={lon} +datum=WGS84 +units=m +type=crs"
     else:

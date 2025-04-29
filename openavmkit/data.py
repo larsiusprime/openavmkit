@@ -1,33 +1,46 @@
+import math
 import os
-import warnings
+
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Dict, Any, Optional
+from typing import Literal
+
+import pygeos
+import shapely
+
 from shapely.geometry import Point
+from osmnx import settings
+from joblib import Parallel, delayed
+
+import osmnx as ox
 
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import geopandas as gpd
+
 from pandas import Series
 from scipy.spatial._ckdtree import cKDTree
 from shapely.geometry import Polygon
-from shapely.ops import unary_union
+from shapely.geometry import LineString
+from shapely.ops import unary_union, nearest_points
 import warnings
 import traceback
 
+from shapely.prepared import prep
+from shapely.strtree import STRtree
+
 from openavmkit.calculations import _crawl_calc_dict_for_fields, perform_calculations, perform_tweaks
 from openavmkit.filters import resolve_filter, select_filter
-from openavmkit.utilities.assertions import dfs_are_equal
 from openavmkit.utilities.cache import check_cache, write_cache, read_cache, get_cached_df, write_cached_df
 from openavmkit.utilities.data import combine_dfs, div_field_z_safe, merge_and_stomp_dfs
-from openavmkit.utilities.geometry import get_crs, clean_geometry, identify_irregular_parcels, get_exterior_coords, \
-	geolocate_point_to_polygon, is_likely_epsg4326
+from openavmkit.utilities.geometry import get_crs, clean_geometry, identify_irregular_parcels, \
+  geolocate_point_to_polygon, is_likely_epsg4326
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
-  get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit, get_valuation_date, get_center
+  get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit, get_valuation_date, get_center, \
+  get_fields_boolean_na_true, get_fields_boolean_na_false, get_short_distance_unit
 
 from openavmkit.utilities.census import get_creds_from_env_census, init_service_census, match_to_census_blockgroups
-from openavmkit.utilities.census import CensusService
 from openavmkit.utilities.openstreetmap import init_service_openstreetmap
 from openavmkit.utilities.overture import init_service_overture
 from openavmkit.inference import get_inference_model, perform_spatial_inference
@@ -273,11 +286,11 @@ def get_vacant_sales(df_in: pd.DataFrame, settings: dict, invert: bool = False) 
   :type settings: dict
   :param invert: If True, return non-vacant (improved) sales.
   :type invert: bool, optional
-  :returns: Filtered DataFrame containing (or excluding) vacant sales.
+  :returns: DataFrame with an added 'is_vacant' column.
   :rtype: pandas.DataFrame
   """
   df = df_in.copy()
-  df = _boolify_column_in_df(df, "vacant_sale")
+  df = _boolify_column_in_df(df, "vacant_sale", settings)
   idx_vacant_sale = df["vacant_sale"].eq(True)
   if invert:
     idx_vacant_sale = ~idx_vacant_sale
@@ -542,6 +555,11 @@ def process_data(dataframes: dict[str, pd.DataFrame], settings: dict, verbose: b
   df_univ = _merge_dict_of_dfs(dataframes, merge_univ, settings, required_key="key")
   df_sales = _merge_dict_of_dfs(dataframes, merge_sales, settings, required_key="key_sale")
 
+  n_dupes_df = df_univ.duplicated(subset="key").sum()
+  n_dupes_sales = df_sales.duplicated(subset="key_sale").sum()
+  print(f"Process Dupes in input univ: {n_dupes_df}")
+  print(f"Process Dupes in input sales: {n_dupes_sales}")
+
   if "valid_sale" not in df_sales:
     raise ValueError("The 'valid_sale' column is required in the sales data.")
   if "vacant_sale" not in df_sales:
@@ -588,6 +606,9 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
   """
   supkeys: list[SUPKey] = ["universe", "sales"]
 
+  n_dupes_df = sup.universe.duplicated(subset="key").sum()
+  print(f"Enrich Dupes in input: {n_dupes_df}")
+
   # Add the "both" entries to both "universe" and "sales" and delete the "both" entry afterward.
   if "both" in s_enrich:
     s_enrich2 = s_enrich.copy()
@@ -617,20 +638,32 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
     if s_enrich_local is not None:
       # Handle Census enrichment for universe if enabled
       if supkey == "universe":
+
+        # do spatial joins on user data
+        df = _enrich_df_spatial_joins(df, s_enrich_local, dataframes, settings, verbose=verbose)
+
+        # add building footprints
+        df = _enrich_df_overture(df, s_enrich_local, dataframes, settings, verbose=verbose)
+
+        # add lat/lon/rectangularity etc.
         df = _basic_geo_enrichment(df, settings, verbose=verbose)
 
         if "census" in s_enrich_local:
           df = _enrich_df_census(df, s_enrich_local.get("census", {}), verbose=verbose)
         if "openstreetmap" in s_enrich_local:
-          df = _enrich_df_openstreetmap(df, s_enrich_local.get("openstreetmap", {}), s_enrich_local, dataframes, verbose=verbose, use_cache = True)
+          df = _enrich_df_openstreetmap(df, s_enrich_local.get("openstreetmap", {}), s_enrich_local, verbose=verbose, use_cache = True)
 
-        df = _enrich_df_geometry(df, s_enrich_local, dataframes, settings, verbose=verbose)
+        # add distances to user-defined locations
+        df = _enrich_df_user_distances(df, s_enrich_local, dataframes, settings, verbose=verbose)
 
       df = _enrich_df_basic(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
 
-      # if supkey == "universe":
-      #   # enrich universe spatial lag fields
-      #   df = _enrich_universe_spatial_lag(df, settings, verbose=verbose)
+      if supkey == "universe":
+        # fill in missing data based on geospatial patterns (should happen after all other enrichments have been done)
+        df = _enrich_spatial_inference(df, s_enrich_local, dataframes, settings, verbose=verbose)
+
+        # enrich universe spatial lag fields
+        # df = _enrich_universe_spatial_lag(df, settings, verbose=verbose)
 
     # stuff to enrich whether the user has settings or not
     df = _enrich_vacant(df, settings)
@@ -638,6 +671,7 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
     sup.set(supkey, df)
 
   return sup
+
 
 def _enrich_df_census(df_in: pd.DataFrame | gpd.GeoDataFrame, census_settings: dict, verbose: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
   """
@@ -722,7 +756,8 @@ def _enrich_df_census(df_in: pd.DataFrame | gpd.GeoDataFrame, census_settings: d
     warnings.warn(f"Failed to enrich with Census data: {str(e)}")
     return df
 
-def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_settings: dict, s_enrich_this: dict, dataframes: dict, verbose: bool = False, use_cache: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
+
+def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_settings: dict, s_enrich_this: dict, verbose: bool = False, use_cache: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
     """
     Enrich a DataFrame with OpenStreetMap data.
     
@@ -730,7 +765,6 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
         df (pd.DataFrame | gpd.GeoDataFrame): DataFrame to enrich
         osm_settings (dict): Settings for OpenStreetMap enrichment
         s_enrich_this (dict): Enrichment settings to update with distances configuration
-        dataframes (dict): Dictionary of all dataframes, will be updated with OSM features
         verbose (bool): Whether to print detailed information
         use_cache (bool): Whether to use cached data if available
         
@@ -738,23 +772,18 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
         pd.DataFrame | gpd.GeoDataFrame: DataFrame enriched with OpenStreetMap data
     """
 
-    df = df_in.copy()
+    if verbose:
+      print("Enriching with OpenStreetMap data...")
 
     if use_cache:
-      print("Checking cache for OpenStreetMap data...")
-      df_out = get_cached_df(df, "osm/all", "key", osm_settings)
+      df_out = get_cached_df(df_in, "osm/all", "key", osm_settings)
       if df_out is not None:
-        # Load cached features into dataframes dictionary
-        for feature in ['water_bodies', 'transportation', 'educational', 'parks', 'golf_courses']:
-          feature_cache = get_cached_df(df, f"osm/{feature}", "key", osm_settings)
-          if feature_cache is not None:
-            dataframes[feature] = feature_cache
-            # Also check for top features
-            top_feature = f"{feature}_top"
-            top_cache = get_cached_df(df, f"osm/{top_feature}", "key", osm_settings)
-            if top_cache is not None:
-              dataframes[top_feature] = top_cache
+        if verbose:
+          print("--> found cached data")
         return df_out
+
+    df = df_in.copy()
+    dataframes: dict[str, pd.DataFrame] = {}
 
     try:
         if not osm_settings.get('enabled', False):
@@ -782,10 +811,16 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
         elif not original_crs.equals(CRS.from_epsg(4326)):
             df = df.to_crs(epsg=4326)
             
-        # Calculate the bounding box by unioning all geometries first
-        # This ensures we get the full extent of all geometries
-        all_geoms = df.geometry.unary_union
-        bbox = all_geoms.bounds
+        if "latitude" not in df or "longitude" not in df:
+            raise ValueError("DataFrame must contain 'latitude' and 'longitude' columns for OpenStreetMap enrichment")
+
+        north = df["latitude"].max()
+        south = df["latitude"].min()
+        east = df["longitude"].max()
+        west = df["longitude"].min()
+
+        bbox = [west, south, east, north]
+
         # Process each feature based on settings
 
         # Define a dictionary to hold feature configurations
@@ -842,7 +877,7 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
                   print(f"--> Found {len(result)} {config['verbose_label']}")
               if not result.empty:
                 # Save the primary result
-                dataframes[feature] = result
+                dataframes[f"osm_{feature}"] = result
                 # Save top features if applicable
                 if config["store_top"]:
                   top_key = feature + "_top"
@@ -861,22 +896,29 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
         
         # Get the distances configuration from settings
         distances_config = s_enrich_this.get('distances', [])
-        distances_by_id = {d.get('id'): d for d in distances_config if isinstance(d, dict)}
-        
-        for feature_name in ['water_bodies', 'transportation', 'educational', 'parks', 'golf_courses']:
-            if feature_name in dataframes:
-                # Add base feature with its settings from the config
-                if feature_name in distances_by_id:
-                    distances.append(distances_by_id[feature_name])
-                
-                # Add top features for individual distances if available
-                top_feature_name = f"{feature_name}_top"
-                if top_feature_name in dataframes and top_feature_name in distances_by_id:
-                    distances.append(distances_by_id[top_feature_name])
-        
-        # Add the distances configuration to the enrichment settings
+
+        legal_features = ['osm_water_bodies', 'osm_transportation', 'osm_educational', 'osm_parks', 'osm_golf_courses']
+
+        for entry in distances_config:
+          if isinstance(entry, dict):
+            source = entry.get("source", entry.get("id"))
+          elif isinstance(entry, str):
+            source = entry
+            entry = {
+              "id": source,
+              "source": source
+            }
+          if source in legal_features and source in dataframes:
+            distances.append(entry)
+          else:
+            print(f"----> {source} not found in legal features, skipping distance calculation")
+
+        print(f"distances = {distances}")
+
         if distances:
-            s_enrich_this['distances'] = distances
+          print("Enrich OSM distances")
+          print(f"distances = {distances}")
+          df = _perform_distance_calculations(df, distances, dataframes, verbose=verbose, cache_key="osm/distance")
 
         write_cached_df(df_in, df, "osm/all", "key", osm_settings)
 
@@ -886,6 +928,463 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
         warnings.warn(f"Failed to enrich with OpenStreetMap data: {str(e)}")
         return df
 
+def enrich_df_streets(
+    df_in: gpd.GeoDataFrame,
+    settings: dict,
+    spacing: float = 1.0,          # in meters
+    max_ray_length: float = 25.0,  # meters to shoot rays
+    network_buffer: float = 500.0, # buffer for street network
+    verbose: bool = False
+) -> gpd.GeoDataFrame:
+
+  # ---- setup parcels ----
+
+  t = TimingData()
+
+  t.start("all")
+
+  t.start("setup")
+
+  print("▶️ INPUT df_in CRS:", df_in.crs)
+  print("▶️ INPUT df_in bounds:", df_in.geometry.total_bounds)
+
+  df = df_in[['key', 'geometry', 'latitude', 'longitude']].copy()
+
+  # drop invalid
+  df = df[df.geometry.notna() & df.geometry.area.gt(0)]
+  # project to equal-distance CRS
+  crs_eq = get_crs(df, 'conformal')
+  df = df.to_crs(crs_eq)
+
+  print("▶ df after to_crs:", df.crs)
+  print("  df.bounds (m):", df.geometry.total_bounds)
+
+  t.stop("setup")
+  if verbose:
+    print(f"T setup = {t.get('setup'):.0f}s")
+
+  t.start("prepare")
+
+  minx = df['longitude'].min()
+  miny = df['latitude'].min()
+  maxx = df['longitude'].max()
+  maxy = df['latitude'].max()
+
+  lat_buf = network_buffer / 111000
+  lon_buf = network_buffer / (111000 * math.cos(math.radians((miny+maxy)/2)))
+
+  # # DEBUG
+  # lat_buf = 0
+  # lon_buf = 0
+  # pad_size = 0.25
+  # size_x = maxx - minx
+  # size_y = maxy - miny
+  # minx += size_x * (pad_size)
+  # miny += size_y * (pad_size)
+  # maxx -= size_x * (pad_size)
+  # maxy -= size_y * (pad_size)
+  # # DEBUG
+
+  north, south = maxy + lat_buf, miny - lat_buf
+  east, west   = maxx + lon_buf, minx - lon_buf
+
+  df = df.loc[
+    df["latitude"].ge(south) &
+    df["latitude"].le(north) &
+    df["longitude"].ge(west) &
+    df["longitude"].le(east)
+  ].drop(columns=["latitude","longitude"]).copy()
+
+  wanted = ["motorway", "trunk", "primary", "secondary", "tertiary", "residential", "service", "unclassified"]
+  highway_regex = "|".join(wanted)
+  custom_filter = f'["highway"~"{highway_regex}"]'
+  t.stop("prepare")
+  if verbose:
+    print(f"T prepare = {t.get('prepare'):.0f}s")
+
+  if verbose:
+    print(f"Loading network within ({south},{west}) -> ({north},{east})")
+
+  ox.settings.use_cache = True
+  t.start("load street")
+  G = ox.graph_from_bbox(
+    bbox=(west, south, east, north),
+    network_type='all',
+    custom_filter=custom_filter
+  )
+  t.stop("load street")
+  if verbose:
+    print(f"T load street = {t.get('load street'):.0f}s")
+
+  t.start("edges")
+  edges = ox.graph_to_gdfs(G, nodes=False, edges=True)[['geometry','name','highway','osmid']]
+  edges = edges.explode(index_parts=False).dropna(subset=['geometry']).to_crs(crs_eq).reset_index(drop=True)
+
+  # unwrap lists to single values to avoid ArrowTypeError
+  edges['road_name'] = edges['name'].apply(lambda v: v[0] if isinstance(v, (list, tuple)) else v)
+  edges['road_type'] = edges['highway'].apply(lambda v: v[0] if isinstance(v, (list, tuple)) else v)
+  edges['road_idx'] = edges.index
+  t.stop("edges")
+  if verbose:
+    print(f"T edges = {t.get('edges'):.0f}s")
+
+  # fill missing road names with the OSM id field:
+  edges['road_name'] = edges['road_name'].fillna(edges['osmid'])
+
+  # flatten lists
+  edges['road_name'] = edges['road_name'].apply(
+    lambda v: v if isinstance(v, str) else str(v)
+  )
+  # ---- helper for single-edge rays ----
+  def _rays_from_edge(geom, rid, rname, rtype,
+    spacing=spacing, max_ray_length=25.0):
+
+    # 1) inject new vertices every `spacing` metres
+    dens = shapely.segmentize(geom, spacing)
+
+    # 2) pull out coords
+    coords = list(dens.coords)
+    if len(coords) < 3:
+      return []
+
+    _out = []
+    # skip first & last point, so i in [1 .. len(coords)-2]
+    for i in range(1, len(coords) - 1):
+      (_ox, _oy) = coords[i]
+      (x0, y0), (x1, y1) = coords[i - 1], coords[i + 1]
+      # estimate tangent from prev->next
+      dx, dy = x1 - x0, y1 - y0
+      norm = math.hypot(dx, dy)
+      nx, ny = -dy / norm, dx / norm  # unit-normal
+
+      for sign in (+1, -1):
+        ex = _ox + sign * nx * max_ray_length
+        ey = _oy + sign * ny * max_ray_length
+        _out.append({
+          'road_idx':     rid,
+          'road_name':    rname,
+          'road_type':    rtype,
+          'geometry':     LineString([(_ox, _oy), (ex, ey)]),
+          'angle':        math.atan2(ey - _oy, ex - _ox)
+        })
+    return _out
+
+  # ---- parallel ray generation ----
+  args = list(zip(
+    edges.geometry, edges.road_idx,
+    edges.road_name, edges.road_type
+  ))
+  t.start('rays_parallel')
+  n_jobs = 8
+  if verbose:
+    print(f"Generating rays for {len(args)} edges with {n_jobs} jobs...")
+  results = Parallel(
+    n_jobs=n_jobs,
+    backend="loky",
+    verbose=10 if verbose else 0
+  )(
+    delayed(_rays_from_edge)(*a) for a in args
+  )
+  # flatten & continue exactly as before
+  rays = [r for sub in results for r in sub]
+  rays_gdf = gpd.GeoDataFrame(rays, geometry='geometry', crs=crs_eq)
+
+  rays_gdf = rays_gdf.drop(columns=['origin'], errors="ignore")
+  rays_gdf["road_name"] = rays_gdf["road_name"].astype(str)
+  rays_gdf["road_type"] = rays_gdf["road_type"].astype(str)
+
+  rays_gdf.to_parquet(f"out/temp/rays.parquet", index=False)
+
+  t.stop('rays_parallel')
+  if verbose:
+    print(f"--> T rays_parallel = {t.get('rays_parallel'):.0f}s")
+
+  # ---- block by first parcel ----
+  t.start("block")
+  # spatial join rays -> parcels
+  gdf = df[['key','geometry']].rename(columns={'geometry':'parcel_geom'})
+  gdf = gpd.GeoDataFrame(gdf, geometry='parcel_geom', crs=crs_eq)
+
+  gdf.to_file(f"out/temp/gdf.gpkg", driver="GPKG")
+
+  ray_par = gpd.sjoin(rays_gdf, gdf, how='inner', predicate='intersects')
+
+  # drop self if occurs
+  ray_par = ray_par[ray_par.road_idx.notna()]
+  t.stop("block")
+  if verbose:
+    print(f"T block = {t.get('block'):.0f}s")
+
+  if ray_par.empty:
+    print(f"Ray par is empty, return early")
+    return df_in
+
+  t.start("ray_par")
+  # bring back the parcel geometry for distance calculations
+  ray_par = ray_par.merge(
+    gdf[['parcel_geom']],
+    left_on='index_right',
+    right_index=True,
+    how='left'
+  )
+  t.stop("ray_par")
+  if verbose:
+    print(f"T ray_par = {t.get('ray_par'):.0f}s")
+
+  t.start("dist")
+
+  t.start("dist_0")
+  # grab the raw Shapely geometries as simple arrays
+  rays    = ray_par.geometry.values
+  parcels = ray_par.parcel_geom.values
+  n       = len(ray_par)
+
+  t.stop("dist_0")
+  if verbose:
+    print(f"T dist_0 = {t.get('dist_0'):.0f}s")
+
+  t.start("origins setup")
+  # flat list of all coordinates (shape (total_pts, 2))
+  coords = shapely.get_coordinates(rays)
+  # get # of points in each LineString (shape (n_rays,))
+  counts = shapely.get_num_coordinates(rays)
+  # compute index of *first* point in each geometry
+  offsets = np.empty_like(counts)
+  offsets[0] = 0
+  offsets[1:] = np.cumsum(counts)[:-1]
+  # index directly into coords to get the origins array (shape (n_rays, 2))
+  origins_all = coords[offsets]
+  t.stop("origins setup")
+  if verbose:
+    print(f"T origins setup = {t.get('origins setup'):.0f}s")
+
+  t.start("intersect")
+  segs = shapely.intersection(rays, parcels)
+  t.stop("intersect")
+  if verbose:
+    print(f"T intersect = {t.get('intersect'):.0f}s")
+
+  t.start("coords_counts")
+  coords = shapely.get_coordinates(segs)
+  counts = shapely.get_num_coordinates(segs)
+  offsets = np.empty_like(counts)
+  offsets[0] = 0
+  offsets[1:] = np.cumsum(counts)[:-1]
+  t.stop("coords_counts")
+  if verbose:
+    print(f"T coords_counts = {t.get('coords_counts'):.0f}s")
+
+  t.start("entries")
+  entries = coords[offsets]
+  t.stop("entries")
+  if verbose:
+    print(f"T entries = {t.get('entries'):.0f}s")
+
+  t.start("distances")
+  diffs = entries - origins_all
+  distances = np.hypot(diffs[:,0], diffs[:,1])
+  t.stop("distances")
+
+  # stick it back on your GeoDataFrame
+  ray_par["distance"] = distances
+
+  # make sure we have an explicit "ray_id" to group on
+  ray_par = ray_par.reset_index().rename(columns={"index": "ray_id"})
+
+  # keep only the closest-hit per ray
+  first_hits = ray_par.loc[
+    ray_par.groupby("ray_id")["distance"].idxmin()
+  ].copy()
+
+  # now 'first_hits' has at most one row per ray (the nearest parcel)
+  first_hits = first_hits.drop(columns=["ray_id"])
+
+  ray_par = first_hits
+
+  t.stop("dist")
+
+  if verbose:
+    print(f"T dist = {t.get('dist'):.0f}s")
+
+  # Fill road name with road_idx if none
+  ray_par['road_name'] = ray_par['road_name'].fillna(f"Unknown Road, ID: " + ray_par['road_idx'].astype(str))
+
+  # ---- aggregate frontages ----
+  t.start('agg')
+  agg = ray_par.groupby(['key','road_name','road_type']).agg(
+    count_rays=('distance','count'),
+    min_distance=('distance','min'),
+    mean_angle=('angle','mean')
+  ).reset_index()
+  agg['frontage'] = agg['count_rays'] * spacing
+
+  # approximate depth via area/frontage
+  areas = df[['key']].copy()
+  areas['area'] = df.geometry.area
+  agg = agg.merge(areas, on='key', how='left')
+  agg['depth'] = agg['area'] / agg['frontage']
+  t.stop('agg')
+  if verbose:
+    print(f"T agg = {t.get('agg'):.0f}s")
+
+  # ---- rank, dedupe, slot & pivot up to 4 frontages ----
+  t.start("pivot")
+
+  # 1) assign type_rank once
+  priority = {
+    "motorway": 0, "trunk": 1, "primary": 2, "secondary": 3,
+    "tertiary": 4, "residential": 5, "service": 6, "unclassified": 7
+  }
+  agg["type_rank"] = agg["road_type"].map(priority).fillna(99).astype(int)
+
+  # 2) sort then drop duplicates by (key,road_name), keeping best
+  # NOTE: since we were aggregating on key/road_idx/road_name/road_type, but here only on key/road_name, we have to be careful
+  # because it's possible that OTHER SEGMENTS of the same road that "front" on our parcel are still hanging around
+  # we make sure to de-duplicate correctly here by sorting on the highest frontage for cases of the identical road names/types
+  agg = (
+    agg.sort_values(
+      ["key","road_name","type_rank","frontage","min_distance"],
+      ascending=[True, True, True, False, True]
+    )
+    .drop_duplicates(subset=["key","road_name"], keep="first")
+  )
+
+  # per key, aggregate the min distance and the max frontage:
+  agg2 = agg.groupby("key").agg(
+    hits=('min_distance', 'count'),
+    max_distance=('min_distance', 'max'),
+    med_frontage=('frontage','median')
+  ).reset_index()
+
+  agg = agg.merge(agg2, on="key", how="left")
+
+  ######## Remove spurious hits: #######
+  # Heuristic:
+  # - For any parcel with more than two street hits
+  # - If this hit's distance is the maximum distance of all hits, and is more than 10 meters away
+  # - If this hit's frontage is less than half the median frontage of all hits
+  agg["spurious"] = False
+
+  agg.loc[
+    agg["hits"].gt(2) &
+    agg["max_distance"].gt(10) &
+    abs(agg["min_distance"] - agg["max_distance"]).lt(1e-6) &
+    agg["frontage"].lt(agg["med_frontage"] / 2)
+  , "spurious"] = True
+
+  # drop spurious hits:
+  agg = agg[agg["spurious"].eq(False)]
+
+  agg = agg.drop(columns=["hits", "max_distance", "med_frontage"], errors="ignore")
+
+  ######
+
+  distance_score = 1.0 - (agg["min_distance"] / max_ray_length)
+  agg["sort_score"] = agg["frontage"] * distance_score
+
+  # 3) now sort by overall priority & distance, assign slots, cap at 4
+  agg = agg.sort_values(
+    ["key", "type_rank", "sort_score", "frontage", "min_distance"],
+    ascending=[True, True, False, False, True]
+  )
+  agg["slot"] = agg.groupby("key").cumcount() + 1
+  agg = agg[agg["slot"] <= 4]
+
+  agg = agg.rename(columns={
+    "mean_angle": "road_angle",
+    "min_distance": "dist_to_road"
+  })
+
+  directions = ["N", "NW", "W", "SW", "S", "SE", "E", "NE"]
+
+  agg["road_face"] = agg["road_angle"].apply(
+    lambda x: directions[int((x + math.pi) / (2 * math.pi) * 8) % 8]
+  )
+
+  # 4) pivot into the _1 … _4 columns
+  final = agg.pivot(
+    index="key",
+    columns="slot",
+    values=["road_name", "frontage", "road_type", "road_angle", "road_face", "depth", "dist_to_road"]
+  )
+
+  # 5) flatten the MultiIndex and drop any all‑null columns
+  final.columns = [f"{field}_{i}" for field,i in final.columns]
+  final = final.reset_index().dropna(axis=1, how="all")
+
+  t.stop("pivot")
+  if verbose:
+    print(f"T pivot = {t.get('pivot'):.0f}s")
+
+  # ---- merge back and add directions ----
+  t.start("merge")
+  out = df_in.merge(final, on='key', how='left')
+  # compute compass dir for each angle if needed...
+
+  t.stop("merge")
+  if verbose:
+    print(f"T merge = {t.get('merge'):.0f}s")
+
+  t.stop("all")
+
+  if verbose:
+    print("***ALL TIMING***")
+    print(t.print())
+    print("****************")
+
+  df_out = gpd.GeoDataFrame(out, geometry='geometry', crs=df_in.crs)
+  df_out = _finish_df_streets(df_out, settings)
+  return df_out
+
+
+def _finish_df_streets(df: gpd.GeoDataFrame, settings: dict) -> gpd.GeoDataFrame:
+  units = get_short_distance_unit(settings)
+
+  if units == "ft":
+    conversion_mult = 3.28084
+    suffix = "_ft"
+  else:
+    conversion_mult = 1.0
+    suffix = "_m"
+
+  stubs = ["frontage", "depth", "dist_to_road"]
+  for stub in stubs:
+    for i in range(1, 5):
+      col = f"{stub}_{i}"
+      if col in df:
+        df[col] = df[col].fillna(0.0) * conversion_mult
+        df.rename(columns={col: f"{stub}{suffix}_{i}"}, inplace=True)
+        print(f"renaming FROM: ({col}) TO: ({stub}{suffix}_{i})")
+
+
+  df[f"osm_total_frontage{suffix}"] = (df[f"frontage{suffix}_1"].fillna(0.0) +
+                              df[f"frontage{suffix}_2"].fillna(0.0) +
+                              df[f"frontage{suffix}_3"].fillna(0.0) +
+                              df[f"frontage{suffix}_4"].fillna(0.0))
+
+  for road_type in ["motorway", "trunk", "primary", "secondary", "tertiary", "residential", "service", "unclassified"]:
+    df[f"osm_frontage_{road_type}{suffix}"] = 0.0
+    for i in range(1, 5):
+      df[f"osm_frontage_{road_type}{suffix}"] += df[f"frontage{suffix}_{i}"].where(df[f"road_type_{i}"] == road_type, 0.0)
+
+  stubs_to_prefix = [
+    "frontage",
+    "road_name",
+    "road_type",
+    "road_face",
+    "depth",
+    "dist_to_road",
+    "road_angle"
+  ]
+
+  renames = {}
+  for stub in stubs_to_prefix:
+    for i in range(1, 5):
+      renames[f"{stub}_{i}"] = f"osm_{stub}_{i}"
+
+  df = df.rename(columns=renames)
+
+  return df
 
 def identify_parcels_with_holes(df: gpd.GeoDataFrame) -> (gpd.GeoDataFrame, gpd.GeoDataFrame):
   """
@@ -1056,25 +1555,44 @@ def _enrich_time_field(df: pd.DataFrame, prefix: str, add_year_month: bool = Tru
   return df
 
 
-def _boolify_series(series: pd.Series):
-  """
-  Convert a series with potential string representations of booleans into actual booleans.
+def _boolify_series(series: pd.Series, na_handling: str = None):
+    """
+    Convert a series with potential string representations of booleans into actual booleans.
 
-  :param series: Input series.
-  :type series: pandas.Series
-  :returns: Boolean series.
-  :rtype: pandas.Series
-  """
-  if series.dtype in ["object", "string", "str"]:
-    series = series.astype(str).str.lower().str.strip()
-    series = series.replace(["true", "t", "1"], 1)
-    series = series.replace(["false", "f", "0"], 0)
-  series = series.fillna(0)
-  series = series.astype(bool)
-  return series
+    :param series: Input series.
+    :type series: pandas.Series
+    :param na_handling: How to handle NA values. Can be "true", "false", or None.
+    :type na_handling: str, optional
+    :returns: Boolean series.
+    :rtype: pandas.Series
+    """
+    # Convert to string and clean
+    series = pd.Series(series, dtype=str).str.lower().str.strip()
+    
+    # Create a boolean mask for True values
+    true_mask = series.isin(['true', 't', '1', 'y', 'yes'])
+    
+    # Create a boolean mask for False values
+    false_mask = series.isin(['false', 'f', '0', 'n', 'no'])
+    
+    # Initialize result series with None/NA
+    result = pd.Series(None, index=series.index, dtype='boolean')
+    
+    # Set True and False values
+    result[true_mask] = True
+    result[false_mask] = False
+    
+    # Handle NA values based on na_handling parameter
+    if na_handling == "true":
+        result = result.fillna(True)
+    elif na_handling == "false":
+        result = result.fillna(False)
+    else:
+        result = result.fillna(False)  # Default be
+    return result
 
 
-def _boolify_column_in_df(df: pd.DataFrame, field: str):
+def _boolify_column_in_df(df: pd.DataFrame, field: str, settings: dict = None):
   """
   Convert a specified column in a DataFrame to boolean.
 
@@ -1082,11 +1600,22 @@ def _boolify_column_in_df(df: pd.DataFrame, field: str):
   :type df: pandas.DataFrame
   :param field: Column name to convert.
   :type field: str
+  :param settings: Settings dictionary to determine NA handling.
+  :type settings: dict, optional
   :returns: DataFrame with the specified column converted.
   :rtype: pandas.DataFrame
   """
   series = df[field]
-  series = _boolify_series(series)
+  
+  # Determine NA handling based on settings
+  na_handling = None
+  if settings is not None:
+    if field in get_fields_boolean_na_true(settings):
+      na_handling = "true"
+    elif field in get_fields_boolean_na_false(settings):
+      na_handling = "false"
+  
+  series = _boolify_series(series, na_handling)
   df[field] = series
   return df
 
@@ -1354,7 +1883,7 @@ def _enrich_vacant(df_in: pd.DataFrame, settings:dict) -> pd.DataFrame:
   return df
 
 
-def _enrich_df_geometry(df_in: pd.DataFrame, s_enrich_this: dict, dataframes: dict[str, pd.DataFrame], settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
+def _enrich_df_spatial_joins(df_in: pd.DataFrame, s_enrich_this: dict, dataframes: dict[str, pd.DataFrame], settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
   """
   Perform basic geometric enrichment on a DataFrame by adding spatial features.
 
@@ -1374,11 +1903,7 @@ def _enrich_df_geometry(df_in: pd.DataFrame, s_enrich_this: dict, dataframes: di
 
   df = df_in.copy()
   s_geom = s_enrich_this.get("geometry", [])
-  s_dist = s_enrich_this.get("distances", {})
-  s_infer = s_enrich_this.get("infer", {})
-  s_overture = s_enrich_this.get("overture", {})
-
-  gdf_out = get_cached_df(df_in, "geom/enrich", "key", s_enrich_this)
+  gdf_out = get_cached_df(df_in, "geom/spatial_joins", "key", s_enrich_this)
   if gdf_out is not None:
     if verbose:
       print("--> found cached data...")
@@ -1389,24 +1914,69 @@ def _enrich_df_geometry(df_in: pd.DataFrame, s_enrich_this: dict, dataframes: di
   # geometry
   gdf = _perform_spatial_joins(s_geom, dataframes, verbose=verbose)
 
+  # Merge everything together:
+  try_keys = ["key", "key2", "key3"]
+  success = False
+  gdf_merged: gpd.GeoDataFrame | None = None
+  for key in try_keys:
+    if key in gdf and key in df:
+      if verbose:
+        print(f"Using \"{key}\" to merge shapefiles onto df")
+      n_dupes_gdf = gdf.duplicated(subset=key).sum()
+      n_dupes_df = df.duplicated(subset=key).sum()
+      if n_dupes_gdf > 0 or n_dupes_df > 0:
+        raise ValueError(f"Found {n_dupes_gdf} duplicate keys for key \"{key}\" in the geo_parcels dataframe, and {n_dupes_df} duplicate keys in the base dataframe. Cannot perform spatial join. De-duplicate your dataframes and try again.")
+      gdf_merged = gdf.merge(df, on=key, how="left", suffixes=("_spatial", "_data"))
+      gdf_merged = _finesse_columns(gdf_merged, "_spatial", "_data")
+      success = True
+
+      # count the number of times "key" appears in gdf_merged.columns:
+      n_key = 0
+      for col in gdf_merged:
+        if col == "key":
+          n_key += 1
+
+      if n_key > 1:
+        print(f"A Found {n_key} columns with \"{key}\" in the name. This may be a problem.")
+        print(f"Columns = {gdf_merged.columns}")
+
+      break
+  if not success:
+    raise ValueError(f"Could not find a common key between geo_parcels and base dataframe. Tried keys: {try_keys}")
+
+  write_cached_df(df_in, gdf_merged, "geom/spatial_joins", "key", s_enrich_this)
+
+  return gdf_merged
+
+
+def _enrich_df_overture(gdf_in: gpd.GeoDataFrame, s_enrich_this: dict, dataframes: dict[str, pd.DataFrame], settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
+  gdf_out = get_cached_df(gdf_in, "geom/overture", "key", s_enrich_this)
+  if gdf_out is not None:
+    if verbose:
+      print("--> found cached data...")
+    return gdf_out
+
+  gdf = gdf_in.copy()
+
+  s_overture = s_enrich_this.get("overture", {})
   # Enrich with Overture building data if enabled
   if s_overture.get("enabled", False):
 
     if verbose:
       print("Enriching with Overture building data...")
-    
+
     # Initialize Overture service with the correct settings path
     overture_settings = {
       "overture": s_overture  # Pass the overture settings directly
     }
     overture_service = init_service_overture(overture_settings)
-    
+
     # Get bounding box from data
     bbox = gdf.to_crs("EPSG:4326").total_bounds
-    
+
     # Fetch building data
     buildings = overture_service.get_buildings(bbox, use_cache=s_overture.get("cache", True), verbose=verbose)
-    
+
     if not buildings.empty:
       # Calculate building footprints
       s_footprint = s_overture.get("footprint", {})
@@ -1422,34 +1992,26 @@ def _enrich_df_geometry(df_in: pd.DataFrame, s_enrich_this: dict, dataframes: di
     elif verbose:
       print("--> No buildings found in the area")
 
-  # distances
-  gdf = _perform_distance_calculations(gdf, s_dist, dataframes, get_long_distance_unit(settings), verbose=verbose)
+    write_cached_df(gdf_in, gdf, "geom/overture", "key", s_enrich_this)
 
-  # Merge everything together:
-  try_keys = ["key", "key2", "key3"]
-  success = False
-  gdf_merged: gpd.GeoDataFrame | None = None
-  for key in try_keys:
-    if key in gdf and key in df:
-      if verbose:
-        print(f"Using \"{key}\" to merge shapefiles onto df")
-      n_dupes_gdf = gdf.duplicated(subset=key).sum()
-      n_dupes_df = df.duplicated(subset=key).sum()
-      if n_dupes_gdf > 0 or n_dupes_df > 0:
-        raise ValueError(f"Found {n_dupes_gdf} duplicate keys in the geo_parcels dataframe, and {n_dupes_df} duplicate keys in the base dataframe. Cannot perform spatial join. De-duplicate your dataframes and try again.")
-      gdf_merged = gdf.merge(df, on=key, how="left", suffixes=("_spatial", "_data"))
-      gdf_merged = _finesse_columns(gdf_merged, "_spatial", "_data")
-      success = True
-      break
-  if not success:
-    raise ValueError(f"Could not find a common key between geo_parcels and base dataframe. Tried keys: {try_keys}")
+  return gdf
 
-  # spatially infer missing
-  gdf_merged = perform_spatial_inference(gdf_merged, s_infer, "key", verbose=verbose)
 
-  write_cached_df(df_in, gdf_merged, "geom/enrich", "key", s_enrich_this)
+def _enrich_spatial_inference(gdf_in: gpd.GeoDataFrame, s_enrich_this: dict, dataframes: dict[str, pd.DataFrame], settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
+  gdf = gdf_in.copy()
+  s_infer = s_enrich_this.get("infer", {})
+  gdf = perform_spatial_inference(gdf, s_infer, "key", verbose=verbose)
+  return gdf
 
-  return gdf_merged
+
+def _enrich_df_user_distances(gdf_in: gpd.GeoDataFrame, s_enrich_this: dict, dataframes: dict[str, pd.DataFrame], settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
+  print("Enrich df user distances")
+  s_dist = s_enrich_this.get("distances", [])
+  # Filter out OSM distances
+  # These are handled directly within the open street map enrichment call
+  s_dist_no_osm = [d for d in s_dist if d.get("id", "").startswith("osm_") == False]
+  print(f"s_dist_no_osm: {s_dist_no_osm}")
+  return _perform_distance_calculations(gdf_in, s_dist_no_osm, dataframes, get_long_distance_unit(settings), verbose=verbose, cache_key="geom/distance")
 
 
 def _enrich_polar_coordinates(gdf_in: gpd.GeoDataFrame, settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
@@ -1553,11 +2115,9 @@ def _calc_geom_stuff(gdf_in: gpd.GeoDataFrame, verbose: bool = False) -> gpd.Geo
   :rtype: geopandas.GeoDataFrame
   """
 
-  print("HO")
   gdf = get_cached_df(gdf_in, "geom/stuff", "key")
   if gdf is not None:
     return gdf
-  print("YO")
 
   t = TimingData()
   t.start("rectangularity")
@@ -1632,6 +2192,7 @@ def _perform_spatial_joins(s_geom: list, dataframes: dict[str, pd.DataFrame], ve
       else:
         print(f"--> {_id}")
     gdf = dataframes[_id]
+    print(f"Merging {_id} with {gdf_merged.shape[0]} parcels")
     fields_to_tag = entry.get("fields", None)
     if fields_to_tag is None:
       fields_to_tag = [field for field in gdf.columns if field != "geometry"]
@@ -1640,6 +2201,14 @@ def _perform_spatial_joins(s_geom: list, dataframes: dict[str, pd.DataFrame], ve
         if field not in gdf:
           raise ValueError(f"Field to tag '{field}' not found in geometry dataframe '{_id}'.")
     gdf_merged = _perform_spatial_join(gdf_merged, gdf, predicate, fields_to_tag)
+
+    n_keys = 0
+    for col in gdf_merged.columns:
+      if col == "key":
+        n_keys += 1
+    if n_keys > 1:
+      print(f"Found {n_keys} columns with \"key\" in the name. This may be a problem.")
+      print(f"Columns = {gdf_merged.columns}")
 
   gdf_no_geometry = gdf_merged[gdf_merged["geometry"].isna()]
   if len(gdf_no_geometry) > 0:
@@ -1652,6 +2221,7 @@ def _perform_spatial_joins(s_geom: list, dataframes: dict[str, pd.DataFrame], ve
       for key in gdf_no_geom_keys:
         f.write(f"{key}\n")
     gdf_merged = gdf_merged.dropna(subset=["geometry"])
+
   return gdf_merged
 
 
@@ -1713,96 +2283,6 @@ def _perform_spatial_join(gdf_in: gpd.GeoDataFrame, gdf_overlay: gpd.GeoDataFram
   gdf = gdf.drop(columns=["geometry_centroid", "__overlay_id__"], errors="ignore")
   return gdf
 
-def _do_perform_spatial_inference(df: pd.DataFrame, s_infer: dict, field: str, key_field: str, verbose: bool = False) -> pd.DataFrame:
-    """
-    Perform spatial inference using specified model
-    
-    Args:
-        df: DataFrame containing data
-        s_infer: Dictionary with inference settings
-        field: Field to infer
-        key_field: Primary key field
-        verbose: Whether to print detailed information
-        
-    Returns:
-        DataFrame with inferred values
-    """
-    if verbose:
-        print(f"\n=== Starting inference for field '{field}' ===")
-    
-    # Get model settings
-    proxies = s_infer.get("proxies", [])
-    locations = s_infer.get("locations", [])
-    group_by = s_infer.get("group_by", [])
-    
-    if not proxies:
-        raise ValueError(f"No proxy fields specified for inference of {field}")
-    
-    # Initialize model
-    model = get_inference_model("ratio_proxy")
-    
-    # Split data into training and inference sets
-    filters = s_infer.get("filters", [])
-    if filters:
-        inference_mask = select_filter(df, filters)
-        training_mask = ~inference_mask & df[field].notna()
-    else:
-        inference_mask = df[field].isna()
-        training_mask = ~inference_mask
-        
-    df_train = df[training_mask].copy()
-    df_to_infer = df[inference_mask].copy()
-    
-    if verbose:
-        print(f"\nData split:")
-        print(f"--> {len(df_to_infer):,} rows need inference")
-        print(f"--> {len(df_train):,} rows available for training")
-
-    # First try direct fill from known sources
-    fill_fields = s_infer.get("fill", [])
-    if fill_fields:
-        if verbose:
-            print(f"\nFilling {field} with known values from: {fill_fields}")
-        for fill_field in fill_fields:
-            if fill_field not in df.columns:
-                warnings.warn(f"Fill field '{fill_field}' not found in dataframe")
-                continue
-            mask = df[field].isna() & df[fill_field].notna() & df[fill_field].gt(0)
-            df.loc[mask, field] = df.loc[mask, fill_field]
-            if verbose:
-                print(f"--> Filled {mask.sum():,} values from {fill_field}")
-    
-    # Fit model
-    if verbose:
-        print("\nFitting model...")
-    model.fit(df_train, field, {"proxies": proxies, "locations": locations, "group_by": group_by})
-    
-    # Evaluate model
-    if verbose:
-        print("\nEvaluating model performance:")
-        metrics = model.evaluate(df_train, field)
-        for metric, value in metrics.items():
-            print(f"--> {metric}: {value:.4f}")
-    
-    # Make predictions
-    if verbose:
-        print("\nMaking predictions...")
-    predictions = model.predict(df_to_infer)
-    
-    # Update DataFrame
-    df = df.copy()
-    df.loc[inference_mask, field] = predictions
-    df[f"inferred_{field}"] = False
-    df.loc[inference_mask, f"inferred_{field}"] = True
-
-    # Final statistics
-    final_missing = df[field].isna().sum()
-    if verbose:
-        print(f"\nFinal results:")
-        print(f"--> {len(predictions):,} values inferred")
-        print(f"--> {final_missing:,} values remain empty ({final_missing/len(df)*100:.1f}% of total)")
-
-    return df
 
 def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDataFrame, _id: str, max_distance: float = None, unit: str = "km") -> pd.DataFrame:
     """
@@ -1844,10 +2324,10 @@ def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDa
       "gdf_cols": sorted(gdf_in.columns.tolist()),
       "gdf_hash": hash(gdf_in.geometry.to_wkb().sum()),
     }
+
     # check if we already have this distance calculation
-    if check_cache(f"osm/distance_{_id}", signature, "df"):
-      df_net_change = read_cache(f"osm/distance_{_id}", "df")
-      df_out = df_in.merge(df_net_change, on="key", how="left")
+    df_out = get_cached_df(df_in, f"osm/do_distance_{_id}", "key", signature)
+    if df_out is not None:
       return df_out
 
     df_projected = df_in.to_crs(crs).copy()
@@ -1949,20 +2429,29 @@ def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDa
       if df_net_change.duplicated(subset="key").sum() > 0:
         raise ValueError(f"Duplicate keys found after distance calculation for '{_id}.' This should not happen.")
 
-      # save to cache:
-      write_cache(f"osm/distance_{_id}", df_net_change, signature, "df")
+      # # save to cache:
+      # write_cache(f"osm/distance_{_id}", df_net_change, signature, "df")
+
+    write_cached_df(df_in, df_out, f"osm/do_distance_{_id}", "key", signature)
 
     return df_out
 
 
-def _perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, dataframes: dict[str, pd.DataFrame], unit: str = "km", verbose: bool = False) -> gpd.GeoDataFrame:
+def _perform_distance_calculations(
+    df_in: gpd.GeoDataFrame,
+    s_dist: list,
+    dataframes: dict[str, pd.DataFrame],
+    unit: str = "km",
+    verbose: bool = False,
+    cache_key: str = "geom/distance"
+) -> gpd.GeoDataFrame:
     """
     Perform distance calculations based on enrichment instructions.
 
     :param df_in: Base GeoDataFrame.
     :type df_in: geopandas.GeoDataFrame
     :param s_dist: Distance calculation instructions.
-    :type s_dist: dict
+    :type s_dist: list
     :param dataframes: Dictionary of additional DataFrames.
     :type dataframes: dict[str, pd.DataFrame]
     :param unit: Unit for distance conversion (default "km").
@@ -1975,8 +2464,10 @@ def _perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, datafr
     """
     df = df_in.copy()
     if verbose:
-        print(f"Performing distance calculations...")
-    
+      print(f"Performing distance calculations {cache_key}...")
+
+    print(f"s_dist = {s_dist}")
+
     # Collect all distance calculations to apply at once
     all_distance_dfs = []
 
@@ -1992,12 +2483,13 @@ def _perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, datafr
       "df_cols": sorted(df_in.columns.tolist()),
       "s_dist": s_dist,
     }
-    # check if we already have this distance calculation
-    if check_cache(f"osm/distance_all", signature, "df"):
-      df_net_change = read_cache(f"osm/distance_all", "df")
-      df_out = df_in.merge(df_net_change, on="key", how="left")
-      return df_out
-    
+
+    gdf_out = get_cached_df(df_in, cache_key, "key", signature)
+    if gdf_out is not None:
+      if verbose:
+        print("--> found cached data...")
+      return gdf_out
+
     for entry in s_dist:
         if isinstance(entry, str):
             entry = {"id": str(entry)}
@@ -2005,63 +2497,81 @@ def _perform_distance_calculations(df_in: gpd.GeoDataFrame, s_dist: dict, datafr
             raise ValueError(f"Invalid distance entry: {entry}")
             
         _id = entry.get("id")
+
+        print(entry)
+
+        source = entry.get("source", _id)
+
         max_distance = entry.get("max_distance")  # Get max_distance from settings
         entry_unit = entry.get("unit", unit)  # Allow overriding unit per feature
         
         if _id is None:
             raise ValueError("No 'id' found in distance entry.")
-        if _id not in dataframes:
+        if source not in dataframes:
             if verbose:
                 print(f"--> Skipping {_id} - not found in dataframes (likely disabled in settings)")
             continue
-            
-        gdf = dataframes[_id]
+
+        gdf = dataframes[source]
         field = entry.get("field", None)
         
         if verbose:
             print(f"--> {_id}")
             if max_distance is not None:
                 print(f"    max_distance: {max_distance} {entry_unit}")
+
         if field is None:
-            if verbose:
-                print(f"--> {_id} field is None")
-            # Calculate distances for this feature
-            distance_df = _do_perform_distance_calculations(df, gdf, _id, max_distance, entry_unit)
-            # Extract only the new columns
-            new_cols = [col for col in distance_df.columns if col not in df.columns]
-            all_distance_dfs.append(distance_df[new_cols])
-            if verbose:
-                print(f"--> {_id} done")
+          if verbose:
+              print(f"--> {_id} field is None")
+
+          # Calculate distances for this feature
+          distance_df = _do_perform_distance_calculations(df, gdf, _id, max_distance, entry_unit)
+
+          # Extract only the new columns
+          new_cols = [col for col in distance_df.columns if col not in df.columns]
+
+          all_distance_dfs.append(distance_df[new_cols])
+          if verbose:
+              print(f"--> {_id} done")
         else:
-            if verbose:
-                print(f"--> {_id} field is {field}")
-            uniques = gdf[field].unique()
-            for unique in uniques:
-                if pd.isna(unique):
-                    continue
-                gdf_subset = gdf[gdf[field].eq(unique)]
-                # Calculate distances for this subset
-                distance_df = _do_perform_distance_calculations(df, gdf_subset, f"{_id}_{unique}", max_distance, entry_unit)
-                # Extract only the new columns
-                new_cols = [col for col in distance_df.columns if col not in df.columns]
-                all_distance_dfs.append(distance_df[new_cols])
-            if verbose:
-                print(f"--> {_id} done")
-    
+          if verbose:
+              print(f"--> {_id} field is {field}")
+          uniques = gdf[field].unique()
+          print(f"uniques = {uniques}")
+          for unique in uniques:
+              if pd.isna(unique):
+                  continue
+              gdf_subset = gdf[gdf[field].eq(unique)]
+              # Calculate distances for this subset
+              distance_df = _do_perform_distance_calculations(df, gdf_subset, f"{_id}_{unique}", max_distance, entry_unit)
+              # Extract only the new columns
+              new_cols = [col for col in distance_df.columns if col not in df.columns]
+
+              print(f"B distance_df rows = {len(distance_df)}")
+              print(f"B new cols = {new_cols}")
+
+              all_distance_dfs.append(distance_df[new_cols])
+          if verbose:
+              print(f"--> {_id} done")
+
+    print(f"all_distance_dfs = {all_distance_dfs}")
+
     # Apply all distance calculations at once
-    if all_distance_dfs:
-        # Combine all distance DataFrames
-        combined_distances = pd.concat(all_distance_dfs, axis=1)
-        # Combine with original DataFrame
-        df = pd.concat([df, combined_distances], axis=1)
+    if len(all_distance_dfs):
+      # Combine all distance DataFrames
+      combined_distances = pd.concat(all_distance_dfs, axis=1)
+      # Combine with original DataFrame
+      df = pd.concat([df, combined_distances], axis=1)
 
     new_cols = [col for col in df.columns if col not in df_in.columns]
     df_net_change = df[["key"]+new_cols].copy()
     # check for duplicate keys:
+
     if df_net_change.duplicated(subset="key").sum() > 0:
         raise ValueError(f"Duplicate keys found after distance calculation. This should not happen.")
+
     # save to cache:
-    write_cache(f"osm/distance_all", df_net_change, signature, "df")
+    write_cached_df(df_in, df, cache_key, "key", signature)
 
     return df
 
@@ -2285,7 +2795,7 @@ def _load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_c
     if col in fields_cat:
       df[col] = df[col].astype("string")
     elif col in fields_bool:
-      df[col] = _boolify_series(df[col])
+      df = _boolify_column_in_df(df, col, settings)
     elif col in fields_num:
       df[col] = df[col].astype("Float64")
 
