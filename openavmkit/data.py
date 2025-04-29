@@ -38,7 +38,7 @@ from openavmkit.utilities.geometry import get_crs, clean_geometry, identify_irre
   geolocate_point_to_polygon, is_likely_epsg4326
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
   get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit, get_valuation_date, get_center, \
-  get_fields_boolean_na_true, get_fields_boolean_na_false, get_short_distance_unit
+  get_fields_boolean_na_true, get_fields_boolean_na_false
 
 from openavmkit.utilities.census import get_creds_from_env_census, init_service_census, match_to_census_blockgroups
 from openavmkit.utilities.openstreetmap import init_service_openstreetmap
@@ -1535,12 +1535,10 @@ def _enrich_time_field(df: pd.DataFrame, prefix: str, add_year_month: bool = Tru
             n_diff = df[f"{prefix}{check}"].ne(date_value).sum()
             raise ValueError(f"Derived field '{prefix}{check}' does not match the date field '{prefix}_date' in {n_diff} rows.")
   return df
-
-
 def _boolify_series(series: pd.Series, na_handling: str = None):
     """
     Convert a series with potential string representations of booleans into actual booleans.
-
+    
     :param series: Input series.
     :type series: pandas.Series
     :param na_handling: How to handle NA values. Can be "true", "false", or None.
@@ -1548,30 +1546,26 @@ def _boolify_series(series: pd.Series, na_handling: str = None):
     :returns: Boolean series.
     :rtype: pandas.Series
     """
-    # Convert to string and clean
-    series = pd.Series(series, dtype=str).str.lower().str.strip()
+    # Convert to string and clean if needed
+    if series.dtype in ["object", "string", "str"]:
+        series = series.astype(str).str.lower().str.strip()
+        series = series.replace(["true", "t", "1", "y", "yes"], 1)
+        series = series.replace(["false", "f", "0", "n", "no"], 0)
+        # Convert common string representations of missing values to NaN
+        none_patterns = ["none", "nan", "null", "na", "n/a", "-", "unknown"]
+        series = series.replace(none_patterns, pd.NA)
     
-    # Create a boolean mask for True values
-    true_mask = series.isin(['true', 't', '1', 'y', 'yes'])
-    
-    # Create a boolean mask for False values
-    false_mask = series.isin(['false', 'f', '0', 'n', 'no'])
-    
-    # Initialize result series with None/NA
-    result = pd.Series(None, index=series.index, dtype='boolean')
-    
-    # Set True and False values
-    result[true_mask] = True
-    result[false_mask] = False
-    
-    # Handle NA values based on na_handling parameter
+    # Handle NA values before boolean conversion
     if na_handling == "true":
-        result = result.fillna(True)
+        series = series.fillna(1)
     elif na_handling == "false":
-        result = result.fillna(False)
+        series = series.fillna(0)
     else:
-        result = result.fillna(False)  # Default be
-    return result
+        series = series.fillna(0)
+    
+    # Convert to non-nullable boolean
+    series = series.astype(bool)
+    return series
 
 
 def _boolify_column_in_df(df: pd.DataFrame, field: str, settings: dict = None):
