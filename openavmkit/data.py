@@ -1541,37 +1541,20 @@ def _boolify_series(series: pd.Series, na_handling: str = None):
     """
     Convert a series with potential string representations of booleans into actual booleans.
 
-    :param series: Input series.
-    :type series: pandas.Series
-    :param na_handling: How to handle NA values. Can be "true", "false", or None.
-    :type na_handling: str, optional
-    :returns: Boolean series.
-    :rtype: pandas.Series
-    """
-    # Convert to string and clean
-    series = pd.Series(series, dtype=str).str.lower().str.strip()
-    
-    # Create a boolean mask for True values
-    true_mask = series.isin(['true', 't', '1', 'y', 'yes'])
-    
-    # Create a boolean mask for False values
-    false_mask = series.isin(['false', 'f', '0', 'n', 'no'])
-    
-    # Initialize result series with None/NA
-    result = pd.Series(None, index=series.index, dtype='boolean')
-    
-    # Set True and False values
-    result[true_mask] = True
-    result[false_mask] = False
-    
-    # Handle NA values based on na_handling parameter
-    if na_handling == "true":
-        result = result.fillna(True)
-    elif na_handling == "false":
-        result = result.fillna(False)
-    else:
-        result = result.fillna(False)  # Default be
-    return result
+  :param series: Input series.
+  :type series: pandas.Series
+  :returns: Boolean series.
+  :rtype: pandas.Series
+  """
+  if series.dtype in ["object", "string", "str"]:
+    series = series.astype(str).str.lower().str.strip()
+    series = series.replace(["true", "t", "1", "y"], True)
+    series = series.replace(["false", "f", "0", "n"], False)
+    # Convert any remaining non-matching strings to NA
+    series = series.replace(["", "nan", "none", "null", "na"], pd.NA)
+  # Convert to boolean type, preserving NA values
+  series = series.astype("boolean")
+  return series
 
 
 def _boolify_column_in_df(df: pd.DataFrame, field: str, settings: dict = None):
