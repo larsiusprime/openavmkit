@@ -120,12 +120,17 @@ def write_cached_df(
 
   modified = []
   for c in common:
-    col_new = df_new[c]
-    col_orig = df_orig[c]
+    col_new = df_new[c].reset_index(drop=True)
+    col_orig = df_orig[c].reset_index(drop=True)
 
-    are_equal = (col_new == col_orig) | (col_new.isna() & col_orig.isna())
+    if len(col_new) == len(col_orig):
+      are_equal = (col_new.values == col_orig.values) | (col_new.isna() & col_orig.isna())
+      if not are_equal.all():
+        is_different = True
+    else:
+      is_different = True
 
-    if not are_equal.all():
+    if is_different:
       modified.append(c)
       continue
 

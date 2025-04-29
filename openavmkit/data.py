@@ -936,6 +936,10 @@ def enrich_df_streets(
   t.start("all")
 
   t.start("setup")
+
+  print("▶️ INPUT df_in CRS:", df_in.crs)
+  print("▶️ INPUT df_in bounds:", df_in.geometry.total_bounds)
+
   df = df_in[['key', 'geometry', 'latitude', 'longitude']].copy()
 
   # drop invalid
@@ -943,6 +947,10 @@ def enrich_df_streets(
   # project to equal-distance CRS
   crs_eq = get_crs(df, 'conformal')
   df = df.to_crs(crs_eq)
+
+  print("▶ df after to_crs:", df.crs)
+  print("  df.bounds (m):", df.geometry.total_bounds)
+
   t.stop("setup")
   if verbose:
     print(f"T setup = {t.get('setup'):.0f}s")
@@ -956,6 +964,18 @@ def enrich_df_streets(
 
   lat_buf = network_buffer / 111000
   lon_buf = network_buffer / (111000 * math.cos(math.radians((miny+maxy)/2)))
+
+  # # DEBUG
+  # lat_buf = 0
+  # lon_buf = 0
+  # pad_size = 0.25
+  # size_x = maxx - minx
+  # size_y = maxy - miny
+  # minx += size_x * (pad_size)
+  # miny += size_y * (pad_size)
+  # maxx -= size_x * (pad_size)
+  # maxy -= size_y * (pad_size)
+  # # DEBUG
 
   north, south = maxy + lat_buf, miny - lat_buf
   east, west   = maxx + lon_buf, minx - lon_buf
@@ -1060,9 +1080,17 @@ def enrich_df_streets(
   # flatten & continue exactly as before
   rays = [r for sub in results for r in sub]
   rays_gdf = gpd.GeoDataFrame(rays, geometry='geometry', crs=crs_eq)
+  print("▶ rays_gdf:", rays_gdf.crs)
+  print("  rays.bounds (m):", rays_gdf.geometry.total_bounds)
+
   rays_gdf = rays_gdf.drop(columns=['origin'], errors="ignore")
   rays_gdf["road_name"] = rays_gdf["road_name"].astype(str)
   rays_gdf["road_type"] = rays_gdf["road_type"].astype(str)
+
+  print("RAYS GDF")
+  display(rays_gdf)
+
+  rays_gdf.to_parquet(f"out/temp/rays.parquet", index=False)
 
   t.stop('rays_parallel')
   if verbose:
@@ -1073,15 +1101,27 @@ def enrich_df_streets(
   # spatial join rays -> parcels
   gdf = df[['key','geometry']].rename(columns={'geometry':'parcel_geom'})
   gdf = gpd.GeoDataFrame(gdf, geometry='parcel_geom', crs=crs_eq)
+  print("▶ parcels gdf:", gdf.crs)
+  print("  parcels.bounds (m):", gdf.geometry.total_bounds)
+
+  print("GDF")
+  display(gdf)
+
+  gdf.to_file(f"out/temp/gdf.gpkg", driver="GPKG")
 
   ray_par = gpd.sjoin(rays_gdf, gdf, how='inner', predicate='intersects')
+
+  print("RAY PAR")
+  display(ray_par)
 
   # drop self if occurs
   ray_par = ray_par[ray_par.road_idx.notna()]
   t.stop("block")
   if verbose:
     print(f"T block = {t.get('block'):.0f}s")
+
   if ray_par.empty:
+    print(f"Ray par is empty, return early")
     return df_in
 
   t.start("ray_par")
@@ -1864,6 +1904,12 @@ def _enrich_df_spatial_joins(df_in: pd.DataFrame, s_enrich_this: dict, dataframe
       gdf_merged = gdf.merge(df, on=key, how="left", suffixes=("_spatial", "_data"))
       gdf_merged = _finesse_columns(gdf_merged, "_spatial", "_data")
       success = True
+
+      # count the number of times "key" appears in gdf_merged.columns:
+      n_key = gdf_merged.columns.str.equals(key).sum()
+      print(f"A Found {n_key} columns with \"{key}\" in the name. This may be a problem.")
+      print(f"Columns = {gdf_merged.columns}")
+
       break
   if not success:
     raise ValueError(f"Could not find a common key between geo_parcels and base dataframe. Tried keys: {try_keys}")
@@ -2116,6 +2162,7 @@ def _perform_spatial_joins(s_geom: list, dataframes: dict[str, pd.DataFrame], ve
       else:
         print(f"--> {_id}")
     gdf = dataframes[_id]
+    print(f"Merging {_id} with {gdf_merged.shape[0]} parcels")
     fields_to_tag = entry.get("fields", None)
     if fields_to_tag is None:
       fields_to_tag = [field for field in gdf.columns if field != "geometry"]
@@ -2124,6 +2171,11 @@ def _perform_spatial_joins(s_geom: list, dataframes: dict[str, pd.DataFrame], ve
         if field not in gdf:
           raise ValueError(f"Field to tag '{field}' not found in geometry dataframe '{_id}'.")
     gdf_merged = _perform_spatial_join(gdf_merged, gdf, predicate, fields_to_tag)
+
+    n_keys = gdf_merged.columns.str.equals("key").sum()
+    if n_keys > 1:
+      print(f"B Found {n_keys} columns with \"key\" in the name. This may be a problem.")
+      print(f"Columns = {gdf_merged.columns}")
 
   gdf_no_geometry = gdf_merged[gdf_merged["geometry"].isna()]
   if len(gdf_no_geometry) > 0:
@@ -2136,6 +2188,7 @@ def _perform_spatial_joins(s_geom: list, dataframes: dict[str, pd.DataFrame], ve
       for key in gdf_no_geom_keys:
         f.write(f"{key}\n")
     gdf_merged = gdf_merged.dropna(subset=["geometry"])
+
   return gdf_merged
 
 
