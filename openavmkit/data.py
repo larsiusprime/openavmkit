@@ -1088,15 +1088,10 @@ def enrich_df_streets(
   # flatten & continue exactly as before
   rays = [r for sub in results for r in sub]
   rays_gdf = gpd.GeoDataFrame(rays, geometry='geometry', crs=crs_eq)
-  print("▶ rays_gdf:", rays_gdf.crs)
-  print("  rays.bounds (m):", rays_gdf.geometry.total_bounds)
 
   rays_gdf = rays_gdf.drop(columns=['origin'], errors="ignore")
   rays_gdf["road_name"] = rays_gdf["road_name"].astype(str)
   rays_gdf["road_type"] = rays_gdf["road_type"].astype(str)
-
-  print("RAYS GDF")
-  display(rays_gdf)
 
   rays_gdf.to_parquet(f"out/temp/rays.parquet", index=False)
 
@@ -1109,18 +1104,10 @@ def enrich_df_streets(
   # spatial join rays -> parcels
   gdf = df[['key','geometry']].rename(columns={'geometry':'parcel_geom'})
   gdf = gpd.GeoDataFrame(gdf, geometry='parcel_geom', crs=crs_eq)
-  print("▶ parcels gdf:", gdf.crs)
-  print("  parcels.bounds (m):", gdf.geometry.total_bounds)
-
-  print("GDF")
-  display(gdf)
 
   gdf.to_file(f"out/temp/gdf.gpkg", driver="GPKG")
 
   ray_par = gpd.sjoin(rays_gdf, gdf, how='inner', predicate='intersects')
-
-  print("RAY PAR")
-  display(ray_par)
 
   # drop self if occurs
   ray_par = ray_par[ray_par.road_idx.notna()]
