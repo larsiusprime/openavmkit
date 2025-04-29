@@ -273,11 +273,11 @@ def get_vacant_sales(df_in: pd.DataFrame, settings: dict, invert: bool = False) 
   :type settings: dict
   :param invert: If True, return non-vacant (improved) sales.
   :type invert: bool, optional
-  :returns: Filtered DataFrame containing (or excluding) vacant sales.
+  :returns: DataFrame with an added 'is_vacant' column.
   :rtype: pandas.DataFrame
   """
   df = df_in.copy()
-  df = _boolify_column_in_df(df, "vacant_sale")
+  df = _boolify_column_in_df(df, "vacant_sale", settings)
   idx_vacant_sale = df["vacant_sale"].eq(True)
   if invert:
     idx_vacant_sale = ~idx_vacant_sale
@@ -1056,27 +1056,35 @@ def _enrich_time_field(df: pd.DataFrame, prefix: str, add_year_month: bool = Tru
   return df
 
 
-def _boolify_series(series: pd.Series):
+def _boolify_series(series: pd.Series, na_handling: str = None):
   """
   Convert a series with potential string representations of booleans into actual booleans.
 
   :param series: Input series.
   :type series: pandas.Series
+  :param na_handling: How to handle NA values. Can be "true", "false", or None.
+  :type na_handling: str, optional
   :returns: Boolean series.
   :rtype: pandas.Series
   """
   if series.dtype in ["object", "string", "str"]:
     series = series.astype(str).str.lower().str.strip()
-    series = series.replace(["true", "t", "1", "y"], True)
-    series = series.replace(["false", "f", "0", "n"], False)
-    # Convert any remaining non-matching strings to NA
-    series = series.replace(["", "nan", "none", "null", "na"], pd.NA)
-  # Convert to boolean type, preserving NA values
-  series = series.astype("boolean")
+    series = series.replace(["true", "t", "1", "y"], 1)
+    series = series.replace(["false", "f", "0", "n"], 0)
+  
+  # Handle NA values based on na_handling parameter
+  if na_handling == "true":
+    series = series.fillna(1)
+  elif na_handling == "false":
+    series = series.fillna(0)
+  else:
+    series = series.fillna(0)  # Default behavior for regular boolean fields
+  
+  series = series.astype(bool)
   return series
 
 
-def _boolify_column_in_df(df: pd.DataFrame, field: str):
+def _boolify_column_in_df(df: pd.DataFrame, field: str, settings: dict = None):
   """
   Convert a specified column in a DataFrame to boolean.
 
@@ -1084,11 +1092,22 @@ def _boolify_column_in_df(df: pd.DataFrame, field: str):
   :type df: pandas.DataFrame
   :param field: Column name to convert.
   :type field: str
+  :param settings: Settings dictionary to determine NA handling.
+  :type settings: dict, optional
   :returns: DataFrame with the specified column converted.
   :rtype: pandas.DataFrame
   """
   series = df[field]
-  series = _boolify_series(series)
+  
+  # Determine NA handling based on settings
+  na_handling = None
+  if settings is not None:
+    if field in get_fields_boolean_na_true(settings):
+      na_handling = "true"
+    elif field in get_fields_boolean_na_false(settings):
+      na_handling = "false"
+  
+  series = _boolify_series(series, na_handling)
   df[field] = series
   return df
 
@@ -2287,7 +2306,7 @@ def _load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_c
     if col in fields_cat:
       df[col] = df[col].astype("string")
     elif col in fields_bool:
-      df[col] = _boolify_series(df[col])
+      df = _boolify_column_in_df(df, col, settings)
     elif col in fields_num:
       df[col] = df[col].astype("Float64")
 
