@@ -811,19 +811,6 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
         east = df["longitude"].max()
         west = df["longitude"].min()
 
-        #DEBUG:
-        shrink_size = 0.125
-
-        north_south = north - south
-        east_west = east - west
-
-        # Shrink the bounding box by a percentage
-        north = north - (north_south * shrink_size)
-        south = south + (north_south * shrink_size)
-        east = east - (east_west * shrink_size)
-        west = west + (east_west * shrink_size)
-
-
         bbox = [west, south, east, north]
 
         # Process each feature based on settings
