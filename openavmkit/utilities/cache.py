@@ -123,6 +123,7 @@ def write_cached_df(
     col_new = df_new[c].reset_index(drop=True)
     col_orig = df_orig[c].reset_index(drop=True)
 
+    is_different = False
     if len(col_new) == len(col_orig):
       are_equal = (col_new.values == col_orig.values) | (col_new.isna() & col_orig.isna())
       if not are_equal.all():

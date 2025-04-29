@@ -38,7 +38,7 @@ from openavmkit.utilities.geometry import get_crs, clean_geometry, identify_irre
   geolocate_point_to_polygon, is_likely_epsg4326
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
   get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit, get_valuation_date, get_center, \
-  get_fields_boolean_na_true, get_fields_boolean_na_false
+  get_fields_boolean_na_true, get_fields_boolean_na_false, get_short_distance_unit
 
 from openavmkit.utilities.census import get_creds_from_env_census, init_service_census, match_to_census_blockgroups
 from openavmkit.utilities.openstreetmap import init_service_openstreetmap
@@ -555,6 +555,11 @@ def process_data(dataframes: dict[str, pd.DataFrame], settings: dict, verbose: b
   df_univ = _merge_dict_of_dfs(dataframes, merge_univ, settings, required_key="key")
   df_sales = _merge_dict_of_dfs(dataframes, merge_sales, settings, required_key="key_sale")
 
+  n_dupes_df = df_univ.duplicated(subset="key").sum()
+  n_dupes_sales = df_sales.duplicated(subset="key_sale").sum()
+  print(f"Process Dupes in input univ: {n_dupes_df}")
+  print(f"Process Dupes in input sales: {n_dupes_sales}")
+
   if "valid_sale" not in df_sales:
     raise ValueError("The 'valid_sale' column is required in the sales data.")
   if "vacant_sale" not in df_sales:
@@ -600,6 +605,9 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
   :rtype: SalesUniversePair
   """
   supkeys: list[SUPKey] = ["universe", "sales"]
+
+  n_dupes_df = sup.universe.duplicated(subset="key").sum()
+  print(f"Enrich Dupes in input: {n_dupes_df}")
 
   # Add the "both" entries to both "universe" and "sales" and delete the "both" entry afterward.
   if "both" in s_enrich:
@@ -1930,15 +1938,20 @@ def _enrich_df_spatial_joins(df_in: pd.DataFrame, s_enrich_this: dict, dataframe
       n_dupes_gdf = gdf.duplicated(subset=key).sum()
       n_dupes_df = df.duplicated(subset=key).sum()
       if n_dupes_gdf > 0 or n_dupes_df > 0:
-        raise ValueError(f"Found {n_dupes_gdf} duplicate keys in the geo_parcels dataframe, and {n_dupes_df} duplicate keys in the base dataframe. Cannot perform spatial join. De-duplicate your dataframes and try again.")
+        raise ValueError(f"Found {n_dupes_gdf} duplicate keys for key \"{key}\" in the geo_parcels dataframe, and {n_dupes_df} duplicate keys in the base dataframe. Cannot perform spatial join. De-duplicate your dataframes and try again.")
       gdf_merged = gdf.merge(df, on=key, how="left", suffixes=("_spatial", "_data"))
       gdf_merged = _finesse_columns(gdf_merged, "_spatial", "_data")
       success = True
 
       # count the number of times "key" appears in gdf_merged.columns:
-      n_key = gdf_merged.columns.str.equals(key).sum()
-      print(f"A Found {n_key} columns with \"{key}\" in the name. This may be a problem.")
-      print(f"Columns = {gdf_merged.columns}")
+      n_key = 0
+      for col in gdf_merged:
+        if col == "key":
+          n_key += 1
+
+      if n_key > 1:
+        print(f"A Found {n_key} columns with \"{key}\" in the name. This may be a problem.")
+        print(f"Columns = {gdf_merged.columns}")
 
       break
   if not success:
