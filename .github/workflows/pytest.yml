@@ -36,12 +36,6 @@ jobs:
           # Install tabulate without dependency resolution
           pip install --no-deps tabulate==0.9.0
 
-<<<<<<< HEAD
-=======
-      - name: Install pygeos
-        run: pip install pygeos
-
->>>>>>> 5a5b1a105aaa660eef3080358d459b18704dc98c
       - name: Check Dependency Conflicts
         run: |
           python -m pip install --upgrade pip
