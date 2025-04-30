@@ -269,9 +269,11 @@ def get_sale_field(settings: dict, df:pd.DataFrame=None) -> str:
   ta = settings.get("modeling", {}).get("instructions", {}).get("time_adjustment", {})
   use = ta.get("use", True)
   if use:
-    return "sale_price_time_adj"
+    sale_field = "sale_price_time_adj"
+  else:
+    sale_field = "sale_price"
   if df is not None:
-    if "sale_price_time_adj" in df:
+    if sale_field == "sale_price_time_adj" and "sale_price_time_adj" in df:
       return "sale_price_time_adj"
   return "sale_price"
 
