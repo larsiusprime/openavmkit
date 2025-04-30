@@ -260,10 +260,15 @@ class PredictionResults:
     y = df_valid[dep_var].to_numpy()
     y_pred = df_valid[prediction_field].to_numpy()
 
-    y_clean = y[~pd.isna(y_pred)]
-    y_pred_clean = y_pred[~pd.isna(y_pred)]
+    # get a mask of all NaN values in y_pred:
+    y_pred_mask = ~pd.isna(y_pred)
+    y_mask = ~pd.isna(y)
 
-    if len(y_clean) > 0:
+    # select only values that are not NaN in either:
+    y_clean = y[y_mask & y_pred_mask]
+    y_pred_clean = y_pred[y_mask & y_pred_mask]
+
+    if len(y_clean) > 0 and len (y_pred_clean) > 0:
       self.mse = mean_squared_error(y_clean, y_pred_clean)
       self.rmse = np.sqrt(self.mse)
       var_y = np.var(y_clean)
