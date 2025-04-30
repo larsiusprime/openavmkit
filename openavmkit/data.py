@@ -1075,6 +1075,8 @@ def enrich_df_streets(
   rays_gdf["road_name"] = rays_gdf["road_name"].astype(str)
   rays_gdf["road_type"] = rays_gdf["road_type"].astype(str)
 
+  # Create out/temp directory if it doesn't exist
+  os.makedirs("out/temp", exist_ok=True)
   rays_gdf.to_parquet(f"out/temp/rays.parquet", index=False)
 
   t.stop('rays_parallel')
