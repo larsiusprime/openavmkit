@@ -38,7 +38,7 @@ from openavmkit.utilities.geometry import get_crs, clean_geometry, identify_irre
   geolocate_point_to_polygon, is_likely_epsg4326
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
   get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit, get_valuation_date, get_center, \
-  get_fields_boolean_na_true, get_fields_boolean_na_false
+  get_fields_boolean_na_true, get_fields_boolean_na_false, get_short_distance_unit
 
 from openavmkit.utilities.census import get_creds_from_env_census, init_service_census, match_to_census_blockgroups
 from openavmkit.utilities.openstreetmap import init_service_openstreetmap
@@ -1075,6 +1075,8 @@ def enrich_df_streets(
   rays_gdf["road_name"] = rays_gdf["road_name"].astype(str)
   rays_gdf["road_type"] = rays_gdf["road_type"].astype(str)
 
+  # Create out/temp directory if it doesn't exist
+  os.makedirs("out/temp", exist_ok=True)
   rays_gdf.to_parquet(f"out/temp/rays.parquet", index=False)
 
   t.stop('rays_parallel')
