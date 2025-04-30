@@ -1999,7 +1999,7 @@ def _prepare_ds(
 	interactions = get_variable_interactions(entry, s, df_sales)
 
 	instructions = s.get("modeling", {}).get("instructions", {})
-	dep_var = instructions.get("dep_var", "sale_price")
+	dep_var = instructions.get("dep_var", "sale_price_time_adj")
 	dep_var_test = instructions.get("dep_var_test", "sale_price_time_adj")
 
 	test_keys, train_keys = _read_split_keys(model_group)
