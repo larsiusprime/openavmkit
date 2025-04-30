@@ -386,9 +386,8 @@ def get_sales(df_in: pd.DataFrame, settings: dict, vacant_only: bool = False, df
     # if a property was NOT vacant at time of sale, but is vacant now, then the sale is invalid:
     idx_is_vacant = df["is_vacant"].eq(True)
     df.loc[~idx_vacant_sale & idx_is_vacant, "valid_sale"] = False
-
+  
   sale_field = get_sale_field(settings, df)
-
   idx_sale_price = df[sale_field].gt(0)
   idx_valid_sale = df["valid_sale"].eq(True)
   idx_is_vacant = df["vacant_sale"].eq(True)
