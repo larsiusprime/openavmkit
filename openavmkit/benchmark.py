@@ -2686,6 +2686,9 @@ def _run_models(
 			slope, _ = np.polyfit(y_true, y_pred, 1)
 		except numpy.linalg.LinAlgError as e:
 			slope = np.nan
+		except numpy.core._exceptions.UFuncTypeError as e:
+			slope = np.nan
+
 		
 		metrics_data["Model"].append(model_name)
 		metrics_data["R²"].append(r2)

@@ -2,6 +2,8 @@ import json
 import os
 import pickle
 import warnings
+
+import numpy.linalg
 from IPython.core.display import display
 import polars as pl
 from joblib import Parallel, delayed
@@ -1551,19 +1553,37 @@ def predict_kernel(ds: DataSplit, kr: KernelReg, timing: TimingData, verbose: bo
     print(f"--> predicting on test set...")
   # Predict at original locations:
   timing.start("predict_test")
-  y_pred_test, _ = kr.fit(X_test)
+  y_pred_test = np.zeros(X_test.shape[0])
+  if kr is not None:
+    try:
+      y_pred_test, _ = kr.fit(X_test)
+    except numpy.linalg.LinAlgError as e:
+      print(f"--> Error in kernel regression: {e}")
+      y_pred_test = np.zeros(X_test.shape[0])
   timing.stop("predict_test")
 
   if verbose:
     print(f"--> predicting on sales set...")
   timing.start("predict_sales")
-  y_pred_sales, _ = kr.fit(X_sales)
+  y_pred_sales = np.zeros(X_sales.shape[0])
+  if kr is not None:
+    try:
+      y_pred_sales, _ = kr.fit(X_sales)
+    except numpy.linalg.LinAlgError as e:
+      print(f"--> Error in kernel regression: {e}")
+      y_pred_sales = np.zeros(X_sales.shape[0])
   timing.stop("predict_sales")
 
   if verbose:
     print(f"--> predicting on universe set...")
   timing.start("predict_univ")
-  y_pred_univ, _ = kr.fit(X_univ)
+  y_pred_univ = np.zeros(X_univ.shape[0])
+  if kr is not None:
+    try:
+      y_pred_univ, _ = kr.fit(X_univ)
+    except numpy.linalg.LinAlgError as e:
+      print(f"--> Error in kernel regression: {e}")
+      y_pred_univ = np.zeros(X_univ.shape[0])
   timing.stop("predict_univ")
 
   timing.stop("total")
@@ -1648,12 +1668,18 @@ def run_kernel(ds: DataSplit, outpath: str, save_params: bool = False, use_saved
   # TODO: can adjust this to handle categorical data better
   var_type = "c" * X_train.shape[1]
   defaults = EstimatorSettings(efficient=True)
-  kr = KernelReg(endog=y_train, exog=X_train, var_type=var_type, bw=kernel_bw, defaults=defaults)
-  kernel_bw = kr.bw
-  if save_params:
-    os.makedirs(outpath, exist_ok=True)
-    with open(f"{outpath}/kernel_bw.pkl", "wb") as f:
-      pickle.dump(kernel_bw, f)
+  try:
+    kr = KernelReg(endog=y_train, exog=X_train, var_type=var_type, bw=kernel_bw, defaults=defaults)
+    kernel_bw = kr.bw
+    if save_params:
+      os.makedirs(outpath, exist_ok=True)
+      with open(f"{outpath}/kernel_bw.pkl", "wb") as f:
+        pickle.dump(kernel_bw, f)
+  except numpy.linalg.LinAlgError as e:
+    print(f"--> Error in kernel regression: {e}")
+    print("Kernel regression failed. Please check your data.")
+    kr = None
+
   if verbose:
     print(f"--> optimal bandwidth = {kernel_bw}")
   timing.stop("train")
