@@ -104,6 +104,12 @@ def clean_valid_sales(sup: SalesUniversePair, settings : dict):
 	print(f"--> {len(df_sales[df_sales['valid_for_ratio_study'].eq(True)])} valid for ratio study")
 	print(f"--> {len(df_sales[df_sales['valid_for_land_ratio_study'].eq(True)])} valid for land ratio study")
 
+	# We need to ensure that the flag "is_vacant" is valid to train on
+	# So in sales it needs to reflect the sale's vacant status
+	# When hydrating, this will stomp the universe's vacant status, which is exactly what we want in a training set
+	# Meanwhile, during prediction, it will infer based on the universe's vacant status
+	df_sales["is_vacant"] = df_sales["vacant_sale"]
+
 	df_sales = df_sales.drop(columns=["univ_is_vacant"])
 
 	# enforce some booleans:
