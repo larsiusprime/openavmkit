@@ -386,19 +386,15 @@ def get_sales(df_in: pd.DataFrame, settings: dict, vacant_only: bool = False, df
     # if a property was NOT vacant at time of sale, but is vacant now, then the sale is invalid:
     idx_is_vacant = df["is_vacant"].eq(True)
     df.loc[~idx_vacant_sale & idx_is_vacant, "valid_sale"] = False
-
-  sale_field = get_sale_field(settings, df)
-
+  
+  # Use sale_price_time_adj if it exists, otherwise use sale_price
+  sale_field = "sale_price_time_adj" if "sale_price_time_adj" in df else "sale_price"
   idx_sale_price = df[sale_field].gt(0)
   idx_valid_sale = df["valid_sale"].eq(True)
   idx_is_vacant = df["vacant_sale"].eq(True)
   idx_all = idx_sale_price & idx_valid_sale & (idx_is_vacant if vacant_only else True)
 
-  df_sales: pd.DataFrame = df[
-    df[sale_field].gt(0) &
-    df["valid_sale"].eq(True) &
-    (df["vacant_sale"].eq(True) if vacant_only else True)
-  ].copy()
+  df_sales: pd.DataFrame = df[idx_all].copy()
 
   return df_sales
 
