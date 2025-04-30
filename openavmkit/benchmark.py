@@ -1,6 +1,8 @@
 import os
 import pickle
 import warnings
+
+import numpy
 from matplotlib import pyplot as plt
 import pandas as pd
 from catboost import CatBoostRegressor
@@ -234,7 +236,7 @@ def try_variables(
 						else:
 							df_sub2 = df_sub[df_sub["vacant_sale"].eq(False)]
 
-						if len(df_sub2) > 0:
+						if len(df_sub2) > 0 and plot:
 							# do a scatter plot of the variable vs. the dependent variable (sale_field):
 							df_sub2.plot.scatter(x=var, y=sale_field)
 							# labels
@@ -2680,7 +2682,10 @@ def _run_models(
 		r2 = model_result.pred_test.r2
 		
 		# Calculate slope using numpy polyfit
-		slope, _ = np.polyfit(y_true, y_pred, 1)
+		try:
+			slope, _ = np.polyfit(y_true, y_pred, 1)
+		except numpy.linalg.LinAlgError as e:
+			slope = np.nan
 		
 		metrics_data["Model"].append(model_name)
 		metrics_data["R²"].append(r2)
