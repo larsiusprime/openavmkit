@@ -1971,10 +1971,10 @@ def run_xgboost(ds: DataSplit, outpath: str, save_params: bool = False, use_save
   timing.stop("train")
 
   # Print timing information for XGBoost model
-  if verbose:
-    print("\n***** XGBoost Model Timing *****")
-    print(timing.print())
-    print("*********************************\n")
+  # if verbose:
+  #   print("\n***** XGBoost Model Timing *****")
+  #   print(timing.print())
+  #   print("*********************************\n")
 
   return predict_xgboost(ds, xgboost_model, timing, verbose)
 
@@ -2077,10 +2077,10 @@ def run_lightgbm(ds: DataSplit, outpath: str, save_params: bool = False, use_sav
   timing.stop("train")
 
   # Print timing information for LightGBM model
-  if verbose:
-    print("\n***** LightGBM Model Timing *****")
-    print(timing.print())
-    print("*********************************\n")
+  # if verbose:
+  #   print("\n***** LightGBM Model Timing *****")
+  #   print(timing.print())
+  #   print("*********************************\n")
   
   return predict_lightgbm(ds, gbm, timing, verbose)
 
@@ -3115,7 +3115,7 @@ def _run_lars_sqft(ds: DataSplit, location_fields: list[str], sales_chase: float
 
   timing.stop("train")
   if verbose:
-    print("Tuning Naive Sqft: searching for optimal parameters...")
+    print("Tuning L.A.R.S. Sqft: searching for optimal parameters...")
     print(f"--> optimal improved $/finished sqft (overall) = {overall_per_impr_sqft:0.2f}")
     print(f"--> optimal vacant   $/land     sqft (overall) = {overall_per_land_sqft:0.2f}")
 
@@ -3222,7 +3222,7 @@ def _run_local_sqft(ds: DataSplit, location_fields: list[str], sales_chase: floa
 
   timing.stop("train")
   if verbose:
-    print("Tuning Naive Sqft: searching for optimal parameters...")
+    print("Tuning Local Sqft: searching for optimal parameters...")
     print(f"--> optimal improved $/finished sqft (overall) = {overall_per_impr_sqft:0.2f}")
     print(f"--> optimal vacant   $/land     sqft (overall) = {overall_per_land_sqft:0.2f}")
 
@@ -3507,7 +3507,7 @@ def _get_params(name: str, slug: str, ds: DataSplit, tune_func, outpath: str, sa
     if os.path.exists(f"{outpath}/{slug}_params.json"):
       params = json.load(open(f"{outpath}/{slug}_params.json", "r"))
       if verbose:
-        print(f"--> using saved parameters: {params}")
+        print(f"--> using saved parameters")
   if params is None:
     params = tune_func(
       ds.X_train,
@@ -3518,8 +3518,6 @@ def _get_params(name: str, slug: str, ds: DataSplit, tune_func, outpath: str, sa
       cat_vars=ds.categorical_vars,
       **kwargs
     )
-    if verbose:
-      print(f"--> optimal parameters = {params}")
     if save_params:
       os.makedirs(outpath, exist_ok=True)
       json.dump(params, open(f"{outpath}/{slug}_params.json", "w"))

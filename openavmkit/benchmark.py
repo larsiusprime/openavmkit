@@ -535,7 +535,11 @@ def run_models(
 		t.start(f"model group: {model_group}")
 		if verbose:
 			print("")
-			print(f"*** Running models for model_group: {model_group} ***")
+			print("")
+			print("******************************************************")
+			print(f"Running models for model_group: {model_group}")
+			print("******************************************************")
+			print("")
 			print("")
 		for vacant_only in [False, True]:
 			if vacant_only and not run_vacant:
@@ -1176,11 +1180,6 @@ def run_one_model(
 		t.start("write")
 		_write_model_results(results, outpath, settings)
 		t.stop("write")
-
-	print("")
-	print("**********TIMING FOR RUN ONE MODEL***********")
-	print(t.print())
-	print("***********************************************")
 
 	return results
 
@@ -2116,7 +2115,17 @@ def _calc_variable_recommendations(
 		] = 1
 		df.loc[df["signs_match"].eq(1), "weighted_score"] += weight_coef_sign
 
-	df = df.sort_values(by="weighted_score", ascending=False)
+	bys = ["weighted_score"]
+	ascs = [False]
+
+	if "adj_r2" in df:
+		bys.append("adj_r2")
+		ascs.append(False)
+	elif "r2" in df:
+		bys.append("r2")
+		ascs.append(False)
+
+	df = df.sort_values(by=bys, ascending=ascs)
 
 	if report is not None:
 		dfr = df.copy()

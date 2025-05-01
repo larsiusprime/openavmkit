@@ -46,7 +46,7 @@ def tune_xgboost(X, y, sizes, he_ids, n_trials=100, n_splits=5, random_state=42,
             verbose_eval=False, sizes=sizes, he_ids=he_ids, custom_alpha=0.1
         )
         if verbose:
-            print(f"-->trial # {trial.number}/{n_trials}, MAE: {mae:10.0f}, params: {params}")
+            print(f"-->trial # {trial.number}/{n_trials}, MAE: {mae:10.0f}") #, params: {params}")
         return mae  # Optuna minimizes, so return the MAE directly
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -102,7 +102,7 @@ def tune_lightgbm(X, y, sizes, he_ids, n_trials=100, n_splits=5, random_state=42
         # Use rolling-origin cross-validation
         mae = _lightgbm_rolling_origin_cv(X, y, params, n_splits=n_splits, random_state=random_state)
         if verbose:
-            print(f"-->trial # {trial.number}/{n_trials}, MAE: {mae:10.0f}, params: {params}")
+            print(f"-->trial # {trial.number}/{n_trials}, MAE: {mae:10.0f}") #, params: {params}")
         return mae  # Optuna minimizes, so return the MAE directly
 
     # Run Bayesian Optimization with Optuna
@@ -161,7 +161,7 @@ def tune_catboost(X, y, sizes, he_ids, n_trials=100, n_splits=5, random_state=42
         # Perform rolling-origin cross-validation
         mae = _catboost_rolling_origin_cv(X, y, params, n_splits=n_splits, random_state=random_state, cat_vars=cat_vars)
         if verbose:
-            print(f"-->trial # {trial.number}/{n_trials}, MAE: {mae:10.0f}, params: {params}")
+            print(f"-->trial # {trial.number}/{n_trials}, MAE: {mae:10.0f}") #, params: {params}")
         return mae  # Optuna minimizes, so return the MAE directly
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
