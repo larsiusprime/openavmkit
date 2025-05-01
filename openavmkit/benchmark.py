@@ -1092,12 +1092,14 @@ def run_one_model(
 	if verbose:
 		print(f" running model {model} on {len(df_sales)} rows...")
 
-	are_dep_vars_default = entry.get("ind_vars", None) is None
+	are_ind_vars_default = entry.get("ind_vars", None) is None
 	ind_vars: list | None = entry.get("ind_vars", default_entry.get("ind_vars", None))
+	# no duplicates!
+	ind_vars = list(set(ind_vars))
 	if ind_vars is None:
 		raise ValueError(f"ind_vars not found for model {model}")
 
-	if are_dep_vars_default and verbose:
+	if are_ind_vars_default and verbose:
 		if set(ind_vars) != set(best_variables):
 			print(f"--> using default variables, auto-optimized variable list: {best_variables}")
 		ind_vars = best_variables
@@ -2681,7 +2683,10 @@ def _run_models(
 		# Get test set predictions and actuals
 		y_pred = model_result.pred_test.y_pred
 		y_true = model_result.pred_test.y
-		
+
+		y_true = y_true.astype(np.float64)
+		y_pred = y_pred.astype(np.float64)
+
 		# Calculate R²
 		r2 = model_result.pred_test.r2
 		
@@ -2689,8 +2694,10 @@ def _run_models(
 		try:
 			slope, _ = np.polyfit(y_true, y_pred, 1)
 		except numpy.linalg.LinAlgError as e:
+			print(f"Model({model_name}) -- Error calculating slope:", e)
 			slope = np.nan
 		except numpy.core._exceptions.UFuncTypeError as e:
+			print(f"Model({model_name}) -- Error calculating slope:", e)
 			slope = np.nan
 
 		
