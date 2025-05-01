@@ -114,7 +114,10 @@ class SalesScrutinyStudy:
     self._write(path, False)
 
 
-  def get_scrutinized(self, df: pd.DataFrame):
+  def get_scrutinized(self, df_in: pd.DataFrame, verbose: bool = False):
+
+    df = df_in.copy()
+
     df_v = self.df_vacant
     df_i = self.df_improved
 
@@ -122,16 +125,36 @@ class SalesScrutinyStudy:
 
     if "flagged" in df_v:
       # remove flagged sales:
-      keys_flagged = df_v[df_v["flagged"].eq(True)]["key_sale"].tolist()
+      vacant_flags = df_v[df_v["flagged"].eq(True)]["key_sale"].tolist()
+      keys_flagged += vacant_flags
+      if verbose:
+        print(f"--> Flagged {len(vacant_flags)} vacant sales")
 
     if "flagged" in df_i:
-      keys_flagged += df_i[df_i["flagged"].eq(True)]["key_sale"].tolist()
+      improved_flags = df_i[df_i["flagged"].eq(True)]["key_sale"].tolist()
+      keys_flagged += improved_flags
+      if verbose:
+        print(f"--> Flagged {len(improved_flags)} improved sales")
 
     # ensure unique:
     keys_flagged = list(dict.fromkeys(keys_flagged))
 
+    if verbose:
+      print(f"--> Flagged {len(keys_flagged)} total sales")
+
     if len(df) > 0:
+
+      num_valid_sales_before = len(df[df["valid_sale"].eq(True)])
+
       df.loc[df["key_sale"].isin(keys_flagged), "valid_sale"] = False
+
+      num_valid_sales_after = len(df[df["valid_sale"].eq(True)])
+
+      if verbose:
+        print(f"--> Valid sales before: {num_valid_sales_before}")
+        print(f"--> Valid sales after: {num_valid_sales_after}")
+        diff = num_valid_sales_before - num_valid_sales_after
+        print(f"--> Marked {diff} new invalid sales")
 
       # merge ss_id into df:
       df = combine_dfs(df, df_v[["key_sale", "ss_id"]], index="key_sale")
@@ -362,7 +385,7 @@ def run_sales_scrutiny(df_in: pd.DataFrame, settings: dict, model_group: str, ve
   ss.write(f"out/sales_scrutiny/{model_group}")
 
   # clean sales data:
-  return ss.get_scrutinized(df_in)
+  return ss.get_scrutinized(df_in, verbose=verbose)
 
 
 # Private

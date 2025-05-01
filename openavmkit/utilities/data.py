@@ -176,6 +176,8 @@ def do_per_model_group(df_in: pd.DataFrame, settings: dict, func: callable, para
   df = df_in.copy()
   model_groups = get_model_group_ids(settings, df_in)
 
+  verbose = params.get("verbose", verbose)
+
   for model_group in model_groups:
     if pd.isna(model_group):
       continue

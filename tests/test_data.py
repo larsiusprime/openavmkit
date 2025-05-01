@@ -551,3 +551,47 @@ def test_merge_and_stomp_dfs():
 	assert dfs_are_equal(merged3, expected3, primary_key="key")
 	assert dfs_are_equal(merged4, expected4, primary_key="key")
 
+def test_update_sales():
+	sales = {
+		"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+		"sale_price": [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],
+		"sale_price_time_adj": [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],
+		"sale_date": ["2025-01-01", "2025-01-01", "2025-01-01", "2025-01-01", "2025-01-01", "2025-01-01", "2025-01-01", "2025-01-01", "2025-01-01", "2025-01-01"],
+		"key_sale": ["0---2025-01-01", "1---2025-01-01", "2---2025-01-01", "3---2025-01-01", "4---2025-01-01", "5---2025-01-01", "6---2025-01-01", "7---2025-01-01", "8---2025-01-01", "9---2025-01-01"],
+		"suspicious": [True, True, True, False, False, False, False, False, False, False],
+		"valid_sale": [True, True, True, True, True, True, True, True, True, True]
+	}
+	univ = {
+		"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+		"bldg_area_finished_sqft": [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000],
+		"land_area_sqft": [10000, 20000, 30000, 40000, 50000, 60000, 70000, 80000, 90000, 100000]
+	}
+	df_sales = pd.DataFrame(sales)
+	df_univ = pd.DataFrame(univ)
+
+	sup = SalesUniversePair(
+		sales=df_sales,
+		universe=df_univ
+	)
+
+	df_sales = sup.sales.copy()
+
+	df_sales.loc[df_sales["suspicious"].eq(True), "valid_sale"] = False
+	df_sales = df_sales[df_sales["valid_sale"].eq(True)]
+
+	num_valid_before = len(sup.sales[sup.sales["valid_sale"].eq(True)])
+	len_before = len(sup.sales)
+
+	sup.update_sales(df_sales, allow_remove_rows=True)
+
+	num_valid_after = len(sup.sales[sup.sales["valid_sale"].eq(True)])
+	len_after = len(sup.sales)
+
+	assert num_valid_before == 10
+	assert len_before == 10
+	assert num_valid_after == 7
+	assert len_after == 7
+
+
+
+

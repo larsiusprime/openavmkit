@@ -103,7 +103,7 @@ class SalesUniversePair:
     else:
       raise ValueError(f"Invalid key: {key}")
 
-  def update_sales(self, new_sales: pd.DataFrame, allow_remove_rows: bool = False):
+  def update_sales(self, new_sales: pd.DataFrame, allow_remove_rows: bool):
     """
     Update the sales DataFrame with new information as an overlay without redundancy.
 
@@ -125,10 +125,6 @@ class SalesUniversePair:
     old_fields = self.sales.columns.values
     univ_fields = [field for field in self.universe.columns.values if field not in old_fields]
     new_fields = [field for field in new_sales.columns.values if field not in old_fields and field not in univ_fields]
-    return_keys = new_sales["key_sale"].values
-    reconciled = new_sales.copy()
-    reconciled = reconciled[reconciled["key_sale"].isin(return_keys)]
-    reconciled = combine_dfs(reconciled, new_sales[["key_sale"] + new_fields], index="key_sale")
 
     old_sales = self.sales.copy()
     return_keys = new_sales["key_sale"].values

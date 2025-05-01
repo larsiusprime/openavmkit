@@ -561,7 +561,7 @@ def process_sales(sup: SalesUniversePair, settings: dict, verbose: bool = False)
    print(f"len after enrich = {len(df_sales_enriched)}")
 
    # update the SUP sales
-   sup.update_sales(df_sales_enriched)
+   sup.update_sales(df_sales_enriched, allow_remove_rows=True)
 
    # enrich sales w/ spatial lag fields
    sup = enrich_sup_spatial_lag(sup, settings, verbose=verbose)
@@ -614,7 +614,7 @@ def mark_ss_ids_per_model_group_sup(sup: SalesUniversePair, settings: dict, verb
    """
    df_sales_hydrated = get_hydrated_sales_from_sup(sup)
    df_marked = mark_ss_ids_per_model_group(df_sales_hydrated, settings, verbose)
-   sup.update_sales(df_marked)
+   sup.update_sales(df_marked, allow_remove_rows=False)
    return sup
 
 
@@ -651,9 +651,27 @@ def run_sales_scrutiny_per_model_group_sup(sup: SalesUniversePair, settings: dic
    :returns: Updated SalesUniversePair after sales scrutiny analysis.
    :rtype: SalesUniversePair
    """
+
    df_sales_hydrated = get_hydrated_sales_from_sup(sup)
+   num_valid_before = len(df_sales_hydrated[df_sales_hydrated["valid_sale"].eq(True)])
    df_scrutinized = run_sales_scrutiny_per_model_group(df_sales_hydrated, settings, verbose)
-   sup.update_sales(df_scrutinized)
+   num_valid_after = len(df_scrutinized[df_scrutinized["valid_sale"].eq(True)])
+
+   # Drop all invalid sales
+   df_scrutinized = df_scrutinized[df_scrutinized["valid_sale"].eq(True)]
+   sup_num_valid_before = len(sup.sales[sup.sales["valid_sale"].eq(True)])
+
+   sup.update_sales(df_scrutinized, allow_remove_rows=True)
+
+   sup_num_valid_after = len(sup.sales[sup.sales["valid_sale"].eq(True)])
+
+   if verbose:
+      diff = sup_num_valid_before - sup_num_valid_after
+      print("")
+      print(f"Number of valid sales in SUP before scrutiny: {sup_num_valid_before}")
+      print(f"Number of valid sales in SUP after scrutiny: {sup_num_valid_after}")
+      print(f"Difference in valid sales in SUP: {diff}")
+
    return sup
 
 
