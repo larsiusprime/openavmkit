@@ -2524,7 +2524,9 @@ def _run_models(
 	dep_var_test = s_inst.get("dep_var_test", "sale_price_time_adj")
 	fields_cat = get_fields_categorical(s, df_univ)
 	models_to_run = s_inst.get(vacant_status, {}).get("run", None)
+	models_to_skip = s_inst.get(vacant_status, {}).get("skip", {}).get(model_group, [])
 	model_entries = s_model.get("models").get(vacant_status, {})
+
 	if models_to_run is None:
 		models_to_run = list(model_entries.keys())
 
@@ -2559,23 +2561,16 @@ def _run_models(
 	)
 	best_variables = var_recs["variables"]
 
-	# var_report = var_recs["report"]
-	# var_report_md = var_report.render()
-	#
-	# os.makedirs(f"{outpath}/reports", exist_ok=True)
-	# with open(f"{outpath}/reports/variable_report.md", "w", encoding="utf-8") as f:
-	# 	f.write(var_report_md)
-	#
-	# pdf_path = f"{outpath}/reports/variable_report.pdf"
-	# formats = settings.get("analysis", {}).get("report", {}).get("formats", None)
-	# _markdown_to_pdf(var_report_md, pdf_path, css_file="variable", formats=formats)
-	# t.stop("var_recs")
-
 	any_results = False
 
 	# Run the models one by one and stash the results
 	t.start("run_models")
 	for model in models_to_run:
+
+		if model in models_to_skip:
+			print(f"Skipping model: {model} for model_group: {model_group}, vacant_only: {vacant_only}")
+			continue
+
 		results = run_one_model(
 			df_sales=df_sales,
 			df_universe=df_univ,
