@@ -747,7 +747,7 @@ def _enrich_df_census(df_in: pd.DataFrame | gpd.GeoDataFrame, census_settings: d
 
 def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_settings: dict, s_enrich_this: dict, verbose: bool = False, use_cache: bool = False) -> pd.DataFrame | gpd.GeoDataFrame:
     """
-    Enrich a DataFrame with OpenStreetMap data.
+    Enrich a DataFrame with OpenStreetMap data by calculating distances to all features.
     
     Args:
         df (pd.DataFrame | gpd.GeoDataFrame): DataFrame to enrich
@@ -771,7 +771,6 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
         return df_out
 
     df = df_in.copy()
-    dataframes: dict[str, pd.DataFrame] = {}
 
     try:
         if not osm_settings.get('enabled', False):
@@ -809,7 +808,13 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
 
         bbox = [west, south, east, north]
 
-        # Process each feature based on settings
+        # Get distances configuration from settings
+        distances_config = {
+            dist["id"]: dist 
+            for dist in s_enrich_this.get('distances', [])
+            if isinstance(dist, dict)
+        }
+
 
         # Define a dictionary to hold feature configurations
         features_config = {
@@ -818,44 +823,55 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
             "verbose_label": "water bodies",
             "store_top": True,
             "error_method": "print",  # print error message with traceback
+            "sort_field": "area",  # field to sort by for top features
+            "type_field": "water"  # field containing feature type for unnamed features
           },
           "transportation": {
             "getter": osm_service.get_transportation,
             "verbose_label": "transportation networks",
             "store_top": False,       # no top features for transportation
             "error_method": "warn",   # use warnings.warn
+            "sort_field": "length",
+            "type_field": "highway"
           },
           "educational": {
             "getter": osm_service.get_educational_institutions,
             "verbose_label": "educational institutions",
             "store_top": True,
             "error_method": "warn",
+            "sort_field": "area",
+            "type_field": "amenity"
           },
           "parks": {
             "getter": osm_service.get_parks,
             "verbose_label": "parks",
             "store_top": True,
             "error_method": "warn",
+            "sort_field": "area",
+            "type_field": "leisure"
           },
           "golf_courses": {
             "getter": osm_service.get_golf_courses,
             "verbose_label": "golf courses",
             "store_top": True,
             "error_method": "warn",
+            "sort_field": "area",
+            "type_field": "leisure"
           },
         }
 
         # Loop through each feature configuration:
         for feature, config in features_config.items():
           # Check if feature is enabled in the osm_settings
-          if osm_settings.get(feature, {}).get('enabled', False):
+          feature_settings = osm_settings.get(feature, {})
+          if feature_settings.get('enabled', False):
             if verbose:
               print(f"--> Getting {config['verbose_label']}...")
             try:
               # Call the designated getter function
               result = config["getter"](
                 bbox=bbox,
-                settings=osm_settings[feature],
+                settings=feature_settings,
                 use_cache=use_cache
               )
               if verbose:
@@ -863,14 +879,85 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
                   print(f"    No {config['verbose_label']} found")
                 else:
                   print(f"--> Found {len(result)} {config['verbose_label']}")
+                  pd.set_option('display.max_columns', None)
+                  pd.set_option('display.max_rows', None)
+                  pd.set_option('display.width', 1000)
+
+              
               if not result.empty:
-                # Save the primary result
-                dataframes[f"osm_{feature}"] = result
-                # Save top features if applicable
-                if config["store_top"]:
-                  top_key = feature + "_top"
-                  if top_key in osm_service.features:
-                    dataframes[top_key] = osm_service.features[top_key]
+                # Get distance settings from distances configuration
+                feature_id = f"osm_{feature}"
+                distance_settings = distances_config.get(feature_id, {})
+                
+                # If no settings found, try with _top suffix as fallback
+                if not distance_settings and f"{feature_id}_top" in distances_config:
+                    distance_settings = distances_config.get(f"{feature_id}_top", {})
+                
+                max_distance = distance_settings.get('max_distance', None)
+                unit = distance_settings.get('unit', 'km')
+                
+                if verbose:
+                    print(f"\nDistance settings for {feature_id}:")
+                    print(f"max_distance: {max_distance}")
+                    print(f"unit: {unit}")
+                    print()
+                
+                # Calculate distances to all features
+                df = _do_perform_distance_calculations_osm(
+                    df,
+                    result,
+                    feature_id,
+                    max_distance=max_distance,
+                    unit=unit
+                )
+                
+                # If store_top is enabled, calculate distances to top features
+                if config["store_top"] and feature_settings.get('top_n', 0) > 0:
+                    # Get top features based on configured sort field
+                    sort_field = config["sort_field"]
+                    if sort_field in result.columns:
+                        top_features = result.nlargest(feature_settings['top_n'], sort_field)
+                    else:
+                        # Fallback to first numeric column or just take first N
+                        numeric_cols = result.select_dtypes(include=[np.number]).columns
+                        if len(numeric_cols) > 0:
+                            top_features = result.nlargest(feature_settings['top_n'], numeric_cols[0])
+                        else:
+                            top_features = result.head(feature_settings['top_n'])
+                    
+                    # Calculate distances to each top feature
+                    for idx, top_feature in top_features.iterrows():
+                        # Try to get name, fallback to type + index if no name
+                        feature_name = None
+                        if 'name' in top_feature and pd.notna(top_feature['name']):
+                            feature_name = str(top_feature['name'])
+                        else:
+                            # Use type field if available
+                            type_field = config['type_field']
+                            if type_field in top_feature and pd.notna(top_feature[type_field]):
+                                feature_type = str(top_feature[type_field])
+                                feature_name = f"{feature_type}_{idx}"
+                            else:
+                                feature_name = f"feature_{idx}"
+                        
+                        # Clean the feature name
+                        feature_name = clean_series(pd.Series([feature_name]))[0]
+                        
+                        # Create single-feature GeoDataFrame
+                        feature_gdf = gpd.GeoDataFrame(
+                            geometry=[top_feature.geometry], 
+                            crs=result.crs
+                        )
+                        
+                        # Calculate distance to this top feature using same distance settings
+                        df = _do_perform_distance_calculations_osm(
+                            df,
+                            feature_gdf,
+                            f"{feature_id}_{feature_name}",
+                            max_distance=max_distance,
+                            unit=unit
+                        )
+                
             except Exception as e:
               err_msg = f"Failed to get {config['verbose_label']}: {str(e)}"
               if config["error_method"] == "warn":
@@ -878,31 +965,6 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
               else:
                 print("ERROR " + err_msg)
                 print("Traceback: " + traceback.format_exc())
-        
-        # Configure distance calculations to match settings file format
-        distances = []
-        
-        # Get the distances configuration from settings
-        distances_config = s_enrich_this.get('distances', [])
-
-        legal_features = ['osm_water_bodies', 'osm_transportation', 'osm_educational', 'osm_parks', 'osm_golf_courses']
-
-        for entry in distances_config:
-          if isinstance(entry, dict):
-            source = entry.get("source", entry.get("id"))
-          elif isinstance(entry, str):
-            source = entry
-            entry = {
-              "id": source,
-              "source": source
-            }
-          if source in legal_features and source in dataframes:
-            distances.append(entry)
-          else:
-            print(f"----> {source} not found in legal features, skipping distance calculation")
-
-        if distances:
-          df = _perform_distance_calculations(df, distances, dataframes, verbose=verbose, cache_key="osm/distance")
 
         write_cached_df(df_in, df, "osm/all", "key", osm_settings)
 
@@ -2257,6 +2319,7 @@ def _perform_spatial_join(gdf_in: gpd.GeoDataFrame, gdf_overlay: gpd.GeoDataFram
   return gdf
 
 
+
 def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDataFrame, _id: str, max_distance: float = None, unit: str = "km") -> pd.DataFrame:
     """
     Perform a divide-by-zero-safe nearest neighbor spatial join to calculate distances.
@@ -2407,6 +2470,109 @@ def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDa
 
     write_cached_df(df_in, df_out, f"osm/do_distance_{_id}", "key", signature)
 
+    return df_out
+
+
+def _do_perform_distance_calculations_osm(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDataFrame, _id: str, max_distance: float = None, unit: str = "km") -> pd.DataFrame:
+    """
+    Perform a divide-by-zero-safe nearest neighbor spatial join to calculate distances.
+
+    :param df_in: Base GeoDataFrame.
+    :type df_in: geopandas.GeoDataFrame
+    :param gdf_in: Overlay GeoDataFrame.
+    :type gdf_in: geopandas.GeoDataFrame
+    :param _id: Identifier used for naming the distance column.
+    :type _id: str
+    :param max_distance: Maximum distance to consider (in specified unit)
+    :type max_distance: float, optional
+    :param unit: Unit for distance conversion (default "km").
+    :type unit: str, optional
+    :returns: DataFrame with added distance and within_distance columns.
+    :rtype: pandas.DataFrame
+    :raises ValueError: If an unsupported unit is specified.
+    """
+    unit_factors = {"m": 1, "km": 0.001, "mile": 0.000621371, "ft": 3.28084}
+    if unit not in unit_factors:
+        raise ValueError(f"Unsupported unit '{unit}'")
+    
+    # Get appropriate CRS for distance calculations
+    crs = get_crs(df_in, "equal_distance")
+    print(f"Calculation CRS: {crs}")
+
+    # Check for duplicate keys
+    if df_in.duplicated(subset="key").sum() > 0:
+        raise ValueError(f"Duplicate keys found before distance calculation for '{_id}.' This should not happen.")
+
+    # Construct cache signature
+    signature = {
+        "crs": crs.name,
+        "_id": _id,
+        "max_distance": max_distance,
+        "unit": unit,
+        "df_in_len": len(df_in),
+        "gdf_in_len": len(gdf_in),
+        "df_cols": sorted(df_in.columns.tolist()),
+        "gdf_cols": sorted(gdf_in.columns.tolist()),
+        "gdf_hash": hash(gdf_in.geometry.to_wkb().sum()),
+    }
+
+    # Check cache
+    df_out = get_cached_df(df_in, f"osm/do_distance_{_id}", "key", signature)
+    if df_out is not None:
+        return df_out
+
+    # Project geometries
+    df_projected = df_in.to_crs(crs).copy()
+    gdf_projected = gdf_in.to_crs(crs).copy()
+    
+    # Calculate distances for all parcels first
+    nearest = gpd.sjoin_nearest(
+        df_projected,
+        gdf_projected,
+        how="left",
+        distance_col="distance"
+    )
+    
+    # Handle duplicates by keeping shortest distance
+    if nearest.duplicated(subset="key").sum() > 0:
+        nearest = nearest.sort_values("distance").drop_duplicates("key")
+    
+    # Create distance series (distances are in meters at this point)
+    distance_series = pd.Series(nearest["distance"].values, index=nearest.index)
+    
+    # Initialize within flag
+    within_series = pd.Series(False, index=df_projected.index)
+    
+    if max_distance is not None:
+        # Convert max_distance to meters (since our distances are in meters)
+        max_distance_m = max_distance / unit_factors[unit]
+        
+        # Mark parcels within max_distance
+        within_series[distance_series <= max_distance_m] = True
+        
+        # Set distances beyond max_distance to max_distance + 1 (in the target unit)
+        distance_series[distance_series > max_distance_m] = (max_distance + 1) / unit_factors[unit]
+        
+        # Convert all distances to target unit
+        distance_series = distance_series * unit_factors[unit]
+    else:
+        # If no max_distance, all parcels are considered "within"
+        within_series[:] = True
+        # Convert distances to target unit
+        distance_series = distance_series * unit_factors[unit]
+    
+    # Create output DataFrame with new columns
+    new_df = pd.DataFrame({
+        f"dist_to_{_id}": distance_series,
+        f"within_{_id}": within_series
+    }, index=df_projected.index)
+    
+    # Combine with original DataFrame
+    df_out = pd.concat([df_in, new_df], axis=1)
+    
+    # Cache results
+    write_cached_df(df_in, df_out, f"osm/do_distance_{_id}", "key", signature)
+    
     return df_out
 
 
@@ -3417,3 +3583,31 @@ def _assign_modal_model_group_to_common_area(df_univ_in: gpd.GeoDataFrame, model
   df_return = combine_dfs(df_return, df[["key", "model_group"]], df2_stomps=True, index="key")
   df_return.to_parquet("out/look/common_area-3-return.parquet", engine="pyarrow")
   return df_return
+
+def clean_series(series: pd.Series) -> pd.Series:
+    """
+    Clean a pandas Series by converting to lowercase, replacing spaces with underscores,
+    and removing special characters.
+    
+    Args:
+        series (pd.Series): Input series to clean
+        
+    Returns:
+        pd.Series: Cleaned series
+    """
+    # Convert to string if not already
+    series = series.astype(str)
+    
+    # Convert to lowercase
+    series = series.str.lower()
+    
+    # Replace spaces and special characters with underscores
+    series = series.str.replace(r'[^a-z0-9]', '_', regex=True)
+    
+    # Replace multiple underscores with single underscore
+    series = series.str.replace(r'_+', '_', regex=True)
+    
+    # Remove leading/trailing underscores
+    series = series.str.strip('_')
+    
+    return series
