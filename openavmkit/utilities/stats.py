@@ -15,6 +15,8 @@ from sklearn.linear_model import ElasticNet, LinearRegression
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from statsmodels.tools.sm_exceptions import MissingDataError
 
+from openavmkit.utilities.settings import get_fields_boolean, get_fields_categorical
+
 
 def calc_chds(df_in: pd.DataFrame, field_cluster: str, field_value: str):
 	"""
@@ -679,7 +681,7 @@ def calc_t_values(X: pd.DataFrame, y: pd.Series):
 	return fitted_model.tvalues
 
 
-def calc_vif_recursive_drop(X: pd.DataFrame, threshold: float = 10):
+def calc_vif_recursive_drop(X: pd.DataFrame, threshold: float = 10, settings: dict = None):
 	"""
   Recursively drop variables with a Variance Inflation Factor (VIF) exceeding the threshold.
 
@@ -687,12 +689,22 @@ def calc_vif_recursive_drop(X: pd.DataFrame, threshold: float = 10):
   :type X: pandas.DataFrame
   :param threshold: Maximum acceptable VIF (default is 10).
   :type threshold: float, optional
+  :param settings: Settings dictionary containing field classifications.
+  :type settings: dict, optional
   :returns: A dictionary with keys "initial" and "final" containing VIF DataFrames.
   :rtype: dict
   :raises ValueError: If no columns remain for VIF calculation.
   """
 	X = X.copy()
 	X = X.astype(np.float64)
+
+	# Get boolean and categorical variables from settings if provided
+	bool_fields = get_fields_boolean(settings, X)
+	cat_fields = get_fields_categorical(settings, X, include_boolean=False)
+	exclude_vars = bool_fields + cat_fields
+
+	# Remove boolean and categorical variables
+	X = X.drop(columns=[col for col in X.columns if col in exclude_vars], errors='ignore')
 
 	# Drop constant columns (VIF cannot be calculated for constant columns)
 	X = X.loc[:, X.nunique() > 1]  # Keep only columns with more than one unique value

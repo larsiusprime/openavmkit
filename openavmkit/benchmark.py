@@ -138,8 +138,6 @@ def try_variables(
 
 	df_hydrated = get_hydrated_sales_from_sup(sup)
 
-	#df_hydrated = df_hydrated[df_hydrated["sale_price_time_adj"].lt(1000000)]
-
 	idx_vacant = df_hydrated["vacant_sale"].eq(True)
 
 	df_vacant = df_hydrated[idx_vacant].copy()
@@ -246,8 +244,6 @@ def try_variables(
 							plt.show()
 
 
-
-
 def get_variable_recommendations(
 		df_sales: pd.DataFrame,
 		df_universe: pd.DataFrame,
@@ -347,9 +343,9 @@ def get_variable_recommendations(
 	else:
 		t_values = None
 
-	# VIF
 	if "vif" in tests_to_run:
-		vif = calc_vif_recursive_drop(X_sales, thresh.get("vif", 10))
+		# VIF
+		vif = calc_vif_recursive_drop(X_sales, thresh.get("vif", 10), settings)
 	else:
 		vif = None
 
@@ -1100,10 +1096,11 @@ def run_one_model(
 	if ind_vars is None:
 		raise ValueError(f"ind_vars not found for model {model}")
 
-	if are_ind_vars_default and verbose:
-		if set(ind_vars) != set(best_variables):
-			print(f"--> using default variables, auto-optimized variable list: {best_variables}")
-		ind_vars = best_variables
+	if are_ind_vars_default:
+		if (best_variables is not None) and (set(ind_vars) != set(best_variables)):
+			if verbose:
+				print(f"--> using default variables, auto-optimized variable list: {best_variables}")
+			ind_vars = best_variables
 
 	interactions = get_variable_interactions(entry, settings, df_sales)
 	location_fields = get_locations(settings, df_sales)
@@ -1997,7 +1994,7 @@ def _prepare_ds(
 		if ind_vars is None:
 			raise ValueError(f"ind_vars not found for model 'default'")
 
-	fields_cat = get_fields_categorical(s, df_sales)
+	fields_cat = get_fields_categorical(s, df_sales, include_boolean=True)
 	interactions = get_variable_interactions(entry, s, df_sales)
 
 	instructions = s.get("modeling", {}).get("instructions", {})
@@ -2532,9 +2529,10 @@ def _run_models(
 	s_inst = s_model.get("instructions", {})
 	vacant_status = "vacant" if vacant_only else "main"
 
-	dep_var = s_inst.get("dep_var", "sale_price")
-	dep_var_test = s_inst.get("dep_var_test", "sale_price_time_adj")
-	fields_cat = get_fields_categorical(s, df_univ)
+	default_value = get_sale_field(settings, df_sales)
+	dep_var = s_inst.get("dep_var", default_value)
+	dep_var_test = s_inst.get("dep_var_test", default_value)
+	fields_cat = get_fields_categorical(s, df_univ, include_boolean=True)
 	models_to_run = s_inst.get(vacant_status, {}).get("run", None)
 	models_to_skip = s_inst.get(vacant_status, {}).get("skip", {}).get(model_group, [])
 	model_entries = s_model.get("models").get(vacant_status, {})
@@ -2583,6 +2581,11 @@ def _run_models(
 			print(f"Skipping model: {model} for model_group: {model_group}, vacant_only: {vacant_only}")
 			continue
 
+		model_variables = best_variables
+		# For tree-based models, we don't perform variable reduction
+		if model in ["xgboost", "lightgbm", "catboost"]:
+			model_variables = None
+
 		results = run_one_model(
 			df_sales=df_sales,
 			df_universe=df_univ,
@@ -2593,7 +2596,7 @@ def _run_models(
 			settings=settings,
 			dep_var=dep_var,
 			dep_var_test=dep_var_test,
-			best_variables=best_variables,
+			best_variables=model_variables,
 			fields_cat=fields_cat,
 			outpath=outpath,
 			save_params=save_params,
@@ -2671,9 +2674,9 @@ def _run_models(
 	print(all_results.benchmark.print())
 
 	# Add performance metrics table
-	print(f"\nModel Performance Metrics for {model_group}:")
+	benchmark_type = "VACANT" if vacant_only else "MAIN"
+	print(f"\n{benchmark_type} Model Performance Metrics for {model_group}:")
 	print("=" * 80)
-	
 	metrics_data = {
 		"Model": [],
 		"R²": [],

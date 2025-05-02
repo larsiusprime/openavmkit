@@ -35,7 +35,7 @@ from openavmkit.sales_scrutiny_study import run_sales_scrutiny_per_model_group, 
 from openavmkit.time_adjustment import enrich_time_adjustment
 from openavmkit.utilities.data import combine_dfs
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_numeric, get_fields_boolean, \
-   get_fields_land, get_fields_impr, get_fields_other, get_fields_boolean_na_false, get_fields_boolean_na_true
+   get_fields_land, get_fields_impr, get_fields_other
 
 
 # Basic data stuff
@@ -469,7 +469,7 @@ def load_dataframes(settings: dict, verbose: bool = False) -> dict:
    dataframes = {}
 
    fields_cat = get_fields_categorical(settings, include_boolean=False)
-   fields_bool = get_fields_boolean(settings) + get_fields_boolean_na_false(settings) + get_fields_boolean_na_true(settings)
+   fields_bool = get_fields_boolean(settings)
    fields_num = get_fields_numeric(settings, include_boolean=False)
 
 
