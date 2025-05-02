@@ -1649,7 +1649,7 @@ def _boolify_column_in_df(df: pd.DataFrame, field: str, na_handling: str = None)
   elif na_handling == "na_true":
     na_handling = "true"
   elif na_handling is None:
-    warnings.warn(f"NA handling specified for boolean field '{field}'. Defaulting to 'na_false'.")
+    warnings.warn(f"No NA handling specified for boolean field '{field}'. Defaulting to 'na_false'.")
     na_handling = "false"
   else:
     raise ValueError(f"Invalid na_handling value: {na_handling}. Expected 'na_true', 'na_false', or None.")
@@ -2899,9 +2899,10 @@ def _load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_c
       if col in dtype_map:
         target_dtype = dtype_map[col]
         if target_dtype == "bool" or target_dtype == "boolean":
-          if col in extra_map:
+          rename_key = rename_map.get(col, col)
+          if rename_key in extra_map:
             # if the user has specified a na_handling, we will manually boolify the column
-            na_handling = extra_map[col]
+            na_handling = extra_map[rename_key]
             df = _boolify_column_in_df(df, col, na_handling)
           else:
             # otherwise, we use the exact dtype they specified with a warning and default to casting NA to false
@@ -3300,7 +3301,7 @@ def _merge_dict_of_dfs(dataframes: dict[str, pd.DataFrame], merge_list: list, se
   # enforce types post-merge:
   for col in df_merged.columns:
     if col in fields_bool:
-      df_merged[col] = _boolify_column_in_df(df_merged, col, "na_false")
+      df_merged = _boolify_column_in_df(df_merged, col, "na_false")
     elif col in fields_num:
       df_merged[col] = df_merged[col].astype("Float64")
     elif col in fields_cat:
