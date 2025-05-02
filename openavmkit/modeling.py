@@ -576,19 +576,13 @@ class DataSplit:
     return ds_encoded
 
 
-  def encode_categoricals_with_one_hot(self):
+  def encode_categoricals_with_one_hot(self, exceptions:list[str] = None):
     """
-    One-hot encode the categorical variables in all data splits using a consistent encoder.
-    This implementation:
-
-    - Collects the union of categorical values from universe, sales, train, test.
-    - Uses scikit-learn's OneHotEncoder (with handle_unknown="ignore" and drop='first') so that output
-      dummy columns are consistent across splits.
-    - Transforms each DataFrame so that each split (universe, sales, train, test,)
-      ends up with the same set of dummy columns (reindexing missing ones to 0).
-
-    Returns:
-        DataSplit: The updated DataSplit instance with one-hot encoded features.
+    One-hot encode categorical variables in the DataSplit instance.
+    :param exceptions: List of categorical variables to exclude from encoding.
+    :type exceptions: list[str], optional
+    :return: A new DataSplit instance with one-hot encoded categorical variables.
+    :rtype: DataSplit
     """
     # If no categorical variables to encode, return self
     if len(self.categorical_vars) == 0:
@@ -599,6 +593,7 @@ class DataSplit:
     # Identify the categorical variables that need encoding.
     # We restrict to those that appear in the independent variables.
     cat_vars = [col for col in ds.ind_vars if col in self.categorical_vars]
+    cat_vars = [col for col in cat_vars if col not in (exceptions or [])]
 
     # Collect data from all splits where a categorical column is present.
     dataframes_for_union = []
@@ -659,14 +654,17 @@ class DataSplit:
           df_tmp[col] = np.nan
       # Subset to our categorical columns in the expected order.
       df_cats = df_tmp[cat_vars]
-      # Transform using the fitted OneHotEncoder; result is a NumPy array.
-      onehot_arr = encoder.transform(df_cats)
-      # Create a DataFrame from the dummy array with proper column names.
-      onehot_df = pd.DataFrame(onehot_arr, columns=onehot_feature_names, index=df.index)
-      # Drop the original categorical columns from the DataFrame.
-      df_tmp = df_tmp.drop(columns=cat_vars, errors='ignore')
-      # Concatenate the dummy DataFrame onto the non-categorical features.
-      df_transformed = pd.concat([df_tmp, onehot_df], axis=1)
+      if len(df_cats) > 0:
+        # Transform using the fitted OneHotEncoder; result is a NumPy array.
+        onehot_arr = encoder.transform(df_cats)
+        # Create a DataFrame from the dummy array with proper column names.
+        onehot_df = pd.DataFrame(onehot_arr, columns=onehot_feature_names, index=df.index)
+        # Drop the original categorical columns from the DataFrame.
+        df_tmp = df_tmp.drop(columns=cat_vars, errors='ignore')
+        # Concatenate the dummy DataFrame onto the non-categorical features.
+        df_transformed = pd.concat([df_tmp, onehot_df], axis=1)
+      else:
+        df_transformed = df_tmp
       return df_transformed
 
     # Transform every split.

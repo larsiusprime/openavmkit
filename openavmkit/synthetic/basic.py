@@ -204,6 +204,7 @@ def generate_basic(
 
 	data_sales = {
 		"key": [],
+		"key_sale": [],
 		"valid_sale": [],
 		"valid_for_ratio_study": [],
 		"vacant_sale": [],
@@ -409,7 +410,9 @@ def generate_basic(
 			data["is_vacant"].append(is_vacant)
 
 			if valid_sale:
+				sale_date_YYYY_MM_DD = sale_date.strftime("%Y-%m-%d")
 				data_sales["key"].append(str(key))
+				data_sales["key_sale"].append(str(key)+"---"+sale_date_YYYY_MM_DD)
 				data_sales["valid_sale"].append(valid_sale)
 				data_sales["valid_for_ratio_study"].append(valid_sale)
 				data_sales["vacant_sale"].append(vacant_sale)
