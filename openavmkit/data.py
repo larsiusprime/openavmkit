@@ -38,7 +38,7 @@ from openavmkit.utilities.geometry import get_crs, clean_geometry, identify_irre
   geolocate_point_to_polygon, is_likely_epsg4326
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
   get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit, get_valuation_date, get_center, \
-  get_fields_boolean_na_true, get_fields_boolean_na_false, get_short_distance_unit
+  get_short_distance_unit
 
 from openavmkit.utilities.census import get_creds_from_env_census, init_service_census, match_to_census_blockgroups
 from openavmkit.utilities.openstreetmap import init_service_openstreetmap
@@ -288,7 +288,7 @@ def get_vacant_sales(df_in: pd.DataFrame, settings: dict, invert: bool = False) 
   :rtype: pandas.DataFrame
   """
   df = df_in.copy()
-  df = _boolify_column_in_df(df, "vacant_sale", settings)
+  df = _boolify_column_in_df(df, "vacant_sale", "na_false")
   idx_vacant_sale = df["vacant_sale"].eq(True)
   if invert:
     idx_vacant_sale = ~idx_vacant_sale
@@ -488,9 +488,9 @@ def get_field_classifications(settings: dict):
   """
   field_map = {}
   for ftype in ["land", "impr", "other"]:
-    nums = get_fields_numeric(settings, None, False, [ftype])
-    cats = get_fields_categorical(settings, None, False, [ftype])
-    bools = get_fields_boolean(settings, None, [ftype])
+    nums = get_fields_numeric(settings, df=None, include_boolean=False, types=[ftype])
+    cats = get_fields_categorical(settings,df=None, include_boolean=False, types=[ftype])
+    bools = get_fields_boolean(settings, df=None, types=[ftype])
     for field in nums:
       field_map[field] = {"type": ftype, "class": "numeric"}
     for field in cats:
@@ -1628,7 +1628,7 @@ def _boolify_series(series: pd.Series, na_handling: str = None):
     return series
 
 
-def _boolify_column_in_df(df: pd.DataFrame, field: str, settings: dict = None):
+def _boolify_column_in_df(df: pd.DataFrame, field: str, na_handling: str = None):
   """
   Convert a specified column in a DataFrame to boolean.
 
@@ -1636,20 +1636,23 @@ def _boolify_column_in_df(df: pd.DataFrame, field: str, settings: dict = None):
   :type df: pandas.DataFrame
   :param field: Column name to convert.
   :type field: str
-  :param settings: Settings dictionary to determine NA handling.
-  :type settings: dict, optional
+  :param na_handling: How to handle NA values.
+  :type na_handling: str, optional
   :returns: DataFrame with the specified column converted.
   :rtype: pandas.DataFrame
   """
   series = df[field]
   
   # Determine NA handling based on settings
-  na_handling = None
-  if settings is not None:
-    if field in get_fields_boolean_na_true(settings):
-      na_handling = "true"
-    elif field in get_fields_boolean_na_false(settings):
-      na_handling = "false"
+  if na_handling == "na_false":
+    na_handling = "false"
+  elif na_handling == "na_true":
+    na_handling = "true"
+  elif na_handling is None:
+    warnings.warn(f"NA handling specified for boolean field '{field}'. Defaulting to 'na_false'.")
+    na_handling = "false"
+  else:
+    raise ValueError(f"Invalid na_handling value: {na_handling}. Expected 'na_true', 'na_false', or None.")
   
   series = _boolify_series(series, na_handling)
   df[field] = series
@@ -2357,8 +2360,7 @@ def _do_perform_distance_calculations(df_in: gpd.GeoDataFrame, gdf_in: gpd.GeoDa
       "df_in_len": len(df_in),
       "gdf_in_len": len(gdf_in),
       "df_cols": sorted(df_in.columns.tolist()),
-      "gdf_cols": sorted(gdf_in.columns.tolist()),
-      "gdf_hash": hash(gdf_in.geometry.to_wkb().sum()),
+      "gdf_cols": sorted(gdf_in.columns.tolist())
     }
 
     # check if we already have this distance calculation
@@ -2924,7 +2926,10 @@ def _load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_c
     if col in fields_cat:
       df[col] = df[col].astype("string")
     elif col in fields_bool:
-      df = _boolify_column_in_df(df, col, settings)
+      na_handling = None
+      if col in extra_map:
+        na_handling = extra_map[col]
+      df = _boolify_column_in_df(df, col, na_handling)
     elif col in fields_num:
       df[col] = df[col].astype("Float64")
 
@@ -3275,6 +3280,20 @@ def _merge_dict_of_dfs(dataframes: dict[str, pd.DataFrame], merge_list: list, se
 
   # ensure a clean index:
   df_merged = df_merged.reset_index(drop=True)
+
+  fields_bool = get_fields_boolean(settings)
+  fields_num = get_fields_numeric(settings, include_boolean=False)
+  fields_cat = get_fields_categorical(settings, include_boolean=False)
+
+  # enforce types post-merge:
+  for col in df_merged.columns:
+    if col in fields_bool:
+      df_merged[col] = _boolify_column_in_df(df_merged, col, "na_false")
+    elif col in fields_num:
+      df_merged[col] = df_merged[col].astype("Float64")
+    elif col in fields_cat:
+      if "date" not in col:
+        df_merged[col] = df_merged[col].astype("string")
 
   return df_merged
 

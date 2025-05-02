@@ -15,6 +15,8 @@ from sklearn.linear_model import ElasticNet, LinearRegression
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from statsmodels.tools.sm_exceptions import MissingDataError
 
+from openavmkit.utilities.settings import get_fields_boolean, get_fields_categorical
+
 
 def calc_chds(df_in: pd.DataFrame, field_cluster: str, field_value: str):
 	"""
@@ -697,15 +699,9 @@ def calc_vif_recursive_drop(X: pd.DataFrame, threshold: float = 10, settings: di
 	X = X.astype(np.float64)
 
 	# Get boolean and categorical variables from settings if provided
-	exclude_vars = []
-	if settings is not None:
-		field_classification = settings.get("field_classification", {})
-		for category in ["land", "impr", "other"]:
-			if category in field_classification:
-				exclude_vars.extend(field_classification[category].get("boolean", []))
-				exclude_vars.extend(field_classification[category].get("categorical", []))
-				exclude_vars.extend(field_classification[category].get("boolean_na_false", []))
-				exclude_vars.extend(field_classification[category].get("boolean_na_true", []))
+	bool_fields = get_fields_boolean(settings, X)
+	cat_fields = get_fields_categorical(settings, X, include_boolean=False)
+	exclude_vars = bool_fields + cat_fields
 
 	# Remove boolean and categorical variables
 	X = X.drop(columns=[col for col in X.columns if col in exclude_vars], errors='ignore')

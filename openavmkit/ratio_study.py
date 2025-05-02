@@ -203,7 +203,7 @@ def _run_ratio_study_breakdowns(settings: dict, df_sales: pd.DataFrame, confiden
 		df_v = get_vacant_sales(df_sales, settings)
 		df_i = get_vacant_sales(df_sales, settings, invert=True)
 
-		cat_fields = get_fields_categorical(settings, df_sales)
+		cat_fields = get_fields_categorical(settings, df_sales, include_boolean=True)
 
 		all = {
 			"assessor": {},

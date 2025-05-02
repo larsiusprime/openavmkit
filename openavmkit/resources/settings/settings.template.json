@@ -340,7 +340,7 @@
 				"warning_vacant_positive_year_built",
 				"warning_vacant_positive_impr_numeric",
 				"warning_vacant_has_impr_categorical",
-				"sale_date",
+					"sale_date",
 				"sale_year_month",
 				"sale_year_quarter",
 				"key",

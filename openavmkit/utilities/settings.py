@@ -105,7 +105,7 @@ def get_fields_date(s: dict, df: pd.DataFrame):
   return date_fields
 
 
-def get_fields_boolean(s: dict, df: pd.DataFrame = None, types: list[str] = None, na_handling: str = None):
+def get_fields_boolean(s: dict, df: pd.DataFrame = None, types: list[str] = None):
   """
   Get all boolean fields from settings.
 
@@ -115,8 +115,6 @@ def get_fields_boolean(s: dict, df: pd.DataFrame = None, types: list[str] = None
   :type df: pandas.DataFrame, optional
   :param types: List of field types to include (e.g., ["land", "impr", "other"]).
   :type types: list[str], optional
-  :param na_handling: How to handle NA values. Can be "true", "false", or None for regular boolean fields.
-  :type na_handling: str, optional
   :returns: List of boolean field names.
   :rtype: list[str]
   """
@@ -126,11 +124,7 @@ def get_fields_boolean(s: dict, df: pd.DataFrame = None, types: list[str] = None
   
   # Determine which boolean field to get based on na_handling
   field_type = "boolean"
-  if na_handling == "true":
-    field_type = "boolean_na_true"
-  elif na_handling == "false":
-    field_type = "boolean_na_false"
-  
+
   if "land" in types:
     bools += s.get("field_classification", {}).get("land", {}).get(field_type, [])
   if "impr" in types:
@@ -143,39 +137,7 @@ def get_fields_boolean(s: dict, df: pd.DataFrame = None, types: list[str] = None
   return bools
 
 
-def get_fields_boolean_na_true(s: dict, df: pd.DataFrame = None, types: list[str] = None):
-  """
-  Get boolean fields that should have NA values converted to True.
-  
-  :param s: Settings dictionary.
-  :type s: dict
-  :param df: Optional DataFrame to filter fields.
-  :type df: pandas.DataFrame, optional
-  :param types: List of field types to include (e.g., ["land", "impr", "other"]).
-  :type types: list[str], optional
-  :returns: List of boolean field names.
-  :rtype: list[str]
-  """
-  return get_fields_boolean(s, df, types, na_handling="true")
-
-
-def get_fields_boolean_na_false(s: dict, df: pd.DataFrame = None, types: list[str] = None):
-  """
-  Get boolean fields that should have NA values converted to False.
-  
-  :param s: Settings dictionary.
-  :type s: dict
-  :param df: Optional DataFrame to filter fields.
-  :type df: pandas.DataFrame, optional
-  :param types: List of field types to include (e.g., ["land", "impr", "other"]).
-  :type types: list[str], optional
-  :returns: List of boolean field names.
-  :rtype: list[str]
-  """
-  return get_fields_boolean(s, df, types, na_handling="false")
-
-
-def get_fields_categorical(s: dict, df: pd.DataFrame = None, include_boolean: bool = True, types: list[str] = None):
+def get_fields_categorical(s: dict, df: pd.DataFrame = None, include_boolean: bool = False, types: list[str] = None):
   if types is None:
     types = ["land", "impr", "other"]
   cats = []
@@ -226,8 +188,8 @@ def get_variable_interactions(entry: dict, settings: dict, df: pd.DataFrame = No
   is_default = interactions.get("default", False)
   if is_default:
     result = {}
-    fields_land = get_fields_categorical(settings, df, types=["land"])
-    fields_impr = get_fields_categorical(settings, df, types=["impr"])
+    fields_land = get_fields_categorical(settings, df, include_boolean=True, types=["land"])
+    fields_impr = get_fields_categorical(settings, df, include_boolean=True, types=["impr"])
     for field in fields_land:
       result[field] = "land_area_sqft"
     for field in fields_impr:

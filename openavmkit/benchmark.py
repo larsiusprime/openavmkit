@@ -138,8 +138,6 @@ def try_variables(
 
 	df_hydrated = get_hydrated_sales_from_sup(sup)
 
-	#df_hydrated = df_hydrated[df_hydrated["sale_price_time_adj"].lt(1000000)]
-
 	idx_vacant = df_hydrated["vacant_sale"].eq(True)
 
 	df_vacant = df_hydrated[idx_vacant].copy()
@@ -403,7 +401,8 @@ def get_variable_recommendations(
 
 	return {
 		"variables": best_variables,
-		"report": report
+		"report": report,
+		"df_results": df_results
 	}
 
 
@@ -1995,7 +1994,7 @@ def _prepare_ds(
 		if ind_vars is None:
 			raise ValueError(f"ind_vars not found for model 'default'")
 
-	fields_cat = get_fields_categorical(s, df_sales)
+	fields_cat = get_fields_categorical(s, df_sales, include_boolean=True)
 	interactions = get_variable_interactions(entry, s, df_sales)
 
 	instructions = s.get("modeling", {}).get("instructions", {})
@@ -2533,7 +2532,7 @@ def _run_models(
 	default_value = get_sale_field(settings, df_sales)
 	dep_var = s_inst.get("dep_var", default_value)
 	dep_var_test = s_inst.get("dep_var_test", default_value)
-	fields_cat = get_fields_categorical(s, df_univ)
+	fields_cat = get_fields_categorical(s, df_univ, include_boolean=True)
 	models_to_run = s_inst.get(vacant_status, {}).get("run", None)
 	models_to_skip = s_inst.get(vacant_status, {}).get("skip", {}).get(model_group, [])
 	model_entries = s_model.get("models").get(vacant_status, {})
