@@ -712,10 +712,30 @@ class DataSplit:
 
     # select the rows that are in the test_keys:
     self.df_test = self.df_sales[self.df_sales["key_sale"].astype(str).isin(test_keys)].reset_index(drop=True)
-    self.df_train = self.df_sales.drop(self.df_test.index)
+    self.df_train = self.df_sales[~self.df_sales["key_sale"].astype(str).isin(test_keys)].reset_index(drop=True)
 
-    self.df_test = self.df_test.reset_index(drop=True)
-    self.df_train = self.df_train.reset_index(drop=True)
+    #self.df_train = self.df_sales.drop(self.df_test.index)
+
+    keys_in_df_test = self.df_test["key_sale"].astype(str).unique()
+    keys_in_df_train = self.df_train["key_sale"].astype(str).unique()
+    keys_in_df_sales = self.df_sales["key_sale"].astype(str).unique()
+    # assert that the keys in keys_in_df_test are found in keys_in_df_sales:
+    # assert that the union of keys_in_df_test and keys_in_df_train is equal to keys_in_df_sales:
+    assert len(set(keys_in_df_test).union(set(keys_in_df_train))) == len(set(keys_in_df_sales)), \
+      f"Union of keys in df_test and df_train is not equal to keys in df_sales: {set(keys_in_df_test).union(set(keys_in_df_train))} != {set(keys_in_df_sales)}"
+
+    # assert that the keys in keys_in_df_test are not found in keys_in_df_train:
+    assert len(set(keys_in_df_test).intersection(set(keys_in_df_train))) == 0, \
+      f"Keys in df_test are also found in df_train: {set(keys_in_df_test).intersection(set(keys_in_df_train))}"
+
+    # assert that the keys in keys_in_df_train ARE found in keys_in_df_sales:
+    assert len(set(keys_in_df_train).difference(set(keys_in_df_sales))) == 0, \
+      f"Keys in df_train are not found in df_sales: {set(keys_in_df_train).difference(set(keys_in_df_sales))}"
+
+    # assert that the keys in keys_in_df_test ARE found in keys_in_df_sales:
+    assert len(set(keys_in_df_test).difference(set(keys_in_df_sales))) == 0, \
+      f"Keys in df_sales are not found in df_test: {set(keys_in_df_test).difference(set(keys_in_df_sales))}"
+
 
     # sort again because sampling shuffles order:
     self.df_test.sort_values(by=self.days_field, ascending=False, inplace=True)
@@ -3189,20 +3209,22 @@ def _run_local_sqft(ds: DataSplit, location_fields: list[str], sales_chase: floa
       X_train_loc_vacant = X_train_loc[X_train_loc["bldg_area_finished_sqft"].eq(0)]
 
       if len(X_train_loc_improved) > 0:
-        local_per_impr_sqft = (y_train_loc / X_train_loc_improved["bldg_area_finished_sqft"]).median()
+        y_train_loc_improved = y_train_loc[X_train_loc["bldg_area_finished_sqft"].gt(0)]
+        local_per_impr_sqft = (y_train_loc_improved / X_train_loc_improved["bldg_area_finished_sqft"]).median()
       else:
-        local_per_impr_sqft = 0
+        local_per_impr_sqft = 0.0
 
       if len(X_train_loc_vacant) > 0:
-        local_per_land_sqft = (y_train_loc / X_train_loc_vacant["land_area_sqft"]).median()
+        y_train_loc_vacant = y_train_loc[X_train_loc["bldg_area_finished_sqft"].eq(0)]
+        local_per_land_sqft = (y_train_loc_vacant / X_train_loc_vacant["land_area_sqft"]).median()
       else:
-        local_per_land_sqft = 0
+        local_per_land_sqft = 0.0
 
       # some values will be null so replace them with zeros
       if pd.isna(local_per_impr_sqft):
-        local_per_impr_sqft = 0
+        local_per_impr_sqft = 0.0
       if pd.isna(local_per_land_sqft):
-        local_per_land_sqft = 0
+        local_per_land_sqft = 0.0
 
       data_sqft_impr[location_field].append(loc)
       data_sqft_land[location_field].append(loc)

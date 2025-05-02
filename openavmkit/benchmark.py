@@ -522,6 +522,7 @@ def run_models(
 	s_model = s.get("modeling", {})
 	s_inst = s_model.get("instructions", {})
 	model_groups = s_inst.get("model_groups", [])
+
 	df_univ = sup["universe"]
 
 	if len(model_groups) == 0:
