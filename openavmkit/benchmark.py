@@ -246,8 +246,6 @@ def try_variables(
 							plt.show()
 
 
-
-
 def get_variable_recommendations(
 		df_sales: pd.DataFrame,
 		df_universe: pd.DataFrame,
@@ -289,20 +287,6 @@ def get_variable_recommendations(
   """
 
 	report = MarkdownReport("variables")
-
-	# Check if this is a tree-based model
-	model_type = settings.get("modeling", {}).get("instructions", {}).get("main", {}).get("run", [])
-	tree_models = ["xgboost", "lightgbm", "catboost"]
-	if any(model in model_type for model in tree_models):
-		# For tree-based models, return all variables without statistical tests
-		if variables_to_use is None:
-			variables_to_use = settings.get("modeling", {}).get("experiment", {}).get("variables", [])
-		if len(variables_to_use) == 0:
-			raise ValueError("No variables defined. Please check settings `modeling.experiment.variables`")
-		return {
-			"variables": variables_to_use,
-			"report": report
-		}
 
 	if tests_to_run is None:
 		tests_to_run = ["corr", "r2", "p_value", "t_value", "enr", "vif"]
@@ -1113,10 +1097,11 @@ def run_one_model(
 	if ind_vars is None:
 		raise ValueError(f"ind_vars not found for model {model}")
 
-	if are_ind_vars_default and verbose:
-		if set(ind_vars) != set(best_variables):
-			print(f"--> using default variables, auto-optimized variable list: {best_variables}")
-		ind_vars = best_variables
+	if are_ind_vars_default:
+		if (best_variables is not None) and (set(ind_vars) != set(best_variables)):
+			if verbose:
+				print(f"--> using default variables, auto-optimized variable list: {best_variables}")
+			ind_vars = best_variables
 
 	interactions = get_variable_interactions(entry, settings, df_sales)
 	location_fields = get_locations(settings, df_sales)
@@ -2545,8 +2530,9 @@ def _run_models(
 	s_inst = s_model.get("instructions", {})
 	vacant_status = "vacant" if vacant_only else "main"
 
-	dep_var = s_inst.get("dep_var", "sale_price_time_adj")
-	dep_var_test = s_inst.get("dep_var_test", "sale_price_time_adj")
+	default_value = get_sale_field(settings, df_sales)
+	dep_var = s_inst.get("dep_var", default_value)
+	dep_var_test = s_inst.get("dep_var_test", default_value)
 	fields_cat = get_fields_categorical(s, df_univ)
 	models_to_run = s_inst.get(vacant_status, {}).get("run", None)
 	models_to_skip = s_inst.get(vacant_status, {}).get("skip", {}).get(model_group, [])
@@ -2596,6 +2582,11 @@ def _run_models(
 			print(f"Skipping model: {model} for model_group: {model_group}, vacant_only: {vacant_only}")
 			continue
 
+		model_variables = best_variables
+		# For tree-based models, we don't perform variable reduction
+		if model in ["xgboost", "lightgbm", "catboost"]:
+			model_variables = None
+
 		results = run_one_model(
 			df_sales=df_sales,
 			df_universe=df_univ,
@@ -2606,7 +2597,7 @@ def _run_models(
 			settings=settings,
 			dep_var=dep_var,
 			dep_var_test=dep_var_test,
-			best_variables=best_variables,
+			best_variables=model_variables,
 			fields_cat=fields_cat,
 			outpath=outpath,
 			save_params=save_params,
