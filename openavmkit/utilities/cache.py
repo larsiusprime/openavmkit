@@ -138,7 +138,7 @@ def write_cached_df(
   changed_cols = new_cols + modified
   if not changed_cols:
     # nothing new or modified → no cache update needed
-    return
+    return df_orig
 
   df_diff = df_new[[key]+changed_cols].copy()
 
@@ -153,6 +153,7 @@ def write_cached_df(
   assert dfs_are_equal(df_new, df_cached, allow_weak=True)
 
   return df_cached
+
 
 def get_cached_df(
     df: pd.DataFrame,
