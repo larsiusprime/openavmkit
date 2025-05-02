@@ -2684,9 +2684,9 @@ def _run_models(
 	print(all_results.benchmark.print())
 
 	# Add performance metrics table
-	print(f"\nModel Performance Metrics for {model_group}:")
+	benchmark_type = "VACANT" if vacant_only else "MAIN"
+	print(f"\n{benchmark_type} Model Performance Metrics for {model_group}:")
 	print("=" * 80)
-	
 	metrics_data = {
 		"Model": [],
 		"R²": [],
