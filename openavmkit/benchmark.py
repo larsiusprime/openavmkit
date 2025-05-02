@@ -2532,7 +2532,7 @@ def _run_models(
 	s_inst = s_model.get("instructions", {})
 	vacant_status = "vacant" if vacant_only else "main"
 
-	dep_var = s_inst.get("dep_var", "sale_price")
+	dep_var = s_inst.get("dep_var", "sale_price_time_adj")
 	dep_var_test = s_inst.get("dep_var_test", "sale_price_time_adj")
 	fields_cat = get_fields_categorical(s, df_univ)
 	models_to_run = s_inst.get(vacant_status, {}).get("run", None)
