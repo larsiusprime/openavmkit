@@ -293,6 +293,26 @@ def get_variable_recommendations(
 		warnings.warn("Time adjustment was not found in sales data. Calculating now...")
 		df_sales = enrich_time_adjustment(df_sales, settings, verbose=verbose)
 
+	s = settings
+	s_model = s.get("modeling", {})
+	vacant_status = "vacant" if vacant_only else "main"
+	model_entries = s_model.get("models", {}).get(vacant_status, {})
+	entry: dict | None = model_entries.get("model", model_entries.get("default", {}))
+	if variables_to_use is None:
+		variables_to_use: list | None = entry.get("ind_vars", None)
+
+	cats = get_fields_categorical(settings, df_sales, include_boolean=False)
+	flagged = []
+	for variable in variables_to_use:
+		if variable in cats:
+			uniques = df_sales[variable].unique()
+			if len(uniques) > 50:
+				warnings.warn(f"Variable '{variable}' has more than 50 unique values. No variable analysis will be done on it and it will not be auto-dropped. Hope you know what you're doing!")
+				flagged.append(variable)
+
+	if len(flagged) > 0:
+		variables_to_use = [variable for variable in variables_to_use if variable not in flagged]
+
 	ds = _prepare_ds(df_sales, df_universe, model_group, vacant_only, settings, variables_to_use)
 	ds = ds.encode_categoricals_with_one_hot()
 

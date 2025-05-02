@@ -179,7 +179,7 @@ def mark_horizontal_equity_clusters_per_model_group_sup(
 		sup: SalesUniversePair,
 		settings: dict,
 		verbose: bool = False,
-		use_cache: bool = False
+		use_cache: bool = True
 ):
 	"""
   Mark horizontal equity clusters on the 'universe' DataFrame of a SalesUniversePair.
@@ -200,20 +200,20 @@ def mark_horizontal_equity_clusters_per_model_group_sup(
 	if verbose:
 		print("")
 		print("Marking horizontal equity clusters...")
-	df_universe = mark_horizontal_equity_clusters_per_model_group(df_universe, settings, verbose, output_folder="horizontal_equity/general", use_cache=False)
+	df_universe = mark_horizontal_equity_clusters_per_model_group(df_universe, settings, verbose, output_folder="horizontal_equity/general", use_cache=use_cache)
 	if verbose:
 		print("")
 		print("Marking LAND horizontal equity clusters...")
-	df_universe = mark_horizontal_equity_clusters_per_model_group(df_universe, settings, verbose, settings_object="land_equity", id_name="land_he_id", output_folder="horizontal_equity/land", use_cache=False)
+	df_universe = mark_horizontal_equity_clusters_per_model_group(df_universe, settings, verbose, settings_object="land_equity", id_name="land_he_id", output_folder="horizontal_equity/land", use_cache=use_cache)
 	if verbose:
 		print("")
 		print("Marking IMPROVEMENT horizontal equity clusters...")
-	df_universe = mark_horizontal_equity_clusters_per_model_group(df_universe, settings, verbose, settings_object="impr_equity", id_name="impr_he_id", output_folder="horizontal_equity/improvement", use_cache=False)
+	df_universe = mark_horizontal_equity_clusters_per_model_group(df_universe, settings, verbose, settings_object="impr_equity", id_name="impr_he_id", output_folder="horizontal_equity/improvement", use_cache=use_cache)
 	sup.set("universe", df_universe)
 	return sup
 
 
-def mark_horizontal_equity_clusters_per_model_group(df_in: pd.DataFrame, settings: dict, verbose: bool = False, settings_object="horizontal_equity", id_name="he_id", output_folder="", use_cache=False):
+def mark_horizontal_equity_clusters_per_model_group(df_in: pd.DataFrame, settings: dict, verbose: bool = False, settings_object="horizontal_equity", id_name="he_id", output_folder="", use_cache=True):
 	"""
   Mark horizontal equity clusters for each model group within the DataFrame.
 
@@ -239,9 +239,9 @@ def mark_horizontal_equity_clusters_per_model_group(df_in: pd.DataFrame, setting
 
 	he = settings.get("analysis", {}).get(settings_object, {})
 	if use_cache:
-	df_out = get_cached_df(df_in, id_name, "key", he)
-	if df_out is not None:
-		return df_out
+		df_out = get_cached_df(df_in, id_name, "key", he)
+		if df_out is not None:
+			return df_out
 
 	df_out = do_per_model_group(df_in, settings, _mark_he_ids, params={
 		"settings": settings, "verbose": verbose, "settings_object": settings_object, "id_name": id_name, "output_folder": output_folder
