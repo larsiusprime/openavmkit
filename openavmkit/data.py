@@ -2897,7 +2897,19 @@ def _load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_c
     # Enforce user's dtypes
     for col in df.columns:
       if col in dtype_map:
-        df[col] = df[col].astype(dtype_map[col])
+        target_dtype = dtype_map[col]
+        if target_dtype == "bool" or target_dtype == "boolean":
+          if col in extra_map:
+            # if the user has specified a na_handling, we will manually boolify the column
+            na_handling = extra_map[col]
+            df = _boolify_column_in_df(df, col, na_handling)
+          else:
+            # otherwise, we use the exact dtype they specified with a warning and default to casting NA to false
+            warnings.warn(f"Column '{col}' is being converted to boolean, but you didn't specify na_handling. All ambiguous values/NA's will be cast to false.")
+            df[col] = df[col].astype(target_dtype)
+            df = _boolify_column_in_df(df, col, "na_false")
+        else:
+          df[col] = df[col].astype(dtype_map[col])
 
   elif ext == "csv":
     df = pd.read_csv(filename, usecols=cols_to_load, dtype=dtype_map)
@@ -2925,7 +2937,7 @@ def _load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_c
   for col in df.columns:
     if col in fields_cat:
       df[col] = df[col].astype("string")
-    elif col in fields_bool:
+    elif col in fields_bool or df[col].dtype == "boolean":
       na_handling = None
       if col in extra_map:
         na_handling = extra_map[col]
