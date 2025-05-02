@@ -290,6 +290,20 @@ def get_variable_recommendations(
 
 	report = MarkdownReport("variables")
 
+	# Check if this is a tree-based model
+	model_type = settings.get("modeling", {}).get("instructions", {}).get("main", {}).get("run", [])
+	tree_models = ["xgboost", "lightgbm", "catboost"]
+	if any(model in model_type for model in tree_models):
+		# For tree-based models, return all variables without statistical tests
+		if variables_to_use is None:
+			variables_to_use = settings.get("modeling", {}).get("experiment", {}).get("variables", [])
+		if len(variables_to_use) == 0:
+			raise ValueError("No variables defined. Please check settings `modeling.experiment.variables`")
+		return {
+			"variables": variables_to_use,
+			"report": report
+		}
+
 	if tests_to_run is None:
 		tests_to_run = ["corr", "r2", "p_value", "t_value", "enr", "vif"]
 
@@ -347,9 +361,9 @@ def get_variable_recommendations(
 	else:
 		t_values = None
 
-	# VIF
 	if "vif" in tests_to_run:
-		vif = calc_vif_recursive_drop(X_sales, thresh.get("vif", 10))
+		# VIF
+		vif = calc_vif_recursive_drop(X_sales, thresh.get("vif", 10), settings)
 	else:
 		vif = None
 
@@ -405,8 +419,7 @@ def get_variable_recommendations(
 
 	return {
 		"variables": best_variables,
-		"report": report,
-		"df_results": df_results
+		"report": report
 	}
 
 

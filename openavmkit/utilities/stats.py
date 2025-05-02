@@ -679,7 +679,7 @@ def calc_t_values(X: pd.DataFrame, y: pd.Series):
 	return fitted_model.tvalues
 
 
-def calc_vif_recursive_drop(X: pd.DataFrame, threshold: float = 10):
+def calc_vif_recursive_drop(X: pd.DataFrame, threshold: float = 10, settings: dict = None):
 	"""
   Recursively drop variables with a Variance Inflation Factor (VIF) exceeding the threshold.
 
@@ -687,12 +687,28 @@ def calc_vif_recursive_drop(X: pd.DataFrame, threshold: float = 10):
   :type X: pandas.DataFrame
   :param threshold: Maximum acceptable VIF (default is 10).
   :type threshold: float, optional
+  :param settings: Settings dictionary containing field classifications.
+  :type settings: dict, optional
   :returns: A dictionary with keys "initial" and "final" containing VIF DataFrames.
   :rtype: dict
   :raises ValueError: If no columns remain for VIF calculation.
   """
 	X = X.copy()
 	X = X.astype(np.float64)
+
+	# Get boolean and categorical variables from settings if provided
+	exclude_vars = []
+	if settings is not None:
+		field_classification = settings.get("field_classification", {})
+		for category in ["land", "impr", "other"]:
+			if category in field_classification:
+				exclude_vars.extend(field_classification[category].get("boolean", []))
+				exclude_vars.extend(field_classification[category].get("categorical", []))
+				exclude_vars.extend(field_classification[category].get("boolean_na_false", []))
+				exclude_vars.extend(field_classification[category].get("boolean_na_true", []))
+
+	# Remove boolean and categorical variables
+	X = X.drop(columns=[col for col in X.columns if col in exclude_vars], errors='ignore')
 
 	# Drop constant columns (VIF cannot be calculated for constant columns)
 	X = X.loc[:, X.nunique() > 1]  # Keep only columns with more than one unique value
