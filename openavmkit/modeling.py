@@ -815,12 +815,16 @@ class DataSplit:
     # convert all Float64 to float64 in X_train:
     for col in self.X_train.columns:
       # if it's a Float64 or a boolean, convert it to float64
-      if (self.X_train[col].dtype == "Float64" or
-          self.X_train[col].dtype == "Int64" or
-          self.X_train[col].dtype == "boolean" or
-          self.X_train[col].dtype == "bool"
-      ):
-        self.X_train = self.X_train.astype({col: "float64"})
+      try:
+        if (self.X_train[col].dtype == "Float64" or
+            self.X_train[col].dtype == "Int64" or
+            self.X_train[col].dtype == "boolean" or
+            self.X_train[col].dtype == "bool"
+        ):
+          self.X_train = self.X_train.astype({col: "float64"})
+      except AttributeError as e:
+        raise AttributeError(f"Error converting column '{col}': {e}")
+
 
     ind_vars = [col for col in self.ind_vars if col in _df_test.columns]
     self.X_test = _df_test[ind_vars]

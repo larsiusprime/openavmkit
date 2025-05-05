@@ -1893,7 +1893,6 @@ def _run_ensemble(
 	test_keys = all_results.model_results[first_key].ds.test_keys
 	train_keys = all_results.model_results[first_key].ds.train_keys
 
-	#test_keys, train_keys = _read_split_keys(model_group)
 	ds = DataSplit(
 		df_sales,
 		df_universe,

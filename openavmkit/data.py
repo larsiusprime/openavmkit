@@ -644,8 +644,6 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
         # add distances to user-defined locations
         df = _enrich_df_user_distances(df, s_enrich_local, dataframes, settings, verbose=verbose)
 
-      df = _enrich_df_basic(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
-
       if supkey == "universe":
         # fill in missing data based on geospatial patterns (should happen after all other enrichments have been done)
         df = _enrich_spatial_inference(df, s_enrich_local, dataframes, settings, verbose=verbose)
@@ -653,7 +651,11 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
         # enrich universe spatial lag fields
         # df = _enrich_universe_spatial_lag(df, settings, verbose=verbose)
 
-    # stuff to enrich whether the user has settings or not
+    # User calcs apply at the VERY end of enrichment, after all automatic enrichments have been applied
+    if s_enrich_local is not None:
+      df = _enrich_df_basic(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
+
+    # Enforce vacant status
     df = _enrich_vacant(df, settings)
 
     sup.set(supkey, df)
