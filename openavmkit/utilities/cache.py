@@ -125,8 +125,16 @@ def write_cached_df(
 
     is_different = False
     if len(col_new) == len(col_orig):
-      are_equal = (col_new.values == col_orig.values) | (col_new.isna() & col_orig.isna())
-      if not are_equal.all():
+      values_equal = col_new.values == col_orig.values
+      na_equal = col_new.isna() & col_orig.isna()
+
+      count_na_equal = na_equal.sum()
+      count_values_equal = values_equal.sum()
+
+      count_to_match = len(col_new)
+
+      all_equal = (count_na_equal == count_to_match and count_values_equal == count_to_match)
+      if not all_equal:
         is_different = True
     else:
       is_different = True
@@ -140,7 +148,11 @@ def write_cached_df(
     # nothing new or modified → no cache update needed
     return df_orig
 
-  df_diff = df_new[[key]+changed_cols].copy()
+  the_cols = changed_cols
+  if key not in the_cols:
+    the_cols = [key]+changed_cols
+
+  df_diff = df_new[the_cols].copy()
 
   signature = _get_df_signature(df_orig, extra_signature)
 

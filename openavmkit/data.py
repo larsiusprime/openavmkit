@@ -1137,7 +1137,9 @@ def enrich_df_streets(
 
   # Create out/temp directory if it doesn't exist
   os.makedirs("out/temp", exist_ok=True)
-  rays_gdf.to_parquet(f"out/temp/rays.parquet", index=False)
+
+  # DEBUG
+  # rays_gdf.to_parquet(f"out/temp/rays.parquet", index=False)
 
   t.stop('rays_parallel')
   if verbose:
@@ -1149,7 +1151,8 @@ def enrich_df_streets(
   gdf = df[['key','geometry']].rename(columns={'geometry':'parcel_geom'})
   gdf = gpd.GeoDataFrame(gdf, geometry='parcel_geom', crs=crs_eq)
 
-  gdf.to_file(f"out/temp/gdf.gpkg", driver="GPKG")
+  # DEBUG
+  # gdf.to_file(f"out/temp/gdf.gpkg", driver="GPKG")
 
   ray_par = gpd.sjoin(rays_gdf, gdf, how='inner', predicate='intersects')
 
@@ -2106,6 +2109,11 @@ def _basic_geo_enrichment(gdf_in: gpd.GeoDataFrame, settings: dict, verbose: boo
   if gdf_out is not None:
     if verbose:
       print("--> found cached data...")
+
+    parcels_with_no_land = gdf_out["land_area_sqft"].isna().sum()
+    if parcels_with_no_land > 0:
+      raise ValueError(f"Found '{parcels_with_no_land}' parcels with no land area in cached data. This should not be able to happen as they should be backfilled with GIS land area. Please check your data.")
+
     return gdf_out
 
   gdf = gdf_in.copy()
@@ -2138,6 +2146,10 @@ def _basic_geo_enrichment(gdf_in: gpd.GeoDataFrame, settings: dict, verbose: boo
   if verbose:
     _t = t.get("polar")
     print(f"--> calculated polar coordinates...({_t:.2f}s)")
+
+  parcels_with_no_land = gdf["land_area_sqft"].isna().sum()
+  if parcels_with_no_land > 0:
+    raise ValueError(f"Found '{parcels_with_no_land}' parcels with no land area. This should not be able to happen as they should be backfilled with GIS land area. Please check your data.")
 
   write_cached_df(gdf_in, gdf, "geom/basic", "key")
 
