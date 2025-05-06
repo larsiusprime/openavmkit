@@ -897,7 +897,6 @@ class SingleModelResults:
     self.field_prediction = field_prediction
 
     df_univ[field_prediction] = y_pred_univ
-
     df_test[field_prediction] = y_pred_test
 
     self.df_universe = df_univ
@@ -920,6 +919,11 @@ class SingleModelResults:
     timing.start("stats_sales")
     if y_pred_sales is not None:
       self.pred_sales = PredictionResults(self.dep_var_test, self.ind_vars, field_prediction, df_sales)
+
+      # If we have predictions for sales, we also have predictions for the training subset
+      df_train = df_sales.copy()
+      df_train = df_train[df_train["key_sale"].isin(ds.train_keys)]
+      self.pred_train = PredictionResults(self.dep_var_test, self.ind_vars, field_prediction, df_train)
     timing.stop("stats_sales")
 
     self.pred_univ = y_pred_univ
@@ -943,7 +947,13 @@ class SingleModelResults:
     timing.stop("chd")
 
     timing.start("utility")
-    self.utility = model_utility_score(self)
+    self.utility_test = (1.0 - self.pred_test.adj_r2) * 1000
+    #self.utility_test = model_utility_score(self, test_set=True)
+    if y_pred_sales is not None:
+      self.utility_train = (1.0 - self.pred_train.adj_r2) * 1000
+      #self.utility_train = model_utility_score(self, test_set=False)
+    else:
+      self.utility_train = float('nan')
     timing.stop("utility")
     self.timing = timing
 
@@ -1069,7 +1079,7 @@ def land_utility_score(land_results: LandPredictionResults):
 
 
 
-def model_utility_score(model_results: SingleModelResults):
+def model_utility_score(model_results: SingleModelResults, test_set: bool = False):
   """
   Compute a utility score for a model based on error, median ratio, COD, and CHD. Lower scores are better.
 
@@ -1086,14 +1096,19 @@ def model_utility_score(model_results: SingleModelResults):
   weight_chd = 1.00
   weight_sales_chase = 7.5
 
-  cod = model_results.pred_test.ratio_study.cod
+  if test_set:
+    pred = model_results.pred_test
+  else:
+    pred = model_results.pred_train
+
+  cod = pred.ratio_study.cod
   chd = model_results.chd
 
   # Penalize over-estimates; err on the side of under-estimates
-  ratio_over_penalty = 2 if model_results.pred_test.ratio_study.median_ratio < 1.05 else 1
+  ratio_over_penalty = 2 if pred.ratio_study.median_ratio < 1.05 else 1
 
   # calculate base score
-  dist_ratio_score = abs(1.0 - model_results.pred_test.ratio_study.median_ratio) * weight_dist_ratio * ratio_over_penalty
+  dist_ratio_score = abs(1.0 - pred.ratio_study.median_ratio) * weight_dist_ratio * ratio_over_penalty
   cod_score = cod * weight_cod
   chd_score = chd * weight_chd
 

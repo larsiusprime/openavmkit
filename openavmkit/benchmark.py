@@ -729,7 +729,10 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 
 			data["model"].append(key)
 			data["subset"].append(subset)
-			data["utility_score"].append(results.utility)
+			if kind == "test":
+				data["utility_score"].append(results.utility_test)
+			else:
+				data["utility_score"].append(results.utility_train)
 			data["count_sales"].append(pred_results.ratio_study.count)
 			data["count_univ"].append(results.df_universe.shape[0])
 			data["mse"].append(pred_results.mse)
@@ -1478,6 +1481,7 @@ def _optimize_ensemble_allocation(
 	while len(ensemble_list) > 1:
 		best_score, best_list = _optimize_ensemble_allocation_iteration(
 			df_test,
+			df_sales,
 			df_univ,
 			timing,
 			all_results,
@@ -1495,6 +1499,7 @@ def _optimize_ensemble_allocation(
 
 def _optimize_ensemble_allocation_iteration(
 		df_test: pd.DataFrame,
+		df_sales: pd.DataFrame,
 		df_univ: pd.DataFrame,
 		timing: TimingData,
 		all_results: MultiModelResults,
@@ -1509,6 +1514,8 @@ def _optimize_ensemble_allocation_iteration(
 
   :param df_test: Test DataFrame.
   :type df_test: pandas.DataFrame
+  :param df_sales: Sales DataFrame.
+  :type df_sales: pandas.DataFrame
   :param df_univ: Universe DataFrame.
   :type df_univ: pandas.DataFrame
   :param timing: TimingData object.
@@ -1529,6 +1536,7 @@ def _optimize_ensemble_allocation_iteration(
   :rtype: tuple(float, list[str])
   """
 	df_test_ensemble = df_test[["key_sale", "key"]].copy()
+	df_sales_ensemble = df_sales[["key_sale", "key"]].copy()
 	df_univ_ensemble = df_univ[["key"]].copy()
 	if len(ensemble_list) == 0:
 		ensemble_list = [key for key in all_results.model_results.keys()]
@@ -1541,6 +1549,7 @@ def _optimize_ensemble_allocation_iteration(
 	for m_key in ensemble_list:
 		m_results = all_results.model_results[m_key]
 		df_test_ensemble[m_key] = m_results.pred_test.y_pred
+		df_sales_ensemble[m_key] = m_results.pred_sales.y_pred
 		df_univ_ensemble[m_key] = m_results.pred_univ
 	timing.stop("train")
 
@@ -1549,6 +1558,7 @@ def _optimize_ensemble_allocation_iteration(
 	timing.stop("predict_test")
 
 	timing.start("predict_sales")
+	y_pred_sales_ensemble = df_sales_ensemble[ensemble_list].median(axis=1)
 	timing.stop("predict_sales")
 
 	timing.start("predict_univ")
@@ -1562,12 +1572,12 @@ def _optimize_ensemble_allocation_iteration(
 		"ensemble",
 		model="ensemble",
 		y_pred_test=y_pred_test_ensemble.to_numpy(),
-		y_pred_sales=None,
+		y_pred_sales=y_pred_sales_ensemble.to_numpy(),
 		y_pred_univ=y_pred_univ_ensemble.to_numpy(),
 		timing=timing,
 		verbose=verbose
 	)
-	score = results.utility
+	score = results.utility_train
 
 	timing.stop("total")
 
@@ -1584,7 +1594,7 @@ def _optimize_ensemble_allocation_iteration(
 	for key in ensemble_list:
 		if key in all_results.model_results:
 			model_results = all_results.model_results[key]
-			model_score = model_results.utility
+			model_score = model_results.utility_train
 
 			if model_score > worst_score:
 				worst_score = model_score
@@ -1809,7 +1819,7 @@ def _optimize_ensemble_iteration(
 	)
 	timing.stop("total")
 
-	score = results.utility
+	score = results.utility_train
 	
 	# Add early exit if score is nan
 	if pd.isna(score):
@@ -1831,8 +1841,10 @@ def _optimize_ensemble_iteration(
 		if key in all_results.model_results:
 			model_results = all_results.model_results[key]
 
-			if model_results.utility > worst_score:
-				worst_score = model_results.utility
+			model_score = model_results.utility_train
+
+			if model_score > worst_score:
+				worst_score = model_score
 				worst_model = key
 
 	if worst_model is not None and len(ensemble_list) > 1:
