@@ -4,7 +4,7 @@ import openavmkit.utilities.stats as stats
 from openavmkit.data import SalesUniversePair
 from openavmkit.utilities.assertions import dfs_are_equal
 from openavmkit.utilities.cache import get_cached_df, write_cached_df
-from openavmkit.utilities.clustering import make_clusters, make_clusters_duckdb
+from openavmkit.utilities.clustering import make_clusters
 from openavmkit.utilities.data import do_per_model_group
 from openavmkit.utilities.timing import TimingData
 
@@ -239,35 +239,32 @@ def mark_horizontal_equity_clusters_per_model_group(df_in: pd.DataFrame, setting
   """
 
 	t = TimingData()
-	t.start("mark_horizontal_equity_clusters_per_model_group")
+	t.start("all")
+
 	he = settings.get("analysis", {}).get(settings_object, {})
 	if use_cache:
-		t.start("get cache")
 		df_out = get_cached_df(df_in, id_name, "key", he)
-		t.stop("get cache")
 		if df_out is not None:
 			return df_out
 
-	t.start("do per model group")
 	df_out = do_per_model_group(df_in, settings, _mark_he_ids, params={
-		"settings": settings, "verbose": verbose, "settings_object": settings_object, "id_name": id_name, "output_folder": output_folder
+		"settings": settings, "verbose": verbose, "settings_object": settings_object, "id_name": id_name, "output_folder": output_folder, "t": TimingData
 	}, key="key", instructions={"just_stomp_columns": [id_name]}, verbose=verbose)
-	t.stop("do per model group")
 
 	if use_cache:
-		t.start("write cache")
 		df_result = write_cached_df(df_in, df_out, id_name, "key", he)
-		t.stop("write cache")
 		assert dfs_are_equal(df_out, df_result, allow_weak=True)
-	t.stop("mark_horizontal_equity_clusters_per_model_group")
+
 	print("")
-	print("TIMING DATA MHECPMG")
+	print("TIMING: Mark Horizontal Equity Clusters")
+	t.stop("all")
 	print(t.print())
 	print("")
+
 	return df_out
 
 
-def mark_horizontal_equity_clusters(df: pd.DataFrame, settings: dict, verbose: bool = False, settings_object="horizontal_equity", id_name: str = "he_id", output_folder: str = ""):
+def mark_horizontal_equity_clusters(df: pd.DataFrame, settings: dict, verbose: bool = False, settings_object="horizontal_equity", id_name: str = "he_id", output_folder: str = "", t:TimingData = None):
 	"""
   Compute and mark horizontal equity clusters in the DataFrame.
 
@@ -293,11 +290,11 @@ def mark_horizontal_equity_clusters(df: pd.DataFrame, settings: dict, verbose: b
 	location = he.get("location", None)
 	fields_categorical = he.get("fields_categorical", [])
 	fields_numeric = he.get("fields_numeric", None)
-	df[id_name], _, _, _ = make_clusters_duckdb(df, location, fields_categorical, fields_numeric, verbose=verbose, output_folder=output_folder)
+	df[id_name], _, _ = make_clusters(df, location, fields_categorical, fields_numeric, verbose=verbose, output_folder=output_folder)
 	return df
 
 
-def _mark_he_ids(df_in: pd.DataFrame, model_group: str, settings: dict, verbose: bool, settings_object="horizontal_equity", id_name: str = "he_id", output_folder: str = ""):
+def _mark_he_ids(df_in: pd.DataFrame, model_group: str, settings: dict, verbose: bool, settings_object="horizontal_equity", id_name: str = "he_id", output_folder: str = "", t:TimingData = None):
 	"""
   Append the model group identifier to the horizontal equity cluster IDs.
 
@@ -318,6 +315,6 @@ def _mark_he_ids(df_in: pd.DataFrame, model_group: str, settings: dict, verbose:
   :returns: DataFrame with updated `id_name` column that includes the model group.
   :rtype: pandas.DataFrame
   """
-	df = mark_horizontal_equity_clusters(df_in, settings, verbose, settings_object, id_name, output_folder)
+	df = mark_horizontal_equity_clusters(df_in, settings, verbose, settings_object, id_name, output_folder, t)
 	df.loc[:, id_name] = model_group + "_" + df[id_name].astype(str)
 	return df

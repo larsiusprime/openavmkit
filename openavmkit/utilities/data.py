@@ -180,12 +180,7 @@ def do_per_model_group(df_in: pd.DataFrame, settings: dict, func: callable, para
   :returns: Modified DataFrame with updates from the function.
   :rtype: pandas.DataFrame
   """
-  t = TimingData()
-  t.start("do_per_model_group")
-
-  t.start("--> in copy")
   df = df_in.copy()
-  t.stop("--> in copy")
 
   if instructions is None:
     instructions = {}
@@ -209,33 +204,20 @@ def do_per_model_group(df_in: pd.DataFrame, settings: dict, func: callable, para
     df_sub = df.loc[mask].copy()
 
     # Apply the function.
-    t.start("--> func")
     df_sub_updated = func(df_sub, **params_local)
-    t.stop("--> func")
 
     if df_sub_updated is not None:
       # Ensure consistent data types between df and the updated subset.
       just_stomp_columns = instructions.get("just_stomp_columns", [])
       if len(just_stomp_columns) > 0:
-        t.start("--> just stomp cols")
         for col in just_stomp_columns:
           if col in df_sub_updated.columns:
             df.loc[mask, col] = df_sub_updated[col]
-        t.stop("--> just stomp cols")
       else:
         for col in df_sub_updated.columns:
           if col == key:
             continue
-          t.start("--> combine dfs")
           df = combine_dfs(df, df_sub_updated[[key, col]], df2_stomps=True, index=key)
-          t.stop("--> combine dfs")
-
-    print("")
-    print("DO PER MODEL GROUP SO FAR:")
-    print(t.print())
-    print("")
-
-  t.stop("do_per_model_group")
 
   return df
 
@@ -371,15 +353,3 @@ def count_values_in_common(a: pd.DataFrame, b: pd.DataFrame, a_field: str, b_fie
     a_in_b = a_values.intersection(b_values)
     b_in_a = b_values.intersection(a_values)
     return len(a_in_b), len(b_in_a)
-
-
-def assure_arrow(df: pd.DataFrame, *, fatal: bool = True) -> pd.DataFrame:
-  """Convert everything to Arrow dtypes and (optionally) fail if any stay NumPy."""
-  df2 = df.convert_dtypes(dtype_backend="pyarrow")
-  bad = [c for c, t in df2.dtypes.items() if "[pyarrow]" not in str(t)]
-  if bad:
-    if fatal:
-      raise ValueError(f"Columns not Arrow-backed (would force a copy): {bad}")
-    else:
-      warnings.warn(f"Columns not Arrow-backed (would force a copy): {bad}")
-  return df2
