@@ -1,3 +1,6 @@
+import json
+import re
+
 import numpy as np
 import pandas as pd
 
@@ -42,3 +45,30 @@ def fancy_format(num):
   else:
     # format num in scientific notation with 2 decimal places
     return '{:e}'.format(num)
+
+
+def round_decimals_in_dict(obj: dict, places: int = 2) -> dict:
+  """
+    Recursively walk dicts/lists, and for every string:
+      • find all substrings that look like stringified floating point numbers
+      • replace each with its float rounded to `places` places
+    Returns a new structure.
+    """
+  DEC_RE = re.compile(r"(-?\d+\.\d+)")
+
+  def _recurse(x):
+    if isinstance(x, dict):
+      return {
+        _recurse(k) if isinstance(k, str) else k:
+          _recurse(v)
+        for k, v in x.items()
+      }
+    elif isinstance(x, list):
+      return [_recurse(v) for v in x]
+    elif isinstance(x, str):
+      # substitute each decimal substring
+      return DEC_RE.sub(lambda m: f"{float(m.group(1)):.{places}f}", x)
+    else:
+      return x
+
+  return _recurse(obj)

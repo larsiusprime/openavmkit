@@ -2,7 +2,9 @@ import math
 
 import pandas as pd
 
-from openavmkit.utilities.clustering import add_to_cluster_dict, make_clusters
+from openavmkit.utilities.assertions import lists_are_equal, dicts_are_equal
+from openavmkit.utilities.clustering import add_to_cluster_dict, make_clusters, make_clusters_duckdb
+from openavmkit.utilities.format import round_decimals_in_dict
 
 
 def test_cluster_dict():
@@ -40,10 +42,10 @@ def test_cluster_dict():
 
 def test_make_clusters():
   data = {}
-  data["key"] = [i for i in range(0, 50)]
-  data["hood"] = [i % 2 for i in range(0, 50)]
-  data["size"] = [i for i in range(0, 50)]
-  data["color"] = [i % 3 for i in range(0, 50)]
+  data["key"] = [i for i in range(0, 500)]
+  data["hood"] = [i % 2 for i in range(0, 500)]
+  data["size"] = [i for i in range(0, 500)]
+  data["color"] = [i % 3 for i in range(0, 500)]
 
   locations = {
     "0": "North",
@@ -58,13 +60,29 @@ def test_make_clusters():
   df["hood"] = df["hood"].astype(str).map(locations)
   df["color"] = df["color"].astype(str).map(colors)
 
-  ids, fields_used, cluster_dict = make_clusters(
+  ids, fields_used, cluster_dict, clusters = make_clusters(
     df,
     field_location="hood",
-    fields_categorical=[],
+    fields_categorical=["color"],
     fields_numeric=["size"],
     min_cluster_size=5
   )
 
-  print("")
-  print(cluster_dict)
+  ids_list = ids.tolist()
+
+  ids_duck, fields_used_duck, cluster_dict_duck, clusters_duck = make_clusters_duckdb(
+    df,
+    field_location="hood",
+    fields_categorical=["color"],
+    fields_numeric=["size"],
+    min_cluster_size=5
+  )
+
+  ids_duck_list = ids_duck.tolist()
+
+  value_counts_crunch = ids.value_counts()
+  value_counts_duck = ids_duck.value_counts()
+
+  assert value_counts_crunch.equals(value_counts_duck)
+  assert lists_are_equal(ids_list, ids_duck_list)
+  assert lists_are_equal(clusters.tolist(), clusters_duck.tolist())

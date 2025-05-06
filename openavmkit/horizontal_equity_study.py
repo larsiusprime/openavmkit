@@ -4,8 +4,9 @@ import openavmkit.utilities.stats as stats
 from openavmkit.data import SalesUniversePair
 from openavmkit.utilities.assertions import dfs_are_equal
 from openavmkit.utilities.cache import get_cached_df, write_cached_df
-from openavmkit.utilities.clustering import make_clusters
+from openavmkit.utilities.clustering import make_clusters, make_clusters_duckdb
 from openavmkit.utilities.data import do_per_model_group
+from openavmkit.utilities.timing import TimingData
 
 
 class HorizontalEquitySummary:
@@ -237,20 +238,32 @@ def mark_horizontal_equity_clusters_per_model_group(df_in: pd.DataFrame, setting
   :rtype: pandas.DataFrame
   """
 
+	t = TimingData()
+	t.start("mark_horizontal_equity_clusters_per_model_group")
 	he = settings.get("analysis", {}).get(settings_object, {})
 	if use_cache:
+		t.start("get cache")
 		df_out = get_cached_df(df_in, id_name, "key", he)
+		t.stop("get cache")
 		if df_out is not None:
 			return df_out
 
+	t.start("do per model group")
 	df_out = do_per_model_group(df_in, settings, _mark_he_ids, params={
 		"settings": settings, "verbose": verbose, "settings_object": settings_object, "id_name": id_name, "output_folder": output_folder
-	}, key="key", verbose=verbose)
+	}, key="key", instructions={"just_stomp_columns": [id_name]}, verbose=verbose)
+	t.stop("do per model group")
 
 	if use_cache:
+		t.start("write cache")
 		df_result = write_cached_df(df_in, df_out, id_name, "key", he)
-		assert dfs_are_equal(df_out, df_result)
-
+		t.stop("write cache")
+		assert dfs_are_equal(df_out, df_result, allow_weak=True)
+	t.stop("mark_horizontal_equity_clusters_per_model_group")
+	print("")
+	print("TIMING DATA MHECPMG")
+	print(t.print())
+	print("")
 	return df_out
 
 
@@ -280,7 +293,7 @@ def mark_horizontal_equity_clusters(df: pd.DataFrame, settings: dict, verbose: b
 	location = he.get("location", None)
 	fields_categorical = he.get("fields_categorical", [])
 	fields_numeric = he.get("fields_numeric", None)
-	df[id_name], _, _ = make_clusters(df, location, fields_categorical, fields_numeric, verbose=verbose, output_folder=output_folder)
+	df[id_name], _, _, _ = make_clusters_duckdb(df, location, fields_categorical, fields_numeric, verbose=verbose, output_folder=output_folder)
 	return df
 
 

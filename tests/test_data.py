@@ -7,7 +7,7 @@ from openavmkit.data import _perform_canonical_split, _handle_duplicated_rows, _
 from openavmkit.modeling import DataSplit
 from openavmkit.inference import _do_perform_spatial_inference
 from openavmkit.utilities.assertions import dfs_are_equal
-from openavmkit.utilities.data import div_z_safe, merge_and_stomp_dfs
+from openavmkit.utilities.data import div_z_safe, merge_and_stomp_dfs, combine_dfs
 
 
 def test_div_z_safe():
@@ -491,6 +491,68 @@ def test_get_sales_from_sup():
 	df_expected = pd.DataFrame(data=data_expected)
 
 	assert dfs_are_equal(df_sales_hydrated, df_expected, primary_key="key")
+
+
+def test_combine_dfs():
+	data_1 = {
+		"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+		"fruit": ["apple", "banana", "cherry", "date", "elderberry", None, None, None, None, None],
+		"color": [None, "yellow", "red", "brown", "purple", "green", "purple", "green", "brown", "yellow"]
+	}
+
+	data_2 = {
+		"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+		"fruit": ["APPLE", "BANANA", "CHERRY", "DATE", "ELDERBERRY", "FIG", "GRAPE", "HONEYDEW", "KIWI", "LEMON"],
+		"color": ["RED", "YELLOW", "RED", "BROWN", "PURPLE", "GREEN", "PURPLE", "GREEN", "BROWN", "YELLOW"]
+	}
+
+	data_3 = {
+		"key": ["0", "1", "2", "3"],
+		"fruit": ["grape", "graper", "grapest", "graperlative"],
+		"color": ["purple", "purpler", "purplest", "purplerlative"]
+	}
+
+	df1 = pd.DataFrame(data=data_1)
+	df2 = pd.DataFrame(data=data_2)
+	df3 = pd.DataFrame(data=data_3)
+
+	expected_1 = {
+		"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+		"fruit": ["apple", "banana", "cherry", "date", "elderberry", "FIG", "GRAPE", "HONEYDEW", "KIWI", "LEMON"],
+		"color": ["RED", "yellow", "red", "brown", "purple", "green", "purple", "green", "brown", "yellow"]
+	}
+	expected_2 = {
+		"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+		"fruit": ["APPLE", "BANANA", "CHERRY", "DATE", "ELDERBERRY", "FIG", "GRAPE", "HONEYDEW", "KIWI", "LEMON"],
+		"color": ["RED", "YELLOW", "RED", "BROWN", "PURPLE", "GREEN", "PURPLE", "GREEN", "BROWN", "YELLOW"]
+	}
+	expected_3 = {
+		"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+		"fruit": ["apple", "banana", "cherry", "date", "elderberry", None, None, None, None, None],
+		"color": ["purple", "yellow", "red", "brown", "purple", "green", "purple", "green", "brown", "yellow"]
+	}
+	expected_4 = {
+		"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+		"fruit": ["grape", "graper", "grapest", "graperlative", "elderberry", None, None, None, None, None],
+		"color": ["purple", "purpler", "purplest", "purplerlative", "purple", "green", "purple", "green", "brown", "yellow"]
+	}
+	expected1 = pd.DataFrame(data=expected_1)
+	expected2 = pd.DataFrame(data=expected_2)
+	expected3 = pd.DataFrame(data=expected_3)
+	expected4 = pd.DataFrame(data=expected_4)
+
+	merged1 = combine_dfs(df1, df2, df2_stomps=False)
+	merged2 = combine_dfs(df1, df2, df2_stomps=True)
+	merged3 = combine_dfs(df1, df3, df2_stomps=False)
+	merged4 = combine_dfs(df1, df3, df2_stomps=True)
+
+	display(merged1)
+	display(expected1)
+
+	assert dfs_are_equal(merged1, expected1, primary_key="key")
+	assert dfs_are_equal(merged2, expected2, primary_key="key")
+	assert dfs_are_equal(merged3, expected3, primary_key="key")
+	assert dfs_are_equal(merged4, expected4, primary_key="key")
 
 
 def test_merge_and_stomp_dfs():
