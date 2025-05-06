@@ -309,7 +309,6 @@ class DataSplit:
   """
 
   counter: int = 0
-
   def __init__(self,
       df_sales: pd.DataFrame | None,
       df_universe: pd.DataFrame | None,
@@ -829,6 +828,8 @@ class DataSplit:
     ind_vars = [col for col in self.ind_vars if col in _df_test.columns]
     self.X_test = _df_test[ind_vars]
     self.y_test = _df_test[self.dep_var_test]
+
+
 
 
 class SingleModelResults:
@@ -2111,6 +2112,15 @@ def run_lightgbm(ds: DataSplit, outpath: str, save_params: bool = False, use_sav
 
   timing.start("parameter_search")
   params = _get_params("LightGBM", "lightgbm", ds, tune_lightgbm, outpath, save_params, use_saved_params, verbose)
+  
+  # Remove any problematic parameters that might cause errors with forced splits
+  problematic_params = ['forcedsplits_filename', 'forced_splits_filename', 'forced_splits_file', 'forced_splits']
+  for param in problematic_params:
+    if param in params:
+      if verbose:
+        print(f"Removing problematic parameter '{param}' from LightGBM parameters")
+      params.pop(param, None)
+  
   timing.stop("parameter_search")
 
   timing.start("train")
