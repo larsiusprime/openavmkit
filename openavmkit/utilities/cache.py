@@ -162,7 +162,9 @@ def write_cached_df(
 
   df_cached = get_cached_df(df_orig, filename, key, extra_signature)
 
-  assert dfs_are_equal(df_new, df_cached, allow_weak=True)
+  are_equal = dfs_are_equal(df_new, df_cached, allow_weak=True)
+  if not are_equal:
+    raise ValueError(f"Cached DataFrame does not match the original DataFrame.")
 
   return df_cached
 

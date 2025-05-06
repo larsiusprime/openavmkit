@@ -124,13 +124,15 @@ def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None, allow_weak
 			else:
 				print(f"Column '{col}' does not match, look:")
 				# print rows that are not equal:
-				print(bad_rows_a)
-				print(bad_rows_b)
+				print(bad_rows_a[col])
+				print(bad_rows_b[col])
 
 			pd.set_option('display.max_columns', old_val)
 
 			if weak_fail and allow_weak:
 				continue
+
+			print(f"Column '{col}' does not match for some reason.")
 
 			return False
 	return True
@@ -152,14 +154,59 @@ def series_are_equal(a: pd.Series, b: pd.Series):
 	if a_is_float and b_is_float:
 		# compare floats with epsilon:
 		result = a.subtract(b).abs().max() < 1e-6
+		if result == False:
+			print(f"Comparing floats with epsilon:\n{a.subtract(b).abs().max()}")
 		return result
 
 	if a_is_int and b_is_int:
 		# compare integers directly:
 		result = a.subtract(b).abs().max() == 0
+		if result == False:
+			print(f"Comparing integers directly:\n{a.subtract(b).abs().max()}")
 		return result
 
 	# ensure that the two series contain the same information:
 	if not a.equals(b):
-		return False
+
+		# They're not strictly equal. Edge case check -- NaN values:
+
+		# check which values are NaN:
+		a_is_nan = a.isna()
+		b_is_nan = b.isna()
+
+		# mask out the NaN values and see if those sections are equal:
+		a_masked = a[~a_is_nan]
+		b_masked = b[~b_is_nan]
+
+		if not a_masked.equals(b_masked):
+
+			# attempt to cast both as floats and compare:
+			try:
+				a_masked = a_masked.astype(float)
+				b_masked = b_masked.astype(float)
+				delta = a_masked.subtract(b_masked).abs().max()
+				result = delta < 1e-6
+				if not result:
+					print(f"Masked values are not equal, max delta = {delta}")
+					return False
+				else:
+					return True
+			except ValueError:
+				print("Masked values are not equal and cannot be cast to float")
+
+			return False
+		else:
+			# if the masked values are equal, then the two series are equal except for the NaN values
+			# check we have an equal number of NaN values:
+			if a_is_nan.sum() != b_is_nan.sum():
+				print(f"Number of NaN values do not match: a={a_is_nan.sum()} b={b_is_nan.sum()}")
+				return False
+			else:
+				# now check if the NaN values are in the same places:
+				if a_is_nan.equals(b_is_nan):
+					return True
+				else:
+					print("NaN values are in different places")
+					return False
+
 	return True
