@@ -312,6 +312,37 @@ def get_variable_recommendations(
 
 	if len(flagged) > 0:
 		variables_to_use = [variable for variable in variables_to_use if variable not in flagged]
+	
+	# Check for duplicate variables in variables_to_use
+	if variables_to_use is not None:
+		seen_vars = set()
+		duplicates = []
+		deduped_vars = []
+		
+		for var in variables_to_use:
+			if var in seen_vars:
+				duplicates.append(var)
+			else:
+				seen_vars.add(var)
+				deduped_vars.append(var)
+		
+		if duplicates:
+			print(f"\n⚠️ WARNING: Found duplicate variables in variables_to_use: {duplicates}")
+			print(f"Using only the first occurrence of each variable for analysis.")
+			variables_to_use = deduped_vars
+
+	# Check for duplicate columns in DataFrame (could happen from merges)
+	duplicate_cols = df_sales.columns[df_sales.columns.duplicated()].tolist()
+	if duplicate_cols:
+		print(f"\n⚠️ WARNING: Found duplicate columns in sales DataFrame: {duplicate_cols}")
+		print(f"This could cause errors in analysis. Keeping only first occurrence of each column.")
+		df_sales = df_sales.loc[:, ~df_sales.columns.duplicated()]
+	
+	duplicate_cols_univ = df_universe.columns[df_universe.columns.duplicated()].tolist()
+	if duplicate_cols_univ:
+		print(f"\n⚠️ WARNING: Found duplicate columns in universe DataFrame: {duplicate_cols_univ}")
+		print(f"This could cause errors in analysis. Keeping only first occurrence of each column.")
+		df_universe = df_universe.loc[:, ~df_universe.columns.duplicated()]
 
 	ds = _prepare_ds(df_sales, df_universe, model_group, vacant_only, settings, variables_to_use)
 	ds = ds.encode_categoricals_with_one_hot()
@@ -365,7 +396,32 @@ def get_variable_recommendations(
 
 	if "vif" in tests_to_run:
 		# VIF
-		vif = calc_vif_recursive_drop(X_sales, thresh.get("vif", 10), settings)
+		# Filter out boolean columns before VIF calculation
+		bool_cols = []
+		vif_X = X_sales.copy()
+		
+		for col in X_sales.columns:
+			# Check if column is boolean or contains only 0/1 values
+			if X_sales[col].dtype == bool or (X_sales[col].isin([0, 1, True, False]).all() and len(X_sales[col].unique()) <= 2):
+				bool_cols.append(col)
+		
+		if bool_cols:
+			if verbose:
+				print(f"Excluding {len(bool_cols)} boolean columns from VIF calculation: {', '.join(bool_cols[:5])}{'...' if len(bool_cols) > 5 else ''}")
+			vif_X = vif_X.drop(columns=bool_cols)
+		
+		# Don't run VIF if we have no columns left or too few rows
+		if vif_X.shape[1] > 0 and len(vif_X) > vif_X.shape[1]:
+			vif = calc_vif_recursive_drop(vif_X, thresh.get("vif", 10), settings)
+			
+			# Add boolean columns back to the final VIF results with NaN VIF values
+			if bool_cols and vif is not None and "final" in vif:
+				for bool_col in bool_cols:
+					vif["final"] = pd.concat([vif["final"], pd.DataFrame({"variable": [bool_col], "vif": [float('nan')]})], ignore_index=True)
+		else:
+			if verbose:
+				print("Skipping VIF calculation - not enough non-boolean variables or samples")
+			vif = {"initial": pd.DataFrame(columns=["variable", "vif"]), "final": pd.DataFrame(columns=["variable", "vif"])}
 	else:
 		vif = None
 
@@ -2025,6 +2081,37 @@ def _prepare_ds(
 		if ind_vars is None:
 			raise ValueError(f"ind_vars not found for model 'default'")
 
+	# Check for duplicate variables in ind_vars
+	if ind_vars is not None:
+		seen_vars = set()
+		duplicates = []
+		deduped_vars = []
+		
+		for var in ind_vars:
+			if var in seen_vars:
+				duplicates.append(var)
+			else:
+				seen_vars.add(var)
+				deduped_vars.append(var)
+		
+		if duplicates:
+			print(f"\n⚠️ WARNING: Found duplicate variables in ind_vars: {duplicates}")
+			print(f"Using only the first occurrence of each variable to avoid errors.")
+			ind_vars = deduped_vars
+
+	# Check for duplicate columns in DataFrame (e.g., from merges)
+	duplicate_cols = df_sales.columns[df_sales.columns.duplicated()].tolist()
+	if duplicate_cols:
+		print(f"\n⚠️ WARNING: Found duplicate columns in DataFrame: {duplicate_cols}")
+		print(f"This could cause errors. Keeping only first occurrence of each column.")
+		df_sales = df_sales.loc[:, ~df_sales.columns.duplicated()]
+	
+	duplicate_cols_univ = df_universe.columns[df_universe.columns.duplicated()].tolist()
+	if duplicate_cols_univ:
+		print(f"\n⚠️ WARNING: Found duplicate columns in universe DataFrame: {duplicate_cols_univ}")
+		print(f"This could cause errors. Keeping only first occurrence of each column.")
+		df_universe = df_universe.loc[:, ~df_universe.columns.duplicated()]
+
 	fields_cat = get_fields_categorical(s, df_sales, include_boolean=True)
 	interactions = get_variable_interactions(entry, s, df_sales)
 
@@ -2474,7 +2561,7 @@ def _run_hedonic_models(
 			vacant_only=vacant_only,
 			dep_var=dep_var,
 			dep_var_test=dep_var_test,
-			all_results=all_hedonic_results,
+				all_results=all_hedonic_results,
 			settings=settings,
 			verbose=verbose,
 			hedonic=True

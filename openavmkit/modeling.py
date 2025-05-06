@@ -1993,25 +1993,34 @@ def run_xgboost(ds: DataSplit, outpath: str, save_params: bool = False, use_save
 
   timing.start("total")
 
-  timing.start("setup")
   ds = ds.encode_categoricals_with_one_hot()
   ds.split()
-  timing.stop("setup")
+  
+  # Fix for object-typed boolean columns (especially 'within_*' fields)
+  for col in ds.X_train.columns:
+    if col.startswith('within_') or (ds.X_train[col].dtype == 'object' and ds.X_train[col].isin([True, False]).all()):
+      if verbose:
+        print(f"Converting column {col} from {ds.X_train[col].dtype} to bool")
+      ds.X_train[col] = ds.X_train[col].astype(bool)
+      if col in ds.X_test.columns:
+        ds.X_test[col] = ds.X_test[col].astype(bool)
+      if col in ds.X_univ.columns:
+        ds.X_univ[col] = ds.X_univ[col].astype(bool)
+      if col in ds.X_sales.columns:
+        ds.X_sales[col] = ds.X_sales[col].astype(bool)
 
-  timing.start("parameter_search")
-  params = _get_params("XGBoost", "xgboost", ds, tune_xgboost, outpath, save_params, use_saved_params, verbose)
-  timing.stop("parameter_search")
+  parameters = _get_params("XGBoost", "xgboost", ds, tune_xgboost, outpath, save_params, use_saved_params, verbose)
+
+  parameters["verbosity"] = 0
+  parameters["tree_method"] = "auto"
+  parameters["device"] = "cpu"
+  parameters["objective"] = "reg:squarederror"
+  # parameters["eval_metric"] = "rmse"
+  xgboost_model = xgb.XGBRegressor(**parameters)
 
   timing.start("train")
-  xgboost_model = xgboost.XGBRegressor(**params)
   xgboost_model.fit(ds.X_train, ds.y_train)
   timing.stop("train")
-
-  # Print timing information for XGBoost model
-  # if verbose:
-  #   print("\n***** XGBoost Model Timing *****")
-  #   print(timing.print())
-  #   print("*********************************\n")
 
   return predict_xgboost(ds, xgboost_model, timing, verbose)
 
@@ -2084,6 +2093,20 @@ def run_lightgbm(ds: DataSplit, outpath: str, save_params: bool = False, use_sav
   timing.start("setup")
   ds = ds.encode_categoricals_with_one_hot()
   ds.split()
+  
+  # Fix for object-typed boolean columns (especially 'within_*' fields)
+  for col in ds.X_train.columns:
+    if col.startswith('within_') or (ds.X_train[col].dtype == 'object' and ds.X_train[col].isin([True, False]).all()):
+      if verbose:
+        print(f"Converting column {col} from {ds.X_train[col].dtype} to bool")
+      ds.X_train[col] = ds.X_train[col].astype(bool)
+      if col in ds.X_test.columns:
+        ds.X_test[col] = ds.X_test[col].astype(bool)
+      if col in ds.X_univ.columns:
+        ds.X_univ[col] = ds.X_univ[col].astype(bool)
+      if col in ds.X_sales.columns:
+        ds.X_sales[col] = ds.X_sales[col].astype(bool)
+  
   timing.stop("setup")
 
   timing.start("parameter_search")
