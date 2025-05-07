@@ -7,7 +7,7 @@ from catboost import Pool, CatBoostRegressor
 from optuna import Trial
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_absolute_error
-
+from optuna.integration import CatBoostPruningCallback
 
 
 
@@ -116,62 +116,79 @@ def tune_lightgbm(X, y, sizes, he_ids, n_trials=100, n_splits=5, random_state=42
 
 
 
-def tune_catboost(X, y, sizes, he_ids, n_trials=100, n_splits=5, random_state=42, cat_vars=None, verbose=False, outpath=None):
-    """
-    Tunes CatBoost hyperparameters using Optuna and rolling-origin cross-validation.
+def tune_catboost(
+    X,
+    y,
+    sizes,
+    he_ids,
+    verbose=False,
+    cat_vars=None,
+    n_trials=100,
+    n_splits=5,
+    random_state=42
+):
+    # 1) Pre‐split once, build Pools
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    cv_pools = []
+    for train_idx, val_idx in kf.split(X):
+        X_tr, X_va = X.iloc[train_idx], X.iloc[val_idx]
+        y_tr, y_va = y.iloc[train_idx], y.iloc[val_idx]
+        cat_feats = [c for c in cat_vars if c in X.columns]
+        cv_pools.append((
+            Pool(X_tr, y_tr, cat_features=cat_feats),
+            Pool(X_va, y_va, cat_features=cat_feats),
+        ))
 
-    Args:
-        X (array-like): Feature matrix.
-        y (array-like): Target vector.
-        sizes (array-like): Array of size values (land or building size)
-        he_ids (array-like): Array of horizontal equity cluster ID's
-        n_trials (int): Number of optimization trials for Optuna. Default is 100.
-        n_splits (int): Number of folds for cross-validation. Default is 5.
-        random_state (int): Random seed for reproducibility. Default is 42.
-
-    Returns:
-        dict: Best hyperparameters found by Optuna.
-        float: Best MAE score achieved.
-    """
-    def objective(trial: Trial):
-        """
-        Objective function for Optuna to optimize CatBoost hyperparameters.
-        """
+    def objective(trial):
+        # 2) Only valid constructor params here:
         params = {
-            "loss_function": "MAE",  # Mean Absolute Error
-            "eval_metric": "MAE",
-            "iterations": trial.suggest_int("iterations", 500, 3000),
-            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-            "depth": trial.suggest_int("depth", 4, 10),
-            "random_strength": trial.suggest_float("random_strength", 0, 10, log=False),
-            "bagging_temperature": trial.suggest_float("bagging_temperature", 0, 1, log=False),
-            "border_count": trial.suggest_int("border_count", 32, 255),
-            "grow_policy": trial.suggest_categorical("grow_policy", ["SymmetricTree", "Depthwise", "Lossguide"]),
-            "subsample": trial.suggest_float("subsample", 0.5, 1.0, log=False),
-            "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 1, 50),
-            "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 10, log=True),
-            "random_seed": random_state,
-            "verbose": 0  # Suppresses CatBoost output
+            "loss_function":       "RMSE",
+            "eval_metric":         "RMSE",
+            "iterations":          trial.suggest_int("iterations", 300, 1000),
+            "learning_rate":       trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            "depth":               trial.suggest_int("depth", 4, 10),
+            "border_count":        trial.suggest_int("border_count", 32, 64),
+            "random_strength":     trial.suggest_float("random_strength", 0, 10),
+            "reg_lambda":          trial.suggest_float("reg_lambda", 1e-4, 10, log=True),
+            "bootstrap_type":      "Bayesian",
+            "bagging_temperature": trial.suggest_float("bagging_temperature", 0, 10),
+            "boosting_type":       "Plain",
+            "task_type":           "CPU",     # CPU so we can use pruning callbacks
+            "thread_count":        -1,        # all cores
+            "random_seed":         random_state,
+            "verbose":             False,
         }
-        if outpath is not None:
-            params["train_dir"] = f"{outpath}/catboost/catboost_info"
-        if params["grow_policy"] == "Lossguide":
-            params["max_leaves"] = trial.suggest_int("max_leaves", 31, 128)
+        if trial.suggest_categorical("grow_policy", ["SymmetricTree","Depthwise","Lossguide"]) == "Lossguide":
+            params["grow_policy"] = "Lossguide"
+            params["max_leaves"]   = trial.suggest_int("max_leaves", 31, 128)
+        else:
+            params["grow_policy"] = trial.params["grow_policy"]
 
-        # Perform rolling-origin cross-validation
-        mae = _catboost_rolling_origin_cv(X, y, params, n_splits=n_splits, random_state=random_state, cat_vars=cat_vars)
-        if verbose:
-            print(f"-->trial # {trial.number}/{n_trials}, MAE: {mae:10.0f}") #, params: {params}")
-        return mae  # Optuna minimizes, so return the MAE directly
+        # 3) Loop folds, pass early_stopping & pruning into fit()
+        maes = []
+        for train_pool, val_pool in cv_pools:
+            model = CatBoostRegressor(**params)
+            model.fit(
+                train_pool,
+                eval_set=val_pool,
+                early_stopping_rounds=50,
+                use_best_model=True,
+                callbacks=[CatBoostPruningCallback(trial, "RMSE")],
+                verbose=False,
+            )
+            y_pred = model.predict(val_pool)
+            maes.append(mean_absolute_error(val_pool.get_label(), y_pred))
+
+        return sum(maes) / len(maes)
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
-
-    # Run Bayesian Optimization with Optuna
     study = optuna.create_study(direction="minimize", pruner=optuna.pruners.MedianPruner())
-    study.optimize(objective, n_trials=n_trials, n_jobs=-1, callbacks=[_plateau_callback])  # Use parallelism if available
+    study.optimize(objective, n_trials=n_trials, n_jobs=1)
 
     if verbose:
-        print(f"Best trial: {study.best_trial.number} with MAE: {study.best_trial.value:10.0f} and params: {study.best_trial.params}")
+        print(f"Best trial #{study.best_trial.number} → RMSE={study.best_trial.value:.4f}")
+        print("Params:", study.best_trial.params)
+
     return study.best_params
 
 

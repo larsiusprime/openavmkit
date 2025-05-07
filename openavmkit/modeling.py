@@ -14,7 +14,7 @@ import numpy as np
 import statsmodels.api as sm
 import pandas as pd
 import geopandas as gpd
-import xgboost
+import xgboost as xgb
 import lightgbm as lgb
 import catboost
 from catboost import CatBoostRegressor, Pool
@@ -40,7 +40,7 @@ from openavmkit.utilities.modeling import GarbageModel, AverageModel, NaiveSqftM
   GWRModel, MRAModel, LarsModel, GroundTruthModel, SpatialLagModel
 from openavmkit.utilities.data import clean_column_names, div_field_z_safe
 from openavmkit.utilities.settings import get_valuation_date
-from openavmkit.utilities.stats import quick_median_chd_pl, calc_mse_r2_adj_r2, calc_prb
+from openavmkit.utilities.stats import quick_median_chd_pl, calc_mse_r2_adj_r2, calc_prb, trim_outliers_mask
 from openavmkit.tuning import tune_lightgbm, tune_xgboost, tune_catboost
 from openavmkit.utilities.timing import TimingData
 
@@ -1963,14 +1963,14 @@ def run_gwr(ds: DataSplit, outpath: str, save_params: bool = False, use_saved_pa
   return predict_gwr(ds, gwr_model, timing, verbose, diagnostic)
 
 
-def predict_xgboost(ds: DataSplit, xgboost_model: xgboost.XGBRegressor, timing: TimingData, verbose: bool = False):
+def predict_xgboost(ds: DataSplit, xgboost_model: xgb.XGBRegressor, timing: TimingData, verbose: bool = False):
   """
   Generate predictions using an XGBoost model.
 
   :param ds: DataSplit object.
   :type ds: DataSplit
   :param xgboost_model: Trained XGBRegressor instance.
-  :type xgboost_model: xgboost.XGBRegressor
+  :type xgboost_model: xgb.XGBRegressor
   :param timing: TimingData object.
   :type timing: TimingData
   :param verbose: Whether to print verbose output.
@@ -2695,8 +2695,20 @@ def predict_local_sqft(ds: DataSplit, sqft_model: LocalSqftModel, timing: Timing
     df_impr.loc[df_impr["per_impr_sqft"].eq(0), "per_impr_sqft"] = df_impr[f"{location_field}_per_impr_sqft"]
     df_land.loc[df_land["per_land_sqft"].eq(0), "per_land_sqft"] = df_land[f"{location_field}_per_land_sqft"]
 
-    # df_sqft_land.to_csv(f"debug_local_sqft_{len(location_fields)}_{location_field}_sqft_land.csv", index=False)
-    # df_land.to_csv(f"debug_local_sqft_{len(location_fields)}_{location_field}_land.csv", index=False)
+    # do_debug = True
+    #
+    # if do_debug:
+    #   path = "main"
+    #   if ds.vacant_only:
+    #     path = "vacant"
+    #   elif ds.hedonic:
+    #     path = "hedonic"
+    #
+    #   out_path = f"out/models/{ds.model_group}/{path}/local_sqft"
+    #   df_sqft_land.to_csv(f"{out_path}/debug_local_sqft_{len(location_fields)}_{location_field}_sqft_land.csv", index=False)
+    #   df_land.to_csv(f"{out_path}debug_local_sqft_{len(location_fields)}_{location_field}_land.csv", index=False)
+    #   df_sqft_impr.to_csv(f"{out_path}/debug_local_sqft_{len(location_fields)}_{location_field}_sqft_impr.csv", index=False)
+    #   df_impr.to_csv(f"{out_path}/debug_local_sqft_{len(location_fields)}_{location_field}_impr.csv", index=False)
 
   # any remaining zeroes get filled with the locality-wide median value
   df_impr.loc[df_impr["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
