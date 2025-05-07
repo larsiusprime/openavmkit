@@ -48,14 +48,15 @@ from openavmkit.utilities.timing import TimingData
 from pyproj import CRS
 import lightgbm as lgb
 
-import psutil, logging
-logging.basicConfig(filename="memory.log", level=logging.INFO,
-  format="%(asctime)s %(message)s")
-process = psutil.Process()
+# import psutil, logging
+# logging.basicConfig(filename="memory.log", level=logging.INFO,
+#   format="%(asctime)s %(message)s")
+# process = psutil.Process()
 
 def log_mem(stage):
-  mem_mb = process.memory_info().rss / 1024**2
-  logging.info(f"{stage}: {mem_mb:.1f} MB")
+  pass
+  # mem_mb = process.memory_info().rss / 1024**2
+  # logging.info(f"{stage}: {mem_mb:.1f} MB")
 
 @dataclass
 class SalesUniversePair:
