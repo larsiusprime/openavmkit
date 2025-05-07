@@ -180,7 +180,9 @@ def mark_horizontal_equity_clusters_per_model_group_sup(
 		sup: SalesUniversePair,
 		settings: dict,
 		verbose: bool = False,
-		use_cache: bool = True
+		use_cache: bool = True,
+		do_land_clusters: bool = True,
+		do_impr_clusters: bool = True
 ):
 	"""
   Mark horizontal equity clusters on the 'universe' DataFrame of a SalesUniversePair.
@@ -194,6 +196,12 @@ def mark_horizontal_equity_clusters_per_model_group_sup(
   :type settings: dict
   :param verbose: If True, prints progress information.
   :type verbose: bool, optional
+  :param use_cache: If True, uses cached DataFrame if available.
+  :type use_cache: bool, optional
+  :param do_land_clusters: If True, marks LAND horizontal equity clusters.
+  :type do_land_clusters: bool, optional
+  :param do_impr_clusters: If True, marks IMPROVEMENT horizontal equity clusters.
+  :type do_impr_clusters: bool, optional
   :returns: Updated SalesUniversePair with marked horizontal equity clusters.
   :rtype: SalesUniversePair
   """
@@ -202,15 +210,17 @@ def mark_horizontal_equity_clusters_per_model_group_sup(
 		print("")
 		print("Marking horizontal equity clusters...")
 	df_universe = mark_horizontal_equity_clusters_per_model_group(df_universe, settings, verbose, output_folder="horizontal_equity/general", use_cache=use_cache)
-	if verbose:
-		print("")
-		print("Marking LAND horizontal equity clusters...")
-	df_universe = mark_horizontal_equity_clusters_per_model_group(df_universe, settings, verbose, settings_object="land_equity", id_name="land_he_id", output_folder="horizontal_equity/land", use_cache=use_cache)
-	if verbose:
-		print("")
-		print("Marking IMPROVEMENT horizontal equity clusters...")
-	df_universe = mark_horizontal_equity_clusters_per_model_group(df_universe, settings, verbose, settings_object="impr_equity", id_name="impr_he_id", output_folder="horizontal_equity/improvement", use_cache=use_cache)
-	sup.set("universe", df_universe)
+	if do_land_clusters:
+		if verbose:
+			print("")
+			print("Marking LAND horizontal equity clusters...")
+		df_universe = mark_horizontal_equity_clusters_per_model_group(df_universe, settings, verbose, settings_object="land_equity", id_name="land_he_id", output_folder="horizontal_equity/land", use_cache=use_cache)
+	if do_impr_clusters:
+		if verbose:
+			print("")
+			print("Marking IMPROVEMENT horizontal equity clusters...")
+		df_universe = mark_horizontal_equity_clusters_per_model_group(df_universe, settings, verbose, settings_object="impr_equity", id_name="impr_he_id", output_folder="horizontal_equity/improvement", use_cache=use_cache)
+		sup.set("universe", df_universe)
 	return sup
 
 
