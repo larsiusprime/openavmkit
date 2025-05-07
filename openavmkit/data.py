@@ -1155,8 +1155,7 @@ def enrich_df_streets(
   edges = edges[['geometry', 'road_idx']].copy()
 
   args = list(zip(
-    edges.geometry, edges.road_idx,
-    edges.road_name, edges.road_type
+    edges.geometry, edges.road_idx
   ))
   t.start('rays_parallel')
   n_jobs = 8
