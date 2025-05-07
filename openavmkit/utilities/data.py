@@ -348,3 +348,56 @@ def count_values_in_common(a: pd.DataFrame, b: pd.DataFrame, a_field: str, b_fie
     a_in_b = a_values.intersection(b_values)
     b_in_a = b_values.intersection(a_values)
     return len(a_in_b), len(b_in_a)
+
+
+def ensure_categories(
+    df: pd.DataFrame,
+    df_other: pd.DataFrame,
+    field: str
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+  if (isinstance(df[field].dtype, pd.CategoricalDtype) and
+      isinstance(df_other[field].dtype, pd.CategoricalDtype)):
+
+    # union keeps order of appearance in the first operands
+    cats = df[field].cat.categories.union(df_other[field].cat.categories)
+
+    # give *both* Series the identical category list
+    df[field]        = df[field].cat.set_categories(cats)
+    df_other[field]  = df_other[field].cat.set_categories(cats)
+
+  return df, df_other
+
+
+def align_categories(
+    df_left: pd.DataFrame,
+    df_right: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+  """
+  Ensure that *every* column that is categorical on either side ends up
+  categorical on both sides and that they share the **union** of categories.
+  """
+
+  for col in df_left.columns.union(df_right.columns):
+
+    left_is_cat  = isinstance(df_left.get(col, pd.Series(dtype="object")).dtype,
+      pd.CategoricalDtype)
+    right_is_cat = isinstance(df_right.get(col, pd.Series(dtype="object")).dtype,
+      pd.CategoricalDtype)
+
+    # If exactly one side is categorical, convert the other side first
+    if left_is_cat and not right_is_cat:
+      df_right[col] = pd.Categorical(df_right[col],
+        categories=df_left[col].cat.categories)
+      right_is_cat = True
+    elif right_is_cat and not left_is_cat:
+      df_left[col] = pd.Categorical(df_left[col],
+        categories=df_right[col].cat.categories)
+      left_is_cat = True
+
+    # Now, if both are categorical, give them the same (union) category list
+    if left_is_cat and right_is_cat:
+      cats = df_left[col].cat.categories.union(df_right[col].cat.categories)
+      df_left[col]  = df_left[col].cat.set_categories(cats)
+      df_right[col] = df_right[col].cat.set_categories(cats)
+
+  return df_left, df_right

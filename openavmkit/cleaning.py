@@ -3,6 +3,7 @@ import numpy as np
 import lightgbm as lgb
 
 from openavmkit.data import SalesUniversePair, get_field_classifications, is_series_all_bools
+from openavmkit.utilities.data import ensure_categories, align_categories
 from openavmkit.utilities.settings import get_valuation_date, get_fields_categorical, get_fields_boolean, \
 	get_grouped_fields_from_data_dictionary, get_data_dictionary, get_model_group_ids
 from openavmkit.utilities.cache import write_cache, read_cache, check_cache
@@ -274,6 +275,11 @@ def fill_unknown_values_sup(sup: SalesUniversePair, settings: dict):
 def _fill_with(df: pd.DataFrame, field: str, value):
 	if field not in df:
 		return df
+
+	if isinstance(df[field].dtype, pd.CategoricalDtype):
+		if value not in df[field].cat.categories:
+			df[field] = df[field].cat.add_categories(value)
+
 	df.loc[df[field].isna(), field] = value
 	return df
 
@@ -335,6 +341,7 @@ def _fill_unknown_values_per_model_group(df_in: pd.DataFrame, settings: dict):
 		else:
 			df_mg = df[df["model_group"].eq(model_group)].copy()
 		df_mg = _fill_unknown_values(df_mg, settings)
+		df, df_mg = align_categories(df, df_mg)
 		df.loc[df_mg.index, :] = df_mg
 
 	return df
@@ -356,11 +363,13 @@ def _fill_unknown_values(df, settings: dict):
 				fill_method = key[:-5]
 				df_impr = df[df["is_vacant"].eq(False)].copy()
 				df_impr = _fill_thing(df_impr, field, fill_method)
+				df, df_impr = ensure_categories(df, df_impr, field_name)
 				df.loc[df_impr.index, field_name] = df_impr[field_name]
 			elif key.endswith("_vacant"):
 				fill_method = key[:-7]
 				df_vacant = df[df["is_vacant"].eq(True)].copy()
 				df_vacant = _fill_thing(df_vacant, field, fill_method)
+				df, df_vacant = ensure_categories(df, df_vacant, field_name)
 				df.loc[df_vacant.index, field_name] = df_vacant[field_name]
 			else:
 				df = _fill_thing(df, field, fill_method)
