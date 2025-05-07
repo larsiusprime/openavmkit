@@ -285,13 +285,18 @@ class PredictionResults:
       y_pred_trim = y_pred_clean[mask]
       y_clean_trim = y_clean[mask]
 
-      self.mse_trim = mean_squared_error(y_clean_trim, y_pred_trim)
-      self.rmse_trim = np.sqrt(self.mse_trim)
-      var_y_trim = np.var(y_clean_trim)
-      if var_y_trim == 0:
-        self.r2_trim = float('nan')
+      if len(y_clean_trim) > 0 and len(y_pred_trim) > 0:
+        self.mse_trim = mean_squared_error(y_clean_trim, y_pred_trim)
+        self.rmse_trim = np.sqrt(self.mse_trim)
+        var_y_trim = np.var(y_clean_trim)
+        if var_y_trim == 0:
+          self.r2_trim = float('nan')
+        else:
+          self.r2_trim = 1 - self.mse_trim / var_y_trim
       else:
-        self.r2_trim = 1 - self.mse_trim / var_y_trim
+        self.mse_trim = float('nan')
+        self.rmse_trim = float('nan')
+        self.r2_trim = float('nan')
 
       n_trim = len(y_pred_trim)
       k = len(ind_vars)
