@@ -618,7 +618,13 @@ def mark_ss_ids_per_model_group_sup(sup: SalesUniversePair, settings: dict, verb
    return sup
 
 
-def mark_horizontal_equity_clusters_per_model_group_sup(sup: SalesUniversePair, settings: dict, verbose: bool = False):
+def mark_horizontal_equity_clusters_per_model_group_sup(
+    sup: SalesUniversePair,
+    settings: dict,
+    verbose: bool = False,
+    do_land_clusters: bool = True,
+    do_impr_clusters: bool = True
+):
    """
    Clusters parcels for horizontal equity study, marking them with 'horizontal equity cluster ids.' This is done for
    each model group within a SalesUniversePair. Marking ids ahead of time allows for more efficient processing later.
@@ -631,10 +637,20 @@ def mark_horizontal_equity_clusters_per_model_group_sup(sup: SalesUniversePair, 
    :type settings: dict
    :param verbose: If True, prints verbose output.
    :type verbose: bool, optional
+   :param do_land_clusters: If True, enables land clustering.
+   :type do_land_clusters: bool, optional
+   :param do_impr_clusters: If True, enables improvement clustering.
+   :type do_impr_clusters: bool, optional
    :returns: Updated SalesUniversePair with horizontal equity clusters marked.
    :rtype: SalesUniversePair
    """
-   return openavmkit.horizontal_equity_study.mark_horizontal_equity_clusters_per_model_group_sup(sup, settings, verbose)
+   return openavmkit.horizontal_equity_study.mark_horizontal_equity_clusters_per_model_group_sup(
+      sup,
+      settings,
+      verbose,
+      do_land_clusters=do_land_clusters,
+      do_impr_clusters=do_impr_clusters
+   )
 
 
 def run_sales_scrutiny_per_model_group_sup(sup: SalesUniversePair, settings: dict, verbose: bool = False) -> SalesUniversePair:
