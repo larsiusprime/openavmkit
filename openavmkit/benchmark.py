@@ -2482,7 +2482,6 @@ def _calc_variable_recommendations(
 def _run_hedonic_models(
 		settings: dict,
 		model_group: str,
-		vacant_only: bool,
 		models_to_run: list[str],
 		all_results: MultiModelResults,
 		df_sales: pd.DataFrame,
@@ -2501,8 +2500,6 @@ def _run_hedonic_models(
   :type settings: dict
   :param model_group: Model group identifier.
   :type model_group: str
-  :param vacant_only: Whether to use only vacant sales.
-  :type vacant_only: bool
   :param models_to_run: List of models to run.
   :type models_to_run: list[str]
   :param all_results: MultiModelResults containing current model results.
@@ -2589,7 +2586,7 @@ def _run_hedonic_models(
 			df_sales=df_sales,
 			df_universe=df_universe,
 			model_group=model_group,
-			vacant_only=vacant_only,
+			vacant_only=False,
 			dep_var=dep_var,
 			dep_var_test=dep_var_test,
 				all_results=all_hedonic_results,
@@ -2602,7 +2599,7 @@ def _run_hedonic_models(
 			df_sales=df_sales,
 			df_universe=df_universe,
 			model_group=model_group,
-			vacant_only=vacant_only,
+			vacant_only=False,
 			hedonic=True,
 			dep_var=dep_var,
 			dep_var_test=dep_var_test,
@@ -2620,8 +2617,74 @@ def _run_hedonic_models(
 		# Calculate final results, including ensemble
 			all_hedonic_results.add_model("ensemble", ensemble_results)
 
-	print("HEDONIC BENCHMARK")
+	print(f"HEDONIC BENCHMARK ({model_group})")
 	print(all_hedonic_results.benchmark.print())
+
+	perf_metrics = _model_performance_metrics(model_group, all_hedonic_results, "HEDONIC")
+	print(perf_metrics)
+
+
+def _model_performance_metrics(
+		model_group: str,
+		all_results: MultiModelResults,
+		title: str,
+):
+	# Add performance metrics table
+	text = (f"\n{title} Model Performance Metrics for {model_group}: (* = trimmed)\n")
+	text += ("=" * 80) + "\n"
+	metrics_data = {
+		"Model": [],
+		"R²": [],
+		"Slope": [],
+		"R²*": [],
+		"Slope*": [],
+	}
+
+	for model_name, model_result in all_results.model_results.items():
+		# Get test set predictions and actuals
+		y_pred = model_result.pred_test.y_pred
+		y_true = model_result.pred_test.y
+
+		y_true = y_true.astype(np.float64)
+		y_pred = y_pred.astype(np.float64)
+
+		y_ratio = y_pred / y_true
+		mask = trim_outliers_mask(y_ratio)
+		y_true_trim = y_true[mask]
+		y_pred_trim = y_pred[mask]
+
+		# Calculate R²
+		r2 = model_result.pred_test.r2
+		r2_trim = model_result.pred_test.r2_trim
+
+		# Calculate slope using numpy polyfit
+		try:
+			slope, _ = np.polyfit(y_true, y_pred, 1)
+			slope_trim, _ = np.polyfit(y_true_trim, y_pred_trim, 1)
+		except numpy.linalg.LinAlgError as e:
+			print(f"Model({model_name}) -- Error calculating slope:", e)
+			slope = np.nan
+		except numpy.core._exceptions.UFuncTypeError as e:
+			print(f"Model({model_name}) -- Error calculating slope:", e)
+			slope = np.nan
+
+		metrics_data["Model"].append(model_name)
+		metrics_data["R²"].append(r2)
+		metrics_data["R²*"].append(r2_trim)
+		metrics_data["Slope"].append(slope)
+		metrics_data["Slope*"].append(slope_trim)
+
+	# Create and display metrics DataFrame
+	metrics_df = pd.DataFrame(metrics_data)
+	metrics_df.set_index("Model", inplace=True)
+	metrics_df["R²"] = metrics_df["R²"].apply(lambda x: f"{x:.4f}")
+	metrics_df["Slope"] = metrics_df["Slope"].apply(lambda x: f"{x:.4f}")
+	metrics_df["R²*"] = metrics_df["R²*"].apply(lambda x: f"{x:.4f}")
+	metrics_df["Slope*"] = metrics_df["Slope*"].apply(lambda x: f"{x:.4f}")
+
+	text += metrics_df.to_string() + "\n"
+	text += ("=" * 80) + "\n"
+	return text
 
 
 def _run_models(
@@ -2817,74 +2880,20 @@ def _run_models(
 
 	print("")
 	if vacant_only:
-		print(f"VACANT BENCHMARK")
+		print(f"VACANT BENCHMARK ({model_group})")
 	else:
-		print(f"MAIN BENCHMARK")
+		print(f"MAIN BENCHMARK ({model_group})")
 	print(all_results.benchmark.print())
 
 	# Add performance metrics table
-	benchmark_type = "VACANT" if vacant_only else "MAIN"
-	print(f"\n{benchmark_type} Model Performance Metrics for {model_group}: (* = trimmed)")
-	print("=" * 80)
-	metrics_data = {
-		"Model": [],
-		"R²": [],
-		"Slope": [],
-		"R²*": [],
-		"Slope*": [],
-	}
-	
-	for model_name, model_result in all_results.model_results.items():
-		# Get test set predictions and actuals
-		y_pred = model_result.pred_test.y_pred
-		y_true = model_result.pred_test.y
-
-		y_true = y_true.astype(np.float64)
-		y_pred = y_pred.astype(np.float64)
-
-		y_ratio = y_pred / y_true
-		mask = trim_outliers_mask(y_ratio)
-		y_true_trim = y_true[mask]
-		y_pred_trim = y_pred[mask]
-
-		# Calculate R²
-		r2 = model_result.pred_test.r2
-		r2_trim = model_result.pred_test.r2_trim
-
-		# Calculate slope using numpy polyfit
-		try:
-			slope, _ = np.polyfit(y_true, y_pred, 1)
-			slope_trim, _ = np.polyfit(y_true_trim, y_pred_trim, 1)
-		except numpy.linalg.LinAlgError as e:
-			print(f"Model({model_name}) -- Error calculating slope:", e)
-			slope = np.nan
-		except numpy.core._exceptions.UFuncTypeError as e:
-			print(f"Model({model_name}) -- Error calculating slope:", e)
-			slope = np.nan
-
-		metrics_data["Model"].append(model_name)
-		metrics_data["R²"].append(r2)
-		metrics_data["R²*"].append(r2_trim)
-		metrics_data["Slope"].append(slope)
-		metrics_data["Slope*"].append(slope_trim)
-
-	# Create and display metrics DataFrame
-	metrics_df = pd.DataFrame(metrics_data)
-	metrics_df.set_index("Model", inplace=True)
-	metrics_df["R²"] = metrics_df["R²"].apply(lambda x: f"{x:.4f}")
-	metrics_df["Slope"] = metrics_df["Slope"].apply(lambda x: f"{x:.4f}")
-	metrics_df["R²*"] = metrics_df["R²*"].apply(lambda x: f"{x:.4f}")
-	metrics_df["Slope*"] = metrics_df["Slope*"].apply(lambda x: f"{x:.4f}")
-	print(metrics_df.to_string())
-	print("=" * 80)
-	print("")
+	perf_metrics = _model_performance_metrics(model_group, all_results, "VACANT" if vacant_only else "MAIN")
+	print(perf_metrics)
 
 	if not vacant_only and run_hedonic:
 		t.start("run hedonic models")
 		_run_hedonic_models(
 			settings=settings,
 			model_group=model_group,
-			vacant_only=vacant_only,
 			models_to_run=models_to_run,
 			all_results=all_results,
 			df_sales=df_sales,
