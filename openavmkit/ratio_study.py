@@ -50,18 +50,30 @@ class RatioStudy:
 			median_ratio = float(np.median(ratios))
 
 			# trim the ratios to remove outliers -- trim to the interquartile range
-			trim_ratios = stats.trim_outliers(ratios)
+			trim_mask = stats.trim_outliers_mask(ratios)
+
+			trim_ratios = ratios[trim_mask]
+			trim_predictions = predictions[trim_mask]
+			trim_ground_truth = ground_truth[trim_mask]
 
 			cod = stats.calc_cod(ratios)
 			cod_trim = stats.calc_cod(trim_ratios)
+
 			prd = stats.calc_prd(predictions, ground_truth)
+			prd_trim = stats.calc_prd(trim_predictions, trim_ground_truth)
+
 			prb, _, _ = stats.calc_prb(predictions, ground_truth)
+			prb_trim, _, _ = stats.calc_prb(trim_predictions, trim_ground_truth)
 
 			self.median_ratio = median_ratio
 			self.cod = cod
 			self.cod_trim = cod_trim
+
 			self.prd = prd
+			self.prd_trim = prd_trim
+
 			self.prb = prb
+			self.prb_trim = prb_trim
 
 
 class RatioStudyBootstrapped(RatioStudy):

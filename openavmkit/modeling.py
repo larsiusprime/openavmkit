@@ -278,10 +278,38 @@ class PredictionResults:
         self.r2 = float('nan')  # R² undefined when variance is 0
       else:
         self.r2 = 1 - self.mse / var_y
+
+      y_ratio = y_pred_clean / y_clean
+      mask = trim_outliers_mask(y_ratio)
+
+      y_pred_trim = y_pred_clean[mask]
+      y_clean_trim = y_clean[mask]
+
+      self.mse_trim = mean_squared_error(y_clean_trim, y_pred_trim)
+      self.rmse_trim = np.sqrt(self.mse_trim)
+      var_y_trim = np.var(y_clean_trim)
+      if var_y_trim == 0:
+        self.r2_trim = float('nan')
+      else:
+        self.r2_trim = 1 - self.mse_trim / var_y_trim
+
+      n_trim = len(y_pred_trim)
+      k = len(ind_vars)
+
+      divisor = n_trim - k - 1
+      if divisor <= 0 or pd.isna(self.r2_trim):
+        self.adj_r2_trim = float('nan')
+      else:
+        self.adj_r2_trim = 1 - ((1 - self.r2_trim) * (n_trim - 1) / divisor)
+
     else:
       self.mse = float('nan')
       self.rmse = float('nan')
       self.r2 = float('nan')
+      self.mse_trim = float('nan')
+      self.rmse_trim = float('nan')
+      self.r2_trim = float('nan')
+      self.adj_r2_trim = float('nan')
 
     n = len(y_pred)
     k = len(ind_vars)
@@ -290,6 +318,7 @@ class PredictionResults:
       self.adj_r2 = float('nan')  # Adjusted R² undefined with insufficient df or undefined R²
     else:
       self.adj_r2 = 1 - ((1 - self.r2) * (n - 1) / divisor)
+
     self.ratio_study = RatioStudy(y_pred_clean, y_clean)
 
 

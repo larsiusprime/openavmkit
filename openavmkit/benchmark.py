@@ -30,7 +30,7 @@ from openavmkit.utilities.settings import get_fields_categorical, get_variable_i
 	get_model_group, apply_dd_to_df_rows, get_model_group_ids, get_fields_boolean
 from openavmkit.utilities.stats import calc_vif_recursive_drop, calc_t_values_recursive_drop, \
 	calc_p_values_recursive_drop, calc_elastic_net_regularization, calc_correlations, calc_r2, \
-	calc_cross_validation_score, calc_cod
+	calc_cross_validation_score, calc_cod, trim_outliers_mask
 from openavmkit.utilities.timing import TimingData
 
 
@@ -762,15 +762,13 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 		"utility_score": [],
 		"count_sales": [],
 		"count_univ": [],
-		"mse": [],
-		"rmse": [],
-		"r2": [],
-		"adj_r2": [],
-		"prd": [],
-		"prb": [],
 		"median_ratio": [],
 		"cod": [],
+		"prd": [],
+		"prb": [],
 		"cod_trim": [],
+		"prd_trim": [],
+		"prb_trim": [],
 		"chd": []
 	}
 	for key in model_results:
@@ -791,15 +789,13 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 				data["utility_score"].append(results.utility_train)
 			data["count_sales"].append(pred_results.ratio_study.count)
 			data["count_univ"].append(results.df_universe.shape[0])
-			data["mse"].append(pred_results.mse)
-			data["rmse"].append(pred_results.rmse)
-			data["r2"].append(pred_results.r2)
-			data["adj_r2"].append(pred_results.adj_r2)
 			data["median_ratio"].append(pred_results.ratio_study.median_ratio)
 			data["cod"].append(pred_results.ratio_study.cod)
-			data["cod_trim"].append(pred_results.ratio_study.cod_trim)
 			data["prd"].append(pred_results.ratio_study.prd)
 			data["prb"].append(pred_results.ratio_study.prb)
+			data["cod_trim"].append(pred_results.ratio_study.cod_trim)
+			data["prd_trim"].append(pred_results.ratio_study.prd_trim)
+			data["prb_trim"].append(pred_results.ratio_study.prb_trim)
 
 			chd_results = None
 			if kind == "univ":
@@ -865,7 +861,9 @@ def _format_benchmark_df(df: pd.DataFrame, transpose: bool = True):
 		"true_prb": dig2_fancy_format,
 
 		"prd": dig2_fancy_format,
+		"prd_trim": dig2_fancy_format,
 		"prb": dig2_fancy_format,
+		"prb_trim": dig2_fancy_format,
 		"total": fancy_format,
 		"param": fancy_format,
 		"train": fancy_format,
@@ -2826,12 +2824,14 @@ def _run_models(
 
 	# Add performance metrics table
 	benchmark_type = "VACANT" if vacant_only else "MAIN"
-	print(f"\n{benchmark_type} Model Performance Metrics for {model_group}:")
+	print(f"\n{benchmark_type} Model Performance Metrics for {model_group}: (* = trimmed)")
 	print("=" * 80)
 	metrics_data = {
 		"Model": [],
 		"R²": [],
-		"Slope": []
+		"Slope": [],
+		"R²*": [],
+		"Slope*": [],
 	}
 	
 	for model_name, model_result in all_results.model_results.items():
@@ -2842,12 +2842,19 @@ def _run_models(
 		y_true = y_true.astype(np.float64)
 		y_pred = y_pred.astype(np.float64)
 
+		y_ratio = y_pred / y_true
+		mask = trim_outliers_mask(y_ratio)
+		y_true_trim = y_true[mask]
+		y_pred_trim = y_pred[mask]
+
 		# Calculate R²
 		r2 = model_result.pred_test.r2
-		
+		r2_trim = model_result.pred_test.r2_trim
+
 		# Calculate slope using numpy polyfit
 		try:
 			slope, _ = np.polyfit(y_true, y_pred, 1)
+			slope_trim, _ = np.polyfit(y_true_trim, y_pred_trim, 1)
 		except numpy.linalg.LinAlgError as e:
 			print(f"Model({model_name}) -- Error calculating slope:", e)
 			slope = np.nan
@@ -2855,16 +2862,19 @@ def _run_models(
 			print(f"Model({model_name}) -- Error calculating slope:", e)
 			slope = np.nan
 
-		
 		metrics_data["Model"].append(model_name)
 		metrics_data["R²"].append(r2)
+		metrics_data["R²*"].append(r2_trim)
 		metrics_data["Slope"].append(slope)
-	
+		metrics_data["Slope*"].append(slope_trim)
+
 	# Create and display metrics DataFrame
 	metrics_df = pd.DataFrame(metrics_data)
 	metrics_df.set_index("Model", inplace=True)
 	metrics_df["R²"] = metrics_df["R²"].apply(lambda x: f"{x:.4f}")
 	metrics_df["Slope"] = metrics_df["Slope"].apply(lambda x: f"{x:.4f}")
+	metrics_df["R²*"] = metrics_df["R²*"].apply(lambda x: f"{x:.4f}")
+	metrics_df["Slope*"] = metrics_df["Slope*"].apply(lambda x: f"{x:.4f}")
 	print(metrics_df.to_string())
 	print("=" * 80)
 	print("")

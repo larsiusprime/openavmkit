@@ -232,6 +232,26 @@ def trim_outliers(values: np.ndarray, lower_quantile: float = 0.25, upper_quanti
 	return values[(values >= lower_bound) & (values <= upper_bound)]
 
 
+def trim_outliers_mask(values: np.ndarray, lower_quantile: float = 0.25, upper_quantile: float = 0.75) -> np.ndarray:
+	"""
+  Trim outliers from an array of values based on quantile thresholds.
+
+  :param values: Input array of numeric values.
+  :type values: numpy.ndarray
+  :param lower_quantile: Lower quantile bound (default is 0.25).
+  :type lower_quantile: float, optional
+  :param upper_quantile: Upper quantile bound (default is 0.75).
+  :type upper_quantile: float, optional
+  :returns: Array representing a mask where values are within the quantile bounds.
+  :rtype: numpy.ndarray
+  """
+	if len(values) == 0:
+		return values
+	lower_bound = np.quantile(values, lower_quantile)
+	upper_bound = np.quantile(values, upper_quantile)
+	return (values >= lower_bound) & (values <= upper_bound)
+
+
 def calc_prb(predictions: np.ndarray, ground_truth: np.ndarray, confidence_interval: float = 0.95) -> (float, float, float):
 	"""
   Calculate the PRB (Price Related Bias) metric using a regression-based approach.
