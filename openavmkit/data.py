@@ -46,6 +46,7 @@ from openavmkit.utilities.overture import init_service_overture
 from openavmkit.inference import get_inference_model, perform_spatial_inference
 from openavmkit.utilities.timing import TimingData
 from pyproj import CRS
+import lightgbm as lgb
 
 
 @dataclass
@@ -3383,9 +3384,141 @@ def _perform_canonical_split(model_group: str, df_sales_in: pd.DataFrame, settin
   return df_test, df_train
 
 
+def _detect_outliers_lightgbm(df: pd.DataFrame, train_keys: np.ndarray, sale_field: str, outlier_config: dict) -> tuple[np.ndarray, np.ndarray]:
+  """
+  Detect outliers in training data using LightGBM model and return filtered keys.
+
+  :param df: Full sales DataFrame
+  :type df: pd.DataFrame
+  :param train_keys: Array of training sale keys
+  :type train_keys: np.ndarray
+  :param sale_field: Name of the sale price field
+  :type sale_field: str
+  :param outlier_config: Configuration dictionary for outlier detection
+  :type outlier_config: dict
+  :returns: Tuple of (clean training keys, outlier keys)
+  :rtype: tuple[np.ndarray, np.ndarray]
+  """
+  # Get training data subset
+  df_train = df[df["key_sale"].isin(train_keys)].copy()
+  
+  # For simplicity, use all numeric columns for training except the target
+  numeric_cols = df_train.select_dtypes(include=[np.number]).columns.tolist()
+  if sale_field in numeric_cols:
+    numeric_cols.remove(sale_field)
+  
+  # Handle object-typed boolean columns
+  for col in numeric_cols[:]:
+    if col in df_train.columns and df_train[col].dtype == 'object' and set(df_train[col].unique()).issubset({True, False, None}):
+      df_train[col] = df_train[col].astype(float)
+    elif col in df_train.columns and df_train[col].dtype not in ['int64', 'float64', 'int32', 'float32', 'bool']:
+      numeric_cols.remove(col)
+  
+  # Prepare data for model
+  X_train = df_train[numeric_cols].copy()
+  y_train = df_train[sale_field].copy()
+  
+  # Enhanced model parameters
+  params = {
+    'objective': 'regression',
+    'metric': ['rmse', 'mae'],  # Track multiple metrics
+    'num_leaves': 63,  # Increased from 31
+    'learning_rate': 0.01,  # Decreased for better generalization
+    'feature_fraction': 0.8,
+    'bagging_fraction': 0.7,
+    'bagging_freq': 5,
+    'min_child_samples': 20,  # Prevent overfitting on small leaf nodes
+    'max_depth': 12,  # Control tree depth
+    'reg_alpha': 0.1,  # L1 regularization
+    'reg_lambda': 0.1,  # L2 regularization
+    'n_jobs': -1,  # Use all CPU cores
+    'verbose': -1
+  }
+  
+  # Feature engineering
+  # Add interaction features for numeric columns
+  for i in range(len(numeric_cols)):
+    for j in range(i + 1, len(numeric_cols)):
+      col1, col2 = numeric_cols[i], numeric_cols[j]
+      interaction_name = f'interaction_{col1}_{col2}'
+      X_train[interaction_name] = X_train[col1] * X_train[col2]
+  
+  # Add polynomial features for important numeric columns
+  important_cols = ['land_area_sqft', 'bldg_area_finished_sqft']
+  for col in numeric_cols:
+    if col in important_cols:  # Add more columns as needed
+      X_train[f'{col}_squared'] = X_train[col] ** 2
+  
+  # Create dataset with feature names
+  feature_names = X_train.columns.tolist()
+  dtrain = lgb.Dataset(X_train, y_train, feature_name=feature_names)
+  
+  # Train model with fixed number of rounds
+  num_boost_round = 500  # Fixed number of rounds instead of CV
+  gbm = lgb.train(
+    params,
+    dtrain,
+    num_boost_round=num_boost_round
+  )
+  
+  # Get feature importance
+  importance = pd.DataFrame({
+    'feature': feature_names,
+    'importance': gbm.feature_importance('gain')
+  }).sort_values('importance', ascending=False)
+  
+ 
+  # Predict and calculate residuals using more robust model
+  predictions = gbm.predict(X_train)
+  residuals = np.abs(y_train - predictions)
+  
+  # Calculate IQR of the residuals
+  q1 = np.percentile(residuals, 25)
+  q3 = np.percentile(residuals, 75)
+  iqr = q3 - q1
+  
+  # Get outlier multiplier from settings
+  iqr_multiplier = outlier_config.get('iqr_multiplier', 1.5)
+  
+  # Define outlier threshold
+  threshold = q3 + (iqr_multiplier * iqr)
+  
+  # Identify outliers
+  is_outlier = residuals > threshold
+  
+  # Get keys for normal and outlier data
+  clean_keys = df_train.loc[~is_outlier, "key_sale"].values
+  outlier_keys = df_train.loc[is_outlier, "key_sale"].values
+  
+  # Save outlier details if any found
+  if len(outlier_keys) > 0:
+    outpath = f"out/models/{df_train['model_group'].iloc[0]}/_data"
+    os.makedirs(outpath, exist_ok=True)
+    
+    # Save full outlier records
+    df_train[is_outlier].to_csv(f"{outpath}/outlier_keys.csv", index=False)
+    
+    # Save outlier summary
+    with open(f"{outpath}/outlier_summary.txt", "w") as f:
+      f.write(f"Model Group: {df_train['model_group'].iloc[0]}\n")
+      f.write(f"Initial training data count: {len(df_train)}\n")
+      f.write(f"Final training data count: {len(clean_keys)}\n")
+      f.write(f"Number of outliers removed: {len(outlier_keys)}\n")
+      f.write(f"Percentage of outliers: {len(outlier_keys)/len(df_train)*100:.2f}%\n")
+      
+      # Add outlier detection settings
+      if outlier_config:
+        f.write("\nOutlier Detection Settings:\n")
+        for key, value in outlier_config.items():
+          f.write(f"  {key}: {value}\n")
+  
+  return clean_keys, outlier_keys
+
+
 def _do_write_canonical_split(model_group: str, df_sales_in: pd.DataFrame, settings: dict, test_train_fraction: float = 0.8, random_seed: int = 1337):
   """
   Write the canonical split keys (train and test) for a given model group to disk.
+  Also performs outlier detection on training data if enabled in settings.
 
   :param model_group: Model group identifier.
   :type model_group: str
@@ -3399,11 +3532,40 @@ def _do_write_canonical_split(model_group: str, df_sales_in: pd.DataFrame, setti
   :type random_seed: int, optional
   :returns: None
   """
+  # Get initial split
   df_test, df_train = _perform_canonical_split(model_group, df_sales_in, settings, test_train_fraction, random_seed)
+  
+  # Get initial keys
+  train_keys = df_train["key_sale"].values
+  test_keys = df_test["key_sale"].values
+
+  # Check if outlier detection is enabled
+  outlier_config = settings.get("modeling", {}).get("instructions", {}).get("outlier_detection", {})
+  if outlier_config.get("enabled", False):
+    try:
+      # Get sale field name
+      sale_field = get_sale_field(settings, df_train)
+      
+      # Perform outlier detection and get updated training keys
+      train_keys, outlier_keys = _detect_outliers_lightgbm(df_train, train_keys, sale_field, outlier_config)
+      
+      # Print outlier detection results
+      if len(outlier_keys) > 0:
+        pct_outliers = (len(outlier_keys) / len(df_train)) * 100
+        print(f"[DataSplit] Removed {len(outlier_keys)} outliers ({pct_outliers:.2f}%) from training data for model group '{model_group}'.")
+      else:
+        print(f"[DataSplit] No outliers detected in training data for model group '{model_group}'.")
+
+    except Exception as e:
+      print(f"Error during outlier detection: {str(e)}")
+      import traceback
+      traceback.print_exc()
+
+  # Create output directory and save keys
   outpath = f"out/models/{model_group}/_data"
   os.makedirs(outpath, exist_ok=True)
-  df_train[["key_sale"]].to_csv(f"{outpath}/train_keys.csv", index=False)
-  df_test[["key_sale"]].to_csv(f"{outpath}/test_keys.csv", index=False)
+  pd.DataFrame({"key_sale": train_keys}).to_csv(f"{outpath}/train_keys.csv", index=False)
+  pd.DataFrame({"key_sale": test_keys}).to_csv(f"{outpath}/test_keys.csv", index=False)
 
 
 def _read_split_keys(model_group: str):
