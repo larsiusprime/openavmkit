@@ -1,15 +1,10 @@
 import os
 import pickle
-import warnings
 
 import numpy as np
 import pandas as pd
-import duckdb as db
-import geopandas as gpd
-from shapely import wkb
 
 from openavmkit.utilities.settings import get_model_group_ids
-from openavmkit.utilities.timing import TimingData
 
 
 def clean_column_names(df: pd.DataFrame):
