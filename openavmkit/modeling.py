@@ -519,7 +519,12 @@ class DataSplit:
 
     for col in ds.categorical_vars:
       ds.df_universe[col] = ds.df_universe[col].astype("category")
+      if "UNKNOWN" not in ds.df_universe[col].cat.categories:
+        ds.df_universe[col].cat.add_categories(["UNKNOWN"])
+
       ds.df_sales[col] = ds.df_sales[col].astype("category")
+      if "UNKNOWN" not in ds.df_sales[col].cat.categories:
+        ds.df_sales[col].cat.add_categories(["UNKNOWN"])
 
     return ds
 
@@ -2201,6 +2206,11 @@ def run_catboost(ds: DataSplit, outpath: str, save_params: bool = False, use_sav
   timing = TimingData()
 
   timing.start("total")
+
+  timing.start("setup")
+  ds = ds.encode_categoricals_as_categories()
+  ds.split()
+  timing.stop("setup")
 
   timing.start("parameter_search")
   params = _get_params("CatBoost", "catboost", ds, tune_catboost, outpath, save_params, use_saved_params, verbose)

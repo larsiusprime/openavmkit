@@ -232,6 +232,13 @@ def simulate_removed_buildings(df: pd.DataFrame, settings: dict, idx_vacant: Ser
   fields_impr_bool = fields_impr["boolean"]
 
   for field in fields_impr_cat:
+    if not isinstance(df[field].dtype, pd.CategoricalDtype):
+      df[field] = df[field].astype("category")
+    # add UNKNOWN if needed
+    if "UNKNOWN" not in df[field].cat.categories:
+      df[field] = df[field].cat.add_categories(["UNKNOWN"])
+
+  for field in fields_impr_cat:
     df.loc[idx_vacant, field] = "UNKNOWN"
 
   for field in fields_impr_num:

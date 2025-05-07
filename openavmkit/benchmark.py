@@ -27,7 +27,7 @@ from openavmkit.utilities.format import fancy_format, dig2_fancy_format
 from openavmkit.utilities.modeling import NaiveSqftModel, LocalSqftModel, PassThroughModel, GWRModel, MRAModel, \
 	LarsModel, GroundTruthModel, SpatialLagModel
 from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions, get_valuation_date, \
-	get_model_group, apply_dd_to_df_rows, get_model_group_ids
+	get_model_group, apply_dd_to_df_rows, get_model_group_ids, get_fields_boolean
 from openavmkit.utilities.stats import calc_vif_recursive_drop, calc_t_values_recursive_drop, \
 	calc_p_values_recursive_drop, calc_elastic_net_regularization, calc_correlations, calc_r2, \
 	calc_cross_validation_score, calc_cod
@@ -932,6 +932,35 @@ def _predict_one_model(
 	return results
 
 
+def clean_categoricals(df_in: pd.DataFrame, fields: list[str], settings: dict):
+	"""
+	Clean categorical fields in the DataFrame.
+
+	:param df_in: Input DataFrame.
+	:type df_in: pandas.DataFrame
+	:param fields: List of fields to clean.
+	:type fields: list[str]
+	:returns: Cleaned DataFrame.
+	:rtype: pandas.DataFrame
+	"""
+
+	fields_bool = get_fields_boolean(settings, df_in)
+	fields_cat = get_fields_categorical(settings, df_in)
+
+	for field in fields:
+		if field in df_in.columns:
+			if field in fields_bool:
+				# Convert boolean fields to integers
+				df_in[field] = df_in[field].astype(int)
+			elif field in fields_cat:
+				# Convert categorical fields to categoricals
+				df_in[field] = df_in[field].astype("category")
+			else:
+				raise ValueError(f"Field '{field}' is neither boolean nor categorical, but was indicated as a categorical field. Please classify it properly!")
+
+	return df_in
+
+
 def get_data_split_for(
 		name: str,
 		model_group: str,
@@ -1001,6 +1030,10 @@ def get_data_split_for(
 	elif name == "spatial_lag_sqft":
 		sale_field = get_sale_field(settings)
 		_ind_vars = [f"spatial_lag_{sale_field}_impr_sqft", f"spatial_lag_{sale_field}_land_sqft", "bldg_area_finished_sqft", "land_area_sqft"]
+	elif name == "catboost":
+		df_sales = clean_categoricals(df_sales, fields_cat, settings)
+		df_universe = clean_categoricals(df_universe, fields_cat, settings)
+		_ind_vars = ind_vars
 	else:
 		_ind_vars = ind_vars
 		if name == "gwr" or name == "kernel":
