@@ -48,6 +48,14 @@ from openavmkit.utilities.timing import TimingData
 from pyproj import CRS
 import lightgbm as lgb
 
+import psutil, logging
+logging.basicConfig(filename="memory.log", level=logging.INFO,
+  format="%(asctime)s %(message)s")
+process = psutil.Process()
+
+def log_mem(stage):
+  mem_mb = process.memory_info().rss / 1024**2
+  logging.info(f"{stage}: {mem_mb:.1f} MB")
 
 @dataclass
 class SalesUniversePair:
@@ -993,6 +1001,22 @@ def enrich_df_streets(
     verbose: bool = False
 ) -> gpd.GeoDataFrame:
 
+  bounds = df_in.total_bounds
+
+  signature = {
+    "rows": len(df_in),
+    "bounds": {
+      "minx": bounds[0],
+      "miny": bounds[1],
+      "maxx": bounds[2],
+      "maxy": bounds[3]
+    }
+  }
+
+  df_out = get_cached_df(df_in, "osm/streets", "key", only_signature = signature)
+  if df_out is not None:
+    return df_out
+
   # ---- setup parcels ----
 
   t = TimingData()
@@ -1010,6 +1034,8 @@ def enrich_df_streets(
   df = df.to_crs(crs_eq)
 
   t.stop("setup")
+  log_mem("setup")
+
   if verbose:
     print(f"T setup = {t.get('setup'):.0f}s")
 
@@ -1049,6 +1075,7 @@ def enrich_df_streets(
   highway_regex = "|".join(wanted)
   custom_filter = f'["highway"~"{highway_regex}"]'
   t.stop("prepare")
+  log_mem("prepare")
   if verbose:
     print(f"T prepare = {t.get('prepare'):.0f}s")
 
@@ -1063,6 +1090,7 @@ def enrich_df_streets(
     custom_filter=custom_filter
   )
   t.stop("load street")
+  log_mem("load street")
   if verbose:
     print(f"T load street = {t.get('load street'):.0f}s")
 
@@ -1075,6 +1103,7 @@ def enrich_df_streets(
   edges['road_type'] = edges['highway'].apply(lambda v: v[0] if isinstance(v, (list, tuple)) else v)
   edges['road_idx'] = edges.index
   t.stop("edges")
+  log_mem("edges")
   if verbose:
     print(f"T edges = {t.get('edges'):.0f}s")
 
@@ -1150,6 +1179,7 @@ def enrich_df_streets(
   # rays_gdf.to_parquet(f"out/temp/rays.parquet", index=False)
 
   t.stop('rays_parallel')
+  log_mem("rays_parallel")
   if verbose:
     print(f"--> T rays_parallel = {t.get('rays_parallel'):.0f}s")
 
@@ -1167,6 +1197,7 @@ def enrich_df_streets(
   # drop self if occurs
   ray_par = ray_par[ray_par.road_idx.notna()]
   t.stop("block")
+  log_mem("block")
   if verbose:
     print(f"T block = {t.get('block'):.0f}s")
 
@@ -1183,6 +1214,7 @@ def enrich_df_streets(
     how='left'
   )
   t.stop("ray_par")
+  log_mem("ray_par")
   if verbose:
     print(f"T ray_par = {t.get('ray_par'):.0f}s")
 
@@ -1195,6 +1227,7 @@ def enrich_df_streets(
   n       = len(ray_par)
 
   t.stop("dist_0")
+  log_mem("dist_0")
   if verbose:
     print(f"T dist_0 = {t.get('dist_0'):.0f}s")
 
@@ -1210,6 +1243,7 @@ def enrich_df_streets(
   # index directly into coords to get the origins array (shape (n_rays, 2))
   origins_all = coords[offsets]
   t.stop("origins setup")
+  log_mem("origins setup")
   if verbose:
     print(f"T origins setup = {t.get('origins setup'):.0f}s")
 
@@ -1222,7 +1256,7 @@ def enrich_df_streets(
       end = start + chunk_size
       if verbose:
         perc = start/len(rays)
-        print(f"--> {perc:5.2%} chunk from {start} to {end}")
+        print(f"--> {perc:5.2%}: chunk from {start} to {end}")
       segs_chunk = shapely.intersection(
           rays[start:end],
           parcels[start:end]
@@ -1231,7 +1265,7 @@ def enrich_df_streets(
   i += 1
   segs = np.concatenate(segs_list)
   t.stop("intersect")
-
+  log_mem("intersect")
   if verbose:
     print(f"T intersect = {t.get('intersect'):.0f}s")
 
@@ -1242,12 +1276,14 @@ def enrich_df_streets(
   offsets[0] = 0
   offsets[1:] = np.cumsum(counts)[:-1]
   t.stop("coords_counts")
+  log_mem("coords_counts")
   if verbose:
     print(f"T coords_counts = {t.get('coords_counts'):.0f}s")
 
   t.start("entries")
   entries = coords[offsets]
   t.stop("entries")
+  log_mem("entries")
   if verbose:
     print(f"T entries = {t.get('entries'):.0f}s")
 
@@ -1255,6 +1291,7 @@ def enrich_df_streets(
   diffs = entries - origins_all
   distances = np.hypot(diffs[:,0], diffs[:,1])
   t.stop("distances")
+  log_mem("distances")
 
   # stick it back on your GeoDataFrame
   ray_par["distance"] = distances
@@ -1273,6 +1310,7 @@ def enrich_df_streets(
   ray_par = first_hits
 
   t.stop("dist")
+  log_mem("dist")
 
   if verbose:
     print(f"T dist = {t.get('dist'):.0f}s")
@@ -1295,6 +1333,7 @@ def enrich_df_streets(
   agg = agg.merge(areas, on='key', how='left')
   agg['depth'] = agg['area'] / agg['frontage']
   t.stop('agg')
+  log_mem("agg")
   if verbose:
     print(f"T agg = {t.get('agg'):.0f}s")
 
@@ -1384,6 +1423,7 @@ def enrich_df_streets(
   final = final.reset_index().dropna(axis=1, how="all")
 
   t.stop("pivot")
+  log_mem("pivot")
   if verbose:
     print(f"T pivot = {t.get('pivot'):.0f}s")
 
@@ -1393,10 +1433,12 @@ def enrich_df_streets(
   # compute compass dir for each angle if needed...
 
   t.stop("merge")
+  log_mem("merge")
   if verbose:
     print(f"T merge = {t.get('merge'):.0f}s")
 
   t.stop("all")
+  log_mem("all")
 
   if verbose:
     print("***ALL TIMING***")
@@ -1405,6 +1447,9 @@ def enrich_df_streets(
 
   df_out = gpd.GeoDataFrame(out, geometry='geometry', crs=df_in.crs)
   df_out = _finish_df_streets(df_out, settings)
+
+  write_cached_df(df_in, df_out, "osm/streets", "key")
+
   return df_out
 
 

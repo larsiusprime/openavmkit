@@ -173,9 +173,14 @@ def get_cached_df(
     df: pd.DataFrame,
     filename: str,
     key: str = "key",
-    extra_signature: dict | str = None
+    extra_signature: dict | str = None,
+    only_signature: dict | str = None
 )->pd.DataFrame | gpd.GeoDataFrame | None:
-  signature = _get_df_signature(df, extra_signature)
+
+  if only_signature is not None:
+    signature = only_signature
+  else:
+    signature = _get_df_signature(df, extra_signature)
 
   if check_cache(filename, signature, "df"):
     df_diff = read_cache(filename, "df")
