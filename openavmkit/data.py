@@ -665,9 +665,6 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
         # fill in missing data based on geospatial patterns (should happen after all other enrichments have been done)
         df = _enrich_spatial_inference(df, s_enrich_local, dataframes, settings, verbose=verbose)
 
-        # enrich universe spatial lag fields
-        # df = _enrich_universe_spatial_lag(df, settings, verbose=verbose)
-
     # User calcs apply at the VERY end of enrichment, after all automatic enrichments have been applied
     if s_enrich_local is not None:
       df = _enrich_df_basic(df, s_enrich_local, dataframes, settings, supkey == "sales", verbose=verbose)
@@ -1733,20 +1730,27 @@ def _boolify_column_in_df(df: pd.DataFrame, field: str, na_handling: str = None)
   return df
 
 
-def _enrich_universe_spatial_lag(df_univ_in: pd.DataFrame, settings: dict, verbose: bool = False) -> pd.DataFrame:
+def _enrich_universe_spatial_lag(df_univ_in: pd.DataFrame, df_test: pd.DataFrame, settings: dict, verbose: bool = False) -> pd.DataFrame:
 
   df = df_univ_in.copy()
+  df_train_univ = df[~df["key"].isin(df_test["key"].values)].copy()
 
   if "floor_area_ratio" not in df:
     df["floor_area_ratio"] = div_field_z_safe(df["bldg_area_finished_sqft"], df["land_area_sqft"])
   if "bedroom_density" not in df and "bldg_rooms_bed" in df:
     df["bedroom_density"] = div_field_z_safe(df["bldg_rooms_bed"], df["land_area_sqft"])
 
-  value_fields = ["floor_area_ratio", "bedroom_density", "bldg_age_years", "dist_to_water_bodies", "dist_to_universities"]
+  # FAR, bedroom density, and big five:
+  value_fields = ["floor_area_ratio", "bedroom_density", "bldg_age_years", "bldg_effective_age_years", "bldg_area_finished_sqft", "land_area_sqft", "bldg_quality_num", "bldg_condition_num"]
 
   # Build a cKDTree from df_sales coordinates
-  coords = df[['latitude', 'longitude']].values
-  tree = cKDTree(coords)
+
+  # we TRAIN on these coordinates -- coordinates that are NOT in the test set
+  coords_train = df_train_univ[['latitude', 'longitude']].values
+  tree = cKDTree(coords_train)
+
+  # we PREDICT on these coordinates -- all the coordinates in the universe
+  coords_all = df[['latitude', 'longitude']].values
 
   for value_field in value_fields:
     if value_field not in df:
@@ -1757,7 +1761,7 @@ def _enrich_universe_spatial_lag(df_univ_in: pd.DataFrame, settings: dict, verbo
 
     # Query the tree: for each parcel in df_universe, find the k nearest parcels
     # distances: shape (n_universe, k); indices: corresponding indices in df_sales
-    distances, indices = tree.query(coords, k=k)
+    distances, indices = tree.query(coords_all, k=k)
 
     # Ensure that distances and indices are 2D arrays (if k==1, reshape them)
     if k == 1:
@@ -1792,14 +1796,16 @@ def _enrich_universe_spatial_lag(df_univ_in: pd.DataFrame, settings: dict, verbo
   return df
 
 
-
-
 def enrich_sup_spatial_lag(sup: SalesUniversePair, settings: dict, verbose: bool = False) -> SalesUniversePair:
 
   df_sales = sup.sales.copy()
   df_universe = sup.universe.copy()
 
   df_hydrated = get_hydrated_sales_from_sup(sup)
+  train_keys, test_keys = get_train_test_keys(df_hydrated)
+
+  df_train = df_hydrated.loc[df_hydrated["key_sale"].isin(train_keys)].copy()
+  df_train_univ_keys = df_train["key"].unique().values
 
   sale_field = get_sale_field(settings)
   sale_field_vacant = f"{sale_field}_vacant"
@@ -1844,9 +1850,11 @@ def enrich_sup_spatial_lag(sup: SalesUniversePair, settings: dict, verbose: bool
       ~pd.isna(df_sub["longitude"])
     ]
 
+    df_sub_train = df_sub.loc[df_sub["key_sale"].isin(train_keys)].copy()
+
     # Build a cKDTree from df_sales coordinates
-    sales_coords = df_sub[['latitude', 'longitude']].values
-    sales_tree = cKDTree(sales_coords)
+    sales_coords_train = df_sub_train[['latitude', 'longitude']].values
+    sales_tree = cKDTree(sales_coords_train)
 
     # Choose the number of nearest neighbors to use
     k = 5  # You can adjust this number as needed
@@ -1894,6 +1902,9 @@ def enrich_sup_spatial_lag(sup: SalesUniversePair, settings: dict, verbose: bool
 
     # Add the new field to sales:
     df_sales = df_sales.merge(df_universe[["key", f"spatial_lag_{value_field}"]], on="key", how="left")
+
+  df_test = df_sales.loc[df_sales["key_sale"].isin(test_keys)].copy()
+  df_universe = _enrich_universe_spatial_lag(df_universe, df_test, settings, verbose=verbose)
 
   sup.set("sales", df_sales)
   sup.set("universe", df_universe)
@@ -3627,6 +3638,48 @@ def _do_write_canonical_split(model_group: str, df_sales_in: pd.DataFrame, setti
   os.makedirs(outpath, exist_ok=True)
   pd.DataFrame({"key_sale": train_keys}).to_csv(f"{outpath}/train_keys.csv", index=False)
   pd.DataFrame({"key_sale": test_keys}).to_csv(f"{outpath}/test_keys.csv", index=False)
+
+
+
+def get_train_test_keys(df_in: pd.DataFrame):
+
+  model_group_ids = get_model_group_ids(settings, df_in)
+
+  # an empty mask the same size as the input DataFrame
+  mask_train = np.zeros(len(df_in), dtype=bool, index=df_in.index)
+  mask_test = np.zeros(len(df_in), dtype=bool, index=df_in.index)
+
+  for model_group in model_group_ids:
+    # Read the split keys for the model group
+    test_keys, train_keys = _read_split_keys(model_group)
+
+    # Filter the DataFrame based on the keys
+    mask_test  |= df_in["key_sale"].isin(test_keys)
+    mask_train |= df_in["key_sale"].isin(train_keys)
+
+  keys_test = df_in.loc[mask_test, "key_sale"].values
+  keys_train = df_in.loc[mask_train, "key_sale"].values
+
+  return keys_train, keys_test
+
+
+def get_train_test_masks(df_in: pd.DataFrame):
+
+  model_group_ids = get_model_group_ids(settings, df_in)
+
+  # an empty mask the same size as the input DataFrame
+  mask_train = np.zeros(len(df_in), dtype=bool, index=df_in.index)
+  mask_test = np.zeros(len(df_in), dtype=bool, index=df_in.index)
+
+  for model_group in model_group_ids:
+    # Read the split keys for the model group
+    test_keys, train_keys = _read_split_keys(model_group)
+
+    # Filter the DataFrame based on the keys
+    mask_test  |= df_in["key_sale"].isin(test_keys)
+    mask_train |= df_in["key_sale"].isin(train_keys)
+
+  return mask_train, mask_test
 
 
 def _read_split_keys(model_group: str):

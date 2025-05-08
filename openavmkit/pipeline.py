@@ -563,9 +563,6 @@ def process_sales(sup: SalesUniversePair, settings: dict, verbose: bool = False)
    # update the SUP sales
    sup.update_sales(df_sales_enriched, allow_remove_rows=True)
 
-   # enrich sales w/ spatial lag fields
-   sup = enrich_sup_spatial_lag(sup, settings, verbose=verbose)
-
    return sup
 
 
