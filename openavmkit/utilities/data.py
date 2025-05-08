@@ -10,6 +10,7 @@ from openavmkit.utilities.settings import get_model_group_ids
 def clean_column_names(df: pd.DataFrame):
   """
   Clean the column names in a DataFrame by replacing forbidden characters with legal representations.
+  For one-hot encoded columns (containing '='), ensures clean formatting.
 
   :param df: Input DataFrame.
   :type df: pandas.DataFrame
@@ -18,21 +19,51 @@ def clean_column_names(df: pd.DataFrame):
   """
   # Find column names that contain forbidden characters and replace them with legal representations.
   replace_map = {
-    "[": "_LBRKT_",
-    "]": "_RBRKT_",
+    "[": "_",
+    "]": "_",
     "<NA>": "_NA_",
-    "/": "_SLASH_",
-    "\\": "_BSLASH_",
-    ":": "_COLON_",
-    "*": "_STAR_",
-    "?": "_QMARK_",
-    "\"": "_DQUOT_",
-    "<": "_LT_",
-    ">": "_GT_",
-    "|": "_PIPE_"
+    "/": "_",
+    "\\": "_",
+    ":": "_",
+    "*": "_",
+    "?": "_",
+    "\"": "_",
+    "<": "_",
+    ">": "_",
+    "|": "_",
+    " ": "_",  # Replace spaces with underscores
+    "-": "_",  # Replace hyphens with underscores
+    ",": "_",  # Replace commas with underscores
+    ";": "_",  # Replace semicolons with underscores
+    ".": "_",  # Replace periods with underscores
+    "(": "_",  # Replace parentheses with underscores
+    ")": "_"
   }
+
+  # First pass - replace special characters
   for key in replace_map:
-    df.columns = df.columns.str.replace(key, replace_map[key])
+    df.columns = df.columns.str.replace(key, replace_map[key], regex=False)
+  
+  # Second pass - clean up one-hot encoded column names
+  new_columns = []
+  for col in df.columns:
+    if "=" in col:
+      # Handle one-hot encoded columns
+      base, value = col.split("=", 1)
+      # Clean up the base and value
+      base = base.strip()
+      value = value.strip()
+      # Replace multiple underscores with single underscore
+      base = "_".join(filter(None, base.split("_")))
+      value = "_".join(filter(None, value.split("_")))
+      new_col = f"{base}__{value}"  # Use double underscore as separator
+    else:
+      # For non-one-hot columns, just clean up multiple underscores
+      new_col = "_".join(filter(None, col.split("_")))
+    
+    new_columns.append(new_col)
+  
+  df.columns = new_columns
   return df
 
 

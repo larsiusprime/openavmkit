@@ -1014,7 +1014,7 @@ def enrich_df_streets(
     }
   }
 
-  df_out = get_cached_df(df_in, "osm/streets", "key", only_signature = signature)
+  df_out = get_cached_df(df_in, "osm/streets", "key", only_signature=signature)
   if df_out is not None:
     return df_out
 
@@ -1151,7 +1151,7 @@ def enrich_df_streets(
 
   # ---- parallel ray generation ----
   args = list(zip(
-    edges.geometry, edges.road_idx
+    edges.geometry, edges.road_idx, edges.road_name, edges.road_type
   ))
   t.start('rays_parallel')
   n_jobs = 8

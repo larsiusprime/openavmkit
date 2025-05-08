@@ -650,8 +650,30 @@ class DataSplit:
     union_categories = {}
     for col in cat_vars:
       if col in union_df.columns:
-        # Drop missing values and sort the unique values (order matters if using drop-first)
-        union_categories[col] = sorted(union_df[col].dropna().unique())
+        # If the column is of categorical type, ensure "missing" is a known category
+        if pd.api.types.is_categorical_dtype(union_df[col].dtype):
+          if "missing" not in union_df[col].cat.categories:
+            # Make a copy to avoid SettingWithCopyWarning if union_df[col] is a slice
+            # and then add the new category
+            # It's generally safer to operate on copies when modifying dtypes or categories
+            # of columns that might be views.
+            # However, given union_df is constructed by pd.concat, its columns should be copies.
+            # For safety and to ensure modification, we explicitly assign back if add_categories
+            # doesn't always modify inplace or if it returns a new Series for certain versions/cases.
+            current_col_series = union_df[col]
+            try:
+                current_col_series = current_col_series.cat.add_categories("missing")
+            except ValueError: # "missing" might already exist due to concurrent modification or previous runs
+                if "missing" not in current_col_series.cat.categories:
+                    raise # Reraise if it genuinely failed to add and was not there
+            union_df[col] = current_col_series
+
+        # Fill NaN with a string placeholder before getting unique categories
+        union_categories[col] = sorted(union_df[col].fillna("missing").unique())
+      else:
+        # If col is not in union_df, it means it's all NaN or wasn't present.
+        # We'll represent its only category as "missing".
+        union_categories[col] = ["missing"]
 
     # Create the OneHotEncoder:
     # - The 'categories' parameter is provided as a list following the order in cat_vars.
@@ -669,10 +691,16 @@ class DataSplit:
     df_for_encoding = pd.DataFrame()
     for col in cat_vars:
       if col in union_df.columns:
-        df_for_encoding[col] = union_df[col]
+        df_for_encoding[col] = union_df[col].fillna("missing")
       else:
-        # If somehow missing, create column filled with NaN.
-        df_for_encoding[col] = np.nan
+        # If somehow missing, create column filled with our placeholder.
+        df_for_encoding[col] = "missing"
+    
+    # Ensure all columns in df_for_encoding are of string type if they are categorical,
+    # to prevent issues if a column was all NaN and became float before fillna.
+    for col in cat_vars:
+        if col in df_for_encoding.columns:
+             df_for_encoding[col] = df_for_encoding[col].astype(str)
 
     # Fit the encoder on the union of the categorical data.
     encoder.fit(df_for_encoding)
@@ -689,7 +717,18 @@ class DataSplit:
       # Make sure all categorical columns are present for transformation.
       for col in cat_vars:
         if col not in df_tmp.columns:
-          df_tmp[col] = np.nan
+          df_tmp[col] = "missing" # Use the same placeholder
+        else:
+          # If the column is of categorical type, ensure "missing" is a known category
+          if pd.api.types.is_categorical_dtype(df_tmp[col].dtype):
+            if "missing" not in df_tmp[col].cat.categories:
+              # Assign back as add_categories may return a new Series
+              df_tmp[col] = df_tmp[col].cat.add_categories("missing")
+          
+          df_tmp[col] = df_tmp[col].fillna("missing") # Fill existing NaNs
+        # Ensure the column is string type before transform
+        df_tmp[col] = df_tmp[col].astype(str)
+
       # Subset to our categorical columns in the expected order.
       df_cats = df_tmp[cat_vars]
       if len(df_cats) > 0:
