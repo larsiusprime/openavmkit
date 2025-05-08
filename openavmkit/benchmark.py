@@ -13,6 +13,7 @@ from statsmodels.nonparametric.kernel_regression import KernelReg
 from xgboost import XGBRegressor
 from IPython.display import display
 import numpy as np
+from sklearn.preprocessing import OneHotEncoder
 
 from openavmkit.data import get_important_field, get_locations, _read_split_keys, SalesUniversePair, \
 	get_hydrated_sales_from_sup, get_report_locations, get_sales, get_sale_field, simulate_removed_buildings
@@ -2888,7 +2889,9 @@ def _run_models(
 
 	if stacked_ensemble_specific_settings.get("enabled", False):
 		if verbose:
+			print("\n=== STACKED ENSEMBLE DEBUG ===")
 			print(f"Attempting to run STACKED ENSEMBLE for model_group: {model_group}, vacant_only: {vacant_only}")
+			print(f"Stacked ensemble settings: {stacked_ensemble_specific_settings}")
 		try:
 			t.start("stacked_ensemble_train_and_predict")
 			
@@ -2898,6 +2901,10 @@ def _run_models(
 			
 			models_for_stacking_oof = stacked_ensemble_specific_settings.get("models_to_include", [])
 			
+			if verbose:
+				print("\n=== Base Models Collection ===")
+				print(f"Models to include in stacking: {models_for_stacking_oof}")
+			
 			if not models_for_stacking_oof:
 				warnings.warn("No models specified in 'models_to_include' for stacked ensemble. Skipping.")
 				raise ValueError("models_to_include is empty for stacked ensemble")
@@ -2906,23 +2913,35 @@ def _run_models(
 			for model_name in models_for_stacking_oof:
 				if model_name in all_results.model_results:
 					smr = all_results.model_results[model_name]
+					if verbose:
+						print(f"\nChecking model: {model_name}")
+						print(f"Has pred_sales: {smr.pred_sales is not None}")
+						print(f"Has y_pred in pred_sales: {smr.pred_sales.y_pred is not None if smr.pred_sales else False}")
+						print(f"Has y in pred_sales: {smr.pred_sales.y is not None if smr.pred_sales else False}")
+						if smr.ds:
+							print(f"DataSplit df_sales columns: {smr.ds.df_sales.columns.tolist() if smr.ds.df_sales is not None else None}")
+							print(f"DataSplit df_test columns: {smr.ds.df_test.columns.tolist() if smr.ds.df_test is not None else None}")
+					
 					if smr.pred_sales is not None and smr.pred_sales.y_pred is not None and smr.pred_sales.y is not None:
 						base_model_oof_predictions[model_name] = smr.pred_sales.y_pred
 						if training_true_values is None:
 							training_true_values = smr.pred_sales.y
 							ds_template_for_contextual = smr.ds # Important: DS for alignment
+							if verbose:
+								print(f"\nUsing {model_name} as template for contextual features")
+								print(f"Template DataSplit has df_sales: {ds_template_for_contextual.df_sales is not None}")
+								print(f"Template DataSplit has df_test: {ds_template_for_contextual.df_test is not None}")
 						elif len(training_true_values) != len(smr.pred_sales.y):
-							warnings.warn(f"OOF true values length mismatch for model {model_name}. Expected {len(training_true_values)}, got {len(smr.pred_sales.y)}. This could indicate inconsistent OOF sets.")
-							# Potentially skip this model or raise error depending on strictness
-							continue # Skip this model for safety
+							warnings.warn(f"OOF true values length mismatch for model {model_name}. Expected {len(training_true_values)}, got {len(smr.pred_sales.y)}.")
+							continue
 						elif verbose:
 							print(f"Collected OOF from {model_name}")
 					else:
 						if verbose:
-							print(f"Model '{model_name}' specified for stacking lacks complete OOF sales predictions (pred_sales) or true values.")
+							print(f"Model '{model_name}' lacks complete OOF predictions or true values.")
 				else:
 					if verbose:
-						print(f"Model '{model_name}' specified for stacking not found in all_results.model_results.")
+						print(f"Model '{model_name}' not found in all_results.model_results.")
 
 			if not base_model_oof_predictions or training_true_values is None or ds_template_for_contextual is None:
 				warnings.warn("Not enough base model OOF predictions, true values, or DataSplit template to train stacked ensemble. Skipping.")
@@ -2930,23 +2949,65 @@ def _run_models(
 				# Extract Training Contextual Features
 				training_contextual_features_df = None
 				contextual_feature_names = stacked_ensemble_specific_settings.get("contextual_features", [])
+				categorical_contextual_features = stacked_ensemble_specific_settings.get("categorical_contextual_features", [])
 				if contextual_feature_names:
+					if verbose:
+						print("\n=== Contextual Features Processing ===")
+						print(f"Looking for contextual features: {contextual_feature_names}")
+					
 					# ds_template_for_contextual.df_sales should be the OOF training fold data
 					if ds_template_for_contextual.df_sales is not None and not ds_template_for_contextual.df_sales.empty:
+						if verbose:
+							print("\nTemplate DataSplit df_sales info:")
+							print(f"Number of rows: {len(ds_template_for_contextual.df_sales)}")
+							print(f"Available columns: {ds_template_for_contextual.df_sales.columns.tolist()}")
+						
 						if len(ds_template_for_contextual.df_sales) == len(training_true_values):
-							missing_cols = [col for col in contextual_feature_names if col not in ds_template_for_contextual.df_sales.columns]
-							if missing_cols:
-								warnings.warn(f"Missing contextual features in ds.df_sales for OOF: {missing_cols}. Proceeding without them.")
-								# Select only available columns
-								available_context_cols = [col for col in contextual_feature_names if col in ds_template_for_contextual.df_sales.columns]
-								if available_context_cols:
-									training_contextual_features_df = ds_template_for_contextual.df_sales[available_context_cols].copy()
-							else:
-								training_contextual_features_df = ds_template_for_contextual.df_sales[contextual_feature_names].copy()
+							# Try to get available columns with proper mapping
+							available_context_cols = []
+							for feature in contextual_feature_names:
+								if feature in categorical_contextual_features:
+									# Look for one-hot encoded columns
+									encoded_cols = [col for col in ds_template_for_contextual.df_sales.columns if col.startswith(f"{feature}_")]
+									if encoded_cols:
+										if verbose:
+											print(f"Found {len(encoded_cols)} one-hot encoded columns for {feature}")
+										available_context_cols.extend(encoded_cols)
+									else:
+										# Try raw field name as fallback
+										field_name = get_important_field(settings, f"loc_{feature}", ds_template_for_contextual.df_sales)
+										if field_name and field_name in ds_template_for_contextual.df_sales.columns:
+											if verbose:
+												print(f"Using raw field {field_name} for {feature}")
+											available_context_cols.append(field_name)
+										else:
+											if verbose:
+												print(f"Warning: No columns found for categorical feature {feature}")
+								else:
+									# Handle non-categorical features
+									if feature in ds_template_for_contextual.df_sales.columns:
+										available_context_cols.append(feature)
+									else:
+										if verbose:
+											print(f"Warning: Feature {feature} not found in training data")
+							
+							if available_context_cols:
+								if verbose:
+									print(f"\nFound available context columns: {available_context_cols}")
+								training_contextual_features_df = ds_template_for_contextual.df_sales[available_context_cols].copy()
 						else:
-							warnings.warn("Length mismatch: ds.df_sales vs OOF true values. Cannot get OOF contextual features.")
+							if verbose:
+								print(f"\nLength mismatch: df_sales ({len(ds_template_for_contextual.df_sales)}) vs OOF true values ({len(training_true_values)})")
 					else:
-						warnings.warn("ds.df_sales is None or empty. Cannot get OOF contextual features.")
+						if verbose:
+							print("\nTemplate DataSplit df_sales is None or empty")
+
+				if verbose:
+					print("\n=== Training Contextual Features Status ===")
+					print(f"Have training contextual features: {training_contextual_features_df is not None}")
+					if training_contextual_features_df is not None:
+						print(f"Training contextual features columns: {training_contextual_features_df.columns.tolist()}")
+						print(f"Training contextual features shape: {training_contextual_features_df.shape}")
 
 				trained_meta_model, base_models_actually_used_in_stacking = _optimize_stacked_ensemble(
 					base_model_oof_predictions=base_model_oof_predictions,
@@ -2961,29 +3022,72 @@ def _run_models(
 				base_models_test_predictions = {}
 				test_contextual_features_df = None
 
+				if verbose:
+					print("\n=== Test Set Preparation ===")
+				
 				for model_name in base_models_actually_used_in_stacking:
 					if model_name in all_results.model_results and all_results.model_results[model_name].pred_test is not None:
 						base_models_test_predictions[model_name] = all_results.model_results[model_name].pred_test.y_pred
+						if verbose:
+							print(f"Got test predictions for {model_name}")
 					else:
 						raise ValueError(f"Test predictions for base model '{model_name}' (used in stacking) not found.")
 
 				if contextual_feature_names:
+					if verbose:
+						print("\n=== Test Contextual Features Processing ===")
+						print(f"Looking for test contextual features: {contextual_feature_names}")
+					
 					# ds_template_for_contextual.df_test should be the test fold data
 					if ds_template_for_contextual.df_test is not None and not ds_template_for_contextual.df_test.empty:
+						if verbose:
+							print("\nTemplate DataSplit df_test info:")
+							print(f"Number of rows: {len(ds_template_for_contextual.df_test)}")
+							print(f"Available columns: {ds_template_for_contextual.df_test.columns.tolist()}")
+							
+							# Try to get the actual neighborhood field name
+							neighborhood_field = get_important_field(settings, "loc_neighborhood", ds_template_for_contextual.df_test)
+							print(f"\nActual neighborhood field name from settings: {neighborhood_field}")
+							if neighborhood_field:
+								print(f"Is neighborhood field in df_test: {neighborhood_field in ds_template_for_contextual.df_test.columns}")
+						
 						num_test_samples = len(ds_template_for_contextual.y_test) if ds_template_for_contextual.y_test is not None else 0
 						if num_test_samples > 0 and len(ds_template_for_contextual.df_test) == num_test_samples:
-							missing_cols = [col for col in contextual_feature_names if col not in ds_template_for_contextual.df_test.columns]
-							if missing_cols:
-								warnings.warn(f"Missing contextual features in ds.df_test for test: {missing_cols}. Proceeding without them.")
-								available_context_cols = [col for col in contextual_feature_names if col in ds_template_for_contextual.df_test.columns]
-								if available_context_cols:
-									test_contextual_features_df = ds_template_for_contextual.df_test[available_context_cols].copy()
+							# Try to get available columns with proper mapping
+							available_context_cols = []
+							for col in contextual_feature_names:
+								if col == "neighborhood":
+									field_name = get_important_field(settings, "loc_neighborhood", ds_template_for_contextual.df_test)
+									if field_name and field_name in ds_template_for_contextual.df_test.columns:
+										available_context_cols.append(field_name)
+								elif col in ds_template_for_contextual.df_test.columns:
+									available_context_cols.append(col)
+							
+							if available_context_cols:
+								if verbose:
+									print(f"\nFound available test context columns after mapping: {available_context_cols}")
+								test_contextual_features_df = ds_template_for_contextual.df_test[available_context_cols].copy()
+								# Rename back to generic names if needed
+								if "neighborhood" in contextual_feature_names:
+									field_name = get_important_field(settings, "loc_neighborhood", ds_template_for_contextual.df_test)
+									if field_name in test_contextual_features_df.columns:
+										test_contextual_features_df = test_contextual_features_df.rename(columns={field_name: "neighborhood"})
 							else:
-								test_contextual_features_df = ds_template_for_contextual.df_test[contextual_feature_names].copy()
+								if verbose:
+									print("\nNo available context columns found in test data after mapping")
 						else:
-							warnings.warn("Length mismatch: ds.df_test vs y_test. Cannot get test contextual features.")
+							if verbose:
+								print(f"\nLength mismatch: df_test ({len(ds_template_for_contextual.df_test)}) vs y_test ({num_test_samples})")
 					else:
-						warnings.warn("ds.df_test is None or empty. Cannot get test contextual features.")
+						if verbose:
+							print("\nTemplate DataSplit df_test is None or empty")
+
+				if verbose:
+					print("\n=== Test Contextual Features Status ===")
+					print(f"Have test contextual features: {test_contextual_features_df is not None}")
+					if test_contextual_features_df is not None:
+						print(f"Test contextual features columns: {test_contextual_features_df.columns.tolist()}")
+						print(f"Test contextual features shape: {test_contextual_features_df.shape}")
 
 				stacked_ensemble_model_results = _run_stacked_ensemble(
 					trained_meta_model=trained_meta_model,
@@ -2992,12 +3096,13 @@ def _run_models(
 					stacked_ensemble_settings=stacked_ensemble_specific_settings,
 					base_models_used_for_training=base_models_actually_used_in_stacking,
 					ds_template=ds_template_for_contextual,
+					settings=settings,
 					verbose=verbose
 				)
 
 				all_results.add_model("stacked_ensemble", stacked_ensemble_model_results)
 				if verbose:
-					print("Stacked ensemble results added to all_results.")
+					print("\nStacked ensemble results added to all_results.")
 
 				if save_results:
 					meta_model_path = f"{outpath}/model_stacked_ensemble_meta.pickle"
@@ -3012,7 +3117,7 @@ def _run_models(
 			# Ensure timing stops if an error occurs mid-block
 			if t.is_running("stacked_ensemble_train_and_predict"):
 				t.stop("stacked_ensemble_train_and_predict")
-		
+				
 	if vacant_only:
 		print(f"VACANT BENCHMARK ({model_group})")
 	else:
@@ -3053,152 +3158,87 @@ def _run_models(
 
 
 def _train_stacked_meta_model(
-		oof_predictions_dict: dict[str, np.ndarray],
-		oof_true_values: np.ndarray,
-		contextual_features_df: pd.DataFrame | None,
+		base_models_oof_predictions: dict[str, np.ndarray],
+		training_contextual_features: pd.DataFrame | None,
 		stacked_ensemble_settings: dict,
+		base_models_used_for_training: list[str],
+		ds_template: DataSplit,
+		settings: dict,
 		verbose: bool = False
-):
-	"""
-  Train the meta-model (Ridge or XGBoost) for stacked ensembling.
-
-  :param oof_predictions_dict: Dictionary of OOF predictions from base models.
-  :type oof_predictions_dict: dict[str, np.ndarray]
-  :param oof_true_values: True target values for OOF predictions.
-  :type oof_true_values: np.ndarray
-  :param contextual_features_df: DataFrame of contextual features for OOF set.
-  :type contextual_features_df: pd.DataFrame | None
-  :param stacked_ensemble_settings: Configuration for the stacked ensemble.
-  :type stacked_ensemble_settings: dict
-  :param verbose: If True, prints additional information.
-  :type verbose: bool
-  :returns: Trained meta-model object and list of models actually used.
-  :rtype: tuple(object, list[str])
-  """
+) -> object:
+	"""Train meta-model for stacked ensemble using out-of-fold predictions."""
 	if verbose:
 		print("Starting _train_stacked_meta_model...")
 
-	models_to_include = stacked_ensemble_settings.get('models_to_include', [])
-	meta_model_type = stacked_ensemble_settings.get('meta_model', 'ridge')
-	contextual_feature_names = stacked_ensemble_settings.get('contextual_features', [])
-	validation_fraction = stacked_ensemble_settings.get('validation_fraction', 0.2)
-
-	# Filter base models and create OOF prediction matrix
-	oof_preds_list = []
-	actual_models_used = []
-	for model_name in models_to_include:
-		if model_name in oof_predictions_dict:
-			oof_preds_list.append(oof_predictions_dict[model_name].reshape(-1, 1))
-			actual_models_used.append(model_name)
-		elif verbose:
-			print(f"Warning: Model '{model_name}' not found in oof_predictions_dict. Skipping.")
-
-	if not oof_preds_list:
-		raise ValueError("No OOF predictions found for any of the specified models_to_include.")
-
-	meta_features_np = np.hstack(oof_preds_list)
-	meta_features_df = pd.DataFrame(meta_features_np, columns=actual_models_used)
-
+	# Get OOF predictions from base models
+	meta_features = []
+	for model in base_models_used_for_training:
+		meta_features.append(base_models_oof_predictions[model])
+	meta_features = np.column_stack(meta_features)
+	
 	if verbose:
-		print(f"Meta features from OOF predictions shape: {meta_features_df.shape}")
-		print(f"Contextual features to include: {contextual_feature_names}")
+		print(f"Meta features from OOF predictions shape: {meta_features.shape}")
+		print(f"Contextual features to include: {stacked_ensemble_settings.get('contextual_features', [])}")
 
-
-	# Concatenate contextual features if any
-	if contextual_feature_names and contextual_features_df is not None and not contextual_features_df.empty:
-		relevant_contextual_features = contextual_features_df[contextual_feature_names].copy()
-		if len(relevant_contextual_features) != len(meta_features_df):
-			raise ValueError(
-				f"Mismatch in number of rows between OOF predictions ({len(meta_features_df)}) "
-				f"and contextual features ({len(relevant_contextual_features)}). "
-				"Ensure they are aligned."
-			)
-		meta_features_df.reset_index(drop=True, inplace=True)
-		relevant_contextual_features.reset_index(drop=True, inplace=True)
-		meta_features_df = pd.concat([meta_features_df, relevant_contextual_features], axis=1)
+	# Handle contextual features
+	contextual_features = stacked_ensemble_settings.get("contextual_features", [])
+	if contextual_features and ds_template is not None:
 		if verbose:
-			print(f"Meta features combined with contextual features shape: {meta_features_df.shape}")
-	elif contextual_feature_names and (contextual_features_df is None or contextual_features_df.empty):
-		if verbose:
-			print(f"Warning: Contextual features {contextual_feature_names} specified, but contextual_features_df is None or empty.")
+			print("\n=== Contextual Features Processing ===")
+			print(f"Looking for contextual features: {contextual_features}")
+			print("\nTemplate DataSplit df_sales info:")
+			print(f"Number of rows: {len(ds_template.df_sales)}")
+			print(f"Available columns: {list(ds_template.df_sales.columns)}")
 
+		# For each contextual feature, try to find either raw or one-hot encoded columns
+		training_contextual_data = []
+		for feature in contextual_features:
+			# First try to get raw field name from settings
+			field_name = get_important_field(settings, f"loc_{feature}", ds_template.df_sales)
+			if verbose:
+				print(f"\nActual {feature} field name from settings: {field_name}")
 
-	# Data splitting for meta-model validation (especially for XGBoost)
-	X_meta_train, X_meta_val, y_meta_train, y_meta_val = None, None, None, None
-	if meta_model_type == 'xgboost' and validation_fraction > 0 and validation_fraction < 1.0:
-		X_meta_train, X_meta_val, y_meta_train, y_meta_val = train_test_split(
-			meta_features_df, oof_true_values, test_size=validation_fraction, random_state=42
-		)
-		if verbose:
-			print(f"Meta-model training set size: {X_meta_train.shape[0]}, Validation set size: {X_meta_val.shape[0]}")
-	else:
-		X_meta_train = meta_features_df
-		y_meta_train = oof_true_values
-
-	# Train meta-model
-	meta_model = None
-	if meta_model_type == 'ridge':
-		meta_model = Ridge() # Assuming Ridge is imported from sklearn.linear_model
-		meta_model.fit(X_meta_train, y_meta_train)
-		if verbose:
-			print("Trained Ridge meta-model.")
-	elif meta_model_type == 'xgboost':
-		# Ensure xgb.XGBRegressor is imported, e.g., import xgboost as xgb
-		meta_model = XGBRegressor(random_state=42)
-		fit_params = {}
-
-		# Conditions for using a validation set for early stopping
-		can_use_validation_for_early_stopping = (
-			X_meta_val is not None and
-			y_meta_val is not None and
-			isinstance(validation_fraction, (int, float)) and
-			0 < validation_fraction < 1.0
-		)
-
-		if can_use_validation_for_early_stopping:
-			early_stopping_value = stacked_ensemble_settings.get('early_stopping_rounds', 10)
-			# Ensure early_stopping_value is a positive integer
-			if isinstance(early_stopping_value, int) and early_stopping_value > 0:
-				# Further check if validation data is actually usable (not empty)
-				if X_meta_val.empty or len(y_meta_val) == 0:
-					if verbose:
-						print("Warning: X_meta_val or y_meta_val is empty. Cannot use for early stopping eval_set.")
-					# Ensure fit_params does not carry over eval_set/early_stopping_rounds if data is empty
-					if 'eval_set' in fit_params: del fit_params['eval_set']
-					if 'early_stopping_rounds' in fit_params: del fit_params['early_stopping_rounds']
-					if verbose:
-						print("Training XGBoost meta-model without early stopping (empty validation data).")
-				else:
-					fit_params['eval_set'] = [(X_meta_val, y_meta_val)]
-					fit_params['early_stopping_rounds'] = early_stopping_value
-					if verbose:
-						# This is the message user is seeing: "Training XGBoost meta-model with early stopping (eval_set provided, rounds: 10)."
-						print(f"Training XGBoost meta-model with early stopping (eval_set with {len(X_meta_val)} samples, rounds: {early_stopping_value}).")
-			else:
+			if field_name and field_name in ds_template.df_sales.columns:
+				# Use raw field if available
 				if verbose:
-					print("Training XGBoost meta-model without early stopping (invalid early_stopping_rounds value).")
+					print(f"Using raw field: {field_name}")
+				training_contextual_data.append(ds_template.df_sales[field_name].values.reshape(-1, 1))
+			else:
+				# Try to find one-hot encoded columns
+				encoded_cols = [col for col in ds_template.df_sales.columns if col.startswith(f"{feature}_")]
+				if encoded_cols:
+					if verbose:
+						print(f"Using one-hot encoded columns: {len(encoded_cols)} columns found")
+						training_contextual_data.append(ds_template.df_sales[encoded_cols].values)
+					else:
+						if verbose:
+							print(f"No columns found for {feature}")
+
+		if training_contextual_data:
+			# Combine all contextual features
+			training_contextual_features = np.hstack(training_contextual_data)
+			if verbose:
+				print("\n=== Training Contextual Features Status ===")
+				print(f"Have training contextual features: True")
+				print(f"Training contextual features shape: {training_contextual_features.shape}")
+			
+			# Combine with meta features
+			meta_features = np.hstack([meta_features, training_contextual_features])
 		else:
 			if verbose:
-				print("Training XGBoost meta-model without early stopping (no validation set for early stopping or validation_fraction out of range).")
-		
-		if verbose:
-			print(f"Type of meta_model: {type(meta_model)}")
-			print(f"Final fit_params before calling meta_model.fit: {fit_params}")
+				print("\n=== Training Contextual Features Status ===")
+				print("Have training contextual features: False")
+				print("Warning: No contextual features could be found in training data")
 
-		# Add verbose to fit_params directly
-		fit_params_for_call = fit_params.copy()
-		fit_params_for_call['verbose'] = False # XGBoost's own verbose for training iterations
-
-		if verbose: # This is our function's verbose flag
-			print(f"Calling meta_model.fit with X_meta_train shape {X_meta_train.shape}, y_meta_train shape {y_meta_train.shape}, and fit_params: {fit_params_for_call}")
-
-		meta_model.fit(X_meta_train, y_meta_train, **fit_params_for_call)
-	else:
-		raise ValueError(f"Unsupported meta_model type: {meta_model_type}")
-
+	# Train meta-model
+	meta_model = Ridge(alpha=1.0)  # Using Ridge regression as meta-model
+	meta_model.fit(meta_features, ds_template.y_sales)
+	
 	if verbose:
+		print("Trained Ridge meta-model.")
 		print("_train_stacked_meta_model finished.")
-	return meta_model, actual_models_used
+
+	return meta_model
 
 
 def _optimize_stacked_ensemble(
@@ -3206,33 +3246,20 @@ def _optimize_stacked_ensemble(
 		training_true_values: np.ndarray,
 		training_contextual_features: pd.DataFrame | None,
 		stacked_ensemble_settings: dict,
-		settings: dict, 
+		settings: dict,
 		verbose: bool = False
 ):
 	"""
-  Prepare for and orchestrate the training of the stacked ensemble's meta-model.
-
-  :param base_model_oof_predictions: Dictionary of OOF predictions from all base models.
-  :type base_model_oof_predictions: dict[str, np.ndarray]
-  :param training_true_values: True target values for the training data.
-  :type training_true_values: np.ndarray
-  :param training_contextual_features: DataFrame of contextual features for training data.
-  :type training_contextual_features: pd.DataFrame | None
-  :param stacked_ensemble_settings: Configuration for the stacked ensemble.
-  :type stacked_ensemble_settings: dict
-  :param settings: The main settings dictionary.
-  :type settings: dict
-  :param verbose: If True, prints additional information.
-  :type verbose: bool
-  :returns: Tuple of (trained_meta_model, base_models_used).
-  :rtype: tuple(object, list[str])
-  """
+    Prepare for and orchestrate the training of the stacked ensemble's meta-model.
+    """
 	if verbose:
 		print("Starting _optimize_stacked_ensemble...")
 
 	models_to_include = stacked_ensemble_settings.get('models_to_include', [])
 	contextual_feature_names = stacked_ensemble_settings.get('contextual_features', [])
+	categorical_contextual_features = stacked_ensemble_settings.get('categorical_contextual_features', [])
 
+	# Filter base model predictions
 	oof_predictions_for_meta_model = {}
 	for model_name in models_to_include:
 		if model_name in base_model_oof_predictions:
@@ -3243,28 +3270,67 @@ def _optimize_stacked_ensemble(
 	if not oof_predictions_for_meta_model:
 		raise ValueError("No OOF predictions available for any of the models specified in 'models_to_include'.")
 
-	prepared_training_contextual_features = None
-	if contextual_feature_names and training_contextual_features is not None and not training_contextual_features.empty:
-		missing_context_features = [cf for cf in contextual_feature_names if cf not in training_contextual_features.columns]
-		if missing_context_features:
-			raise ValueError(f"Missing contextual features in training_contextual_features: {missing_context_features}")
-		prepared_training_contextual_features = training_contextual_features[contextual_feature_names]
-	elif contextual_feature_names and (training_contextual_features is None or training_contextual_features.empty):
-		if verbose:
-			print(f"Warning: Contextual features {contextual_feature_names} requested, but training_contextual_features is None or empty.")
+	# Prepare meta features from base model predictions
+	meta_features = []
+	for model in models_to_include:
+		if model in oof_predictions_for_meta_model:
+			meta_features.append(oof_predictions_for_meta_model[model])
+	meta_features = np.column_stack(meta_features)
 	
-	trained_meta_model, base_models_actually_used = _train_stacked_meta_model(
-		oof_predictions_dict=oof_predictions_for_meta_model,
-		oof_true_values=training_true_values,
-		contextual_features_df=prepared_training_contextual_features,
-		stacked_ensemble_settings=stacked_ensemble_settings,
-		verbose=verbose
-	)
-
 	if verbose:
-		print(f"Finished _optimize_stacked_ensemble. Meta-model trained using OOF from: {base_models_actually_used}")
+		print(f"Meta features from OOF predictions shape: {meta_features.shape}")
+		print(f"Contextual features to include: {contextual_feature_names}")
+
+	# Handle contextual features
+	if contextual_feature_names and training_contextual_features is not None:
+		contextual_data = []
+		for feature in contextual_feature_names:
+			if feature in categorical_contextual_features:
+				# Look for one-hot encoded columns
+				encoded_cols = [col for col in training_contextual_features.columns if col.startswith(f"{feature}_")]
+				if encoded_cols:
+					if verbose:
+						print(f"Found {len(encoded_cols)} one-hot encoded columns for {feature}")
+					contextual_data.append(training_contextual_features[encoded_cols].values)
+				else:
+					# Try raw field name as fallback
+					field_name = get_important_field(settings, f"loc_{feature}", training_contextual_features)
+					if field_name and field_name in training_contextual_features.columns:
+						if verbose:
+							print(f"Using raw field {field_name} for {feature}")
+						contextual_data.append(training_contextual_features[field_name].values.reshape(-1, 1))
+					else:
+						if verbose:
+							print(f"Warning: No columns found for categorical feature {feature}")
+			else:
+				# Handle non-categorical features
+				if feature in training_contextual_features.columns:
+					contextual_data.append(training_contextual_features[feature].values.reshape(-1, 1))
+				else:
+					if verbose:
+						print(f"Warning: Feature {feature} not found in contextual features")
+
+		if contextual_data:
+			# Combine all contextual features
+			contextual_features = np.hstack(contextual_data)
+			if verbose:
+				print(f"Combined contextual features shape: {contextual_features.shape}")
+			# Combine with meta features
+			meta_features = np.hstack([meta_features, contextual_features])
+			if verbose:
+				print(f"Final meta features shape (with contextual): {meta_features.shape}")
+	elif contextual_feature_names and verbose:
+		print(f"Warning: Contextual features {contextual_feature_names} specified, but training_contextual_features is None")
+
+	# Train meta-model
+	meta_model = Ridge(alpha=1.0)  # Using Ridge regression as meta-model
+	meta_model.fit(meta_features, training_true_values)
 	
-	return trained_meta_model, base_models_actually_used
+	if verbose:
+		print("Trained Ridge meta-model.")
+		print(f"Finished _optimize_stacked_ensemble. Meta-model trained using OOF from: {list(oof_predictions_for_meta_model.keys())}")
+	
+	return meta_model, list(oof_predictions_for_meta_model.keys())
 
 
 def _run_stacked_ensemble(
@@ -3274,105 +3340,100 @@ def _run_stacked_ensemble(
 		stacked_ensemble_settings: dict,
 		base_models_used_for_training: list[str],
 		ds_template: DataSplit,
+		settings: dict,
 		verbose: bool = False
 ) -> SingleModelResults:
-	"""
-  Use the trained meta-model to generate final predictions on the test set.
-
-  :param trained_meta_model: The trained meta-model object.
-  :type trained_meta_model: object
-  :param base_models_test_predictions: Dictionary of base model predictions on the test set.
-  :type base_models_test_predictions: dict[str, np.ndarray]
-  :param test_contextual_features: DataFrame of contextual features for the test set.
-  :type test_contextual_features: pd.DataFrame | None
-  :param stacked_ensemble_settings: Configuration for the stacked ensemble.
-  :type stacked_ensemble_settings: dict
-  :param base_models_used_for_training: List of base model names the meta-model expects.
-  :type base_models_used_for_training: list[str]
-  :param ds_template: DataSplit object to use as a template for creating SingleModelResults.
-  :type ds_template: DataSplit
-  :param verbose: If True, prints additional information.
-  :type verbose: bool
-  :returns: SingleModelResults object for the stacked ensemble.
-  :rtype: SingleModelResults
-  """
+	"""Run stacked ensemble predictions using trained meta-model."""
 	if verbose:
 		print("Starting _run_stacked_ensemble...")
 
-	contextual_feature_names = stacked_ensemble_settings.get('contextual_features', [])
-
-	test_preds_list = []
-	for model_name in base_models_used_for_training:
-		if model_name in base_models_test_predictions:
-			test_preds_list.append(base_models_test_predictions[model_name].reshape(-1, 1))
-		else:
-			raise ValueError(f"Test predictions for model '{model_name}' (used in meta-model training) not found in base_models_test_predictions.")
-
-	if not test_preds_list:
-		raise ValueError("No test predictions found for any of the base_models_used_for_training.")
-	
-	meta_features_test_np = np.hstack(test_preds_list)
-	meta_features_test_df = pd.DataFrame(meta_features_test_np, columns=base_models_used_for_training)
+	# Get test predictions from base models
+	meta_features = []
+	for model in base_models_used_for_training:
+		if verbose:
+			print(f"Got test predictions for {model}")
+		meta_features.append(base_models_test_predictions[model])
+	meta_features = np.column_stack(meta_features)
 	
 	if verbose:
-		print(f"Test meta features from base model predictions shape: {meta_features_test_df.shape}")
+		print(f"\nTest meta features from base model predictions shape: {meta_features.shape}")
 
-	if contextual_feature_names and test_contextual_features is not None and not test_contextual_features.empty:
-		missing_context_features = [cf for cf in contextual_feature_names if cf not in test_contextual_features.columns]
-		if missing_context_features:
-			raise ValueError(f"Missing contextual features in test_contextual_features: {missing_context_features}")
-		
-		relevant_contextual_features_test = test_contextual_features[contextual_feature_names].copy()
+	# Handle contextual features
+	contextual_features = stacked_ensemble_settings.get("contextual_features", [])
+	categorical_contextual_features = stacked_ensemble_settings.get("categorical_contextual_features", [])
 
-		if len(relevant_contextual_features_test) != len(meta_features_test_df):
-			raise ValueError(
-				f"Mismatch in number of rows between test predictions ({len(meta_features_test_df)}) "
-				f"and test contextual features ({len(relevant_contextual_features_test)}). Ensure alignment."
-			)
-		
-		meta_features_test_df.reset_index(drop=True, inplace=True)
-		relevant_contextual_features_test.reset_index(drop=True, inplace=True)
-		meta_features_test_df = pd.concat([meta_features_test_df, relevant_contextual_features_test], axis=1)
+	if contextual_features and ds_template is not None:
 		if verbose:
-			print(f"Test meta features combined with contextual features shape: {meta_features_test_df.shape}")
-	elif contextual_feature_names and (test_contextual_features is None or test_contextual_features.empty):
-		if verbose:
-			print(f"Warning: Contextual features {contextual_feature_names} specified, but test_contextual_features is None or empty.")
+			print("\n=== Test Contextual Features Processing ===")
+			print(f"Looking for contextual features: {contextual_features}")
+			print("\nTemplate DataSplit df_test info:")
+			print(f"Number of rows: {len(ds_template.df_test)}")
+			print(f"Available columns: {list(ds_template.df_test.columns)}")
 
-	stacked_predictions_test = trained_meta_model.predict(meta_features_test_df)
-	
-	# Generate predictions for the full sales set
-	sales_preds_list = []
-	for model_name in base_models_used_for_training:
-		if model_name in base_models_test_predictions:
-			sales_preds_list.append(base_models_test_predictions[model_name].reshape(-1, 1))
+		# For each contextual feature, try to find either raw or one-hot encoded columns
+		test_contextual_data = []
+		for feature in contextual_features:
+			if feature in categorical_contextual_features:
+				# Look for one-hot encoded columns
+				encoded_cols = [col for col in ds_template.df_test.columns if col.startswith(f"{feature}_")]
+				if encoded_cols:
+					if verbose:
+						print(f"Found {len(encoded_cols)} one-hot encoded columns for {feature}")
+					test_contextual_data.append(ds_template.df_test[encoded_cols].values)
+				else:
+					# Try raw field name as fallback
+					field_name = get_important_field(settings, f"loc_{feature}", ds_template.df_test)
+					if field_name and field_name in ds_template.df_test.columns:
+						if verbose:
+							print(f"Using raw field {field_name} for {feature}")
+						test_contextual_data.append(ds_template.df_test[field_name].values.reshape(-1, 1))
+					else:
+						if verbose:
+							print(f"Warning: No columns found for categorical feature {feature}")
+			else:
+				# Handle non-categorical features
+				if feature in ds_template.df_test.columns:
+					test_contextual_data.append(ds_template.df_test[feature].values.reshape(-1, 1))
+				else:
+					if verbose:
+						print(f"Warning: Feature {feature} not found in test data")
+
+		if test_contextual_data:
+			# Combine all contextual features
+			test_contextual_features = np.hstack(test_contextual_data)
+			if verbose:
+				print("\n=== Test Contextual Features Status ===")
+				print(f"Have test contextual features: True")
+				print(f"Test contextual features shape: {test_contextual_features.shape}")
+			
+			# Combine with meta features
+			meta_features = np.hstack([meta_features, test_contextual_features])
+			if verbose:
+				print(f"Final meta features shape (with contextual): {meta_features.shape}")
 		else:
-			raise ValueError(f"Sales predictions for model '{model_name}' not found in base_models_test_predictions.")
-	
-	num_sales_samples = len(ds_template.y_sales) if ds_template.y_sales is not None else 0
-	num_universe_samples = len(ds_template.df_universe)
-	y_pred_sales_stacked = np.full(num_sales_samples, np.nan) 
-	y_pred_univ_stacked = np.full(num_universe_samples, np.nan) 
+			if verbose:
+				print("\n=== Test Contextual Features Status ===")
+				print("Have test contextual features: False")
+				print("Warning: No contextual features could be found in test data")
 
-	# Update ds_template's ind_vars with the meta-features used
-	ds_template.ind_vars = list(meta_features_test_df.columns)
+	# Make predictions using meta-model
+	y_pred = trained_meta_model.predict(meta_features)
 
-	stacked_ensemble_results = SingleModelResults(
-		ds=ds_template, 
-		field_prediction="prediction_stacked",
-		field_horizontal_equity_id="he_id",
-		type="stacked_ensemble",
-		model=trained_meta_model, 
-		y_pred_test=stacked_predictions_test,
-		y_pred_sales=y_pred_sales_stacked,
-		y_pred_univ=y_pred_univ_stacked,
-		timing=TimingData(),
+	# Create SingleModelResults
+	results = SingleModelResults(
+		ds=ds_template,
+		field_prediction="sale_price",  # Using standard field for predictions
+		field_horizontal_equity_id="he_id",  # Standard HE ID field
+		type="prediction",
+		model="stacked_ensemble",
+		y_pred_test=y_pred,
+		y_pred_sales=None,  # Not used for stacked ensemble
+		y_pred_univ=None,  # Not used for stacked ensemble
+		timing=TimingData(),  # Create new timing data
 		verbose=verbose
 	)
-	
-	if verbose:
-		print(f"_run_stacked_ensemble finished. Generated {len(stacked_predictions_test)} test predictions.")
-	return stacked_ensemble_results
+
+	return results
 
 
 def _prepare_ds(
