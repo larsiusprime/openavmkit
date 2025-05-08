@@ -1116,7 +1116,7 @@ def enrich_df_streets(
     lambda v: v if isinstance(v, str) else str(v)
   )
   # ---- helper for single-edge rays ----
-  def _rays_from_edge(geom, rid,
+  def _rays_from_edge(geom, rid, rname, rtype,
     spacing=spacing, max_ray_length=25.0):
 
     # 1) inject new vertices every `spacing` metres
@@ -1142,18 +1142,14 @@ def enrich_df_streets(
         ey = _oy + sign * ny * max_ray_length
         _out.append({
           'road_idx':     rid,
+          'road_name':    rname,
+          'road_type':    rtype,
           'geometry':     LineString([(_ox, _oy), (ex, ey)]),
           'angle':        math.atan2(ey - _oy, ex - _ox)
         })
     return _out
 
   # ---- parallel ray generation ----
-  # pull off just the name/type info for a later merge
-  road_info = edges[['road_idx', 'road_name', 'road_type']].copy()
-
-  # prune edges down to only what's needed for _rays_from_edge
-  edges = edges[['geometry', 'road_idx']].copy()
-
   args = list(zip(
     edges.geometry, edges.road_idx
   ))
@@ -1168,20 +1164,13 @@ def enrich_df_streets(
   )(
     delayed(_rays_from_edge)(*a) for a in args
   )
-  # flatten and continue exactly as before
+  # flatten & continue exactly as before
   rays = [r for sub in results for r in sub]
   rays_gdf = gpd.GeoDataFrame(rays, geometry='geometry', crs=crs_eq)
-  # Merge back info
-  rays_gdf = rays_gdf.merge(
-    road_info,
-    on='road_idx',
-    how='left'
-  )
-  # Coerce to strings
-  rays_gdf["road_name"] = rays_gdf["road_name"].astype(str)
-  rays_gdf["road_type"] = rays_gdf["road_type"].astype(str)
 
   rays_gdf = rays_gdf.drop(columns=['origin'], errors="ignore")
+  rays_gdf["road_name"] = rays_gdf["road_name"].astype(str)
+  rays_gdf["road_type"] = rays_gdf["road_type"].astype(str)
 
   # Create out/temp directory if it doesn't exist
   os.makedirs("out/temp", exist_ok=True)
