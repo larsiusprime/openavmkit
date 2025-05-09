@@ -260,10 +260,22 @@ def merge_and_stomp_dfs(df1: pd.DataFrame, df2: pd.DataFrame, df2_stomps=False, 
       continue
     if df2_stomps:
       # prefer df2's column value everywhere df2 has a non-null value
-      df_merge[col] = df_merge[col + "_2"].combine_first(df_merge[col + "_1"])
+      # Filter out empty entries before combining
+      df2_col = df_merge[col + "_2"].dropna()
+      df1_col = df_merge[col + "_1"].dropna()
+      if not df2_col.empty:
+        df_merge[col] = df2_col.combine_first(df1_col)
+      else:
+        df_merge[col] = df1_col
     else:
       # prefer df1's column value everywhere df1 has a non-null value
-      df_merge[col] = df_merge[col + "_1"].combine_first(df_merge[col + "_2"])
+      # Filter out empty entries before combining
+      df1_col = df_merge[col + "_1"].dropna()
+      df2_col = df_merge[col + "_2"].dropna()
+      if not df1_col.empty:
+        df_merge[col] = df1_col.combine_first(df2_col)
+      else:
+        df_merge[col] = df2_col
 
   df_merge.drop(columns=suffixed_columns, inplace=True)
   return df_merge

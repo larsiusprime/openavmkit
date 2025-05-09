@@ -669,7 +669,9 @@ class DataSplit:
             union_df[col] = current_col_series
 
         # Fill NaN with a string placeholder before getting unique categories
-        union_categories[col] = sorted(union_df[col].fillna("missing").unique())
+        filled_series = union_df[col].fillna("missing")
+        filled_series = filled_series.infer_objects(copy=False)
+        union_categories[col] = sorted(filled_series.unique())
       else:
         # If col is not in union_df, it means it's all NaN or wasn't present.
         # We'll represent its only category as "missing".
@@ -691,7 +693,9 @@ class DataSplit:
     df_for_encoding = pd.DataFrame()
     for col in cat_vars:
       if col in union_df.columns:
-        df_for_encoding[col] = union_df[col].fillna("missing")
+        filled_series = union_df[col].fillna("missing")
+        filled_series = filled_series.infer_objects(copy=False)
+        df_for_encoding[col] = filled_series
       else:
         # If somehow missing, create column filled with our placeholder.
         df_for_encoding[col] = "missing"
@@ -725,7 +729,9 @@ class DataSplit:
               # Assign back as add_categories may return a new Series
               df_tmp[col] = df_tmp[col].cat.add_categories("missing")
           
-          df_tmp[col] = df_tmp[col].fillna("missing") # Fill existing NaNs
+          filled_series = df_tmp[col].fillna("missing")
+          filled_series = filled_series.infer_objects(copy=False)
+          df_tmp[col] = filled_series
         # Ensure the column is string type before transform
         df_tmp[col] = df_tmp[col].astype(str)
 
