@@ -1877,7 +1877,7 @@ def enrich_sup_spatial_lag(sup: SalesUniversePair, settings: dict, verbose: bool
   df_universe = sup.universe.copy()
 
   df_hydrated = get_hydrated_sales_from_sup(sup)
-  train_keys, test_keys = get_train_test_keys(df_hydrated)
+  train_keys, test_keys = get_train_test_keys(df_hydrated, settings)
 
   df_train = df_hydrated.loc[df_hydrated["key_sale"].isin(train_keys)].copy()
   df_train_univ_keys = df_train["key"].unique().values
@@ -3716,13 +3716,13 @@ def _do_write_canonical_split(model_group: str, df_sales_in: pd.DataFrame, setti
 
 
 
-def get_train_test_keys(df_in: pd.DataFrame):
+def get_train_test_keys(df_in: pd.DataFrame, settings: dict):
 
   model_group_ids = get_model_group_ids(settings, df_in)
 
   # an empty mask the same size as the input DataFrame
-  mask_train = np.zeros(len(df_in), dtype=bool, index=df_in.index)
-  mask_test = np.zeros(len(df_in), dtype=bool, index=df_in.index)
+  mask_train = pd.Series(np.zeros(len(df_in), dtype=bool), index=df_in.index)
+  mask_test = pd.Series(np.zeros(len(df_in), dtype=bool), index=df_in.index)
 
   for model_group in model_group_ids:
     # Read the split keys for the model group
@@ -3743,8 +3743,8 @@ def get_train_test_masks(df_in: pd.DataFrame):
   model_group_ids = get_model_group_ids(settings, df_in)
 
   # an empty mask the same size as the input DataFrame
-  mask_train = np.zeros(len(df_in), dtype=bool, index=df_in.index)
-  mask_test = np.zeros(len(df_in), dtype=bool, index=df_in.index)
+  mask_train = pd.Series(np.zeros(len(df_in), dtype=bool), index=df_in.index)
+  mask_test = pd.Series(np.zeros(len(df_in), dtype=bool), index=df_in.index)
 
   for model_group in model_group_ids:
     # Read the split keys for the model group
