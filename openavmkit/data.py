@@ -1017,10 +1017,14 @@ def enrich_df_streets(
     }
   }
 
-  df_out = get_cached_df(df_in, "osm/streets", "key", only_signature=signature)
-  if df_out is not None:
-    return df_out
-
+  if os.path.exists("in/osm/streets.parquet"):
+      df_streets = pd.read_parquet("in/osm/streets.parquet")
+      if "key" in df_streets:
+        df_out = df_in.copy()
+        df_out = df_out.merge(df_streets, on="key", how="left")
+        if verbose:
+          print(f"--> found streets in in/osm/streets.parquet, loading from disk!")
+        return df_out
   # ---- setup parcels ----
 
   t = TimingData()
