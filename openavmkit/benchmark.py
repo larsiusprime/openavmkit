@@ -2881,7 +2881,100 @@ def _run_models(
 		all_results.add_model("ensemble", ensemble_results)
 		t.stop("calc final results")
 
-	# Stacked Ensemble Logic
+	# Run stacked ensemble if enabled
+	_run_stacked_ensemble_for_model_group(
+		t=t,
+		model_group=model_group,
+		vacant_only=vacant_only,
+		all_results=all_results,
+		df_sales=df_sales,
+		df_univ=df_univ,
+		outpath=outpath,
+		settings=settings,
+		save_results=save_results,
+		verbose=verbose
+	)
+
+	if vacant_only:
+		print(f"VACANT BENCHMARK ({model_group})")
+	else:
+		print(f"MAIN BENCHMARK ({model_group})")
+	print(all_results.benchmark.print())
+
+	# Add performance metrics table
+	perf_metrics = _model_performance_metrics(model_group, all_results, "VACANT" if vacant_only else "MAIN")
+	print(perf_metrics)
+
+	if not vacant_only and run_hedonic:
+		t.start("run hedonic models")
+		_run_hedonic_models(
+			settings=settings,
+			model_group=model_group,
+			models_to_run=models_to_run,
+			all_results=all_results,
+			df_sales=df_sales,
+			df_universe=df_univ,
+			dep_var=dep_var,
+			dep_var_test=dep_var_test,
+			fields_cat=fields_cat,
+			verbose=verbose,
+			save_results=save_results,
+			run_ensemble=run_ensemble
+		)
+		t.stop("run hedonic models")
+
+	t.stop("total")
+
+	print("")
+	print("****** TIMING FOR _RUN_MODELS ******")
+	print(t.print())
+	print("************************************")
+	print("")
+
+	return all_results
+
+
+def _run_stacked_ensemble_for_model_group(
+		t: TimingData,
+		model_group: str,
+		vacant_only: bool,
+		all_results: MultiModelResults,
+		df_sales: pd.DataFrame,
+		df_univ: pd.DataFrame,
+		outpath: str,
+		settings: dict,
+		save_results: bool = False,
+		verbose: bool = False
+):
+	"""
+	Run stacked ensemble for a model group if enabled in settings.
+
+	:param t: TimingData object for timing tracking
+	:type t: TimingData
+	:param model_group: Model group identifier
+	:type model_group: str
+	:param vacant_only: Whether this is for vacant-only models
+	:type vacant_only: bool
+	:param all_results: MultiModelResults containing all model results
+	:type all_results: MultiModelResults
+	:param df_sales: Sales DataFrame
+	:type df_sales: pd.DataFrame
+	:param df_univ: Universe DataFrame
+	:type df_univ: pd.DataFrame
+	:param outpath: Output path for saving results
+	:type outpath: str
+	:param settings: Settings dictionary
+	:type settings: dict
+	:param save_results: Whether to save results
+	:type save_results: bool
+	:param verbose: Whether to print verbose output
+	:type verbose: bool
+	"""
+	s = settings
+	s_model = s.get("modeling", {})
+	s_inst = s_model.get("instructions", {})
+	vacant_status = "vacant" if vacant_only else "main"
+
 	# Get stacked_ensemble settings from the correct part of settings (main or vacant)
 	stacked_ensemble_specific_settings = s_inst.get(vacant_status, {}).get("stacked_ensemble", {})
 
@@ -2948,6 +3041,10 @@ def _run_models(
 				training_contextual_features_df = None
 				contextual_feature_names = stacked_ensemble_specific_settings.get("contextual_features", [])
 				categorical_contextual_features = stacked_ensemble_specific_settings.get("categorical_contextual_features", [])
+				
+				# Store the one-hot encoded column names for consistency
+				neighborhood_encoded_cols = None
+				
 				if contextual_feature_names:
 					if verbose:
 						print("\n=== Contextual Features Processing ===")
@@ -2971,6 +3068,8 @@ def _run_models(
 										if verbose:
 											print(f"Found {len(encoded_cols)} one-hot encoded columns for {feature}")
 										available_context_cols.extend(encoded_cols)
+										if feature == "neighborhood":
+											neighborhood_encoded_cols = encoded_cols
 									else:
 										# Try raw field name as fallback
 										field_name = get_important_field(settings, f"loc_{feature}", ds_template_for_contextual.df_sales)
@@ -3031,7 +3130,7 @@ def _run_models(
 					else:
 						raise ValueError(f"Test predictions for base model '{model_name}' (used in stacking) not found.")
 
-				if contextual_feature_names:
+				if contextual_feature_names and neighborhood_encoded_cols:
 					if verbose:
 						print("\n=== Test Contextual Features Processing ===")
 						print(f"Looking for test contextual features: {contextual_feature_names}")
@@ -3042,37 +3141,19 @@ def _run_models(
 							print("\nTemplate DataSplit df_test info:")
 							print(f"Number of rows: {len(ds_template_for_contextual.df_test)}")
 							print(f"Available columns: {ds_template_for_contextual.df_test.columns.tolist()}")
-							
-							# Try to get the actual neighborhood field name
-							neighborhood_field = get_important_field(settings, "loc_neighborhood", ds_template_for_contextual.df_test)
-							print(f"\nActual neighborhood field name from settings: {neighborhood_field}")
-							if neighborhood_field:
-								print(f"Is neighborhood field in df_test: {neighborhood_field in ds_template_for_contextual.df_test.columns}")
 						
 						num_test_samples = len(ds_template_for_contextual.y_test) if ds_template_for_contextual.y_test is not None else 0
 						if num_test_samples > 0 and len(ds_template_for_contextual.df_test) == num_test_samples:
-							# Try to get available columns with proper mapping
-							available_context_cols = []
-							for col in contextual_feature_names:
-								if col == "neighborhood":
-									field_name = get_important_field(settings, "loc_neighborhood", ds_template_for_contextual.df_test)
-									if field_name and field_name in ds_template_for_contextual.df_test.columns:
-										available_context_cols.append(field_name)
-								elif col in ds_template_for_contextual.df_test.columns:
-									available_context_cols.append(col)
+							# Use the same encoded columns from training
+							test_contextual_features_df = pd.DataFrame(0, index=ds_template_for_contextual.df_test.index, columns=neighborhood_encoded_cols)
 							
-							if available_context_cols:
-								if verbose:
-									print(f"\nFound available test context columns after mapping: {available_context_cols}")
-								test_contextual_features_df = ds_template_for_contextual.df_test[available_context_cols].copy()
-								# Rename back to generic names if needed
-								if "neighborhood" in contextual_feature_names:
-									field_name = get_important_field(settings, "loc_neighborhood", ds_template_for_contextual.df_test)
-									if field_name in test_contextual_features_df.columns:
-										test_contextual_features_df = test_contextual_features_df.rename(columns={field_name: "neighborhood"})
-							else:
-								if verbose:
-									print("\nNo available context columns found in test data after mapping")
+							# Fill in the encoded columns that exist in test data
+							for col in neighborhood_encoded_cols:
+								if col in ds_template_for_contextual.df_test.columns:
+									test_contextual_features_df[col] = ds_template_for_contextual.df_test[col]
+							
+							if verbose:
+								print(f"\nCreated test contextual features with same columns as training")
 						else:
 							if verbose:
 								print(f"\nLength mismatch: df_test ({len(ds_template_for_contextual.df_test)}) vs y_test ({num_test_samples})")
@@ -3116,44 +3197,6 @@ def _run_models(
 			# Ensure timing stops if an error occurs mid-block
 			if t.is_running("stacked_ensemble_train_and_predict"):
 				t.stop("stacked_ensemble_train_and_predict")
-				
-	if vacant_only:
-		print(f"VACANT BENCHMARK ({model_group})")
-	else:
-		print(f"MAIN BENCHMARK ({model_group})")
-	print(all_results.benchmark.print())
-
-	# Add performance metrics table
-	perf_metrics = _model_performance_metrics(model_group, all_results, "VACANT" if vacant_only else "MAIN")
-	print(perf_metrics)
-
-	if not vacant_only and run_hedonic:
-		t.start("run hedonic models")
-		_run_hedonic_models(
-			settings=settings,
-			model_group=model_group,
-			models_to_run=models_to_run,
-			all_results=all_results,
-			df_sales=df_sales,
-			df_universe=df_univ,
-			dep_var=dep_var,
-			dep_var_test=dep_var_test,
-			fields_cat=fields_cat,
-			verbose=verbose,
-			save_results=save_results,
-			run_ensemble=run_ensemble
-		)
-		t.stop("run hedonic models")
-
-	t.stop("total")
-
-	print("")
-	print("****** TIMING FOR _RUN_MODELS ******")
-	print(t.print())
-	print("************************************")
-	print("")
-
-	return all_results
 
 
 def _train_stacked_meta_model(
