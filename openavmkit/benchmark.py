@@ -2935,63 +2935,136 @@ def _run_models(
 
 
 def _run_stacked_ensemble(
-    trained_meta_model: object,
-    base_models_test_predictions: dict[str, np.ndarray],
-    test_contextual_features: pd.DataFrame | None,
-    stacked_ensemble_settings: dict,
-    base_models_used_for_training: list[str],
-    feature_columns: list[str],
-    ds_template: DataSplit,
-    settings: dict,
-    all_results: MultiModelResults,
-    verbose: bool = False
+		trained_meta_model: object,
+		base_models_test_predictions: dict[str, np.ndarray],
+		test_contextual_features: pd.DataFrame | None,
+		stacked_ensemble_settings: dict,
+		base_models_used_for_training: list[str],
+		feature_columns: list[str],
+		ds_template: DataSplit,
+		settings: dict,
+		all_results: MultiModelResults,
+		verbose: bool = False
 ) -> SingleModelResults:
-    """Run stacked ensemble predictions using trained meta-model."""
-    if verbose:
-        print("Starting _run_stacked_ensemble...")
+	"""Run stacked ensemble predictions using trained meta-model."""
+	if verbose:
+		print("Starting _run_stacked_ensemble...")
 
-    # Get predictions for each dataset
-    y_pred_test = _prepare_and_predict_for_dataset(
-        trained_meta_model, base_models_test_predictions, ds_template,
-        stacked_ensemble_settings, base_models_used_for_training,
-        feature_columns, "test", settings, verbose
-    )
-    
-    sales_predictions = {
-        model: all_results.model_results[model].pred_sales.y_pred
-        for model in base_models_used_for_training
-        if model in all_results.model_results
-    }
-    y_pred_sales = _prepare_and_predict_for_dataset(
-        trained_meta_model, sales_predictions, ds_template,
-        stacked_ensemble_settings, base_models_used_for_training,
-        feature_columns, "sales", settings, verbose
-    )
-    
-    universe_predictions = {
-        model: all_results.model_results[model].pred_univ
-        for model in base_models_used_for_training
-        if model in all_results.model_results
-    }
-    y_pred_univ = _prepare_and_predict_for_dataset(
-        trained_meta_model, universe_predictions, ds_template,
-        stacked_ensemble_settings, base_models_used_for_training,
-        feature_columns, "universe", settings, verbose
-    )
+	# Prepare test features and make predictions
+	test_features, _ = _prepare_stacked_features(
+		base_models_test_predictions,
+		test_contextual_features,
+		base_models_used_for_training,
+		feature_columns,
+		ds_template.test_indices if hasattr(ds_template, 'test_indices') else None,
+		"test",
+		verbose
+	)
+	y_pred_test = trained_meta_model.predict(test_features)
 
-    # Create SingleModelResults with all predictions
-    return SingleModelResults(
-        ds=ds_template,
-        field_prediction="sale_price",
-        field_horizontal_equity_id="he_id",
-        type="prediction",
-        model="stacked_ensemble",
-        y_pred_test=y_pred_test,
-        y_pred_sales=y_pred_sales,
-        y_pred_univ=y_pred_univ,
-        timing=TimingData(),
-        verbose=verbose
-    )
+	# Prepare sales predictions
+	sales_predictions = {
+		model: all_results.model_results[model].pred_sales.y_pred
+		for model in base_models_used_for_training
+		if model in all_results.model_results
+	}
+	
+	sales_contextual = _prepare_contextual_features(
+		ds_template,
+		stacked_ensemble_settings.get("contextual_features", []),
+		stacked_ensemble_settings.get("categorical_contextual_features", []),
+		None,
+		False,
+		settings,
+		verbose
+	)
+	
+	sales_features, _ = _prepare_stacked_features(
+		sales_predictions,
+		sales_contextual,
+		base_models_used_for_training,
+		feature_columns,
+		ds_template.sales_indices if hasattr(ds_template, 'sales_indices') else None,
+		"sales",
+		verbose
+	)
+	y_pred_sales = trained_meta_model.predict(sales_features)
+
+	# Prepare universe predictions
+	universe_predictions = {
+		model: all_results.model_results[model].pred_univ
+		for model in base_models_used_for_training
+		if model in all_results.model_results
+	}
+	
+	# Get base predictions length
+	univ_length = len(next(iter(universe_predictions.values())))
+	
+	# Create a DataFrame with just the base predictions first
+	universe_features, base_feature_names = _prepare_stacked_features(
+		universe_predictions,
+		None,  # No contextual features yet
+		base_models_used_for_training,
+		None,  # No feature columns yet
+		None,  # No indices needed
+		"universe (base)",
+		verbose
+	)
+	
+	# Now get contextual features
+	universe_contextual = _prepare_contextual_features(
+		ds_template,
+		stacked_ensemble_settings.get("contextual_features", []),
+		stacked_ensemble_settings.get("categorical_contextual_features", []),
+		None,
+		False,
+		settings,
+		verbose
+	)
+	
+	# If we have contextual features, create interaction features
+	if universe_contextual is not None and len(universe_contextual) > 0:
+		# Ensure universe_contextual has same length as predictions
+		if len(universe_contextual) != univ_length:
+			if verbose:
+				print(f"Adjusting contextual features from {len(universe_contextual)} to {univ_length} records")
+			# Create zero-filled DataFrame with correct length
+			zero_filled = pd.DataFrame(0, index=range(univ_length), columns=universe_contextual.columns)
+			# Fill in the values we have
+			zero_filled.iloc[:len(universe_contextual)] = universe_contextual.values
+			universe_contextual = zero_filled
+		
+		# Now create interaction features
+		universe_features_with_interactions, _ = _prepare_stacked_features(
+			universe_predictions,
+			universe_contextual,
+			base_models_used_for_training,
+			feature_columns,
+			None,
+			"universe (with interactions)",
+			verbose
+		)
+		y_pred_univ = trained_meta_model.predict(universe_features_with_interactions)
+	else:
+		# Just use base predictions if no contextual features
+		y_pred_univ = trained_meta_model.predict(universe_features)
+
+	# Create SingleModelResults with all predictions
+	results = SingleModelResults(
+		ds=ds_template,
+		field_prediction="sale_price",
+		field_horizontal_equity_id="he_id",
+		type="prediction",
+		model="stacked_ensemble",
+		y_pred_test=y_pred_test,
+		y_pred_sales=y_pred_sales,
+		y_pred_univ=y_pred_univ,
+		timing=TimingData(),
+		verbose=verbose
+	)
+
+	return results
+
 
 def _prepare_ds(
 		df_sales: pd.DataFrame,
