@@ -2981,10 +2981,6 @@ def _run_stacked_ensemble_for_model_group(
 	stacked_ensemble_specific_settings = s_inst.get(vacant_status, {}).get("stacked_ensemble", {})
 
 	if stacked_ensemble_specific_settings.get("enabled", False):
-		if verbose:
-			print("\n=== STACKED ENSEMBLE DEBUG ===")
-			print(f"Attempting to run STACKED ENSEMBLE for model_group: {model_group}, vacant_only: {vacant_only}")
-			print(f"Stacked ensemble settings: {stacked_ensemble_specific_settings}")
 		try:
 			t.start("stacked_ensemble_train_and_predict")
 			
@@ -2994,10 +2990,6 @@ def _run_stacked_ensemble_for_model_group(
 			
 			models_for_stacking_oof = stacked_ensemble_specific_settings.get("models_to_include", [])
 			
-			if verbose:
-				print("\n=== Base Models Collection ===")
-				print(f"Models to include in stacking: {models_for_stacking_oof}")
-			
 			if not models_for_stacking_oof:
 				warnings.warn("No models specified in 'models_to_include' for stacked ensemble. Skipping.")
 				raise ValueError("models_to_include is empty for stacked ensemble")
@@ -3006,29 +2998,14 @@ def _run_stacked_ensemble_for_model_group(
 			for model_name in models_for_stacking_oof:
 				if model_name in all_results.model_results:
 					smr = all_results.model_results[model_name]
-					if verbose:
-						print(f"\nChecking model: {model_name}")
-						print(f"Has pred_sales: {smr.pred_sales is not None}")
-						print(f"Has y_pred in pred_sales: {smr.pred_sales.y_pred is not None if smr.pred_sales else False}")
-						print(f"Has y in pred_sales: {smr.pred_sales.y is not None if smr.pred_sales else False}")
-						if smr.ds:
-							print(f"DataSplit df_sales columns: {smr.ds.df_sales.columns.tolist() if smr.ds.df_sales is not None else None}")
-							print(f"DataSplit df_test columns: {smr.ds.df_test.columns.tolist() if smr.ds.df_test is not None else None}")
-					
 					if smr.pred_sales is not None and smr.pred_sales.y_pred is not None and smr.pred_sales.y is not None:
 						base_model_oof_predictions[model_name] = smr.pred_sales.y_pred
 						if training_true_values is None:
 							training_true_values = smr.pred_sales.y
-							ds_template_for_contextual = smr.ds # Important: DS for alignment
-							if verbose:
-								print(f"\nUsing {model_name} as template for contextual features")
-								print(f"Template DataSplit has df_sales: {ds_template_for_contextual.df_sales is not None}")
-								print(f"Template DataSplit has df_test: {ds_template_for_contextual.df_test is not None}")
+							ds_template_for_contextual = smr.ds 
 						elif len(training_true_values) != len(smr.pred_sales.y):
 							warnings.warn(f"OOF true values length mismatch for model {model_name}. Expected {len(training_true_values)}, got {len(smr.pred_sales.y)}.")
 							continue
-						elif verbose:
-							print(f"Collected OOF from {model_name}")
 					else:
 						if verbose:
 							print(f"Model '{model_name}' lacks complete OOF predictions or true values.")
@@ -3048,17 +3025,8 @@ def _run_stacked_ensemble_for_model_group(
 				neighborhood_encoded_cols = None
 				
 				if contextual_feature_names:
-					if verbose:
-						print("\n=== Contextual Features Processing ===")
-						print(f"Looking for contextual features: {contextual_feature_names}")
-					
 					# ds_template_for_contextual.df_sales should be the OOF training fold data
 					if ds_template_for_contextual.df_sales is not None and not ds_template_for_contextual.df_sales.empty:
-						if verbose:
-							print("\nTemplate DataSplit df_sales info:")
-							print(f"Number of rows: {len(ds_template_for_contextual.df_sales)}")
-							print(f"Available columns: {ds_template_for_contextual.df_sales.columns.tolist()}")
-						
 						if len(ds_template_for_contextual.df_sales) == len(training_true_values):
 							# Try to get available columns with proper mapping
 							available_context_cols = []
@@ -3067,8 +3035,6 @@ def _run_stacked_ensemble_for_model_group(
 									# Look for one-hot encoded columns
 									encoded_cols = [col for col in ds_template_for_contextual.df_sales.columns if col.startswith(f"{feature}_")]
 									if encoded_cols:
-										if verbose:
-											print(f"Found {len(encoded_cols)} one-hot encoded columns for {feature}")
 										available_context_cols.extend(encoded_cols)
 										if feature == "neighborhood":
 											neighborhood_encoded_cols = encoded_cols
@@ -3091,8 +3057,6 @@ def _run_stacked_ensemble_for_model_group(
 											print(f"Warning: Feature {feature} not found in training data")
 							
 							if available_context_cols:
-								if verbose:
-									print(f"\nFound available context columns: {available_context_cols}")
 								training_contextual_features_df = ds_template_for_contextual.df_sales[available_context_cols].copy()
 						else:
 							if verbose:
@@ -3100,13 +3064,6 @@ def _run_stacked_ensemble_for_model_group(
 					else:
 						if verbose:
 							print("\nTemplate DataSplit df_sales is None or empty")
-
-				if verbose:
-					print("\n=== Training Contextual Features Status ===")
-					print(f"Have training contextual features: {training_contextual_features_df is not None}")
-					if training_contextual_features_df is not None:
-						print(f"Training contextual features columns: {training_contextual_features_df.columns.tolist()}")
-						print(f"Training contextual features shape: {training_contextual_features_df.shape}")
 
 				trained_meta_model, base_models_actually_used_in_stacking = _optimize_stacked_ensemble(
 					base_model_oof_predictions=base_model_oof_predictions,
@@ -3120,30 +3077,17 @@ def _run_stacked_ensemble_for_model_group(
 				# Prepare Test Set Data for Stacked Ensemble Prediction
 				base_models_test_predictions = {}
 				test_contextual_features_df = None
-
-				if verbose:
-					print("\n=== Test Set Preparation ===")
 				
 				for model_name in base_models_actually_used_in_stacking:
 					if model_name in all_results.model_results and all_results.model_results[model_name].pred_test is not None:
 						base_models_test_predictions[model_name] = all_results.model_results[model_name].pred_test.y_pred
-						if verbose:
-							print(f"Got test predictions for {model_name}")
+
 					else:
 						raise ValueError(f"Test predictions for base model '{model_name}' (used in stacking) not found.")
 
 				if contextual_feature_names and neighborhood_encoded_cols:
-					if verbose:
-						print("\n=== Test Contextual Features Processing ===")
-						print(f"Looking for test contextual features: {contextual_feature_names}")
-					
 					# ds_template_for_contextual.df_test should be the test fold data
 					if ds_template_for_contextual.df_test is not None and not ds_template_for_contextual.df_test.empty:
-						if verbose:
-							print("\nTemplate DataSplit df_test info:")
-							print(f"Number of rows: {len(ds_template_for_contextual.df_test)}")
-							print(f"Available columns: {ds_template_for_contextual.df_test.columns.tolist()}")
-						
 						num_test_samples = len(ds_template_for_contextual.y_test) if ds_template_for_contextual.y_test is not None else 0
 						if num_test_samples > 0 and len(ds_template_for_contextual.df_test) == num_test_samples:
 							# Use the same encoded columns from training
@@ -3163,13 +3107,6 @@ def _run_stacked_ensemble_for_model_group(
 						if verbose:
 							print("\nTemplate DataSplit df_test is None or empty")
 
-				if verbose:
-					print("\n=== Test Contextual Features Status ===")
-					print(f"Have test contextual features: {test_contextual_features_df is not None}")
-					if test_contextual_features_df is not None:
-						print(f"Test contextual features columns: {test_contextual_features_df.columns.tolist()}")
-						print(f"Test contextual features shape: {test_contextual_features_df.shape}")
-
 				stacked_ensemble_model_results = _run_stacked_ensemble(
 					trained_meta_model=trained_meta_model,
 					base_models_test_predictions=base_models_test_predictions,
@@ -3183,9 +3120,6 @@ def _run_stacked_ensemble_for_model_group(
 				)
 
 				all_results.add_model("stacked_ensemble", stacked_ensemble_model_results)
-				if verbose:
-					print("\nStacked ensemble results added to all_results.")
-
 				if save_results:
 					meta_model_path = f"{outpath}/model_stacked_ensemble_meta.pickle"
 					with open(meta_model_path, "wb") as f_meta:
