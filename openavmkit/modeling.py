@@ -3716,6 +3716,29 @@ def plot_value_surface(title: str, values: np.array, gdf: gpd.GeoDataFrame, cmap
   plt.show()
 
 
+def simple_mra(
+    df: pd.DataFrame,
+    ind_vars: list[str],
+    dep_var: str
+):
+   y = df[dep_var].copy()
+   X = df[ind_vars].copy()
+   X = sm.add_constant(X)
+   X = X.astype(np.float64)
+   model = sm.OLS(y, X).fit()
+
+   return {
+      "coefs": {ind_var: model.params[ind_var] for ind_var in ind_vars},
+      "intercept": model.params["const"],
+      "r2": model.rsquared,
+      "adj_r2": model.rsquared_adj,
+      "pval": model.pvalues[ind_vars],
+      "mse": model.mse_resid,
+      "rmse": np.sqrt(model.mse_resid),
+      "std_err": model.bse[ind_vars]
+   }
+
+
 def simple_ols(
     df: pd.DataFrame,
     ind_var: str,
@@ -3731,5 +3754,9 @@ def simple_ols(
     "slope": model.params[ind_var],
     "intercept": model.params["const"],
     "r2": model.rsquared,
-    "adj_r2": model.rsquared_adj
+    "adj_r2": model.rsquared_adj,
+    "pval": model.pvalues[ind_var],
+    "mse": model.mse_resid,
+    "rmse": np.sqrt(model.mse_resid),
+    "std_err": model.bse[ind_var]
   }
