@@ -1293,15 +1293,18 @@ def enrich_df_streets(
   chunk_size = 100_000
   segs_list = []
   i = 0
+
   for start in range(0, len(rays), chunk_size):
-      end = start + chunk_size
-      if verbose:
-        perc = start/len(rays)
-        print(f"--> {perc:5.2%}: chunk from {start} to {end}")
-      segs_chunk = shapely.intersection(
-          rays[start:end],
-        parcels[start:end]
+    end = start + chunk_size
+    if verbose:
+      perc = start/len(rays)
+      print(f"--> {perc:5.2%}: chunk from {start} to {end}")
+
+    segs_chunk = shapely.intersection(
+      rays[start:end],
+      parcels[start:end]
     )
+
     segs_list.append(segs_chunk)
     segs_chunk = None
 
