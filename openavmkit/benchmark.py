@@ -214,7 +214,9 @@ def try_variables(
 			print("")
 			print(f"model group: {model_group} / {vacant_status}")
 			results = entry[vacant_status]
+			pd.set_option('display.max_rows', None)
 			display(results)
+			pd.set_option('display.max_rows', 15)
 
 			for var in results["variable"].unique():
 				if var in df_hydrated.columns:
