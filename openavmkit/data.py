@@ -1,3 +1,4 @@
+import gc
 import math
 import os
 
@@ -1014,9 +1015,16 @@ def enrich_df_streets(
     }
   }
 
-  df_out = get_cached_df(df_in, "osm/streets", "key", only_signature = signature)
-  if df_out is not None:
-    return df_out
+  # check if in/osm/streets.parquet exists:
+  # if so, read it and return
+  if os.path.exists("in/osm/streets.parquet"):
+    df_streets = pd.read_parquet("in/osm/streets.parquet")
+    if "key" in df_streets:
+      df_out = df_in.copy()
+      df_out = df_out.merge(df_streets, on="key", how="left")
+      if verbose:
+        print(f"--> found streets in in/osm/streets.parquet, loading from disk!")
+      return df_out
 
   # ---- setup parcels ----
 
@@ -1097,6 +1105,8 @@ def enrich_df_streets(
 
   t.start("edges")
   edges = ox.graph_to_gdfs(G, nodes=False, edges=True)[['geometry','name','highway','osmid']]
+  G = None
+
   edges = edges.explode(index_parts=False).dropna(subset=['geometry']).to_crs(crs_eq).reset_index(drop=True)
 
   # unwrap lists to single values to avoid ArrowTypeError
@@ -1151,8 +1161,10 @@ def enrich_df_streets(
 
   # ---- parallel ray generation ----
   args = list(zip(
-    edges.geometry, edges.road_idx
+    edges.geometry, edges.road_idx, edges.road_name, edges.road_type
   ))
+  edges = None
+
   t.start('rays_parallel')
   n_jobs = 8
   if verbose:
@@ -1164,9 +1176,13 @@ def enrich_df_streets(
   )(
     delayed(_rays_from_edge)(*a) for a in args
   )
+
   # flatten & continue exactly as before
   rays = [r for sub in results for r in sub]
+  args = None
+
   rays_gdf = gpd.GeoDataFrame(rays, geometry='geometry', crs=crs_eq)
+  rays = None
 
   rays_gdf = rays_gdf.drop(columns=['origin'], errors="ignore")
   rays_gdf["road_name"] = rays_gdf["road_name"].astype(str)
@@ -1180,6 +1196,9 @@ def enrich_df_streets(
 
   t.stop('rays_parallel')
   log_mem("rays_parallel")
+
+  gc.collect()
+
   if verbose:
     print(f"--> T rays_parallel = {t.get('rays_parallel'):.0f}s")
 
@@ -1196,7 +1215,9 @@ def enrich_df_streets(
 
   # drop self if occurs
   ray_par = ray_par[ray_par.road_idx.notna()]
+  gc.collect()
   t.stop("block")
+
   log_mem("block")
   if verbose:
     print(f"T block = {t.get('block'):.0f}s")
@@ -1242,7 +1263,11 @@ def enrich_df_streets(
   offsets[1:] = np.cumsum(counts)[:-1]
   # index directly into coords to get the origins array (shape (n_rays, 2))
   origins_all = coords[offsets]
+  coords = None
+  offsets = None
+  gc.collect()
   t.stop("origins setup")
+
   log_mem("origins setup")
   if verbose:
     print(f"T origins setup = {t.get('origins setup'):.0f}s")
@@ -1259,11 +1284,18 @@ def enrich_df_streets(
         print(f"--> {perc:5.2%}: chunk from {start} to {end}")
       segs_chunk = shapely.intersection(
           rays[start:end],
-          parcels[start:end]
-      )
-      segs_list.append(segs_chunk)
+        parcels[start:end]
+    )
+    segs_list.append(segs_chunk)
+    segs_chunk = None
+
+  rays = None
+  parcels = None
+
   i += 1
   segs = np.concatenate(segs_list)
+  segs_list = None
+  gc.collect()
   t.stop("intersect")
   log_mem("intersect")
   if verbose:
@@ -1282,6 +1314,9 @@ def enrich_df_streets(
 
   t.start("entries")
   entries = coords[offsets]
+  coors = None
+  counts = None
+  offsets = None
   t.stop("entries")
   log_mem("entries")
   if verbose:
@@ -1295,6 +1330,9 @@ def enrich_df_streets(
 
   # stick it back on your GeoDataFrame
   ray_par["distance"] = distances
+  diffs = None
+  origins_all = None
+  distances = None
 
   # make sure we have an explicit "ray_id" to group on
   ray_par = ray_par.reset_index().rename(columns={"index": "ray_id"})
@@ -1308,6 +1346,8 @@ def enrich_df_streets(
   first_hits = first_hits.drop(columns=["ray_id"])
 
   ray_par = first_hits
+  first_hits = None
+  gc.collect()
 
   t.stop("dist")
   log_mem("dist")
@@ -1325,12 +1365,16 @@ def enrich_df_streets(
     min_distance=('distance','min'),
     mean_angle=('angle','mean')
   ).reset_index()
+  ray_par = None
+
   agg['frontage'] = agg['count_rays'] * spacing
 
   # approximate depth via area/frontage
   areas = df[['key']].copy()
   areas['area'] = df.geometry.area
   agg = agg.merge(areas, on='key', how='left')
+  areas = None
+
   agg['depth'] = agg['area'] / agg['frontage']
   t.stop('agg')
   log_mem("agg")
@@ -1367,6 +1411,7 @@ def enrich_df_streets(
   ).reset_index()
 
   agg = agg.merge(agg2, on="key", how="left")
+  agg2 = None
 
   ######## Remove spurious hits: #######
   # Heuristic:
@@ -1417,6 +1462,7 @@ def enrich_df_streets(
     columns="slot",
     values=["road_name", "frontage", "road_type", "road_angle", "road_face", "depth", "dist_to_road"]
   )
+  agg = None
 
   # 5) flatten the MultiIndex and drop any all‑null columns
   final.columns = [f"{field}_{i}" for field,i in final.columns]
@@ -1448,7 +1494,17 @@ def enrich_df_streets(
   df_out = gpd.GeoDataFrame(out, geometry='geometry', crs=df_in.crs)
   df_out = _finish_df_streets(df_out, settings)
 
-  write_cached_df(df_in, df_out, "osm/streets", "key")
+  # Eliminate a bunch of things I'm not using anymore:
+  agg = None
+  final = None
+  out = None
+
+  net_columns = [col for col in df_out if col not in df_in.columns]
+  df_net_streets = df_out[["key"] + net_columns]
+
+  os.makedirs("in/osm", exist_ok=True)
+
+  df_net_streets.to_parquet("in/osm/streets.parquet")
 
   return df_out
 
