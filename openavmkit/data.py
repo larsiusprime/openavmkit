@@ -255,14 +255,19 @@ def simulate_removed_buildings(df: pd.DataFrame, settings: dict, idx_vacant: Ser
     df.loc[idx_vacant, field] = 0
 
   for field in fields_impr_bool:
+    # Convert to boolean type first if needed
+    if df[field].dtype != bool:
+      df[field] = df[field].astype(bool)
     df.loc[idx_vacant, field] = False
 
   # just to be safe, ensure that the "bldg_area_finished_sqft" field is set to 0 for vacant sales
   # and update "is_vacant" to perfectly match
-  # TODO: if we add support for a user having a custom vacancy filter, we will need to adjust this
+  # TODO: if we add support for a custom vacancy filter, we will need to adjust this
   if "bldg_area_finished_sqft" in df:
     df.loc[idx_vacant, "bldg_area_finished_sqft"] = 0
-    df["is_vacant"] = False
+    # Convert is_vacant to boolean first
+    if "is_vacant" not in df or df["is_vacant"].dtype != bool:
+      df["is_vacant"] = False
     df.loc[idx_vacant, "is_vacant"] = True
 
   return df
