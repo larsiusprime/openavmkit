@@ -1211,7 +1211,36 @@ def enrich_df_streets(
   # DEBUG
   # gdf.to_file(f"out/temp/gdf.gpkg", driver="GPKG")
 
-  ray_par = gpd.sjoin(rays_gdf, gdf, how='inner', predicate='intersects')
+  # Build spatial index on the rays
+  tree = STRtree(list(rays_gdf.geometry.values))
+
+  # now use `query` on the array of geometries
+  # returns a 2×N array: [ray_idx_array, parcel_idx_array]
+  pairs = tree.query(
+    gdf.geometry.values,   # array of parcel_geom
+    predicate="intersects"
+  )
+  tree = None
+  gc.collect()
+
+  parcel_idxs = pairs[0]     # indices into gdf
+  ray_idxs    = pairs[1]     # indices into rays_gdf
+  pairs = None
+  gc.collect()
+
+  # 3) Select only those matching rows, preserving order
+  parcels_sel = gdf.iloc[parcel_idxs].reset_index(drop=True)
+  rays_sel   = rays_gdf.iloc[ray_idxs].reset_index(drop=True)
+  rays_gdf = None
+  gc.collect()
+
+  # 4) Combine into ray_par DataFrame
+  ray_par = rays_sel.copy()
+  ray_par["key"]         = parcels_sel["key"]
+  ray_par["parcel_geom"] = parcels_sel["parcel_geom"]
+  parcel_sel = None
+  rays_sel = None
+  gc.collect()
 
   # drop self if occurs
   ray_par = ray_par[ray_par.road_idx.notna()]
@@ -1225,19 +1254,6 @@ def enrich_df_streets(
   if ray_par.empty:
     print(f"Ray par is empty, return early")
     return df_in
-
-  t.start("ray_par")
-  # bring back the parcel geometry for distance calculations
-  ray_par = ray_par.merge(
-    gdf[['parcel_geom']],
-    left_on='index_right',
-    right_index=True,
-    how='left'
-  )
-  t.stop("ray_par")
-  log_mem("ray_par")
-  if verbose:
-    print(f"T ray_par = {t.get('ray_par'):.0f}s")
 
   t.start("dist")
 
