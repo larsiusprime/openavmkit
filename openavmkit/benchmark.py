@@ -3097,6 +3097,7 @@ def _run_models(
 					base_models_used_for_training=base_models_actually_used_in_stacking,
 					ds_template=ds_template_for_contextual,
 					settings=settings,
+					all_results=all_results,
 					verbose=verbose
 				)
 
@@ -3341,96 +3342,87 @@ def _run_stacked_ensemble(
 		base_models_used_for_training: list[str],
 		ds_template: DataSplit,
 		settings: dict,
+		all_results: MultiModelResults,
 		verbose: bool = False
 ) -> SingleModelResults:
 	"""Run stacked ensemble predictions using trained meta-model."""
 	if verbose:
 		print("Starting _run_stacked_ensemble...")
 
-	# Get test predictions from base models
-	meta_features = []
-	for model in base_models_used_for_training:
+	# Function to prepare meta features for a given dataset
+	def prepare_meta_features(base_predictions: dict[str, np.ndarray], contextual_data: pd.DataFrame | None) -> np.ndarray:
+		# Get predictions from base models
+		meta_features = []
+		for model in base_models_used_for_training:
+			if model in base_predictions:
+				meta_features.append(base_predictions[model])
+		meta_features = np.column_stack(meta_features)
+		
 		if verbose:
-			print(f"Got test predictions for {model}")
-		meta_features.append(base_models_test_predictions[model])
-	meta_features = np.column_stack(meta_features)
-	
-	if verbose:
-		print(f"\nTest meta features from base model predictions shape: {meta_features.shape}")
+			print(f"Meta features shape before contextual: {meta_features.shape}")
 
-	# Handle contextual features
+		# Handle contextual features if available
+		if contextual_data is not None and len(contextual_features) > 0:
+			contextual_arrays = []
+			for feature in contextual_features:
+				if feature in categorical_contextual_features:
+					# Look for one-hot encoded columns
+					encoded_cols = [col for col in contextual_data.columns if col.startswith(f"{feature}_")]
+					if encoded_cols:
+						contextual_arrays.append(contextual_data[encoded_cols].values)
+					else:
+						# Try raw field name
+						field_name = get_important_field(settings, f"loc_{feature}", contextual_data)
+						if field_name and field_name in contextual_data.columns:
+							contextual_arrays.append(contextual_data[field_name].values.reshape(-1, 1))
+				else:
+					if feature in contextual_data.columns:
+						contextual_arrays.append(contextual_data[feature].values.reshape(-1, 1))
+			
+			if contextual_arrays:
+				contextual_features_array = np.hstack(contextual_arrays)
+				meta_features = np.hstack([meta_features, contextual_features_array])
+				if verbose:
+					print(f"Meta features shape after adding contextual: {meta_features.shape}")
+		
+		return meta_features
+
+	# Get settings
 	contextual_features = stacked_ensemble_settings.get("contextual_features", [])
 	categorical_contextual_features = stacked_ensemble_settings.get("categorical_contextual_features", [])
 
-	if contextual_features and ds_template is not None:
-		if verbose:
-			print("\n=== Test Contextual Features Processing ===")
-			print(f"Looking for contextual features: {contextual_features}")
-			print("\nTemplate DataSplit df_test info:")
-			print(f"Number of rows: {len(ds_template.df_test)}")
-			print(f"Available columns: {list(ds_template.df_test.columns)}")
+	# Prepare predictions for test set
+	test_meta_features = prepare_meta_features(base_models_test_predictions, ds_template.df_test)
+	y_pred_test = trained_meta_model.predict(test_meta_features)
 
-		# For each contextual feature, try to find either raw or one-hot encoded columns
-		test_contextual_data = []
-		for feature in contextual_features:
-			if feature in categorical_contextual_features:
-				# Look for one-hot encoded columns
-				encoded_cols = [col for col in ds_template.df_test.columns if col.startswith(f"{feature}_")]
-				if encoded_cols:
-					if verbose:
-						print(f"Found {len(encoded_cols)} one-hot encoded columns for {feature}")
-					test_contextual_data.append(ds_template.df_test[encoded_cols].values)
-				else:
-					# Try raw field name as fallback
-					field_name = get_important_field(settings, f"loc_{feature}", ds_template.df_test)
-					if field_name and field_name in ds_template.df_test.columns:
-						if verbose:
-							print(f"Using raw field {field_name} for {feature}")
-						test_contextual_data.append(ds_template.df_test[field_name].values.reshape(-1, 1))
-					else:
-						if verbose:
-							print(f"Warning: No columns found for categorical feature {feature}")
-			else:
-				# Handle non-categorical features
-				if feature in ds_template.df_test.columns:
-					test_contextual_data.append(ds_template.df_test[feature].values.reshape(-1, 1))
-				else:
-					if verbose:
-						print(f"Warning: Feature {feature} not found in test data")
+	# Prepare predictions for sales set
+	sales_predictions = {}
+	for model in base_models_used_for_training:
+		if model in all_results.model_results:
+			sales_predictions[model] = all_results.model_results[model].pred_sales.y_pred
+	sales_meta_features = prepare_meta_features(sales_predictions, ds_template.df_sales)
+	y_pred_sales = trained_meta_model.predict(sales_meta_features)
 
-		if test_contextual_data:
-			# Combine all contextual features
-			test_contextual_features = np.hstack(test_contextual_data)
-			if verbose:
-				print("\n=== Test Contextual Features Status ===")
-				print(f"Have test contextual features: True")
-				print(f"Test contextual features shape: {test_contextual_features.shape}")
-			
-			# Combine with meta features
-			meta_features = np.hstack([meta_features, test_contextual_features])
-			if verbose:
-				print(f"Final meta features shape (with contextual): {meta_features.shape}")
-		else:
-			if verbose:
-				print("\n=== Test Contextual Features Status ===")
-				print("Have test contextual features: False")
-				print("Warning: No contextual features could be found in test data")
+	# Prepare predictions for universe set
+	universe_predictions = {}
+	for model in base_models_used_for_training:
+		if model in all_results.model_results:
+			universe_predictions[model] = all_results.model_results[model].pred_univ
+	universe_meta_features = prepare_meta_features(universe_predictions, ds_template.df_universe)
+	y_pred_univ = trained_meta_model.predict(universe_meta_features)
 
-	# Make predictions using meta-model
-	y_pred = trained_meta_model.predict(meta_features)
-
-	# Create SingleModelResults
+	# Create SingleModelResults with all predictions
 	results = SingleModelResults(
 		ds=ds_template,
 		field_prediction="sale_price",  # Using standard field for predictions
-		field_horizontal_equity_id="he_id",  # Standard HE ID field
-		type="prediction",
-		model="stacked_ensemble",
-		y_pred_test=y_pred,
-		y_pred_sales=None,  # Not used for stacked ensemble
-		y_pred_univ=None,  # Not used for stacked ensemble
-		timing=TimingData(),  # Create new timing data
-		verbose=verbose
+			field_horizontal_equity_id="he_id",  # Standard HE ID field
+			type="prediction",
+			model="stacked_ensemble",
+			y_pred_test=y_pred_test,
+			y_pred_sales=y_pred_sales,
+			y_pred_univ=y_pred_univ,
+			timing=TimingData(),
+			verbose=verbose
 	)
 
 	return results
