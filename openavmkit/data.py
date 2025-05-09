@@ -2284,7 +2284,12 @@ def _basic_geo_enrichment(gdf_in: gpd.GeoDataFrame, settings: dict, verbose: boo
     _t = t.get("latlon")
     print(f"--> added latitude/longitude...({_t:.2f}s)")
   t.start("area")
-  gdf["land_area_gis_sqft"] = gdf_area.geometry.area
+
+  # we converted to a metric CRS, so we are in meters right now
+  area_in_meters = gdf_area.geometry.area
+
+  gdf["land_area_gis_sqft"] = area_in_meters * 10.7639
+
   gdf["land_area_given_sqft"] = gdf["land_area_sqft"]
   gdf["land_area_sqft"] = gdf["land_area_sqft"].combine_first(gdf["land_area_gis_sqft"])
   gdf["land_area_gis_delta_sqft"] = gdf["land_area_gis_sqft"] - gdf["land_area_sqft"]
