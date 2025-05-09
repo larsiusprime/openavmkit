@@ -4,7 +4,6 @@ import time
 class TimingData:
 	_data = {}
 	results = {}
-	@@ -9,28 +6,23 @@
 		self._data = {}
 		self.results = {}
 	def start(self, key):
