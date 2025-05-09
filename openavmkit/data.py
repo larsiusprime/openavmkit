@@ -1880,8 +1880,7 @@ def enrich_sup_spatial_lag(sup: SalesUniversePair, settings: dict, verbose: bool
   train_keys, test_keys = get_train_test_keys(df_hydrated, settings)
 
   df_train = df_hydrated.loc[df_hydrated["key_sale"].isin(train_keys)].copy()
-  df_train_univ_keys = df_train["key"].unique().values
-
+  
   sale_field = get_sale_field(settings)
   sale_field_vacant = f"{sale_field}_vacant"
 
