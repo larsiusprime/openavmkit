@@ -1231,6 +1231,11 @@ def _do_perform_spatial_inference(df_in: pd.DataFrame, s_infer: dict, field: str
     
     # Update DataFrame
     df_result.loc[inference_mask, field] = predictions
+
+    do_round = s_infer.get("round", True)
+    if do_round:
+        df_result[field] = np.round(df_result[field])
+
     df_result[f"inferred_{field}"] = False
     df_result.loc[inference_mask, f"inferred_{field}"] = True
 

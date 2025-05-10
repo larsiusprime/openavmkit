@@ -40,6 +40,13 @@ def plot_scatterplot(
 ):
   plt.close('all')
 
+  if xlabel == "":
+    xlabel = x
+  if ylabel == "":
+    ylabel = y
+  if title == "":
+    title = f"{x} vs {y}"
+
   color = None
   if style is not None:
     if "random_color_by" in style:

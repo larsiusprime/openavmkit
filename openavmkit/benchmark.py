@@ -215,6 +215,7 @@ def try_variables(
 			print(f"model group: {model_group} / {vacant_status}")
 			results = entry[vacant_status]
 			pd.set_option('display.max_rows', None)
+			results = results[~results["corr_strength"].isna()]
 			display(results)
 			pd.set_option('display.max_rows', 15)
 
@@ -1367,6 +1368,7 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
 	fields = ["key", "geometry", "prediction",
 						"assr_market_value", "assr_land_value",
 						"true_market_value", "true_land_value",
+						"bldg_area_finished_sqft", "land_area_sqft",
 						"sale_price", "sale_price_time_adj", "sale_date"] + locations
 	fields = [field for field in fields if field in results.df_sales.columns]
 
@@ -1379,6 +1381,12 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
 	for key in dfs:
 		df = dfs[key]
 		df["prediction_ratio"] = div_z_safe(df, "prediction", "sale_price_time_adj")
+
+		if "bldg_area_finished_sqft" in df:
+			df["prediction_impr_sqft"] = div_z_safe(df, "prediction", "bldg_area_finished_sqft")
+		if "land_area_sqft" in df:
+			df["prediction_land_sqft"] = div_z_safe(df, "prediction", "land_area_sqft")
+
 		if "assr_market_value" in df:
 			df["assr_ratio"] = div_z_safe(df, "assr_market_value", "sale_price_time_adj")
 		else:

@@ -1808,12 +1808,13 @@ def _boolify_column_in_df(df: pd.DataFrame, field: str, na_handling: str = None)
 def _enrich_universe_spatial_lag(df_univ_in: pd.DataFrame, df_test: pd.DataFrame, settings: dict, verbose: bool = False) -> pd.DataFrame:
 
   df = df_univ_in.copy()
-  df_train_univ = df[~df["key"].isin(df_test["key"].values)].copy()
 
   if "floor_area_ratio" not in df:
     df["floor_area_ratio"] = div_field_z_safe(df["bldg_area_finished_sqft"], df["land_area_sqft"])
   if "bedroom_density" not in df and "bldg_rooms_bed" in df:
     df["bedroom_density"] = div_field_z_safe(df["bldg_rooms_bed"], df["land_area_sqft"])
+
+  df_train_univ = df[~df["key"].isin(df_test["key"].values)].copy()
 
   # FAR, bedroom density, and big five:
   value_fields = ["floor_area_ratio", "bedroom_density", "bldg_age_years", "bldg_effective_age_years", "bldg_area_finished_sqft", "land_area_sqft", "bldg_quality_num", "bldg_condition_num"]
@@ -1856,7 +1857,7 @@ def _enrich_universe_spatial_lag(df_univ_in: pd.DataFrame, df_test: pd.DataFrame
     weights_norm = weights / weights.sum(axis=1, keepdims=True)
 
     # Get the values corresponding to the neighbor indices
-    parcel_values = df[value_field].values
+    parcel_values = df_train_univ[value_field].values
     neighbor_values = parcel_values[indices]  # shape (n_universe, k)
 
     # Compute the weighted average (spatial lag) for each parcel in the universe
@@ -1905,10 +1906,8 @@ def enrich_sup_spatial_lag(sup: SalesUniversePair, settings: dict, verbose: bool
 
     if value_field == sale_field:
       df_sub = df_hydrated.loc[df_hydrated["valid_sale"].eq(True)].copy()
-    elif value_field == sale_field_vacant:
-      df_sub = df_hydrated.loc[df_hydrated["valid_sale"].eq(True) & df_hydrated["bldg_area_finished_sqft"].le(0) & df_hydrated["land_area_sqft"].gt(0)].copy()
-    elif value_field == per_land_field:
-      df_sub = df_hydrated.loc[df_hydrated["valid_sale"].eq(True) & df_hydrated["bldg_area_finished_sqft"].le(0) & df_hydrated["land_area_sqft"].gt(0)].copy()
+    elif (value_field == sale_field_vacant) or (value_field == per_land_field):
+      df_sub = df_hydrated.loc[df_hydrated["valid_sale"].eq(True) & df_hydrated["vacant_sale"].eq(True) & df_hydrated["land_area_sqft"].gt(0)].copy()
     elif value_field == per_impr_field:
       df_sub = df_hydrated.loc[df_hydrated["valid_sale"].eq(True) & df_hydrated["bldg_area_finished_sqft"].gt(0)].copy()
     else:
@@ -1926,12 +1925,12 @@ def enrich_sup_spatial_lag(sup: SalesUniversePair, settings: dict, verbose: bool
 
     df_sub_train = df_sub.loc[df_sub["key_sale"].isin(train_keys)].copy()
 
-    # Build a cKDTree from df_sales coordinates
+    # Build a cKDTree from df_sales coordinates -- but ONLY from the training set
     sales_coords_train = df_sub_train[['latitude', 'longitude']].values
     sales_tree = cKDTree(sales_coords_train)
 
     # Choose the number of nearest neighbors to use
-    k = 5  # You can adjust this number as needed
+    k = 5  # adjust this number as needed
 
     # Get the coordinates for the universe parcels
     universe_coords = df_universe[['latitude', 'longitude']].values
@@ -1962,7 +1961,7 @@ def enrich_sup_spatial_lag(sup: SalesUniversePair, settings: dict, verbose: bool
     weights_norm = weights / weights.sum(axis=1, keepdims=True)
 
     # Get the sales prices corresponding to the neighbor indices
-    sales_prices = df_sub[value_field].values
+    sales_prices = df_sub_train[value_field].values
     neighbor_prices = sales_prices[indices]  # shape (n_universe, k)
 
     # Compute the weighted average (spatial lag) for each parcel in the universe
@@ -1971,7 +1970,7 @@ def enrich_sup_spatial_lag(sup: SalesUniversePair, settings: dict, verbose: bool
     # Add the spatial lag as a new column
     df_universe[f"spatial_lag_{value_field}"] = spatial_lag
 
-    median_value = df_sub[value_field].median()
+    median_value = df_sub_train[value_field].median()
     df_universe[f"spatial_lag_{value_field}"] = df_universe[f"spatial_lag_{value_field}"].fillna(median_value)
 
     # Add the new field to sales:
@@ -2291,7 +2290,12 @@ def _basic_geo_enrichment(gdf_in: gpd.GeoDataFrame, settings: dict, verbose: boo
   gdf["land_area_gis_sqft"] = area_in_meters * 10.7639
 
   gdf["land_area_given_sqft"] = gdf["land_area_sqft"]
+
+  # Anywhere given land area is 0, negative, or NULL, use GIS area
   gdf["land_area_sqft"] = gdf["land_area_sqft"].combine_first(gdf["land_area_gis_sqft"])
+  gdf["land_area_sqft"] = np.round(gdf["land_area_sqft"].combine_first(gdf["land_area_gis_sqft"])).astype(int)
+  gdf.loc[gdf["land_area_given_sqft"].le(0) | gdf["land_area_given_sqft"].isna(), "land_area_sqft"] = gdf["land_area_gis_sqft"]
+
   gdf["land_area_gis_delta_sqft"] = gdf["land_area_gis_sqft"] - gdf["land_area_sqft"]
   gdf["land_area_gis_delta_percent"] = div_field_z_safe(gdf["land_area_gis_delta_sqft"], gdf["land_area_sqft"])
   t.stop("area")
