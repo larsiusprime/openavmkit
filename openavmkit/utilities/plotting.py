@@ -1,30 +1,55 @@
+import random
+
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 import colorsys
 
-def get_nice_random_colors(n: int):
+def get_nice_random_colors(n: int, shuffle=False, seed=1337):
   """
-  Generate a list of n aesthetically pleasing random colors for plotting
+  Generate a list of n aesthetically pleasing and perceptually distinct colors for plotting.
+
+  Parameters:
+  - n: Number of colors
+  - shuffle: Whether to shuffle the color order to make the sequence appear more visually distinct
+
+  Returns:
+  - List of hex color codes
   """
   colors = []
+  golden_ratio_conjugate = 0.61803398875  # For perceptually even hue spacing
+  random.seed(seed)
+  h = random.random()  # Start with a random hue base
+
   for i in range(n):
-    h = i / n
+    # Evenly spaced hue using golden ratio increment
+    h = (h + golden_ratio_conjugate) % 1
 
-    # pick a nice saturation value, don't use the full range, just an aesthetic choice:
-    s = 0.75 + 0.25 * np.sin(i / n * 2 * np.pi)
+    # Fix saturation and value in a pleasing range
+    s = 0.65  # More muted than full saturation
+    v = 0.85  # High value, good for line plots on white background
 
-    # pick a nice value, don't use the full range, just an aesthetic choice:
-    v = 0.75 + 0.25 * np.cos(i / n * 2 * np.pi)
-
-    # convert from hsv to rgb:
+    # Convert to RGB and then to hex
     r, g, b = colorsys.hsv_to_rgb(h, s, v)
-
     hex_code = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
-
     colors.append(hex_code)
+
+  if shuffle:
+    random.shuffle(colors)
+
   return colors
 
+def _get_color_by(df: pd.DataFrame, style: dict):
+  color = None
+  if style is not None:
+    if "random_color_by" in style:
+      random_color_by = style.get("random_color_by", "")
+      if random_color_by in df:
+        unique_values = df[random_color_by].unique()
+        colors = get_nice_random_colors(len(unique_values))
+        color_map = dict(zip(unique_values, colors))
+        color = df[random_color_by].map(color_map).values
+  return color
 
 def plot_scatterplot(
     df: pd.DataFrame,
@@ -47,15 +72,7 @@ def plot_scatterplot(
   if title == "":
     title = f"{x} vs {y}"
 
-  color = None
-  if style is not None:
-    if "random_color_by" in style:
-      random_color_by = style.get("random_color_by", "")
-      if random_color_by in df:
-        unique_values = df[random_color_by].unique()
-        colors = get_nice_random_colors(len(unique_values))
-        color_map = dict(zip(unique_values, colors))
-        color = df[random_color_by].map(color_map).values
+  color = _get_color_by(df, style)
 
   plt.scatter(df[x], df[y], alpha=0.25, c=color)
   plt.xlabel(xlabel)
@@ -68,6 +85,35 @@ def plot_scatterplot(
   if out_file is not None:
     plt.savefig(out_file)
   plt.show()
+
+
+def plot_bar(
+    df: pd.DataFrame,
+    data_field: str,
+    height = 1.0,
+    width = 1.0,
+    xlabel: str = "",
+    ylabel: str = "",
+    title: str = "",
+    out_file: str = None,
+    style: dict = None
+):
+  color = _get_color_by(df, style)
+
+  df = df.sort_values(by=data_field, ascending=True)
+
+  data = df[data_field]
+  data = data[~data.isna()]
+
+  plt.xlabel(xlabel)
+  plt.ylabel(ylabel)
+  plt.title(title)
+  plt.bar(data, height=height, width=width, color=color)
+  if out_file is not None:
+    plt.savefig(out_file)
+  plt.show()
+
+
 
 
 def plot_histogram_df(df: pd.DataFrame, fields: list[str], xlabel: str = "", ylabel: str = "", title: str = "", bins = 500, x_lim=None, out_file: str = None):
