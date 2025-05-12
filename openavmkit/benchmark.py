@@ -7,10 +7,13 @@ from matplotlib import pyplot as plt
 import pandas as pd
 from catboost import CatBoostRegressor
 from lightgbm import Booster
+from sklearn.linear_model import Ridge
+from sklearn.model_selection import train_test_split
 from statsmodels.nonparametric.kernel_regression import KernelReg
 from xgboost import XGBRegressor
 from IPython.display import display
 import numpy as np
+from sklearn.preprocessing import OneHotEncoder
 
 from openavmkit.data import get_important_field, get_locations, _read_split_keys, SalesUniversePair, \
 	get_hydrated_sales_from_sup, get_report_locations, get_sales, get_sale_field, simulate_removed_buildings
@@ -2888,7 +2891,20 @@ def _run_models(
 		all_results.add_model("ensemble", ensemble_results)
 		t.stop("calc final results")
 
-	print("")
+	# Run stacked ensemble if enabled
+	_run_stacked_ensemble_for_model_group(
+		t=t,
+		model_group=model_group,
+		vacant_only=vacant_only,
+		all_results=all_results,
+		df_sales=df_sales,
+		df_univ=df_univ,
+		outpath=outpath,
+		settings=settings,
+		save_results=save_results,
+		verbose=verbose
+	)
+
 	if vacant_only:
 		print(f"VACANT BENCHMARK ({model_group})")
 	else:
@@ -2926,3 +2942,1070 @@ def _run_models(
 	print("")
 
 	return all_results
+
+
+def _run_stacked_ensemble(
+		trained_meta_model: object,
+		base_models_test_predictions: dict[str, np.ndarray],
+		test_contextual_features: pd.DataFrame | None,
+		stacked_ensemble_settings: dict,
+		base_models_used_for_training: list[str],
+		feature_columns: list[str],
+		ds_template: DataSplit,
+		settings: dict,
+		all_results: MultiModelResults,
+		verbose: bool = False
+) -> SingleModelResults:
+	"""Run stacked ensemble predictions using trained meta-model."""
+	if verbose:
+		print("Starting _run_stacked_ensemble...")
+
+	# Prepare test features and make predictions
+	test_features, _ = _prepare_stacked_features(
+		base_models_test_predictions,
+		test_contextual_features,
+		base_models_used_for_training,
+		feature_columns,
+		ds_template.test_indices if hasattr(ds_template, 'test_indices') else None,
+		"test",
+		verbose
+	)
+	y_pred_test = trained_meta_model.predict(test_features)
+
+	# Prepare sales predictions
+	sales_predictions = {
+		model: all_results.model_results[model].pred_sales.y_pred
+		for model in base_models_used_for_training
+		if model in all_results.model_results
+	}
+	
+	sales_contextual = _prepare_contextual_features(
+		ds_template,
+		stacked_ensemble_settings.get("contextual_features", []),
+		stacked_ensemble_settings.get("categorical_contextual_features", []),
+		None,
+		False,
+		settings,
+		verbose
+	)
+	
+	sales_features, _ = _prepare_stacked_features(
+		sales_predictions,
+		sales_contextual,
+		base_models_used_for_training,
+		feature_columns,
+		ds_template.sales_indices if hasattr(ds_template, 'sales_indices') else None,
+		"sales",
+		verbose
+	)
+	y_pred_sales = trained_meta_model.predict(sales_features)
+
+	# Prepare universe predictions
+	universe_predictions = {
+		model: all_results.model_results[model].pred_univ
+		for model in base_models_used_for_training
+		if model in all_results.model_results
+	}
+	
+	# Get base predictions length
+	univ_length = len(next(iter(universe_predictions.values())))
+	
+	# Create a DataFrame with just the base predictions first
+	universe_features, base_feature_names = _prepare_stacked_features(
+		universe_predictions,
+		None,  # No contextual features yet
+		base_models_used_for_training,
+		None,  # No feature columns yet
+		None,  # No indices needed
+		"universe (base)",
+		verbose
+	)
+	
+	# Now get contextual features
+	universe_contextual = _prepare_contextual_features(
+		ds_template,
+		stacked_ensemble_settings.get("contextual_features", []),
+		stacked_ensemble_settings.get("categorical_contextual_features", []),
+		None,
+		False,
+		settings,
+		verbose
+	)
+	
+	# If we have contextual features, create interaction features
+	if universe_contextual is not None and len(universe_contextual) > 0:
+		# Ensure universe_contextual has same length as predictions
+		if len(universe_contextual) != univ_length:
+			if verbose:
+				print(f"Adjusting contextual features from {len(universe_contextual)} to {univ_length} records")
+			# Create zero-filled DataFrame with correct length
+			zero_filled = pd.DataFrame(0, index=range(univ_length), columns=universe_contextual.columns)
+			# Fill in the values we have
+			zero_filled.iloc[:len(universe_contextual)] = universe_contextual.values
+			universe_contextual = zero_filled
+		
+		# Now create interaction features
+		universe_features_with_interactions, _ = _prepare_stacked_features(
+			universe_predictions,
+			universe_contextual,
+			base_models_used_for_training,
+			feature_columns,
+			None,
+			"universe (with interactions)",
+			verbose
+		)
+		y_pred_univ = trained_meta_model.predict(universe_features_with_interactions)
+	else:
+		# Just use base predictions if no contextual features
+		y_pred_univ = trained_meta_model.predict(universe_features)
+
+	# Create SingleModelResults with all predictions
+	results = SingleModelResults(
+		ds=ds_template,
+		field_prediction="sale_price",
+		field_horizontal_equity_id="he_id",
+		type="prediction",
+		model="stacked_ensemble",
+		y_pred_test=y_pred_test,
+		y_pred_sales=y_pred_sales,
+		y_pred_univ=y_pred_univ,
+		timing=TimingData(),
+		verbose=verbose
+	)
+
+	return results
+
+
+def _prepare_ds(
+		df_sales: pd.DataFrame,
+		df_universe: pd.DataFrame,
+		model_group: str,
+		vacant_only: bool,
+		settings: dict,
+		ind_vars: list[str] | None = None,
+):
+	"""
+  Prepare a DataSplit object for modeling.
+
+  :param df_sales: Sales DataFrame.
+  :type df_sales: pandas.DataFrame
+  :param df_universe: Universe DataFrame.
+  :type df_universe: pandas.DataFrame
+  :param model_group: Model group identifier.
+  :type model_group: str
+  :param vacant_only: Whether to use only vacant sales.
+  :type vacant_only: bool
+  :param settings: Settings dictionary.
+  :type settings: dict
+  :param ind_vars: List of independent variables (optional)
+  :type ind_vars: list[str] | None
+  :returns: A DataSplit object.
+  :rtype: DataSplit
+  """
+	s = settings
+	s_model = s.get("modeling", {})
+	vacant_status = "vacant" if vacant_only else "main"
+	model_entries = s_model.get("models", {}).get(vacant_status, {})
+	entry: dict | None = model_entries.get("model", model_entries.get("default", {}))
+
+	if ind_vars is None:
+		ind_vars: list | None = entry.get("ind_vars", None)
+		if ind_vars is None:
+			raise ValueError(f"ind_vars not found for model 'default'")
+
+	# Check for duplicate variables in ind_vars
+	if ind_vars is not None:
+		seen_vars = set()
+		duplicates = []
+		deduped_vars = []
+		
+		for var in ind_vars:
+			if var in seen_vars:
+				duplicates.append(var)
+			else:
+				seen_vars.add(var)
+				deduped_vars.append(var)
+		
+		if duplicates:
+			print(f"\n⚠️ WARNING: Found duplicate variables in ind_vars: {duplicates}")
+			print(f"Using only the first occurrence of each variable to avoid errors.")
+			ind_vars = deduped_vars
+
+	# Check for duplicate columns in DataFrame (e.g., from merges)
+	duplicate_cols = df_sales.columns[df_sales.columns.duplicated()].tolist()
+	if duplicate_cols:
+		print(f"\n⚠️ WARNING: Found duplicate columns in DataFrame: {duplicate_cols}")
+		print(f"This could cause errors. Keeping only first occurrence of each column.")
+		df_sales = df_sales.loc[:, ~df_sales.columns.duplicated()]
+	
+	duplicate_cols_univ = df_universe.columns[df_universe.columns.duplicated()].tolist()
+	if duplicate_cols_univ:
+		print(f"\n⚠️ WARNING: Found duplicate columns in universe DataFrame: {duplicate_cols_univ}")
+		print(f"This could cause errors. Keeping only first occurrence of each column.")
+		df_universe = df_universe.loc[:, ~df_universe.columns.duplicated()]
+
+	fields_cat = get_fields_categorical(s, df_sales, include_boolean=True)
+	interactions = get_variable_interactions(entry, s, df_sales)
+
+	instructions = s.get("modeling", {}).get("instructions", {})
+	dep_var = instructions.get("dep_var", "sale_price_time_adj")
+	dep_var_test = instructions.get("dep_var_test", "sale_price_time_adj")
+
+	test_keys, train_keys = _read_split_keys(model_group)
+
+	ds = DataSplit(
+		df_sales=df_sales,
+		df_universe=df_universe,
+		model_group=model_group,
+		settings=settings,
+		dep_var=dep_var,
+		dep_var_test=dep_var_test,
+		ind_vars=ind_vars,
+		categorical_vars=fields_cat,
+		interactions=interactions,
+		test_keys=test_keys,
+		train_keys=train_keys,
+		vacant_only=vacant_only
+	)
+	return ds
+
+
+def _calc_variable_recommendations(
+		ds: DataSplit,
+		settings: dict,
+		correlation_results: dict,
+		enr_results: dict,
+		r2_values_results: pd.DataFrame,
+		p_values_results: dict,
+		t_values_results: dict,
+		vif_results: dict,
+		report: MarkdownReport = None
+):
+	"""
+  Calculate variable recommendations based on various statistical metrics.
+
+  :param ds: DataSplit object containing the data.
+  :type ds: DataSplit
+  :param settings: Settings dictionary.
+  :type settings: dict
+  :param correlation_results: Correlation analysis results.
+  :type correlation_results: dict
+  :param enr_results: Elastic net regularization results.
+  :type enr_results: dict
+  :param r2_values_results: R² values DataFrame.
+  :type r2_values_results: pandas.DataFrame
+  :param p_values_results: P-value analysis results.
+  :type p_values_results: dict
+  :param t_values_results: T-value analysis results.
+  :type t_values_results: dict
+  :param vif_results: VIF analysis results.
+  :type vif_results: dict
+  :param report: Optional MarkdownReport object.
+  :type report: MarkdownReport or None
+  :returns: DataFrame with variable recommendations.
+  :rtype: pandas.DataFrame
+  """
+	feature_selection = settings.get("modeling", {}).get("instructions", {}).get("feature_selection", {})
+	thresh = feature_selection.get("thresholds", {})
+	weights = feature_selection.get("weights", {})
+
+	stuff_to_merge = [
+		correlation_results,
+		{"final": r2_values_results},
+		enr_results,
+		p_values_results,
+		t_values_results,
+		vif_results
+	]
+
+	df: pd.DataFrame | None = None
+	for thing in stuff_to_merge:
+		if thing is None:
+			continue
+		if df is None:
+			df = thing["final"]
+		else:
+			df = pd.merge(df, thing["final"], on="variable", how="outer")
+
+	if df is None:
+		raise ValueError("df is None, no data to merge")
+
+	df["weighted_score"] = 0
+
+	# remove "const" from df:
+	df = df[df["variable"].ne("const")]
+
+	adj_r2_thresh = thresh.get("adj_r2", 0.1)
+	df.loc[df["adj_r2"].gt(adj_r2_thresh), "weighted_score"] += 1
+
+	weight_corr_score = weights.get("corr_score", 1)
+	weight_enr_coef = weights.get("enr_coef", 1)
+	weight_p_value = weights.get("p_value", 1)
+	weight_t_value = weights.get("t_value", 1)
+	weight_vif = weights.get("vif", 1)
+	weight_coef_sign = weights.get("coef_sign", 1)
+
+	if correlation_results is not None:
+		df.loc[df["corr_score"].notna(), "weighted_score"] += weight_corr_score
+	if enr_results is not None:
+		df.loc[df["enr_coef"].notna(), "weighted_score"] += weight_enr_coef
+	if p_values_results is not None:
+		df.loc[df["p_value"].notna(), "weighted_score"] += weight_p_value
+	if t_values_results is not None:
+		df.loc[df["t_value"].notna(), "weighted_score"] += weight_t_value
+	if vif_results is not None:
+		df.loc[df["vif"].notna(), "weighted_score"] += weight_vif
+
+	if t_values_results is not None and enr_results is not None:
+		# check if "enr_coefficient", "t_value", and "coef_sign" are pointing in the same direction:
+		df.loc[
+			df["enr_coef_sign"].eq(df["t_value_sign"]) &
+			df["enr_coef_sign"].eq(df["coef_sign"]),
+			"signs_match"
+		] = 1
+		df.loc[df["signs_match"].eq(1), "weighted_score"] += weight_coef_sign
+
+	bys = ["weighted_score"]
+	ascs = [False]
+
+	if "adj_r2" in df:
+		bys.append("adj_r2")
+		ascs.append(False)
+	elif "r2" in df:
+		bys.append("r2")
+		ascs.append(False)
+
+	df = df.sort_values(by=bys, ascending=ascs)
+
+	if report is not None:
+		dfr = df.copy()
+		dfr = dfr.rename(columns={
+			"variable": "Variable",
+			"corr_score": "Correlation",
+			"enr_coef": "ENR",
+			"adj_r2": "R-squared",
+			"p_value": "P Value",
+			"t_value": "T Value",
+			"vif": "VIF",
+			"signs_match": "Coef. sign",
+			"weighted_score": "Weighted Score"
+		})
+
+		# Correlation:
+		thresh_corr = thresh.get("correlation", 0.1)
+		report.set_var("thresh_corr", thresh_corr, ".2f")
+		corr_fields = ["variable", "corr_strength", "corr_clarity", "corr_score"]
+		corr_renames = {
+			"variable": "Variable",
+			"corr_strength": "Strength",
+			"corr_clarity": "Clarity",
+			"corr_score": "Score"
+		}
+
+		# VIF:
+		thresh_vif = thresh.get("vif", 10)
+		vif_renames = {
+			"variable": "Variable",
+			"vif": "VIF"
+		}
+
+		# P-value:
+		thresh_p_value = thresh.get("p_value", 0.05)
+		p_value_renames = {
+			"variable": "Variable",
+			"p_value": "P-value"
+		}
+
+		# T-value:
+		thresh_t_value = thresh.get("t_value", 2)
+		t_value_renames = {
+			"variable": "Variable",
+			"t_value": "T-value"
+		}
+
+		# ENR:
+		thresh_enr = thresh.get("enr", 0.1)
+		enr_renames = {
+			"variable": "Variable",
+			"enr_coef": "Coefficient"
+		}
+
+		# R-Squared:
+		thresh_r2 = thresh.get("adj_r2", 0.1)
+		r2_renames = {
+			"variable": "Variable",
+			"adj_r2": "R-squared"
+		}
+
+		# Coef signs:
+		coef_sign_renames = {
+			"variable": "Variable",
+			"enr_coef_sign": "ENR sign",
+			"t_value_sign": "T-value sign",
+			"coef_sign": "Coef. sign"
+		}
+
+		for state in ["initial", "final"]:
+			# Correlation:
+			dfr_corr = correlation_results[state][corr_fields].copy()
+			dfr_corr["Pass/Fail"] = dfr_corr["corr_score"].apply(lambda x: "✅" if x > thresh_corr else "❌")
+			for field in corr_fields:
+				if field == "variable":
+					continue
+				if field not in dfr_corr:
+					print("missing field", field)
+				dfr_corr[field] = dfr_corr[field].apply(lambda x: f"{x:.2f}").astype("string")
+
+			dfr_corr = dfr_corr.rename(columns=corr_renames)
+			dfr_corr["Rank"] = range(1, len(dfr_corr) + 1)
+			dfr_corr = dfr_corr[["Rank", "Variable", "Strength", "Clarity", "Score", "Pass/Fail"]]
+			dfr_corr.set_index("Rank", inplace=True)
+			dfr_corr = apply_dd_to_df_rows(dfr_corr, "Variable", settings, ds.one_hot_descendants)
+			report.set_var(f"table_corr_{state}", dataframe_to_markdown(dfr_corr))
+
+			# TODO: refactor this down to DRY it out a bit
+
+			if vif_results is not None:
+				# VIF:
+				dfr_vif = vif_results[state][["variable", "vif"]].copy()
+				dfr_vif = dfr_vif.sort_values(by="vif", ascending=True)
+				dfr_vif["Pass/Fail"] = dfr_vif["vif"].apply(lambda x: "✅" if x < thresh_vif else "❌")
+				dfr_vif["vif"] = dfr_vif["vif"].apply(lambda x: f"{x:.2f}" if x < 10 else f"{x:.1f}" if x < 100 else f"{x:,.0f}").astype("string")
+				dfr_vif = dfr_vif.rename(columns=vif_renames)
+				dfr_vif["Rank"] = range(1, len(dfr_vif) + 1)
+				dfr_vif = dfr_vif[["Rank", "Variable", "VIF", "Pass/Fail"]]
+				dfr_vif.set_index("Rank", inplace=True)
+				dfr_vif = apply_dd_to_df_rows(dfr_vif, "Variable", settings, ds.one_hot_descendants)
+				report.set_var(f"table_vif_{state}", dataframe_to_markdown(dfr_vif))
+			else:
+				report.set_var(f"table_vif_{state}", "N/A")
+
+			if p_values_results is not None:
+				# P-value:
+				dfr_p_value = p_values_results[state][["variable", "p_value"]].copy()
+				dfr_p_value = dfr_p_value[dfr_p_value["variable"].ne("const")]
+				dfr_p_value = dfr_p_value.sort_values(by="p_value", ascending=True)
+				dfr_p_value["Pass/Fail"] = dfr_p_value["p_value"].apply(lambda x: "✅" if x < thresh_p_value else "❌")
+				dfr_p_value["p_value"] = dfr_p_value["p_value"].apply(lambda x: f"{x:.3f}").astype("string")
+				dfr_p_value = dfr_p_value.rename(columns=p_value_renames)
+				dfr_p_value["Rank"] = range(1, len(dfr_p_value) + 1)
+				dfr_p_value = dfr_p_value[["Rank", "Variable", "P-value", "Pass/Fail"]]
+				dfr_p_value.set_index("Rank", inplace=True)
+				dfr_p_value = apply_dd_to_df_rows(dfr_p_value, "Variable", settings, ds.one_hot_descendants)
+				report.set_var(f"table_p_value_{state}", dataframe_to_markdown(dfr_p_value))
+
+			if t_values_results is not None:
+				# T-value:
+				dfr_t_value = t_values_results[state][["variable", "t_value"]].copy()
+				dfr_t_value = dfr_t_value[dfr_t_value["variable"].ne("const")]
+				dfr_t_value = dfr_t_value.sort_values(by="t_value", ascending=False, key=abs)
+				dfr_t_value["Pass/Fail"] = dfr_t_value["t_value"].apply(lambda x: "✅" if abs(x) > thresh_t_value else "❌")
+				dfr_t_value["t_value"] = dfr_t_value["t_value"].apply(lambda x: f"{x:.2f}").astype("string")
+				dfr_t_value = dfr_t_value.rename(columns=t_value_renames)
+				dfr_t_value["Rank"] = range(1, len(dfr_t_value) + 1)
+				dfr_t_value = dfr_t_value[["Rank", "Variable", "T-value", "Pass/Fail"]]
+				dfr_t_value.set_index("Rank", inplace=True)
+				dfr_t_value = apply_dd_to_df_rows(dfr_t_value, "Variable", settings, ds.one_hot_descendants)
+				report.set_var(f"table_t_value_{state}", dataframe_to_markdown(dfr_t_value))
+
+			if enr_results is not None:
+				# ENR:
+				dfr_enr = enr_results[state][["variable", "enr_coef"]].copy()
+				dfr_enr = dfr_enr.sort_values(by="enr_coef", ascending=False, key=abs)
+				dfr_enr["Pass/Fail"] = dfr_enr["enr_coef"].apply(lambda x: "✅" if abs(x) > thresh_enr else "❌")
+				dfr_enr["enr_coef"] = dfr_enr["enr_coef"].apply(lambda x: f"{x:.2f}" if abs(x) < 100 else f"{x:,.0f}").astype("string")
+				dfr_enr = dfr_enr.rename(columns=enr_renames)
+				dfr_enr["Rank"] = range(1, len(dfr_enr) + 1)
+				dfr_enr = dfr_enr[["Rank", "Variable", "Coefficient", "Pass/Fail"]]
+				dfr_enr.set_index("Rank", inplace=True)
+				dfr_enr = apply_dd_to_df_rows(dfr_enr, "Variable", settings, ds.one_hot_descendants)
+				report.set_var(f"table_enr_{state}", dataframe_to_markdown(dfr_enr))
+
+			if r2_values_results is not None:
+				# R-squared
+				dfr_r2 = r2_values_results.copy()
+				dfr_r2 = dfr_r2.sort_values(by="adj_r2", ascending=False)
+				dfr_r2["Pass/Fail"] = dfr_r2["adj_r2"].apply(lambda x: "✅" if x > thresh_r2 else "❌")
+				dfr_r2["adj_r2"] = dfr_r2["adj_r2"].apply(lambda x: f"{x:.2f}").astype("string")
+				dfr_r2 = dfr_r2.rename(columns=r2_renames)
+				dfr_r2["Rank"] = range(1, len(dfr_r2) + 1)
+				dfr_r2 = dfr_r2[["Rank", "Variable", "R-squared", "Pass/Fail"]]
+				dfr_r2.set_index("Rank", inplace=True)
+				dfr_r2 = apply_dd_to_df_rows(dfr_r2, "Variable", settings, ds.one_hot_descendants)
+				if state == "final":
+					dfr_r2 = dfr_r2[dfr_r2["Pass/Fail"].eq("✅")]
+				report.set_var(f"table_adj_r2_{state}", dataframe_to_markdown(dfr_r2))
+
+			if enr_results is not None and t_values_results is not None:
+				# Coef sign:
+				dfr_coef_sign = enr_results[state][["variable", "enr_coef_sign"]].copy()
+				dfr_coef_sign = dfr_coef_sign.merge(t_values_results[state][["variable", "t_value_sign"]], on="variable", how="outer")
+				dfr_coef_sign = dfr_coef_sign.merge(r2_values_results[["variable", "coef_sign"]], on="variable", how="outer")
+				dfr_coef_sign["signs_match"] = False
+				dfr_coef_sign.loc[
+					dfr_coef_sign["enr_coef_sign"].eq(dfr_coef_sign["t_value_sign"]) &
+					dfr_coef_sign["enr_coef_sign"].eq(dfr_coef_sign["coef_sign"]),
+					"signs_match"
+				] = True
+				dfr_coef_sign["Pass/Fail"] = dfr_coef_sign["signs_match"].apply(lambda x: "✅" if x else "❌")
+				dfr_coef_sign = dfr_coef_sign.sort_values(by="signs_match", ascending=False)
+				dfr_coef_sign = dfr_coef_sign[dfr_coef_sign["variable"].ne("const")]
+				dfr_coef_sign = dfr_coef_sign.rename(columns=coef_sign_renames)
+				dfr_coef_sign = dfr_coef_sign[["Variable", "ENR sign", "T-value sign", "Coef. sign", "Pass/Fail"]]
+				for field in ["ENR sign", "T-value sign", "Coef. sign"]:
+					dfr_coef_sign[field] = dfr_coef_sign[field].apply(lambda x: f"{x:.0f}").astype("string")
+				dfr_coef_sign = apply_dd_to_df_rows(dfr_coef_sign, "Variable", settings, ds.one_hot_descendants)
+				if state == "final":
+					dfr_coef_sign = dfr_coef_sign[dfr_coef_sign["Pass/Fail"].eq("✅")]
+				report.set_var(f"table_coef_sign_{state}", dataframe_to_markdown(dfr_coef_sign))
+
+
+		dfr["Rank"] = range(1, len(dfr) + 1)
+		dfr = apply_dd_to_df_rows(dfr, "Variable", settings, ds.one_hot_descendants)
+
+		the_cols = ["Rank", "Weighted Score", "Variable", "VIF", "P Value", "T Value", "ENR", "Correlation", "Coef. sign", "R-squared"]
+		the_cols = [col for col in the_cols if col in dfr]
+
+		dfr = dfr[the_cols]
+		dfr.set_index("Rank", inplace=True)
+		for col in dfr.columns:
+			if col == "R-squared":
+				dfr[col] = dfr[col].apply(lambda x: "✅" if x > adj_r2_thresh else "❌")
+			elif col == "Coef. sign":
+				dfr[col] = dfr[col].apply(lambda x: "✅" if x == 1 else "❌")
+			elif col not in ["Rank", "Weighted Score", "Variable"]:
+				dfr[col] = dfr[col].apply(lambda x: "✅" if not pd.isna(x) else "❌")
+		report.set_var("pre_model_table", dfr.to_markdown())
+
+	return df
+
+
+def _run_hedonic_models(
+		settings: dict,
+		model_group: str,
+		models_to_run: list[str],
+		all_results: MultiModelResults,
+		df_sales: pd.DataFrame,
+		df_universe: pd.DataFrame,
+		dep_var: str,
+		dep_var_test: str,
+		fields_cat: list[str],
+		verbose: bool = False,
+		save_results: bool = False,
+		run_ensemble: bool = True
+):
+	"""
+  Run hedonic models and ensemble them, then update the benchmark.
+
+  :param settings: Settings dictionary.
+  :type settings: dict
+  :param model_group: Model group identifier.
+  :type model_group: str
+  :param models_to_run: List of models to run.
+  :type models_to_run: list[str]
+  :param all_results: MultiModelResults containing current model results.
+  :type all_results: MultiModelResults
+  :param df_sales: Sales DataFrame.
+  :type df_sales: pandas.DataFrame
+  :param df_universe: Universe DataFrame.
+  :type df_universe: pandas.DataFrame
+  :param dep_var: Dependent variable for training.
+  :type dep_var: str
+  :param dep_var_test: Dependent variable for testing.
+  :type dep_var_test: str
+  :param fields_cat: List of categorical fields.
+  :type fields_cat: list[str]
+  :param verbose: If True, prints additional information.
+  :type verbose: bool, optional
+  :param save_results: Whether to save results.
+  :type save_results: bool
+  :param run_ensemble: Whether to run ensemble models.
+  :type run_ensemble: bool, optional
+  :returns: None
+  """
+	hedonic_results = {}
+	# Run hedonic models
+	outpath = f"out/models/{model_group}/hedonic"
+	if not os.path.exists(outpath):
+		os.makedirs(outpath)
+
+	location_field_neighborhood = get_important_field(settings, "loc_neighborhood", df_sales)
+	location_field_market_area = get_important_field(settings, "loc_market_area", df_sales)
+	location_fields = [location_field_neighborhood, location_field_market_area]
+
+	# Re-run the models one by one and stash the results
+	for model in models_to_run:
+		if model not in all_results.model_results:
+			continue
+		smr = all_results.model_results[model]
+		ds = get_data_split_for(
+			name=model,
+			model_group=model_group,
+			location_fields=location_fields,
+			ind_vars=smr.ind_vars,
+			df_sales=df_sales,
+			df_universe=df_universe,
+			settings=settings,
+			dep_var=dep_var,
+			dep_var_test=dep_var_test,
+			fields_cat=fields_cat,
+			interactions=smr.ds.interactions.copy(),
+			test_keys=smr.ds.test_keys,
+			train_keys=smr.ds.train_keys,
+			vacant_only=False,
+			hedonic=True,
+			hedonic_test_against_vacant_sales=True
+		)
+
+		# if the other one is one-hot encoded, we need to reconcile the fields
+		ds = ds.reconcile_fields_with_foreign(smr.ds)
+
+		# We call this here because we are re-running prediction without first calling run(), which would call this
+		ds.split()
+		if len(ds.y_sales) < 15:
+			print(f"Skipping hedonic model because there are not enough sale records....")
+			return
+		smr.ds = ds
+		results = _predict_one_model(
+			smr=smr,
+			model=model,
+			outpath=outpath,
+			settings=settings,
+			save_results=save_results,
+			verbose=verbose
+		)
+		if results is not None:
+			hedonic_results[model] = results
+
+	all_hedonic_results = MultiModelResults(
+		model_results=hedonic_results,
+		benchmark=_calc_benchmark(hedonic_results)
+	)
+
+	if run_ensemble:
+		best_ensemble = _optimize_ensemble(
+			df_sales=df_sales,
+			df_universe=df_universe,
+			model_group=model_group,
+			vacant_only=False,
+			dep_var=dep_var,
+			dep_var_test=dep_var_test,
+				all_results=all_hedonic_results,
+			settings=settings,
+			verbose=verbose,
+			hedonic=True
+		)
+		# Run the ensemble model
+		ensemble_results = _run_ensemble(
+			df_sales=df_sales,
+			df_universe=df_universe,
+			model_group=model_group,
+			vacant_only=False,
+			hedonic=True,
+			dep_var=dep_var,
+			dep_var_test=dep_var_test,
+			outpath=outpath,
+			ensemble_list=best_ensemble,
+			all_results=all_results,
+			settings=settings,
+			verbose=verbose
+		)
+
+		out_pickle = f"{outpath}/model_ensemble.pickle"
+		with open(out_pickle, "wb") as file:
+			pickle.dump(ensemble_results, file)
+
+		# Calculate final results, including ensemble
+			all_hedonic_results.add_model("ensemble", ensemble_results)
+
+	print(f"HEDONIC BENCHMARK ({model_group})")
+	print(all_hedonic_results.benchmark.print())
+
+	perf_metrics = _model_performance_metrics(model_group, all_hedonic_results, "HEDONIC")
+	print(perf_metrics)
+
+
+def _model_performance_metrics(
+		model_group: str,
+		all_results: MultiModelResults,
+		title: str,
+):
+	# Add performance metrics table
+	text = (f"\n{title} Model Performance Metrics for {model_group}: (* = trimmed)\n")
+	text += ("=" * 80) + "\n"
+	metrics_data = {
+		"Model": [],
+		"R²": [],
+		"Slope": [],
+		"R²*": [],
+		"Slope*": [],
+	}
+
+	for model_name, model_result in all_results.model_results.items():
+		# Get test set predictions and actuals
+		y_pred = model_result.pred_test.y_pred
+		y_true = model_result.pred_test.y
+
+		y_true = y_true.astype(np.float64)
+		y_pred = y_pred.astype(np.float64)
+
+		y_ratio = y_pred / y_true
+		mask = trim_outliers_mask(y_ratio)
+		y_true_trim = y_true[mask]
+		y_pred_trim = y_pred[mask]
+
+		# Calculate R²
+		r2 = model_result.pred_test.r2
+		r2_trim = model_result.pred_test.r2_trim
+
+		# Calculate slope using numpy polyfit
+		try:
+			slope, _ = np.polyfit(y_true, y_pred, 1)
+			slope_trim, _ = np.polyfit(y_true_trim, y_pred_trim, 1)
+		except numpy.linalg.LinAlgError as e:
+			print(f"Model({model_name}) -- Error calculating slope:", e)
+			slope = np.nan
+		except numpy.core._exceptions.UFuncTypeError as e:
+			print(f"Model({model_name}) -- Error calculating slope:", e)
+			slope = np.nan
+
+		metrics_data["Model"].append(model_name)
+		metrics_data["R²"].append(r2)
+		metrics_data["R²*"].append(r2_trim)
+		metrics_data["Slope"].append(slope)
+		metrics_data["Slope*"].append(slope_trim)
+
+	# Create and display metrics DataFrame
+	metrics_df = pd.DataFrame(metrics_data)
+	metrics_df.set_index("Model", inplace=True)
+	metrics_df["R²"] = metrics_df["R²"].apply(lambda x: f"{x:.4f}")
+	metrics_df["Slope"] = metrics_df["Slope"].apply(lambda x: f"{x:.4f}")
+	metrics_df["R²*"] = metrics_df["R²*"].apply(lambda x: f"{x:.4f}")
+	metrics_df["Slope*"] = metrics_df["Slope*"].apply(lambda x: f"{x:.4f}")
+
+	text += metrics_df.to_string() + "\n"
+	text += ("=" * 80) + "\n"
+	return text
+
+
+def _run_stacked_ensemble_for_model_group(
+    t: TimingData,
+    model_group: str,
+    vacant_only: bool,
+    all_results: MultiModelResults,
+    df_sales: pd.DataFrame,
+    df_univ: pd.DataFrame,
+    outpath: str,
+    settings: dict,
+    save_results: bool = False,
+    verbose: bool = False
+):
+    """Run stacked ensemble for a model group if enabled in settings."""
+    try:
+        # Get settings
+        vacant_status = "vacant" if vacant_only else "main"
+        stacked_settings = settings.get("modeling", {}).get("instructions", {}) \
+            .get(vacant_status, {}).get("stacked_ensemble", {})
+        
+        if not stacked_settings.get("enabled", False):
+            return
+            
+        t.start("stacked_ensemble_train_and_predict")
+        
+        # Training phase
+        trained_model, used_models, feature_columns = _train_stacked_ensemble_phase(
+            all_results, stacked_settings, settings, verbose
+        )
+        
+        # Prediction phase
+        stacked_results = _run_stacked_ensemble(
+            trained_meta_model=trained_model,
+            base_models_test_predictions=_collect_base_model_predictions(
+                used_models, all_results, 'test', verbose)[0],
+            test_contextual_features=_prepare_contextual_features(
+                all_results.model_results[used_models[0]].ds,
+                stacked_settings.get("contextual_features", []),
+                stacked_settings.get("categorical_contextual_features", []),
+                feature_columns,
+                True,
+                settings,
+                verbose
+            ),
+            stacked_ensemble_settings=stacked_settings,
+            base_models_used_for_training=used_models,
+            feature_columns=feature_columns,
+            ds_template=all_results.model_results[used_models[0]].ds,
+            settings=settings,
+            all_results=all_results,
+            verbose=verbose
+        )
+        
+        # Save results
+        all_results.add_model("stacked_ensemble", stacked_results)
+        if save_results:
+            meta_model_path = f"{outpath}/model_stacked_ensemble_meta.pickle"
+            with open(meta_model_path, "wb") as f_meta:
+                pickle.dump(trained_model, f_meta)
+            if verbose:
+                print(f"Saved trained meta-model to {meta_model_path}")
+                
+    except Exception as e:
+        print(f"ERROR during stacked ensembling for model_group {model_group}, "
+              f"vacant_only {vacant_only}: {e}")
+        warnings.warn(f"Stacked ensembling failed: {e}")
+    finally:
+        if t.is_running("stacked_ensemble_train_and_predict"):
+            t.stop("stacked_ensemble_train_and_predict")
+
+def _prepare_stacked_features(
+    base_predictions: dict[str, np.ndarray],
+    contextual_data: pd.DataFrame | None,
+    models_to_use: list[str],
+    feature_columns: list[str] | None,
+    data_indices: np.ndarray | None = None,
+    feature_set: str = "",
+    verbose: bool = False
+) -> tuple[np.ndarray, list[str]]:
+    """
+    Prepare features for stacked ensemble, using only interactions from training set contextual fields.
+    """
+    # Prepare base features
+    base_features = []
+    feature_names = []
+    for model in models_to_use:
+        if model in base_predictions:
+            preds = base_predictions[model]
+            if data_indices is not None:
+                valid_indices = data_indices[data_indices < len(preds)]
+                if len(valid_indices) < len(data_indices):
+                    if verbose:
+                        print(f"Warning: Some indices were out of bounds for {feature_set} predictions")
+                preds = preds[valid_indices]
+            base_features.append(preds)
+            feature_names.append(model)
+    
+    base_features = np.column_stack(base_features)
+    
+    if verbose:
+        print(f"{feature_set} base features shape: {base_features.shape}")
+    
+    if contextual_data is None or feature_columns is None:
+        return base_features, feature_names
+    
+    # Create interactions only for contextual fields from training
+    interacted_features = []
+    interaction_names = []
+    
+    for col in feature_columns:
+        if col in contextual_data.columns:
+            indicator = contextual_data[col].values.reshape(-1, 1)
+            if data_indices is not None:
+                valid_indices = data_indices[data_indices < len(indicator)]
+                indicator = indicator[valid_indices]
+            
+            # Create interactions with each model's predictions
+            for i, model in enumerate(models_to_use):
+                if model in base_predictions:
+                    model_preds = base_features[:, i].reshape(-1, 1)
+                    # Ensure shapes match before multiplication
+                    min_len = min(indicator.shape[0], model_preds.shape[0])
+                    interaction = indicator[:min_len] * model_preds[:min_len]
+                    interacted_features.append(interaction)
+                    interaction_names.append(f"{col}_{model}")
+    
+    if interacted_features:
+        interaction_matrix = np.hstack(interacted_features)
+        if verbose:
+            print(f"{feature_set} interaction terms shape: {interaction_matrix.shape}")
+        # Use the base features up to the length of interaction matrix
+        final_features = np.hstack([base_features[:interaction_matrix.shape[0]], interaction_matrix])
+        if verbose:
+            print(f"Final {feature_set} features shape: {final_features.shape}")
+        return final_features, feature_names + interaction_names
+    
+    return base_features, feature_names
+
+def _prepare_contextual_features(
+    ds: DataSplit,
+    contextual_feature_names: list[str],
+    categorical_contextual_features: list[str],
+    neighborhood_encoded_cols: list[str] | None,
+    is_test: bool,
+    settings: dict,
+    verbose: bool = False
+) -> pd.DataFrame | None:
+    """
+    Prepare contextual features for either training or test data.
+    
+    Args:
+        ds: DataSplit object containing the data
+        contextual_feature_names: List of feature names to include
+        categorical_contextual_features: List of categorical features
+        neighborhood_encoded_cols: List of encoded neighborhood columns (for test data)
+        is_test: Whether preparing test or training data
+        settings: Settings dictionary
+        verbose: Whether to print verbose output
+    """
+    # Use appropriate DataFrame based on context
+    if is_test:
+        df = ds.df_test
+    else:
+        # For universe predictions, use df_universe
+        df = ds.df_universe if hasattr(ds, 'df_universe') else ds.df_sales
+        
+    if df is None or df.empty:
+        if verbose:
+            print(f"\n{'Test' if is_test else 'Universe/Training'} DataFrame is None or empty")
+        return None
+
+    # Handle training data or test data without encoded columns
+    available_context_cols = []
+    for feature in contextual_feature_names:
+        if feature in categorical_contextual_features:
+            encoded_cols = [col for col in df.columns if col.startswith(f"{feature}_")]
+            if encoded_cols:
+                available_context_cols.extend(encoded_cols)
+            else:
+                field_name = get_important_field(settings, f"loc_{feature}", df)
+                if field_name and field_name in df.columns:
+                    if verbose:
+                        print(f"Using raw field {field_name} for {feature}")
+                    available_context_cols.append(field_name)
+                elif verbose:
+                    print(f"Warning: No columns found for categorical feature {feature}")
+        else:
+            if feature in df.columns:
+                available_context_cols.append(feature)
+            elif verbose:
+                print(f"Warning: Feature {feature} not found in data")
+
+    if not available_context_cols:
+        if verbose:
+            print("No contextual features available")
+        return None
+
+    # Create contextual features DataFrame
+    contextual_df = df[available_context_cols].copy()
+    
+    # For test/universe data, ensure all training columns exist (with zeros if needed)
+    if is_test and neighborhood_encoded_cols:
+        for col in neighborhood_encoded_cols:
+            if col not in contextual_df.columns:
+                contextual_df[col] = 0
+                
+    return contextual_df
+
+def _train_stacked_ensemble_phase(
+    all_results: MultiModelResults,
+    stacked_ensemble_settings: dict,
+    settings: dict,
+    verbose: bool = False
+) -> tuple[object, list[str], list[str] | None]:
+    """Handle the training phase of stacked ensemble."""
+    models_for_stacking = stacked_ensemble_settings.get("models_to_include", [])
+    
+    # Get base predictions and true values for training
+    base_predictions = {}
+    true_values = None
+    template_ds = None
+    
+    # Collect OOF predictions for training
+    for model_name in models_for_stacking:
+        if model_name not in all_results.model_results:
+            if verbose:
+                print(f"Model '{model_name}' not found in results")
+            continue
+            
+        smr = all_results.model_results[model_name]
+        if smr.pred_sales is not None and smr.pred_sales.y_pred is not None:
+            base_predictions[model_name] = smr.pred_sales.y_pred
+            if true_values is None:
+                true_values = smr.pred_sales.y
+                template_ds = smr.ds
+    
+    if not base_predictions or true_values is None or template_ds is None:
+        raise ValueError("Insufficient data for training stacked ensemble")
+        
+    # Get contextual features for training
+    contextual_features = _prepare_contextual_features(
+        template_ds,
+        stacked_ensemble_settings.get("contextual_features", []),
+        stacked_ensemble_settings.get("categorical_contextual_features", []),
+        None,
+        False,
+        settings,
+        verbose
+    )
+    
+    # Get encoded column names if they exist
+    feature_columns = None
+    if contextual_features is not None:
+        feature_columns = contextual_features.columns.tolist()
+    
+    # Prepare training features
+    train_features, feature_names = _prepare_stacked_features(
+        base_predictions,
+        contextual_features,
+        list(base_predictions.keys()),
+        feature_columns,
+        None,
+        "train",
+        verbose
+    )
+    
+    meta_model = Ridge(alpha=1.0)
+    meta_model.fit(train_features, true_values)
+    
+    if verbose:
+        print("Trained Ridge meta-model.")
+        print(f"Using models: {list(base_predictions.keys())}")
+        if feature_columns:
+            print(f"Using contextual features: {feature_columns}")
+    
+    return meta_model, list(base_predictions.keys()), feature_columns
+
+def _collect_base_model_predictions(
+    models_for_stacking: list[str],
+    all_results: MultiModelResults,
+    prediction_type: str,
+    verbose: bool = False
+) -> tuple[dict[str, np.ndarray], np.ndarray | None, DataSplit | None]:
+    """
+    Collect predictions from base models.
+    
+    Args:
+        models_for_stacking: List of models to include in stacking
+        all_results: MultiModelResults containing model results
+        prediction_type: Type of predictions to collect ('oof', 'test', or 'universe')
+        verbose: Whether to print verbose output
+    """
+    predictions = {}
+    true_values = None
+    template_ds = None
+    
+    for model_name in models_for_stacking:
+        if model_name not in all_results.model_results:
+            if verbose:
+                print(f"Model '{model_name}' not found in results")
+            continue
+            
+        smr = all_results.model_results[model_name]
+        
+        if prediction_type == 'oof':
+            if smr.pred_sales is not None and smr.pred_sales.y_pred is not None:
+                predictions[model_name] = smr.pred_sales.y_pred
+                if true_values is None:
+                    true_values = smr.pred_sales.y
+                    template_ds = smr.ds
+        elif prediction_type == 'test':
+            if smr.pred_test is not None and smr.pred_test.y_pred is not None:
+                predictions[model_name] = smr.pred_test.y_pred
+                if true_values is None:
+                    true_values = smr.pred_test.y
+                    template_ds = smr.ds
+        elif prediction_type == 'universe':
+            if smr.pred_univ is not None:
+                predictions[model_name] = smr.pred_univ
+                template_ds = smr.ds
+                
+    return predictions, true_values, template_ds
