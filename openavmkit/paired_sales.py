@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pandas as pd
 from scipy.spatial._ckdtree import cKDTree
@@ -10,7 +12,14 @@ from openavmkit.utilities.plotting import plot_bar
 from openavmkit.utilities.stats import calc_cod, trim_outliers
 
 
-def spatial_paired_sales(sup: SalesUniversePair, settings: dict, model_group: str, do_plot: bool = False):
+def spatial_paired_sales(
+    sup: SalesUniversePair,
+    settings: dict,
+    model_group: str,
+    verbose: bool = False,
+    plot: bool = False,
+    write: bool = False
+):
 
   s_land = settings.get("land", {})
   s_entry = s_land.get(model_group, s_land.get("default", {}))
@@ -137,23 +146,25 @@ def spatial_paired_sales(sup: SalesUniversePair, settings: dict, model_group: st
     "v_key": [],
     "count": [],
     "neg": [],
-    "25%ile": [],
-    "median": [],
-    "75%ile": [],
-    "cod": [],
-    "cod_trim": []
+    "25th": [],
+    "med": [],
+    "75th": [],
+    "stdev": [],
+    "cov": [],
+    "abs_cov": []
   }
 
   d_global = {
     "impr_he_id": [],
-    "locations": [],
+    "locs": [],
     "count": [],
     "neg": [],
-    "25%ile": [],
-    "median": [],
-    "75%ile": [],
-    "cod": [],
-    "cod_trim": []
+    "25th": [],
+    "med": [],
+    "75th": [],
+    "stdev": [],
+    "cov": [],
+    "abs_cov": []
   }
 
   # Calculate global variation per impr_he_id cluster
@@ -168,25 +179,24 @@ def spatial_paired_sales(sup: SalesUniversePair, settings: dict, model_group: st
     if len(impr_values_global) == 0:
       continue
     count_neg = len(impr_values_global[impr_values_global < 0])
-    perc_25 = np.round(np.percentile(impr_values_global, 25)*10)/10
-    median_global = np.round(np.median(impr_values_global)*10)/10
-    perc_75 = np.round(np.percentile(impr_values_global, 75)*10)/10
-    cod = np.round(calc_cod(impr_values_global)*10)/10
-
-    trim_impr_values = trim_outliers(impr_values_global)
-    cod_trim = np.round(calc_cod(trim_impr_values)*10)/10
+    perc_25 = np.round(np.percentile(impr_values_global, 25)).astype(int)
+    median_global = np.round(np.median(impr_values_global)).astype(int)
+    perc_75 = np.round(np.percentile(impr_values_global, 75)).astype(int)
+    stdev = np.round(np.std(impr_values_global)).astype(int)
+    cov = (np.round(stdev / np.mean(impr_values_global), 2)*100).astype(int)
 
     locations = len(df_loc["v_key"].unique())
 
     d_global["impr_he_id"].append(impr_he_id)
-    d_global["locations"].append(locations)
+    d_global["locs"].append(locations)
     d_global["count"].append(count)
     d_global["neg"].append(count_neg)
-    d_global["25%ile"].append(perc_25)
-    d_global["median"].append(median_global)
-    d_global["75%ile"].append(perc_75)
-    d_global["cod"].append(cod)
-    d_global["cod_trim"].append(cod_trim)
+    d_global["25th"].append(perc_25)
+    d_global["med"].append(median_global)
+    d_global["75th"].append(perc_75)
+    d_global["stdev"].append(stdev)
+    d_global["cov"].append(cov)
+    d_global["abs_cov"].append(abs(cov))
 
   # Calculate local variation within each impr_he_id cluster x v_key combination
   for impr_he_id_x_v_key in df_results["impr_he_id_x_v_key"].unique():
@@ -202,43 +212,97 @@ def spatial_paired_sales(sup: SalesUniversePair, settings: dict, model_group: st
     if len(impr_values_local) == 0:
       continue
     count_neg = len(impr_values_local[impr_values_local < 0])
-    perc_25 = np.round(np.percentile(impr_values_local, 25)*10)/10
-    median_local = np.round(np.median(impr_values_local)*10)/10
-    perc_75 = np.round(np.percentile(impr_values_local, 75)*10)/10
-    cod = np.round(calc_cod(impr_values_local)*10)/10
-
-    trim_impr_values = trim_outliers(impr_values_local)
-    cod_trim = np.round(calc_cod(trim_impr_values)*10)/10
+    perc_25 = np.round(np.percentile(impr_values_local, 25)).astype(int)
+    median_local = np.round(np.median(impr_values_local)).astype(int)
+    perc_75 = np.round(np.percentile(impr_values_local, 75)).astype(int)
+    stdev = np.round(np.std(impr_values_local)).astype(int)
+    cov = (np.round(stdev / np.mean(impr_values_local), 2)*100).astype(int)
 
     d_local["impr_he_id"].append(impr_he_id)
     d_local["v_key"].append(v_key)
     d_local["count"].append(len(impr_values_local))
     d_local["neg"].append(count_neg)
-    d_local["25%ile"].append(perc_25)
-    d_local["median"].append(median_local)
-    d_local["75%ile"].append(perc_75)
-    d_local["cod"].append(cod)
-    d_local["cod_trim"].append(cod_trim)
+    d_local["25th"].append(perc_25)
+    d_local["med"].append(median_local)
+    d_local["75th"].append(perc_75)
+    d_local["stdev"].append(stdev)
+    d_local["cov"].append(cov)
+    d_local["abs_cov"].append(abs(cov))
 
   df_local = pd.DataFrame(d_local)
   df_global = pd.DataFrame(d_global)
 
-  df_local.sort_values(by=["impr_he_id", "neg", "cod"], ascending=[True, True, True], inplace=True)
-  df_global.sort_values(by=["neg", "cod"], ascending=[True, True], inplace=True)
+  df_local.sort_values(by=["impr_he_id", "abs_cov"], ascending=[True, True], inplace=True)
+  df_global.sort_values(by=["abs_cov"], ascending=[True], inplace=True)
 
-  print("==========================================================")
-  print("          Global improvement values + variation")
-  print("==========================================================")
-  print(df_global.to_string(index=False))
-  print("")
+  df_local = df_local.drop(columns=["abs_cov"])
+  df_global = df_global.drop(columns=["abs_cov"])
 
-  print("==========================================================")
-  print("           Local improvement values + variation")
-  print("==========================================================")
-  print(df_local.to_string(index=False))
-  print("")
+  df_payload = df_global[["impr_he_id", "med", "stdev", "cov"]].rename(columns={
+    "med": "impr_value_sqft",
+    "stdev": "impr_stdev",
+    "cov": "impr_cov"
+  })
 
-  if do_plot:
+  df_sales = get_hydrated_sales_from_sup(sup)
+  df_site_values = df_sales[df_sales["model_group"].eq(model_group)].copy()
+  df_site_values = df_site_values.merge(df_payload, on="impr_he_id", how="left")
+  df_site_values["impr_value"] = df_site_values["impr_value_sqft"] * df_site_values["bldg_area_finished_sqft"]
+  df_site_values["impr_value_low"] = df_site_values["impr_value_sqft"] - df_site_values["impr_stdev"]
+  df_site_values["land_value"] = df_site_values[sale_field] - df_site_values["impr_value"]
+  df_site_values["land_value_high"] = df_site_values[sale_field] - df_site_values["impr_value_low"]
+  df_site_values["land_value_sqft"] = div_z_safe(df_site_values, "land_value", "land_area_sqft")
+  df_site_values["land_value_high_sqft"] = div_z_safe(df_site_values, "land_value_high", "land_area_sqft")
+  df_site_values["site_value_degree"] = 0
+
+  df_site_values.loc[
+    df_site_values["key_sale"].isin(df_v["key_sale"].unique()),
+    "site_value_degree"
+  ] = 1
+
+  df_site_values.loc[
+    df_site_values["key_sale"].isin(df_results["key_sale"].unique()) &
+    df_site_values["key_sale"].isin(df_i["key_sale"].unique()) &
+    df_site_values["site_value_degree"].eq(0),
+    "site_value_degree"
+  ] = 2
+
+  df_site_values.loc[
+    ~df_site_values["impr_value_sqft"].isna() &
+    df_site_values["site_value_degree"].eq(0),
+    "site_value_degree"
+  ] = 3
+
+  df_site_values = df_site_values[df_site_values["site_value_degree"].gt(0)]
+
+  if verbose:
+
+    print("")
+    print(f"Derived site values for {len(df_site_values)} sales in {model_group} model group:")
+    print(f"1st degree: {len(df_site_values[df_site_values['site_value_degree'].eq(1)])}")
+    print(f"2nd degree: {len(df_site_values[df_site_values['site_value_degree'].eq(2)])}")
+    print(f"3rd degree: {len(df_site_values[df_site_values['site_value_degree'].eq(3)])}")
+    print("")
+
+    print("==========================================================")
+    print("          Global improvement values + variation")
+    print("==========================================================")
+    print(df_global.to_string(index=False))
+    print("")
+
+    print("==========================================================")
+    print("   Local improvement values + variation, per impr_he_id")
+    print("==========================================================")
+    print(df_local.to_string(index=False))
+    print("")
+
+  if write:
+    os.makedirs(f"out/paired_sales/{model_group}", exist_ok=True)
+    df_local.to_csv(f"out/paired_sales/{model_group}/local.csv", index=False)
+    df_global.to_csv(f"out/paired_sales/{model_group}/global.csv", index=False)
+    df_site_values.to_parquet(f"out/paired_sales/{model_group}/site_values.parquet", index=False)
+
+  if plot:
     for impr_he_id in df_results["impr_he_id"].unique():
       df_loc = df_results[df_results["impr_he_id"].eq(impr_he_id)]
       locations = len(df_loc["v_key"].unique())
@@ -255,6 +319,7 @@ def spatial_paired_sales(sup: SalesUniversePair, settings: dict, model_group: st
         else:
           all_vcs = pd.concat([all_vcs, vcs], ignore_index=True)
 
+      os.makedirs(f"out/paired_sales/{model_group}/plots", exist_ok=True)
       plot_bar(
         all_vcs,
         "impr_value_sqft_round",
@@ -263,5 +328,6 @@ def spatial_paired_sales(sup: SalesUniversePair, settings: dict, model_group: st
         title=f"{impr_he_id} @ {locations} locations",
         style={
           "random_color_by": "v_key"
-        }
+        },
+        out_file=f"out/paired_sales/{model_group}/plots/{impr_he_id}.png" if write else None
       )

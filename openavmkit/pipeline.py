@@ -666,9 +666,7 @@ def run_sales_scrutiny_per_model_group_sup(sup: SalesUniversePair, settings: dic
    """
 
    df_sales_hydrated = get_hydrated_sales_from_sup(sup)
-   num_valid_before = len(df_sales_hydrated[df_sales_hydrated["valid_sale"].eq(True)])
    df_scrutinized = run_sales_scrutiny_per_model_group(df_sales_hydrated, settings, verbose)
-   num_valid_after = len(df_scrutinized[df_scrutinized["valid_sale"].eq(True)])
 
    # Drop all invalid sales
    df_scrutinized = df_scrutinized[df_scrutinized["valid_sale"].eq(True)]
