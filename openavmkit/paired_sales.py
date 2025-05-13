@@ -22,9 +22,12 @@ def spatial_paired_sales(
 ):
 
   s_land = settings.get("land", {})
-  s_entry = s_land.get(model_group, s_land.get("default", {}))
-  land_filter = s_entry.get("prime_lot_filter")
-  max_distance = s_entry.get("max_distance", 0.5) # miles
+  s_default = s_land.get("default", {})
+  s_entry = s_land.get(model_group, s_default)
+  land_filter = s_entry.get("prime_lot_filter", s_default.get("prime_lot_filter"))
+  max_distance = s_entry.get("max_distance", s_default.get("prime_lot_filter", 0.5)) # miles
+  land_match = s_entry.get("land_match", s_default.get("land_match", {}))
+  land_match_cats = land_match.get("fields_categorical", [])
 
   distance_m = max_distance * 1609.34 # meters
 
@@ -45,7 +48,7 @@ def spatial_paired_sales(
   else:
     mask_vacant = df_sales["vacant_sale"].eq(True)
 
-  df_sales = df_sales[[
+  the_cols = [
     "key_sale",
     "geometry",
     "model_group",
@@ -56,7 +59,14 @@ def spatial_paired_sales(
     "bldg_area_finished_sqft",
     sale_field,
     "vacant_sale"
-  ]].copy()
+  ]
+
+  if land_match_cats:
+    for field in land_match_cats:
+      if field not in the_cols and field in df_sales:
+        the_cols.append(field)
+
+  df_sales = df_sales[the_cols].copy()
 
   crs = get_crs(df_sales, "equal_distance")
   df_sales = df_sales.to_crs(crs)
@@ -96,9 +106,15 @@ def spatial_paired_sales(
   # ===============================================================================================================
 
   # Process the vacant sales
-  df_v_base = df_v[["key_sale", "land_area_sqft", sale_field]].copy().rename(
+  base_cols = ["key_sale", "land_area_sqft", sale_field]
+  for field in land_match_cats:
+    if field in df_v and field not in base_cols:
+      base_cols.append(field)
+
+  df_v_base = df_v[base_cols].copy().rename(
     columns={
       "key_sale": "v_key",
+      "land_he_id": "land_he_id",
       "land_area_sqft": "v_land_area_sqft",
       sale_field: "land_value"
     }
@@ -117,6 +133,18 @@ def spatial_paired_sales(
 
     # Pair the vacant sale with each improved sale, generating a dataframe containing one record per pair
     df_match["v_key"] = v_key
+
+    for field in land_match_cats:
+      if field in df_match:
+        # get the value from the vacant sale
+        v_value = df_v_base.iloc[i][field]
+
+        # limit matches to just those that match the vacant sale
+        df_match = df_match[df_match[field].eq(v_value)]
+
+    if len(df_match) == 0:
+      continue
+
     df_combined = df_match.merge(df_v_base, how="left", on="v_key")
 
     # Join the impr_he_id cluster with the vacant sale key to identify the *local* cluster
@@ -164,7 +192,10 @@ def spatial_paired_sales(
     "75th": [],
     "stdev": [],
     "cov": [],
-    "abs_cov": []
+    "loc_stdev": [],
+    "loc_cov": [],
+    "abs_cov": [],
+    "conf_score": []
   }
 
   # Calculate global variation per impr_he_id cluster
@@ -172,7 +203,7 @@ def spatial_paired_sales(
     df_loc = df_results[df_results["impr_he_id"].eq(impr_he_id)]
     impr_values_global = df_loc["impr_value_sqft"].values
     count = len(impr_values_global)
-    if count < 3:
+    if count < 5:
       continue
 
     impr_values_global = impr_values_global[~np.isnan(impr_values_global)]
@@ -185,7 +216,21 @@ def spatial_paired_sales(
     stdev = np.round(np.std(impr_values_global)).astype(int)
     cov = (np.round(stdev / np.mean(impr_values_global), 2)*100).astype(int)
 
+    loc_means = df_loc.groupby("v_key")["impr_value_sqft"].mean()
+    loc_stdev = np.round(np.std(loc_means)).astype(int)
+    loc_cov = (np.round(loc_stdev / np.mean(loc_means), 2)*100).astype(int)
+
     locations = len(df_loc["v_key"].unique())
+
+    alpha = 0.3  # weight of location diversity
+    beta = 0.1   # weight of total sample size
+
+    conf_score = (
+        (1 / (1 + (abs(cov)/100))) *
+        (1 / (1 + (abs(loc_cov)/100))) *
+        (1 - np.exp(-alpha * locations)) *
+        (1 - np.exp(-beta * count))
+    )
 
     d_global["impr_he_id"].append(impr_he_id)
     d_global["locs"].append(locations)
@@ -196,7 +241,10 @@ def spatial_paired_sales(
     d_global["75th"].append(perc_75)
     d_global["stdev"].append(stdev)
     d_global["cov"].append(cov)
+    d_global["loc_stdev"].append(loc_stdev)
+    d_global["loc_cov"].append(loc_cov)
     d_global["abs_cov"].append(abs(cov))
+    d_global["conf_score"].append(conf_score)
 
   # Calculate local variation within each impr_he_id cluster x v_key combination
   for impr_he_id_x_v_key in df_results["impr_he_id_x_v_key"].unique():
@@ -205,7 +253,7 @@ def spatial_paired_sales(
     v_key = df_loc["v_key"].values[0]
     impr_values_local = df_loc["impr_value_sqft"].values
     count = len(impr_values_local)
-    if count < 3:
+    if count < 1:
       continue
 
     impr_values_local = impr_values_local[~np.isnan(impr_values_local)]
@@ -233,15 +281,16 @@ def spatial_paired_sales(
   df_global = pd.DataFrame(d_global)
 
   df_local.sort_values(by=["impr_he_id", "abs_cov"], ascending=[True, True], inplace=True)
-  df_global.sort_values(by=["abs_cov"], ascending=[True], inplace=True)
+  df_global.sort_values(by=["conf_score"], ascending=[False], inplace=True)
 
   df_local = df_local.drop(columns=["abs_cov"])
   df_global = df_global.drop(columns=["abs_cov"])
 
-  df_payload = df_global[["impr_he_id", "med", "stdev", "cov"]].rename(columns={
+  df_payload = df_global[["impr_he_id", "med", "stdev", "cov", "conf_score"]].rename(columns={
     "med": "impr_value_sqft",
     "stdev": "impr_stdev",
-    "cov": "impr_cov"
+    "cov": "impr_cov",
+    "conf_score": "impr_conf_score"
   })
 
   df_sales = get_hydrated_sales_from_sup(sup)
@@ -303,7 +352,7 @@ def spatial_paired_sales(
     df_site_values.to_parquet(f"out/paired_sales/{model_group}/site_values.parquet", index=False)
 
   if plot:
-    for impr_he_id in df_results["impr_he_id"].unique():
+    for impr_he_id in df_global["impr_he_id"].unique():
       df_loc = df_results[df_results["impr_he_id"].eq(impr_he_id)]
       locations = len(df_loc["v_key"].unique())
       df_loc["impr_value_sqft_round"] = (np.round(df_loc["impr_value_sqft"]/5) * 5)
