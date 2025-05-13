@@ -84,9 +84,7 @@
 				"slope_mean",
 				"noise_mean",
 				"is_geom_complex",
-				"is_geom_irregular",
-				"osm_is_waterfront",
-				"osm_on_golf_course"
+				"is_geom_irregular"
 			]
 		},
 		"impr_equity": {
