@@ -34,6 +34,7 @@ from xgboost import XGBRegressor
 
 from openavmkit.data import get_sales, simulate_removed_buildings, _enrich_time_field, _enrich_sale_age_days, \
   SalesUniversePair, get_hydrated_sales_from_sup
+from openavmkit.filters import select_filter
 from openavmkit.ratio_study import RatioStudy
 from openavmkit.utilities.format import fancy_format
 from openavmkit.utilities.modeling import GarbageModel, AverageModel, NaiveSqftModel, LocalSqftModel, PassThroughModel, \
@@ -946,7 +947,8 @@ class SingleModelResults:
       y_pred_sales: np.ndarray | None,
       y_pred_univ: np.ndarray,
       timing: TimingData,
-      verbose: bool = False
+      verbose: bool = False,
+      sale_filter: list = None
   ):
     """
     Initialize SingleModelResults by attaching predictions and computing performance metrics.
@@ -971,6 +973,8 @@ class SingleModelResults:
     :type timing: TimingData
     :param verbose: Whether to print verbose output.
     :type verbose: bool, optional
+    :param sale_filter: Filter to apply to sales
+    :type sale_filter: list, optional
     """
     self.ds = ds
 
@@ -979,9 +983,21 @@ class SingleModelResults:
     df_test = ds.df_test.copy()
 
     self.field_prediction = field_prediction
+    self.field_horizontal_equity_id = field_horizontal_equity_id
 
     df_univ[field_prediction] = y_pred_univ
     df_test[field_prediction] = y_pred_test
+
+    if sale_filter is not None:
+      sales_before = len(df_sales)
+      test_before = len(df_test)
+      df_sales = select_filter(df_sales, sale_filter)
+      df_test = select_filter(df_test, sale_filter)
+      sales_after = len(df_sales)
+      test_after = len(df_test)
+      if verbose:
+        print(f"{sales_after}/{sales_before} sales records passed filter")
+        print(f"{test_after}/{test_before} test records passed filter")
 
     self.df_universe = df_univ
     self.df_test = df_test
@@ -1006,6 +1022,13 @@ class SingleModelResults:
 
       # If we have predictions for sales, we also have predictions for the training subset
       df_train = df_sales.copy()
+      if sale_filter is not None:
+        train_before = len(df_train)
+        df_train = select_filter(df_train, sale_filter)
+        train_after = len(df_train)
+        if verbose:
+          print(f"{train_after}/{train_before} training records passed filter")
+
       df_train = df_train[df_train["key_sale"].isin(ds.train_keys)]
       self.pred_train = PredictionResults(self.dep_var_test, self.ind_vars, field_prediction, df_train)
     timing.stop("stats_sales")

@@ -626,7 +626,8 @@ def run_models(
 			if not vacant_only and not run_main:
 				continue
 			mg_results = _run_models(sup, model_group, settings, vacant_only, save_params, use_saved_params, save_results, verbose, run_hedonic, run_ensemble)
-			dict_all_results[model_group] = mg_results
+			if mg_results is not None:
+				dict_all_results[model_group] = mg_results
 		t.stop(f"model group: {model_group}")
 	t.stop("run model groups")
 
@@ -2633,7 +2634,13 @@ def _run_hedonic_models(
 	print(f"HEDONIC BENCHMARK ({model_group})")
 	print(all_hedonic_results.benchmark.print())
 
-	perf_metrics = _model_performance_metrics(model_group, all_hedonic_results, "HEDONIC")
+	title = "HEDONIC"
+	perf_metrics = _model_performance_metrics(model_group, all_hedonic_results, title, settings)
+	print(perf_metrics)
+
+	# Post-valuation metrics
+	title = f"{title} (POST-VALUATION DATE)"
+	perf_metrics = _model_performance_metrics(model_group, _get_post_valuation_mmr(all_hedonic_results), title, settings)
 	print(perf_metrics)
 
 
@@ -2641,6 +2648,7 @@ def _model_performance_metrics(
 		model_group: str,
 		all_results: MultiModelResults,
 		title: str,
+		settings: dict
 ):
 	# Add performance metrics table
 	text = (f"\n{title} Model Performance Metrics for {model_group}: (* = trimmed)\n")
@@ -2653,10 +2661,31 @@ def _model_performance_metrics(
 		"Slope*": [],
 	}
 
+	rs = settings.get("analysis", {}).get("ratio_study", {})
+	look_back_years = rs.get("look_back_years", 1)
+	val_date = get_valuation_date(settings)
+	look_back_year = val_date.year - look_back_years
+
 	for model_name, model_result in all_results.model_results.items():
-		# Get test set predictions and actuals
-		y_pred = model_result.pred_test.y_pred
-		y_true = model_result.pred_test.y
+
+		df_test = model_result.df_test.copy()
+
+		df_test["y_pred"] = model_result.pred_test.y_pred
+		df_test["y_true"] = model_result.pred_test.y
+
+		# Filter to just the lookback period
+		df_test = df_test[df_test["sale_year"].ge(look_back_year)]
+
+		# Note any NA predictions:
+		if df_test["y_pred"].isna().any():
+			mask_na = df_test["y_pred"].isna()
+			count_na = mask_na.count()
+			print(f"WARNING: y_pred has {count_na} NaN values!")
+			df_test = df_test[~mask_na]
+
+		# Get test set predictions and actual values
+		y_pred = df_test["y_pred"].to_numpy()
+		y_true = df_test["y_true"].to_numpy()
 
 		y_true = y_true.astype(np.float64)
 		y_pred = y_pred.astype(np.float64)
@@ -2672,14 +2701,25 @@ def _model_performance_metrics(
 
 		# Calculate slope using numpy polyfit
 		try:
+			if len(y_true_trim) <= 0 or len(y_pred_trim) <= 0:
+				print(f"Model({model_name}) -- 0 length array!")
+				print(f"--> y_true_trim: {y_true_trim}")
+				print(f"--> y_pred_trim: {y_pred_trim}")
+
 			slope, _ = np.polyfit(y_true, y_pred, 1)
 			slope_trim, _ = np.polyfit(y_true_trim, y_pred_trim, 1)
 		except numpy.linalg.LinAlgError as e:
 			print(f"Model({model_name}) -- Error calculating slope:", e)
 			slope = np.nan
+			slope_trim = np.nan
 		except numpy.core._exceptions.UFuncTypeError as e:
 			print(f"Model({model_name}) -- Error calculating slope:", e)
 			slope = np.nan
+			slope_trim = np.nan
+		except TypeError as e:
+			print(f"Model({model_name}) -- Error calculating slope:", e)
+			slope = np.nan
+			slope_trim = np.nan
 
 		metrics_data["Model"].append(model_name)
 		metrics_data["R²"].append(r2)
@@ -2760,6 +2800,11 @@ def _run_models(
 	fields_cat = get_fields_categorical(s, df_univ, include_boolean=True)
 	models_to_run = s_inst.get(vacant_status, {}).get("run", None)
 	models_to_skip = s_inst.get(vacant_status, {}).get("skip", {}).get(model_group, [])
+
+	if "all" in models_to_skip:
+		print(f"Skipping all models for model_group: {model_group}, vacant_only: {vacant_only}")
+		return None
+
 	model_entries = s_model.get("models").get(vacant_status, {})
 
 	if models_to_run is None:
@@ -2778,7 +2823,7 @@ def _run_models(
 
 	if len(df_sales_count) == 0:
 		print(f"No sales records found for model_group: {model_group}, vacant_only: {vacant_only}. Skipping...")
-		return
+		return None
 
 	if len(df_sales_count) < 15:
 		warnings.warn(f"For model_group: {model_group}, vacant_only: {vacant_only}, there are fewer than 15 sales records. Model might not be any good!")
@@ -2911,8 +2956,16 @@ def _run_models(
 		print(f"MAIN BENCHMARK ({model_group})")
 	print(all_results.benchmark.print())
 
+	title = "VACANT" if vacant_only else "MAIN"
+
 	# Add performance metrics table
-	perf_metrics = _model_performance_metrics(model_group, all_results, "VACANT" if vacant_only else "MAIN")
+	perf_metrics = _model_performance_metrics(model_group, all_results, title, settings)
+	print(perf_metrics)
+	print("")
+
+	# Post-valuation metrics
+	title = f"{title} (POST-VALUATION DATE)"
+	perf_metrics = _model_performance_metrics(model_group, _get_post_valuation_mmr(all_results), title, settings)
 	print(perf_metrics)
 
 	if not vacant_only and run_hedonic:
@@ -2942,6 +2995,41 @@ def _run_models(
 	print("")
 
 	return all_results
+
+
+def _get_post_valuation_mmr(m:MultiModelResults):
+	new_results = {}
+
+	for model_name, smr in m.model_results.items():
+		smr = _get_post_valuation_smr(smr)
+		new_results[model_name] = smr
+
+	benchmark = _calc_benchmark(new_results)
+
+	return MultiModelResults(
+		model_results=new_results,
+		benchmark=benchmark
+	)
+
+
+def _get_post_valuation_smr(smr: SingleModelResults, verbose: bool = False):
+	y_pred_test = smr.df_test[smr.field_prediction].copy()
+	y_pred_sales = smr.df_sales[smr.field_prediction].copy()
+	y_pred_univ = smr.df_universe[smr.field_prediction].copy()
+	new_smr = SingleModelResults(
+		smr.ds.copy(),
+		smr.field_prediction,
+		smr.field_horizontal_equity_id,
+		smr.type,
+		smr.model,
+		y_pred_test,
+		y_pred_sales,
+		y_pred_univ,
+		smr.timing,
+		verbose,
+		["<", "sale_age_days", 0] # sale age days becomes negative PAST the valuation date
+	)
+	return new_smr
 
 
 def _run_stacked_ensemble(
@@ -3142,8 +3230,7 @@ def _run_stacked_ensemble_for_model_group(
               f"vacant_only {vacant_only}: {e}")
         warnings.warn(f"Stacked ensembling failed: {e}")
     finally:
-        if t.is_running("stacked_ensemble_train_and_predict"):
-            t.stop("stacked_ensemble_train_and_predict")
+        t.stop("stacked_ensemble_train_and_predict")
 
 def _prepare_stacked_features(
     base_predictions: dict[str, np.ndarray],
