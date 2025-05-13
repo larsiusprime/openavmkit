@@ -729,8 +729,7 @@ class DataSplit:
               # Assign back as add_categories may return a new Series
               df_tmp[col] = df_tmp[col].cat.add_categories("missing")
           
-          filled_series = df_tmp[col].fillna("missing")
-          filled_series = filled_series.infer_objects(copy=False)
+          filled_series = df_tmp[col].fillna("missing").infer_objects(copy=False)
           df_tmp[col] = filled_series
         # Ensure the column is string type before transform
         df_tmp[col] = df_tmp[col].astype(str)

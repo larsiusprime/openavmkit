@@ -256,15 +256,17 @@ def merge_and_stomp_dfs(df1: pd.DataFrame, df2: pd.DataFrame, df2_stomps=False, 
   suffixed_columns = [col for col in suffixed_columns if col in df_merge.columns]
 
   for col in common_columns:
-    if col == on:
+    if col == on or (isinstance(on, list) and col in on):
       continue
     if df2_stomps:
       # prefer df2's column value everywhere df2 has a non-null value
       # Filter out empty entries before combining
       df2_col = df_merge[col + "_2"].dropna()
       df1_col = df_merge[col + "_1"].dropna()
-      if not df2_col.empty:
+      if df2_col.size > 0 and df1_col.size > 0:
         df_merge[col] = df2_col.combine_first(df1_col)
+      elif df2_col.size > 0:
+        df_merge[col] = df2_col
       else:
         df_merge[col] = df1_col
     else:
@@ -272,8 +274,10 @@ def merge_and_stomp_dfs(df1: pd.DataFrame, df2: pd.DataFrame, df2_stomps=False, 
       # Filter out empty entries before combining
       df1_col = df_merge[col + "_1"].dropna()
       df2_col = df_merge[col + "_2"].dropna()
-      if not df1_col.empty:
+      if df1_col.size > 0 and df2_col.size > 0:
         df_merge[col] = df1_col.combine_first(df2_col)
+      elif df1_col.size > 0:
+        df_merge[col] = df1_col
       else:
         df_merge[col] = df2_col
 

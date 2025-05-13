@@ -1712,6 +1712,7 @@ def _enrich_time_field(df: pd.DataFrame, prefix: str, add_year_month: bool = Tru
   df[f"{prefix}_date"] = pd.to_datetime(df[f"{prefix}_date"], format="%Y-%m-%d", errors="coerce")
   df[f"{prefix}_year"] = df[f"{prefix}_date"].dt.year
   df[f"{prefix}_month"] = df[f"{prefix}_date"].dt.month
+  df[f"{prefix}_day"] = df[f"{prefix}_date"].dt.day
   df[f"{prefix}_quarter"] = df[f"{prefix}_date"].dt.quarter
   if add_year_month:
     df[f"{prefix}_year_month"] = df[f"{prefix}_date"].dt.to_period("M").astype("str")
