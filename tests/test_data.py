@@ -8,6 +8,7 @@ from openavmkit.modeling import DataSplit
 from openavmkit.inference import _do_perform_spatial_inference
 from openavmkit.utilities.assertions import dfs_are_equal
 from openavmkit.utilities.data import div_z_safe, merge_and_stomp_dfs, combine_dfs
+from openavmkit.utilities.settings import get_valuation_date
 
 
 def test_div_z_safe():
@@ -71,7 +72,7 @@ def test_split_keys():
 	df.loc[df["is_vacant"].eq(False), "bldg_area_finished_sqft"] = 2000.0
 	df["sale_price"] = df["valid_sale"] * ((df["bldg_area_finished_sqft"] * 80.0) + (df["land_area_sqft"] * 20.0))
 	df["sale_date"] = None
-	df.loc[df["valid_sale"].eq(True), "sale_date"] = "2025-01-01"
+	df.loc[df["valid_sale"].eq(True), "sale_date"] = "2023-01-01"
 	df["sale_date"] = pd.to_datetime(df["sale_date"])
 	df["key_sale"] = df["key"].astype(str) + "-" + df["sale_date"].astype(str)
 	df["sale_year"] = None
@@ -186,6 +187,8 @@ def test_split_keys():
 		a_keys = a["key"].tolist()
 		b_keys = b["key"].tolist()
 		return set(a_keys).issubset(set(b_keys))
+		result = set(a_keys).issubset(set(b_keys))
+		return result
 
 	def a_is_superset_of_b(a: pd.DataFrame, b: pd.DataFrame):
 		a_keys = a["key"].tolist()
@@ -211,11 +214,19 @@ def test_split_keys():
 
 	# now intentionally screw up the data and assert the tests are FALSE (guard against broken tests yielding false positives)
 
-	# remove the first row from ds_v.df_test:
-	ds_v.df_test = ds_v.df_test.iloc[1:]
+	# find a key that is in ds_v and df_test:
+	keys_in_ds_v = ds_v.df_test["key_sale"].tolist()
+	keys_in_ds = ds.df_test["key_sale"].tolist()
 
-	# remove the last row from ds.df_test:
-	ds.df_test = ds.df_test.iloc[:-1]
+	keys_in_both_ds_v_and_ds = list(set(keys_in_ds_v) & set(keys_in_ds))
+	first_key_in_both_ds_v_and_ds = keys_in_both_ds_v_and_ds[0]
+	second_key_in_both_ds_v_and_ds = keys_in_both_ds_v_and_ds[1]
+
+	# remove a key from ds_v we know is in df_test:
+	ds_v.df_test = ds_v.df_test[ds_v.df_test["key_sale"] != first_key_in_both_ds_v_and_ds]
+
+	# remove a key from df_test we know is in ds_v:
+	ds.df_test = ds.df_test[ds.df_test["key_sale"] != second_key_in_both_ds_v_and_ds]
 
 	# All of these should return false now:
 	assert a_equals_b(ds_v.df_test, ds_h.df_test) == False
@@ -223,6 +234,284 @@ def test_split_keys():
 	assert a_is_superset_of_b(ds.df_test, ds_v.df_test) == False
 	assert a_is_subset_of_b(ds_h.df_test, ds.df_test) == False
 	assert a_is_superset_of_b(ds.df_test, ds_h.df_test) == False
+
+
+def test_split_keys_time():
+	keys = [f"{i}" for i in range(10000)]
+
+	df = pd.DataFrame(data={"key": keys})
+	df["model_group"] = "residential_sf"
+	df["valid_sale"] = False
+
+	# Quick synthetic data:
+	# - 10% of the data are sales
+	# - 10% of the data are vacant
+
+	df["valid_sale"] = False
+	df["is_vacant"] = False
+	df["vacant_sale"] = False
+	df["bldg_area_finished_sqft"] = 0.0
+	df["land_area_sqft"] = 0.0
+	df["sale_price"] = 0.0
+	df["sale_date"] = None
+	df["sale_year"] = None
+	df["sale_month"] = None
+	df["sale_day"] = None
+
+	#### START ANNOYING BLOCK ####
+
+	# Set 10% of the rows to be valid sales
+	df.loc[df["key"].astype(int) % 10 == 0, "valid_sale"] = True
+
+	# Number numerically from 0 starting from the first
+	df["sale_id"] = -1
+	df.loc[df["valid_sale"].eq(True), "sale_id"] = df["valid_sale"].cumsum()
+
+	df["row_id"] = df.index
+
+	df["non_sale_id"] = -1
+	df["not_sale"] = df["valid_sale"].eq(False)
+	df.loc[df["valid_sale"].eq(False), "non_sale_id"] = df["not_sale"].cumsum()
+
+	# Set 10% of the sales to vacant:
+	df.loc[df["sale_id"].astype(int) % 10 == 0, "is_vacant"] = True
+
+	# Set 10% of the non-sales to vacant:
+	df.loc[df["non_sale_id"].astype(int) % 10 == 0, "is_vacant"] = True
+
+	#### END ANNOYING BLOCK ####
+
+	df.loc[df["is_vacant"].eq(True) & df["valid_sale"].eq(True), "vacant_sale"] = True
+
+	df["land_area_sqft"] = 10000.0
+	df.loc[df["is_vacant"].eq(True), "bldg_area_finished_sqft"] = 0.0
+	df.loc[df["is_vacant"].eq(False), "bldg_area_finished_sqft"] = 2000.0
+	df["sale_price"] = df["valid_sale"] * ((df["bldg_area_finished_sqft"] * 80.0) + (df["land_area_sqft"] * 20.0))
+	df["sale_date"] = None
+	df["sale_date"] = "2015-01-01"
+	df["sale_date"] = pd.to_datetime(df["sale_date"])
+	df["sale_date"] = df["sale_date"] + pd.to_timedelta(np.round(df["row_id"]/2.5), unit="d")
+	df.loc[df["valid_sale"].eq(False), "sale_date"] = None
+
+	df["key_sale"] = df["key"].astype(str) + "-" + df["sale_date"].astype(str)
+	df["sale_year"] = None
+	df["sale_month"] = None
+	df["sale_day"] = None
+	df["sale_age_days"] = None
+	df.loc[df["valid_sale"].eq(True), "sale_year"] = df["sale_date"].dt.year
+	df.loc[df["valid_sale"].eq(True), "sale_month"] = df["sale_date"].dt.month
+	df.loc[df["valid_sale"].eq(True), "sale_day"] = df["sale_date"].dt.day
+
+	settings = {
+		"modeling":{
+			"metadata":{
+				"valuation_date": "2025-01-01",
+				"use_sales_from": 2020
+			}
+		},
+		"analysis":{
+			"ratio_study":{
+				"look_back_years": 1
+			}
+		}
+	}
+	val_date = get_valuation_date(settings)
+
+	df.loc[df["valid_sale"].eq(True), "sale_age_days"] = (val_date - df["sale_date"]).dt.days
+
+	df_sales = df[df["valid_sale"].eq(True)].copy()
+
+
+
+	df_test, df_train = _perform_canonical_split("residential_sf", df_sales, settings, test_train_fraction=0.8)
+
+	test_keys = df_test["key_sale"].tolist()
+	train_keys = df_train["key_sale"].tolist()
+
+	count_vacant = len(df_sales[df_sales["is_vacant"].eq(True)])
+	count_improved = len(df_sales[df_sales["is_vacant"].eq(False)])
+
+	look_back_years = settings["analysis"]["ratio_study"]["look_back_years"]
+
+	look_back_date = val_date - pd.DateOffset(years=look_back_years)
+	df_look_back = df_sales[df_sales["sale_date"].gt(look_back_date)]
+	df_post_val = df_sales[df_sales["sale_date"].gt(val_date)]
+	df_pre_val = df_sales[df_sales["sale_date"].le(val_date)]
+
+	expected_train = len(df_sales) * 0.8
+	expected_test = len(df_sales) * 0.2
+
+	expected_train_vacant = count_vacant * 0.8
+	expected_test_vacant = count_vacant * 0.2
+
+	expected_train_improved = count_improved * 0.8
+	expected_test_improved = count_improved * 0.2
+
+	# Assert that the key splits are the expected lengths
+	assert(len(test_keys) == expected_test)
+	assert(len(train_keys) == expected_train)
+
+	# Assert that test and train are the expected length
+	assert(df_test.shape[0] + df_train.shape[0] == df_sales.shape[0])
+	assert(df_test.shape[0] == expected_test)
+	assert(df_train.shape[0] == expected_train)
+
+	# Assert that the expected number of vacant and improved sales exist
+	assert(abs(df_test[df_test["is_vacant"].eq(True)].shape[0] - expected_test_vacant) <= 1)
+	assert(abs(df_train[df_train["is_vacant"].eq(True)].shape[0] - expected_train_vacant) <= 1)
+
+	assert(abs(df_test[df_test["is_vacant"].eq(False)].shape[0] - expected_test_improved) <= 1)
+	assert(abs(df_train[df_train["is_vacant"].eq(False)].shape[0] - expected_train_improved) <= 1)
+
+	ds = DataSplit(
+		df_sales=df_sales,
+		df_universe=df,
+		model_group="residential_sf",
+		settings={},
+		dep_var="sale_price",
+		dep_var_test="sale_price",
+		ind_vars=["bldg_area_finished_sqft", "land_area_sqft"],
+		categorical_vars=[],
+		interactions={},
+		test_keys=test_keys,
+		train_keys=train_keys,
+		vacant_only=False,
+		hedonic=False
+	)
+	ds.split()
+
+	ds_v = DataSplit(
+		df_sales=df_sales,
+		df_universe=df,
+		model_group="residential_sf",
+		settings={},
+		dep_var="sale_price",
+		dep_var_test="sale_price",
+		ind_vars=["bldg_area_finished_sqft", "land_area_sqft"],
+		categorical_vars=[],
+		interactions={},
+		test_keys=test_keys,
+		train_keys=train_keys,
+		vacant_only=True,
+		hedonic=False
+	)
+	ds_v.split()
+
+	ds_h = DataSplit(
+		df_sales=df_sales,
+		df_universe=df,
+		model_group="residential_sf",
+		settings={},
+		dep_var="sale_price",
+		dep_var_test="sale_price",
+		ind_vars=["bldg_area_finished_sqft", "land_area_sqft"],
+		categorical_vars=[],
+		interactions={},
+		test_keys=test_keys,
+		train_keys=train_keys,
+		vacant_only=False,
+		hedonic=True
+	)
+	ds_h.split()
+
+	# Assert that all three flavors of splits generated the expected lengths
+	assert(abs(ds.df_train.shape[0] - expected_train) <= 1)
+	assert(abs(ds.df_test.shape[0] - expected_test) <= 1)
+	assert(abs(ds_v.df_train.shape[0] - expected_train_vacant) <= 1)
+	assert(abs(ds_v.df_test.shape[0] - expected_test_vacant) <= 1)
+	assert(abs(ds_h.df_train.shape[0] - expected_train_vacant) <= 1)
+	assert(abs(ds_h.df_test.shape[0] - expected_test_vacant) <= 1)
+
+	def a_is_disjoint_with_b(a: pd.DataFrame, b: pd.DataFrame):
+		a_keys = a["key"].tolist()
+		b_keys = b["key"].tolist()
+		return set(a_keys).isdisjoint(set(b_keys))
+
+	def a_equals_b(a: pd.DataFrame, b: pd.DataFrame):
+		a_keys = a["key"].tolist()
+		b_keys = b["key"].tolist()
+		return set(a_keys) == set(b_keys)
+
+	def a_is_subset_of_b(a: pd.DataFrame, b: pd.DataFrame):
+		a_keys = a["key"].tolist()
+		b_keys = b["key"].tolist()
+		result = set(a_keys).issubset(set(b_keys))
+		return result
+
+	def a_is_superset_of_b(a: pd.DataFrame, b: pd.DataFrame):
+		a_keys = a["key"].tolist()
+		b_keys = b["key"].tolist()
+		return set(a_keys).issuperset(set(b_keys))
+
+
+	# Assert that the test sets obey certain relationships:
+
+	# all the post val keys are in the test set:
+	assert a_is_subset_of_b(df_post_val, df_test)
+	assert a_is_superset_of_b(df_test, df_post_val)
+
+	# none of the post val keys are in the train set:
+	assert a_is_disjoint_with_b(df_train, df_post_val)
+
+	# find keys in df_train/df_post_val:
+	keys_in_df_train = df_train["key"].tolist()
+	keys_in_df_post_val = df_post_val["key"].tolist()
+
+	keys_in_both_df_train_and_df_post_val = list(set(keys_in_df_train) & set(keys_in_df_post_val))
+	keys_only_in_post_val = list(set(keys_in_df_post_val) - set(keys_in_df_train))
+
+	print(f"Length of df_sales = {len(df_sales)}")
+	print(f"Length of df_train = {len(df_train)}")
+	print(f"Length of df_test = {len(df_test)}")
+	print(f"Length of df_post_val = {len(df_post_val)}")
+
+	print(f"Length of keys_in_both_df_train_and_df_post_val = {len(keys_in_both_df_train_and_df_post_val)}")
+	print(f"Length of keys_only_in_post_val = {len(keys_only_in_post_val)}")
+
+	display(df_sales[df_sales["key"].isin(keys_in_df_train)][["key_sale","sale_age_days"]])
+
+	return
+
+	#assert a_is_disjoint_with_b(df_train, df_post_val)
+
+	# ds_v.test is equivalent to ds_h.test (they both test against vacant sales)
+	assert a_equals_b(ds_v.df_test, ds_h.df_test)
+
+	# ds_v.test is a strict subset of ds.test (vacant test sales only has sales also found in the vacant+improved test sales)
+	assert a_is_subset_of_b(ds_v.df_test, ds.df_test)
+
+	# ds.test is a strict superset of ds_v.test (vacant+improved test sales includes all sales found in vacant test sales)
+	assert a_is_superset_of_b(ds.df_test, ds_v.df_test)
+
+	# ds_h.test is a strict subset of ds.test (hedonic test sales only has sales also found in the vacant+improved test sales)
+	assert a_is_subset_of_b(ds_h.df_test, ds.df_test)
+
+	# ds.test is a strict superset of ds_h.test (vacant+improved test sales includes all sales found in hedonic test sales)
+	assert a_is_superset_of_b(ds.df_test, ds_h.df_test)
+
+	# now intentionally screw up the data and assert the tests are FALSE (guard against broken tests yielding false positives)
+
+	# find a key that is in ds_v and df_test:
+	keys_in_ds_v = ds_v.df_test["key_sale"].tolist()
+	keys_in_ds = ds.df_test["key_sale"].tolist()
+
+	keys_in_both_ds_v_and_ds = list(set(keys_in_ds_v) & set(keys_in_ds))
+	first_key_in_both_ds_v_and_ds = keys_in_both_ds_v_and_ds[0]
+	second_key_in_both_ds_v_and_ds = keys_in_both_ds_v_and_ds[1]
+
+	# remove a key from ds_v we know is in df_test:
+	ds_v.df_test = ds_v.df_test[ds_v.df_test["key_sale"] != first_key_in_both_ds_v_and_ds]
+
+	# remove a key from df_test we know is in ds_v:
+	ds.df_test = ds.df_test[ds.df_test["key_sale"] != second_key_in_both_ds_v_and_ds]
+
+	# All of these should return false now:
+	assert a_equals_b(ds_v.df_test, ds_h.df_test) == False
+	assert a_is_subset_of_b(ds_v.df_test, ds.df_test) == False
+	assert a_is_superset_of_b(ds.df_test, ds_v.df_test) == False
+	assert a_is_subset_of_b(ds_h.df_test, ds.df_test) == False
+	assert a_is_superset_of_b(ds.df_test, ds_h.df_test) == False
+
 
 
 def test_duplicates():
@@ -407,6 +696,7 @@ def test_enrich_year_built():
 		"bldg_year_built": [1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000],
 		"sale_year": [None, None, None, "2021", None, None, None, None, None, "2022", None],
 		"sale_month": [None, None, None, "1", None, None, None, None, None, "11", None],
+		"sale_day": [None, None, None, "1", None, None, None, None, None, "15", None],
 		"sale_quarter": [None, None, None, "1", None, None, None, None, None, "4", None],
 		"sale_year_month": ["NaT", "NaT", "NaT", "2021-01", "NaT", "NaT", "NaT", "NaT", "NaT", "2022-11", "NaT"],
 		"sale_year_quarter": ["NaT", "NaT", "NaT", "2021Q1", "NaT", "NaT", "NaT", "NaT", "NaT", "2022Q4", "NaT"],
@@ -422,6 +712,7 @@ def test_enrich_year_built():
 		"bldg_year_built": [1993, 1999],
 		"sale_year": ["2021", "2022"],
 		"sale_month": ["1", "11"],
+		"sale_day": ["1", "15"],
 		"sale_quarter": ["1", "4"],
 		"sale_year_month": ["2021-01", "2022-11"],
 		"sale_year_quarter": ["2021Q1", "2022Q4"],
@@ -451,6 +742,8 @@ def test_enrich_year_built():
 		df_sales[thing] = df_sales[thing].astype("string")
 		df_univ_expected[thing] = df_univ_expected[thing].astype("string")
 		df_sales_expected[thing] = df_sales_expected[thing].astype("string")
+
+
 
 	assert dfs_are_equal(df_univ, df_univ_expected, primary_key="key")
 	assert dfs_are_equal(df_sales, df_sales_expected, primary_key="key")

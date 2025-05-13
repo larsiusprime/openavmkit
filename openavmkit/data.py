@@ -3529,14 +3529,162 @@ def _perform_canonical_split(model_group: str, df_sales_in: pd.DataFrame, settin
   :returns: Tuple of (test DataFrame, training DataFrame).
   :rtype: tuple(pandas.DataFrame, pandas.DataFrame)
   """
+
+  # High level goals
+  # 1. Split the sales data into a TRAINING and a TEST set
+  # 2. Maintain uniformity of sample size across VACANT and IMPROVED sales
+  # 3. TEST set details:
+  #   - sales no older than the lookback period (typically one year, user-configurable)
+  #   - favor post-valuation-date sales if available
+  #   - aim to be 20% of total sales (user-configurable). Exception: if we have more post-valuation sales, use them all for test
+  #   - if not enough sales in the post-valuation period to hit 20%, use lookback period sales to fill
+  #   - if not enough sales in the lookback period to hit 20%, use all pre-valuation sales to fill
+  #   - sample randomly whenever possible
+  # 4. TRAINING set details:
+  #   - whatever is not in the TEST set
+  #   - never use post-valuation-date sales, even if there's some left over
+  #   - aim to be 80% of total sales
+
+  rs = settings.get("analysis", {}).get("ratio_study", {})
+  look_back_years = rs.get("look_back_years", 1)
+  val_date = get_valuation_date(settings)
+
+  # Look back N years BEFORE the valuation date
+  look_back_date = val_date - pd.DateOffset(years=look_back_years)
+
+  # Get that time in terms of days (positive = days before the valuation date)
+  look_back_days = (val_date - look_back_date).days
+
+  # Get our sales dataframe for this model group and split it into vacant and improved sales
   df = df_sales_in[df_sales_in["model_group"].eq(model_group)].copy()
   df_v = get_vacant_sales(df, settings)
   df_i = df.drop(df_v.index)
+
+  df_v_pre_val = df_v[df_v["sale_age_days"].ge(0)] # Positive sale_age_days indicates days BEFORE the valuation date
+  df_i_pre_val = df_i[df_i["sale_age_days"].ge(0)]
+
+  # Find sales that occurred on or after the look_back_date (i.e., within 1 year of the valuation date, but not after it)
+  df_v_look_back = df_v[df_v["sale_age_days"].le(look_back_days) & (df_v["sale_age_days"].ge(0))]
+  df_i_look_back = df_i[df_i["sale_age_days"].le(look_back_days) & (df_i["sale_age_days"].ge(0))]
+
+  # Find sales that occurred AFTER the valuation date
+  # These will also be candidates for the holdout set
+  df_v_post_val = df_v[df_v["sale_age_days"].lt(0)]  # Negative sale_age_days indicates days AFTER the valuation date
+  df_i_post_val = df_i[df_i["sale_age_days"].lt(0)]
+
+  test_share = 1.0 - test_train_fraction
+
+  # This is how many test sales we need
+  test_set_count = np.floor(len(df) * test_share).astype(int)
+
+  # Sales in general
+  count_sales_all = len(df)
+
+  # Sales after the val date
+  count_post_val = len(df_v_post_val) + len(df_i_post_val)
+
+  # Sales within the look back period
+  count_look_back = len(df_v_look_back) + len(df_i_look_back)
+
   np.random.seed(random_seed)
-  df_v_train = df_v.sample(frac=test_train_fraction)
-  df_v_test = df_v.drop(df_v_train.index)
-  df_i_train = df_i.sample(frac=test_train_fraction)
-  df_i_test = df_i.drop(df_i_train.index)
+
+  df_v_test: pd.DataFrame | None = None
+  df_i_test: pd.DataFrame | None = None
+  df_v_train: pd.DataFrame | None = None
+  df_i_train: pd.DataFrame | None = None
+
+  if count_post_val >= test_set_count:
+    # The post-valuation set is GREATER than or EQUAL to the test set
+    # We will use the whole post-valuation set exclusively for the test set, and the pre-valuation set exclusively for the training set
+    # (We do not train on post-valuation sales, to maintain the integrity of post-valuation data)
+
+    # The test set is exactly equal to the post-valuation set:
+    df_v_test = df_v_post_val
+    df_i_test = df_i_post_val
+
+    # The train set is exactly equal to the pre-valuation set:
+    df_v_train = df_v_pre_val
+    df_i_train = df_i_pre_val
+
+  elif count_post_val < test_set_count:
+    # The post-valuation set is SMALLER than the test set
+    # We consume the whole post-valuation set for the test set
+
+    df_v_test = df_v_post_val
+    df_i_test = df_i_post_val
+
+    # How many more sales do we need to fill the test set?
+    remaining_test_count = test_set_count - count_post_val
+    remaining_test_frac = None
+
+    if count_look_back > 0:
+      # Express that as a fraction of the lookback sales if they exist
+      remaining_test_frac = remaining_test_count  / count_look_back
+
+    if count_look_back > 0 and remaining_test_frac <= 1.0:
+      # We can sample the lookback sales alone to fill the test set
+
+      n_v = np.floor(len(df_v_look_back)*remaining_test_frac).astype(int)
+      n_i = np.floor(len(df_i_look_back)*remaining_test_frac).astype(int)
+      diff = (remaining_test_count-(n_v+n_i))
+      while diff > 0:
+        old_diff = diff
+        if len(df_v_look_back) > n_v:
+          n_v += 1
+          diff -= 1
+        if len(df_i_look_back) > n_i:
+          n_i += 1
+          diff -= 1
+        if diff == old_diff:
+          break
+
+      _df_v_test = df_v_look_back.sample(n=n_v, random_state=random_seed)
+      _df_i_test = df_i_look_back.sample(n=n_i, random_state=random_seed)
+
+      df_v_test = pd.concat([df_v_test, _df_v_test])
+      df_i_test = pd.concat([df_i_test, _df_i_test])
+    else:
+      # We need to sample ALL the lookback sales to start with...
+      df_v_test = pd.concat([df_v_test, df_v_look_back])
+      df_i_test = pd.concat([df_i_test, df_i_look_back])
+
+      # ...and then we need to sample the pre-valuation sales to fill the remainder of the test set
+      remaining_test_count = test_set_count - (count_post_val + count_look_back)
+
+      # Figure out how many sales we haven't touched yet
+      untouched_sales_count = count_sales_all - (count_post_val + count_look_back)
+      df_v_untouched = df_v[~df_v["key_sale"].isin(df_v_test["key_sale"])]
+      df_i_untouched = df_i[~df_i["key_sale"].isin(df_i_test["key_sale"])]
+
+      # Express how many more we need as a fraction of the untouched sales
+      remaining_test_frac = remaining_test_count / untouched_sales_count
+
+      n_v = np.floor(len(df_v_untouched)*remaining_test_frac).astype(int)
+      n_i = np.floor(len(df_i_untouched)*remaining_test_frac).astype(int)
+      diff = (remaining_test_count-(n_v+n_i))
+      while diff > 0:
+        old_diff = diff
+        if len(df_v_look_back) > n_v:
+          n_v += 1
+          diff -= 1
+        if len(df_i_look_back) > n_i:
+          n_i += 1
+          diff -= 1
+        if diff == old_diff:
+          break
+
+      # Sample the untouched sales to fill the test set
+      _df_v_test = df_v_untouched.sample(n=n_v, random_state=random_seed)
+      _df_i_test = df_i_untouched.sample(n=n_i, random_state=random_seed)
+
+      # Add the untouched sales to the test set -- we're finally done
+      df_v_test = pd.concat([df_v_test, _df_v_test])
+      df_i_test = pd.concat([df_i_test, _df_i_test])
+
+    # Training set is whatever is not in the test set
+    df_v_train = df_v_pre_val[~df_v_pre_val["key_sale"].isin(df_v_test["key_sale"])]
+    df_i_train = df_i_pre_val[~df_i_pre_val["key_sale"].isin(df_i_test["key_sale"])]
+
   df_test = pd.concat([df_v_test, df_i_test]).reset_index(drop=True)
   df_train = pd.concat([df_v_train, df_i_train]).reset_index(drop=True)
   return df_test, df_train
