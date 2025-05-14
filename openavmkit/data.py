@@ -667,9 +667,15 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
         # add distances to user-defined locations
         df = _enrich_df_user_distances(df, s_enrich_local, dataframes, settings, verbose=verbose)
 
-      if supkey == "universe":
         # fill in missing data based on geospatial patterns (should happen after all other enrichments have been done)
         df = _enrich_spatial_inference(df, s_enrich_local, dataframes, settings, verbose=verbose)
+
+        # TODO: Universe Permit enrichment
+        # df = _enrich_permits(df, s_enrich_local, dataframes, settings, False, verbose=verbose)
+
+      elif supkey == "sales":
+
+        df = _enrich_permits(df, s_enrich_local, dataframes, settings, True, verbose=verbose)
 
     # User calcs apply at the VERY end of enrichment, after all automatic enrichments have been applied
     if s_enrich_local is not None:
@@ -1884,7 +1890,7 @@ def enrich_sup_spatial_lag(sup: SalesUniversePair, settings: dict, verbose: bool
   train_keys, test_keys = get_train_test_keys(df_hydrated, settings)
 
   df_train = df_hydrated.loc[df_hydrated["key_sale"].isin(train_keys)].copy()
-  
+
   sale_field = get_sale_field(settings)
   sale_field_vacant = f"{sale_field}_vacant"
 
@@ -2066,9 +2072,11 @@ def _enrich_vacant(df_in: pd.DataFrame, settings:dict) -> pd.DataFrame:
   :rtype: pandas.DataFrame
   """
 
+  df = df_in.copy()
+
   if "bldg_area_finished_sqft" in df_in:
-    df = df_in.copy()
     df["is_vacant"] = False
+
     df.loc[pd.isna(df["bldg_area_finished_sqft"]), "bldg_area_finished_sqft"] = 0
     df.loc[df["bldg_area_finished_sqft"].eq(0), "is_vacant"] = True
 
@@ -2202,6 +2210,43 @@ def _enrich_spatial_inference(gdf_in: gpd.GeoDataFrame, s_enrich_this: dict, dat
   s_infer = s_enrich_this.get("infer", {})
   gdf = perform_spatial_inference(gdf, s_infer, "key", verbose=verbose)
   return gdf
+
+
+def _enrich_permits(df_in: pd.DataFrame, s_enrich_this: dict, dataframes: dict[str, pd.DataFrame], settings: dict, is_sales: bool = False, verbose: bool = False) -> pd.DataFrame:
+  s_permits = s_enrich_this.get("permits", {})
+
+  sources = s_permits.get("sources", [])
+  if sources is None:
+    return df_in
+
+  df = df_in.copy()
+
+  fields = ["key", "date", "is_teardown", "is_renovation", "renovation_txt", "renovation_num"]
+
+  df_all_permits: pd.DataFrame | None = None
+
+  for source in sources:
+    df_permits = dataframes[source]
+    if df_permits is None:
+      raise ValueError(f"Teardown source '{source}' not found in dataframes.")
+    the_fields = [field for field in fields if field in df_permits.columns]
+    if "key" not in the_fields:
+      raise ValueError(f"Permits source '{source}' does not contain 'key' field.")
+    if "date" not in the_fields:
+      raise ValueError(f"Permits source '{source}' does not contain 'date' field.")
+    if not pd.api.types.is_datetime64_any_dtype(df_permits["date"]):
+      raise ValueError(f"Permits source '{source}' 'date' column must be of datetime type.")
+    df_permits = df_permits[the_fields]
+    if df_all_permits is None:
+      df_all_permits = df_permits
+    else:
+      df_all_permits = pd.concat([df_all_permits, df_permits], ignore_index=True)
+
+  if is_sales:
+    df = _process_permits_sales(df, df_all_permits, s_permits, settings, verbose=verbose)
+  else:
+    df = _process_permits_univ(df, df_all_permits, s_permits, settings, verbose=verbose)
+  return df
 
 
 def _enrich_df_user_distances(gdf_in: gpd.GeoDataFrame, s_enrich_this: dict, dataframes: dict[str, pd.DataFrame], settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
@@ -4174,3 +4219,200 @@ def clean_series(series: pd.Series) -> pd.Series:
     series = series.str.strip('_')
     
     return series
+
+
+def _process_permits_univ(
+    df_in: pd.DataFrame,
+    df_permits: pd.DataFrame,
+    s_permits: dict,
+    settings: dict,
+    verbose: bool = False
+):
+  calc_effective_age = s_permits.get("calc_effective_age", False)
+
+  # We might have multiple permits per key. We have multiple questions to answer:
+
+  # 1. Do we have a demolition permit? When was the demolition date?
+  df_demos = df_permits[df_permits["is_teardown"].eq(True)][["key", "date"]].copy()
+
+  # 2. Do we have a renovation permit? When was the renovation date?
+  df_renos = df_permits[df_permits["is_renovation"].eq(True)][["key", "date"]].copy()
+
+  #==========================================================================================#
+  #                              Process teardown universe                                   #
+  #==========================================================================================#
+
+  # We want to know -- was the most recent permit for this parcel a demolition permit?
+
+  df_u = df_in[["key"]].copy()
+
+  df_permits = df_permits.rename(columns={"date":"permit_date"})
+  df_u = df_u.merge(df_permits, on="key", how="left")
+  df_u["sale_date"] = get_valuation_date(settings)
+  # Ignore permits that happened AFTER the valuation date
+  df_u.loc[df_u["permit_date"].gt(df_u["sale_date"]), "permit_date"] = np.nan
+
+  # we could have multiple hits, we need to de-duplicate.
+  # find the permit date closest to the valuation date for each key
+  df_u = df_u.sort_values(by=["permit_date"], descending=[True])
+  df_u = df_u.drop_duplicates(subset=["key"], keep="first")
+
+  df_u["last_permit_was_teardown"] = df_u[df_u["is_teardown"].eq(True)]
+  df_u = df_u.rename(columns={"permit_date": "demo_date"})
+
+  # Now we know, for each parcel, if it's last permit was for a teardown, and when it was torn down
+  df_univ = df_in.merge(df_u[["key", "last_permit_was_teardown", "demo_date"]], on="key", how="left")
+
+  #===========================================================================================#
+  #                              Process renovation universe                                  #
+  #===========================================================================================#
+
+  valuation_date = get_valuation_date(settings)
+
+  df_u = df_in[["key"]].copy()
+
+  df_u = df_u.merge(df_renos, on="key", how="left")
+  df_u["sale_date"] = valuation_date
+  df_u["days_to_reno"] = (df_u["reno_date"] - df_u["sale_date"]).dt.days
+  # Ignore renovations that happened AFTER the valuation date
+  df_u.loc[df_u["days_to_reno"].ge(0), "days_to_reno"] = np.nan
+
+  # Find the most recent major renovation date:
+  df_u = df_u.sort_values(by=["renovation_num", "days_to_reno"], ascending=[False])
+  df_u = df_u.drop_duplicates(subset=["key"], keep="first")
+
+  # Merge the results back onto df_universe
+  df_univ = df_univ.merge(df_u[["key", "reno_date", "days_to_reno", "renovation_num", "renovation_txt"]], on="key", how="left")
+
+  if calc_effective_age:
+    # Calculate effective year built based on last major renovation
+    if "bldg_effective_year_built" in df_univ:
+      warnings.warn("bldg_effective_year_built already exists in df_univ, overwriting it.")
+      df_univ["bldg_effective_year_built"] = df_univ["bldg_effective_year_built"]
+    else:
+      df_univ["bldg_effective_year_built"] = df_univ["bldg_year_built"]
+
+    # Major renovations reset the date to the current year
+    df_univ.loc[df_univ["renovation_num"].eq(3), "bldg_effective_year_built"] = df_univ["reno_date"].dt.year
+
+  return df_univ
+
+
+def _process_permits_sales(
+    df_in: pd.DataFrame,
+    df_permits: pd.DataFrame,
+    s_permits: dict,
+    settings: dict,
+    verbose: bool = False
+):
+  df_sales = df_in.copy()
+
+  calc_effective_age = s_permits.get("calc_effective_age", False)
+
+  # We might have multiple permits per key. We have multiple questions to answer:
+
+  #=========================================================================================#
+  #                              Process teardown sales                                     #
+  #=========================================================================================#
+
+  # 1. Do we have a demolition permit? When was the demolition date?
+  if "is_teardown" in df_permits:
+    df_demos = df_permits[df_permits["is_teardown"].eq(True)][["key", "date"]].copy()
+
+    df = df_sales[["key", "key_sale", "sale_date", "valid_sale", "vacant_sale", "sale_price"]].copy()
+
+    # Label the teardown sales (sales torn down shortly AFTER the sale date)
+    df_demos = df_demos.rename(columns={"date":"demo_date"})
+    df = df.merge(df_demos, on="key", how="left")
+    df["days_to_demo"] = (df["sale_date"] - df["demo_date"]).dt.days
+    # Ignore demolitions that happened BEFORE the sale
+    df.loc[df["days_to_demo"].le(0), "days_to_demo"] = np.nan
+
+    # we could have multiple hits, we need to de-duplicate.
+    # find the demo date closest to the sale for each key
+    df = df.sort_values(by=["days_to_demo"], ascending=[True])
+    df = df.drop_duplicates(subset=["key"], keep="first")
+
+    max_days_to_demo = s_permits.get("max_days_to_demo", 365)
+
+    # Count it as a teardown if the demo date is within the max_days_to_demo
+    df["is_teardown_sale"] = False
+    df.loc[
+      df["days_to_demo"].gt(0) &
+      df["days_to_demo"].le(max_days_to_demo),
+      "is_teardown_sale"
+    ] = True
+
+    # Merge the results back onto df_sales
+    # Now we know, for each sale, if it's a likely teardown sale and when it was torn down
+    df_sales = df_sales.merge(df[["key", "is_teardown_sale", "demo_date", "days_to_demo"]], on="key", how="left")
+
+    # Set is_vacant_sale to True for teardown sales
+    df_sales.loc[df_sales["is_teardown_sale"].eq(True), "is_vacant_sale"] = True
+
+    if verbose:
+      teardown_sales = df[df["is_teardown_sale"]]
+      print(f"Identified {len(teardown_sales)} teardown sales.")
+
+  #=========================================================================================#
+  #                              Process renovation sales                                   #
+  #=========================================================================================#
+
+  # 2. Do we have a renovation permit? When was the renovation date?
+  if "is_renovation" in df_permits:
+
+    if "renovation_num" not in df_permits:
+      raise ValueError("Missing field 'renovation_num' in df_permits. Cannot process renovation permits.")
+    if "renovation_txt" not in df_permits:
+      raise ValueError("Missing field 'renovation_txt' in df_permits. Cannot process renovation permits.")
+
+    df_renos = df_permits[df_permits["is_renovation"].eq(True)][["key", "date", "renovation_num", "renovation_txt", "is_renovation"]].copy()
+
+    # Label sales with the most recent renovation data from BEFORE the sale date
+    df_renos = df_renos.rename(columns={"date":"reno_date", "is_renovation":"is_renovated"})
+    df = df_in.merge(df_renos, on="key", how="left")
+    df.loc[pd.isna(df["is_renovated"]), "is_renovated"] = False
+    df["days_to_reno"] = (df["reno_date"] - df["sale_date"]).dt.days
+
+    # Ignore renovations that happened AFTER the sale
+    df.loc[df["days_to_reno"].ge(0), "days_to_reno"] = np.nan
+    df.loc[pd.isna(df["days_to_reno"]), "reno_date"] = None
+    df.loc[pd.isna(df["days_to_reno"]), "renovation_num"] = np.nan
+    df.loc[pd.isna(df["days_to_reno"]), "renovation_txt"] = None
+    df.loc[pd.isna(df["days_to_reno"]), "is_renovated"] = False
+
+    # Find the most recent major renovation date:
+    df = df.sort_values(by=["renovation_num", "days_to_reno"], ascending=[False, False])
+
+    df = df.drop_duplicates(subset=["key"], keep="first")
+
+    # Merge the results back onto df_sales
+    df_sales = df_sales.merge(df[["key", "is_renovated", "reno_date", "days_to_reno", "renovation_num", "renovation_txt"]], on="key", how="left")
+
+    if calc_effective_age:
+      # Calculate effective year built based on last major renovation
+      if "bldg_effective_year_built" in df_sales:
+        warnings.warn("bldg_effective_year_built already exists in df_sales, overwriting it.")
+        df_sales["bldg_effective_year_built"] = df_sales["bldg_effective_year_built"]
+      else:
+        df_sales["bldg_effective_year_built"] = df_sales["bldg_year_built"]
+
+      # Major renovations reset the date to the current year
+      df_sales.loc[df_sales["renovation_num"].eq(3), "bldg_effective_year_built"] = df_sales["reno_date"].dt.year
+
+      # TODO: Medium renovations reset the date partially, which requires knowing a bunch of stuff
+
+      # Minor renovations do not reset the date
+
+    if verbose:
+      renovations = df[df["is_renovated"]]
+      renovations_3 = df[df["renovation_num"].eq(3)]
+      renovations_2 = df[df["renovation_num"].eq(2)]
+      renovations_1 = df[df["renovation_num"].eq(1)]
+      print(f"Identified {len(renovations)} renovated sales.")
+      print(f"--> {len(renovations_3)} major renovations.")
+      print(f"--> {len(renovations_2)} medium renovations.")
+      print(f"--> {len(renovations_1)} minor renovations.")
+
+  return df_sales
+

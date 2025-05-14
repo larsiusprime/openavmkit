@@ -180,21 +180,29 @@ def series_are_equal(a: pd.Series, b: pd.Series):
 
 		if not a_masked.equals(b_masked):
 
-			# attempt to cast both as floats and compare:
-			try:
-				a_masked = a_masked.astype(float)
-				b_masked = b_masked.astype(float)
-				delta = a_masked.subtract(b_masked).abs().max()
-				result = delta < 1e-6
-				if not result:
-					print(f"Masked values are not equal, max delta = {delta}")
-					return False
-				else:
-					return True
-			except ValueError:
-				print("Masked values are not equal and cannot be cast to float")
+			# if both are datetimes:
+			if pd.api.types.is_datetime64_any_dtype(a_masked) and pd.api.types.is_datetime64_any_dtype(b_masked):
+				# compare datetimes directly:
+				result = a_masked.subtract(b_masked).abs().max() == pd.Timedelta(0)
+				if result == False:
+					print(f"Comparing datetimes directly:\n{a_masked.subtract(b_masked).abs().max()}")
+				return result
+			else:
+				# attempt to cast both as floats and compare:
+				try:
+					a_masked = a_masked.astype(float)
+					b_masked = b_masked.astype(float)
+					delta = a_masked.subtract(b_masked).abs().max()
+					result = delta < 1e-6
+					if not result:
+						print(f"Masked values are not equal, max delta = {delta}")
+						return False
+					else:
+						return True
+				except ValueError:
+					print("Masked values are not equal and cannot be cast to float")
 
-			return False
+				return False
 		else:
 			# if the masked values are equal, then the two series are equal except for the NaN values
 			# check we have an equal number of NaN values:

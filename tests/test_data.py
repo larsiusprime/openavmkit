@@ -3,7 +3,8 @@ import pandas as pd
 from IPython.core.display_functions import display
 
 from openavmkit.data import _perform_canonical_split, _handle_duplicated_rows, _perform_ref_tables, _merge_dict_of_dfs, \
-	_do_enrich_year_built, enrich_time, SalesUniversePair, get_hydrated_sales_from_sup
+	_do_enrich_year_built, enrich_time, SalesUniversePair, get_hydrated_sales_from_sup, _enrich_permits, \
+	_process_permits_sales
 from openavmkit.modeling import DataSplit
 from openavmkit.inference import _do_perform_spatial_inference
 from openavmkit.utilities.assertions import dfs_are_equal
@@ -906,6 +907,7 @@ def test_merge_and_stomp_dfs():
 	assert dfs_are_equal(merged3, expected3, primary_key="key")
 	assert dfs_are_equal(merged4, expected4, primary_key="key")
 
+
 def test_update_sales():
 	sales = {
 		"key": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
@@ -948,5 +950,172 @@ def test_update_sales():
 	assert len_after == 7
 
 
+def test_permits_teardown_sales():
+	print("")
+
+	sales = {
+		"key": ["0", "1", "2", "3"],
+		"valid_sale": [True, True, True, True],
+		"vacant_sale": [False, False, False, False],
+		"sale_price": [1, 1, 1, 1],
+		"sale_date": [
+			"2020-06-01",
+			"2020-06-01",
+			"2020-06-01",
+			"2020-06-01"
+		]
+	}
+
+	nan = float('nan')
+	permits = {
+		"key": ["0", "1", "2", "3", "3", "3"],
+		"is_teardown": [True, True, True, True, True, True],
+		"date": [
+			              # Demo dates for keys 1, 2, and 3
+			"2020-07-01", # too early: one month AFTER the sale
+			"2020-01-01", # just right: five months BEFORE the sale
+			"2021-07-01", # too late: thirteen months AFTER the sale
+
+			              # 3 demo dates, all for key 3 -- should de-duplicate and pick the middle one
+			"2020-07-01", # too early
+			"2020-01-01", # just right
+			"2021-07-01"  # too late
+		]
+	}
+	expected = {
+		"key": ["0", "1", "2", "3"],
+		"valid_sale": [True, True, True, True],
+		"vacant_sale": [False, False, False, False],
+		"sale_price": [1, 1, 1, 1],
+		"sale_date": ["2020-06-01", "2020-06-01", "2020-06-01", "2020-06-01"],
+		"key_sale": ["0---2020-06-01", "1---2020-06-01", "2---2020-06-01", "3---2020-06-01"],
+		"is_teardown_sale": [False, True, False, True],
+		"demo_date": ["2020-07-01", "2020-01-01", "2021-07-01", "2020-01-01"],
+		"days_to_demo":[nan, 152.0, nan, 152.0]
+	}
+
+	df_expected = pd.DataFrame(data=expected)
+
+	df_sales = pd.DataFrame(data=sales)
+	df_sales["key_sale"] = df_sales["key"] + "---" + df_sales["sale_date"]
+	df_sales["sale_date"] = pd.to_datetime(df_sales["sale_date"], format="%Y-%m-%d")
+	df_permits = pd.DataFrame(data=permits)
+	df_permits["date"] = pd.to_datetime(df_permits["date"], format="%Y-%m-%d")
+
+	settings = {
+		"data":{
+			"process":{
+				"enrich":{
+					"sales":{
+						"permits":{
+							"sources": ["permits"]
+						}
+					}
+				}
+			}
+		}
+	}
+	s_enrich_sales = settings.get("data", {}).get("process", {}).get("enrich", {}).get("sales")
+	dataframes = {"permits": df_permits}
+
+	df_results = _enrich_permits(
+		df_sales,
+		s_enrich_sales,
+		dataframes,
+		settings,
+		is_sales=True,
+		verbose=True
+	)
+
+	assert dfs_are_equal(df_expected, df_results, allow_weak=True)
 
 
+def test_permits_reno_sales():
+	print("")
+
+	sales = {
+		"key": ["0", "1", "2", "3", "4"],
+		"valid_sale": [True, True, True, True, True],
+		"vacant_sale": [False, False, False, False, False],
+		"sale_price": [1, 1, 1, 1, 1],
+		"sale_date": [
+			"2020-06-01",
+			"2020-06-01",
+			"2020-06-01",
+			"2020-06-01",
+			"2020-06-01",
+		]
+	}
+
+	nan = float('nan')
+	permits = {
+		"key": ["0", "1", "2", "3", "3", "3", "4", "4", "4"],
+		"is_renovation": [True, True, True, True, True, True, True, True, True],
+		"renovation_num": [2, 3, 3, 1, 2, 3, 3, 2, 1],
+		"renovation_txt": ["medium", "major", "major", "minor", "medium", "major", "major", "medium", "minor"],
+		"date": [
+			# reno dates for keys 1, 2, and 3
+			"2020-05-01", # before the sale, picked
+			"2020-07-01", # after the sale, dismissed
+			"2010-06-01", # before the sale, picked
+
+			# 3 reno dates, all for key 3 -- should de-duplicate and pick the last one (best one)
+			"2020-05-01",
+			"2020-05-10",
+			"2020-05-20",
+
+			# 4 reno dates, all for key 4 -- should de-duplicate and pick the first one (best one)
+			"2020-05-01",
+			"2020-06-01",
+			"2020-07-01"
+		]
+	}
+	expected = {
+		"key": ["0", "1", "2", "3", "4"],
+		"valid_sale": [True, True, True, True, True],
+		"vacant_sale": [False, False, False, False, False],
+		"sale_price": [1, 1, 1, 1, 1],
+		"sale_date": ["2020-06-01", "2020-06-01", "2020-06-01", "2020-06-01", "2020-06-01"],
+		"key_sale": ["0---2020-06-01", "1---2020-06-01", "2---2020-06-01", "3---2020-06-01", "4---2020-06-01"],
+		"is_renovated": [True, False, True, True, True],
+		"reno_date": ["2020-05-01", None, "2010-06-01", "2020-05-20", "2020-05-01"],
+		"renovation_num": [2, None, 3, 3, 3],
+		"renovation_txt": ["medium", None, "major", "major", "major"],
+		"days_to_reno": [-31.0, None, -3653.0, None, -31.0]
+	}
+
+	df_expected = pd.DataFrame(data=expected)
+	df_expected["reno_date"] = pd.to_datetime(df_expected["reno_date"], format="%Y-%m-%d")
+
+	df_sales = pd.DataFrame(data=sales)
+	df_sales["key_sale"] = df_sales["key"] + "---" + df_sales["sale_date"]
+	df_sales["sale_date"] = pd.to_datetime(df_sales["sale_date"], format="%Y-%m-%d")
+	df_permits = pd.DataFrame(data=permits)
+	df_permits["date"] = pd.to_datetime(df_permits["date"], format="%Y-%m-%d")
+
+	settings = {
+		"data":{
+			"process":{
+				"enrich":{
+					"sales":{
+						"permits":{
+							"sources": ["permits"]
+						}
+					}
+				}
+			}
+		}
+	}
+	s_enrich_sales = settings.get("data", {}).get("process", {}).get("enrich", {}).get("sales")
+	dataframes = {"permits": df_permits}
+
+	df_results = _enrich_permits(
+		df_sales,
+		s_enrich_sales,
+		dataframes,
+		settings,
+		is_sales=True,
+		verbose=True
+	)
+
+	assert dfs_are_equal(df_expected, df_results, allow_weak=True)
