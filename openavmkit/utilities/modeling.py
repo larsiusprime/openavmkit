@@ -44,16 +44,20 @@ class LocalSqftModel:
     self.sales_chase = sales_chase
 
 
-class LarsModel:
+class LocalSomersModel:
   def __init__(
       self,
-      sqft_model: LocalSqftModel,
-      land_adjustments: dict,
-      impr_adjustments: dict
+      loc_map: dict,
+      location_fields: list,
+      overall_per_impr_sqft: float,
+      overall_land_unit_ft: float,
+      sales_chase: float
   ):
-    self.sqft_model = sqft_model
-    self.land_adjustments = land_adjustments
-    self.impr_adjustments = impr_adjustments
+    self.loc_map = loc_map
+    self.location_fields = location_fields
+    self.overall_per_impr_sqft = overall_per_impr_sqft
+    self.overall_land_unit_ft = overall_land_unit_ft
+    self.sales_chase = sales_chase
 
 
 class GroundTruthModel:

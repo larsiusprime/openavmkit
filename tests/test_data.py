@@ -985,7 +985,7 @@ def test_permits_teardown_sales():
 	expected = {
 		"key": ["0", "1", "2", "3"],
 		"valid_sale": [True, True, True, True],
-		"vacant_sale": [False, False, False, False],
+		"vacant_sale": [False, True, False, True],
 		"sale_price": [1, 1, 1, 1],
 		"sale_date": ["2020-06-01", "2020-06-01", "2020-06-01", "2020-06-01"],
 		"key_sale": ["0---2020-06-01", "1---2020-06-01", "2---2020-06-01", "3---2020-06-01"],

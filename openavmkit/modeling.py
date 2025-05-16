@@ -36,9 +36,10 @@ from openavmkit.data import get_sales, simulate_removed_buildings, _enrich_time_
   SalesUniversePair, get_hydrated_sales_from_sup
 from openavmkit.filters import select_filter
 from openavmkit.ratio_study import RatioStudy
+from openavmkit.somers import get_unit_ft, get_lot_value_ft
 from openavmkit.utilities.format import fancy_format
-from openavmkit.utilities.modeling import GarbageModel, AverageModel, NaiveSqftModel, LocalSqftModel, PassThroughModel, \
-  GWRModel, MRAModel, LarsModel, GroundTruthModel, SpatialLagModel
+from openavmkit.utilities.modeling import GarbageModel, AverageModel, NaiveSqftModel, LocalSqftModel, LocalSomersModel, \
+  PassThroughModel, GWRModel, MRAModel, GroundTruthModel, SpatialLagModel
 from openavmkit.utilities.data import clean_column_names, div_field_z_safe
 from openavmkit.utilities.settings import get_valuation_date
 from openavmkit.utilities.stats import quick_median_chd_pl, calc_mse_r2_adj_r2, calc_prb, trim_outliers_mask
@@ -59,7 +60,7 @@ PredictionModel = Union[
   AverageModel,
   NaiveSqftModel,
   LocalSqftModel,
-  LarsModel,
+  LocalSomersModel,
   PassThroughModel,
   SpatialLagModel,
   GroundTruthModel,
@@ -672,6 +673,7 @@ class DataSplit:
         # Fill NaN with a string placeholder before getting unique categories
         filled_series = union_df[col].fillna("missing")
         filled_series = filled_series.infer_objects(copy=False)
+        filled_series = filled_series.astype(str)
         union_categories[col] = sorted(filled_series.unique())
       else:
         # If col is not in union_df, it means it's all NaN or wasn't present.
@@ -2800,10 +2802,8 @@ def predict_local_sqft(ds: DataSplit, sqft_model: LocalSqftModel, timing: Timing
   X_test.loc[X_test["per_land_sqft"].isna() | X_test["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
   X_test = X_test.drop(columns=["key_sale", "key"])
 
-  X_test_improved = X_test[X_test["bldg_area_finished_sqft"].gt(0)]
-  X_test_vacant = X_test[X_test["bldg_area_finished_sqft"].eq(0)]
-  X_test["prediction_impr"] = X_test_improved["bldg_area_finished_sqft"] * X_test_improved["per_impr_sqft"]
-  X_test["prediction_land"] = X_test_vacant["land_area_sqft"] * X_test_vacant["per_land_sqft"]
+  X_test["prediction_impr"] = X_test["bldg_area_finished_sqft"] * X_test["per_impr_sqft"]
+  X_test["prediction_land"] = X_test["land_area_sqft"] * X_test["per_land_sqft"]
   X_test["prediction"] = np.where(X_test["bldg_area_finished_sqft"].gt(0), X_test["prediction_impr"], X_test["prediction_land"])
 
   y_pred_test = X_test["prediction"].to_numpy()
@@ -2823,10 +2823,8 @@ def predict_local_sqft(ds: DataSplit, sqft_model: LocalSqftModel, timing: Timing
   X_sales.loc[X_sales["per_land_sqft"].isna() | X_sales["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
   X_sales = X_sales.drop(columns=["key_sale", "key"])
 
-  X_sales_improved = X_sales[X_sales["bldg_area_finished_sqft"].gt(0)]
-  X_sales_vacant = X_sales[X_sales["bldg_area_finished_sqft"].eq(0)]
-  X_sales["prediction_impr"] = X_sales_improved["bldg_area_finished_sqft"] * X_sales_improved["per_impr_sqft"]
-  X_sales["prediction_land"] = X_sales_vacant["land_area_sqft"] * X_sales_vacant["per_land_sqft"]
+  X_sales["prediction_impr"] = X_sales["bldg_area_finished_sqft"] * X_sales["per_impr_sqft"]
+  X_sales["prediction_land"] = X_sales["land_area_sqft"] * X_sales["per_land_sqft"]
   X_sales["prediction"] = np.where(X_sales["bldg_area_finished_sqft"].gt(0), X_sales["prediction_impr"], X_sales["prediction_land"])
   y_pred_sales = X_sales["prediction"].to_numpy()
   X_sales.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_sqft"], inplace=True)
@@ -2843,10 +2841,8 @@ def predict_local_sqft(ds: DataSplit, sqft_model: LocalSqftModel, timing: Timing
   X_univ.loc[X_univ["per_land_sqft"].isna() | X_univ["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
   X_univ = X_univ.drop(columns=["key"])
 
-  X_univ_improved = X_univ[X_univ["bldg_area_finished_sqft"].gt(0)]
-  X_univ_vacant = X_univ[X_univ["bldg_area_finished_sqft"].eq(0)]
-  X_univ["prediction_impr"] = X_univ_improved["bldg_area_finished_sqft"] * X_univ_improved["per_impr_sqft"]
-  X_univ["prediction_land"] = X_univ_vacant["land_area_sqft"] * X_univ_vacant["per_land_sqft"]
+  X_univ["prediction_impr"] = X_univ["bldg_area_finished_sqft"] * X_univ["per_impr_sqft"]
+  X_univ["prediction_land"] = X_univ["land_area_sqft"] * X_univ["per_land_sqft"]
   X_univ.loc[X_univ["prediction_impr"].isna() | X_univ["prediction_impr"].eq(0), "prediction_impr"] = overall_per_impr_sqft
   X_univ.loc[X_univ["prediction_land"].isna() | X_univ["prediction_land"].eq(0), "prediction_land"] = overall_per_land_sqft
   X_univ["prediction"] = np.where(X_univ["bldg_area_finished_sqft"].gt(0), X_univ["prediction_impr"], X_univ["prediction_land"])
@@ -2884,15 +2880,31 @@ def predict_local_sqft(ds: DataSplit, sqft_model: LocalSqftModel, timing: Timing
   return results
 
 
-def _prepredict_lars_sqft(ds: DataSplit, sqft_model: LocalSqftModel, timing: TimingData, verbose: bool = False):
+def predict_local_somers(ds: DataSplit, sqft_model: LocalSomersModel, timing: TimingData, verbose: bool = False):
+  """
+  Generate predictions using a local Somers model that uses location-specific values.
 
-  if verbose:
-    print(f"Prepredicting lars sqft...")
-  timing.start("train")
+  Merges local per-square-foot and somers unit foot values values computed for different location fields with the test
+  set, and then computes predictions based on improved and vacant properties.
+
+  :param ds: DataSplit object.
+  :type ds: DataSplit
+  :param sqft_model: LocalSomersModel instance containing location-specific multipliers.
+  :type sqft_model: LocalSomersModel
+  :param timing: TimingData object.
+  :type timing: TimingData
+  :param verbose: Whether to print verbose output.
+  :type verbose: bool, optional
+  :returns: Prediction results from the local sqft model.
+  :rtype: SingleModelResults
+  """
+  timing.start("predict_test")
+
   loc_map = sqft_model.loc_map
   location_fields = sqft_model.location_fields
   overall_per_impr_sqft = sqft_model.overall_per_impr_sqft
-  overall_per_land_sqft = sqft_model.overall_per_land_sqft
+  overall_land_unit_ft = sqft_model.overall_land_unit_ft
+  sales_chase = sqft_model.sales_chase
 
   # intent is to create a primary-keyed dataframe that we can fill with the appropriate local $/sqft value
   # we will merge this in to the main dataframes, then mult. local size by local $/sqft value to predict
@@ -2900,216 +2912,137 @@ def _prepredict_lars_sqft(ds: DataSplit, sqft_model: LocalSqftModel, timing: Tim
   df_impr = ds.df_universe[["key"] + location_fields].copy()
 
   # start with zero
-  df_land["per_land_sqft"] = 0.0  # Initialize as float
+  df_land["per_land_unit_ft"] = 0.0  # Initialize as float
   df_impr["per_impr_sqft"] = 0.0  # Initialize as float
-  df_land["prediction_land"] = 0.0
-  df_impr["prediction"] = 0.0
 
   # go from most specific to the least specific location (first to last)
   for location_field in location_fields:
     df_sqft_impr, df_sqft_land = loc_map[location_field]
 
     df_impr = df_impr.merge(df_sqft_impr[[location_field, f"{location_field}_per_impr_sqft"]], on=location_field, how="left")
-    df_land = df_land.merge(df_sqft_land[[location_field, f"{location_field}_per_land_sqft"]], on=location_field, how="left")
+    df_land = df_land.merge(df_sqft_land[[location_field, f"{location_field}_per_land_unit_ft"]], on=location_field, how="left")
 
     df_impr.loc[df_impr["per_impr_sqft"].eq(0), "per_impr_sqft"] = df_impr[f"{location_field}_per_impr_sqft"]
-    df_land.loc[df_land["per_land_sqft"].eq(0), "per_land_sqft"] = df_land[f"{location_field}_per_land_sqft"]
+    df_land.loc[df_land["per_land_unit_ft"].eq(0), "per_land_unit_ft"] = df_land[f"{location_field}_per_land_unit_ft"]
+
+    # do_debug = True
+    #
+    # if do_debug:
+    #   path = "main"
+    #   if ds.vacant_only:
+    #     path = "vacant"
+    #   elif ds.hedonic:
+    #     path = "hedonic"
+    #
+    #   out_path = f"out/models/{ds.model_group}/{path}/local_sqft"
+    #   df_sqft_land.to_csv(f"{out_path}/debug_local_sqft_{len(location_fields)}_{location_field}_sqft_land.csv", index=False)
+    #   df_land.to_csv(f"{out_path}debug_local_sqft_{len(location_fields)}_{location_field}_land.csv", index=False)
+    #   df_sqft_impr.to_csv(f"{out_path}/debug_local_sqft_{len(location_fields)}_{location_field}_sqft_impr.csv", index=False)
+    #   df_impr.to_csv(f"{out_path}/debug_local_sqft_{len(location_fields)}_{location_field}_impr.csv", index=False)
 
   # any remaining zeroes get filled with the locality-wide median value
   df_impr.loc[df_impr["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
-  df_land.loc[df_land["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
+  df_land.loc[df_land["per_land_unit_ft"].eq(0), "per_land_unit_ft"] = overall_land_unit_ft
+
+  X_test = ds.X_test
 
   df_impr = df_impr[["key", "per_impr_sqft"]]
-  df_land = df_land[["key", "per_land_sqft"]]
+  df_land = df_land[["key", "per_land_unit_ft"]]
 
-  X_train = ds.X_train
+  # merge the df_sqft_land/impr values into the X_test dataframe:
+  X_test["key_sale"] = ds.df_test["key_sale"]
+  X_test["key"] = ds.df_test["key"]
+  X_test = X_test.merge(df_land, on="key", how="left")
+  X_test = X_test.merge(df_impr, on="key", how="left")
+  X_test.loc[X_test["per_impr_sqft"].isna() | X_test["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
+  X_test.loc[X_test["per_land_unit_ft"].isna() | X_test["per_land_unit_ft"].eq(0), "per_land_unit_ft"] = overall_land_unit_ft
+  X_test = X_test.drop(columns=["key_sale", "key"])
 
-  # merge the df_sqft_land/impr values into the X_sales dataframe:
-  X_train["key_sale"] = ds.df_train["key_sale"]
-  X_train = X_train.merge(df_land, on="key_sale", how="left")
-  X_train = X_train.merge(df_impr, on="key_sale", how="left")
-  X_train.loc[X_train["per_impr_sqft"].isna() | X_train["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
-  X_train.loc[X_train["per_land_sqft"].isna() | X_train["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
-  X_train = X_train.drop(columns=["key_sale", "key"])
-
-  X_train_improved = X_train[X_train["bldg_area_finished_sqft"].gt(0)]
-  X_train["prediction_land"] = X_train_improved["land_area_sqft"] * X_train_improved["per_land_sqft"]
-  X_train["prediction_impr"] = X_train_improved["bldg_area_finished_sqft"] * X_train_improved["per_impr_sqft"]
-  X_train["prediction"] = X_train["prediction_land"] + X_train["prediction_impr"]
-
-  timing.stop("train")
-  if verbose:
-    print(f"Done...")
-
-  return X_train, timing
-
-
-def run_local_sqft(ds: DataSplit, location_fields: list[str], sales_chase: float = 0.0, verbose: bool = False):
-  sqft_model, timing = _run_local_sqft(ds, location_fields, sales_chase, verbose)
-  return predict_local_sqft(ds, sqft_model, timing, verbose)
-
-
-def run_lars(ds: DataSplit, location_fields: list[str], sales_chase: float = 0.0, verbose: bool = False):
-  sqft_model, timing = _run_lars_sqft(ds, location_fields, sales_chase, verbose)
-
-  # Pre-predict just the training set to get baseline values
-  X_train, timing = _prepredict_lars_sqft(ds, sqft_model, timing, verbose)
-
-  y_train = ds.y_train
-
-  # X_train now has these new fields:
-  # - "prediction_impr",
-  # - "prediction_land",
-  # - "prediction",
-  # - "per_impr_sqft",
-  # - "per_land_sqft"
-
-  # We do some renaming:
-  X_train.rename(columns={
-    "per_impr_sqft": "baseline_impr_rate",
-    "per_land_sqft": "baseline_land_rate"
-  }, inplace=True)
-
-  # Now we organize our land cluster ids and our improvement cluster ids
-  land_he_ids = ds.train_land_he_ids
-  impr_he_ids = ds.train_impr_he_ids
-  unique_land_he_ids = np.unique(land_he_ids)
-  unique_impr_he_ids = np.unique(impr_he_ids)
-
-  # We pack them together into one list of parameters
-  # Essentially, we're going to derive unique local adjustment values per cluster id
-  n_land = len(unique_land_he_ids)
-  n_impr = len(unique_impr_he_ids)
-
-  if n_land == 0:
-    raise ValueError("No land clusters found.")
-  if n_impr == 0:
-    raise ValueError("No improvement clusters found.")
-
-  initial_params = np.zeros(n_land + n_impr)
-
-  # Check we have the necessary fields:
-  necessary = ["baseline_land_rate", "baseline_impr_rate", "bldg_area_finished_sqft", "land_area_sqft"]
-  for field in necessary:
-    if field not in X_train:
-      raise ValueError(f"Required field \"{field}\" not found in training data.")
-
-  if verbose:
-    print("Optimizing L.A.R.S. model")
-
-  def objective_wrapper(params, *args):
-    # Increment the counter each time this function is called
-    objective_wrapper.calls += 1
-    verbose = False
-    if objective_wrapper.calls % 100 == 0:
-      print(f"Objective function called {objective_wrapper.calls} times")
-      verbose = True
-    # Call the original objective function
-    return _objective_lars(params, *args, verbose=verbose)
-
-  objective_wrapper.calls = 0
-
-  # Optimize the objective function
-  result = minimize(
-    objective_wrapper,
-    initial_params,
-    args=(land_he_ids, impr_he_ids, X_train, y_train),
-    method='L-BFGS-B'
+  X_test["prediction_impr"] = X_test["bldg_area_finished_sqft"] * X_test["per_impr_sqft"]
+  X_test["prediction_land"] = get_lot_value_ft(
+    X_test["per_land_unit_ft"],
+    X_test["frontage_ft_1"],
+    X_test["depth_ft_1"]
   )
 
-  if verbose:
-    print("Minimum loss achieved:", result.fun)
+  X_test["prediction"] = np.where(X_test["bldg_area_finished_sqft"].gt(0), X_test["prediction_impr"], X_test["prediction_land"])
 
-  # unpack the optimal parameters into land_x and impr_x
-  land_x = result.x[:n_land]
-  impr_x = result.x[n_land:]
-
-  # create a map of cluster id to optimal local rate for land and impr respectively:
-  land_map = {}
-  impr_map = {}
-
-  for i, land_id in enumerate(unique_land_he_ids):
-    land_map[land_id] = land_x[i]
-
-  for i, impr_id in enumerate(unique_impr_he_ids):
-    impr_map[impr_id] = impr_x[i]
-
-  # Now we have a map of land adjustment values per id, and improvement adjustment values per id
-
-  if verbose:
-    print("Optimal parameters:")
-    print("Land:")
-    for land_id in land_map:
-      print(f"--> {land_id}: {land_map[land_id]:0.2f}")
-    print("")
-    print("Improvement:")
-    for impr_id in impr_map:
-      print(f"--> {impr_id}: {impr_map[impr_id]:0.2f}")
-
-  # Pack it all up and predict
-  lars_model = LarsModel(sqft_model, land_map, impr_map)
-  return predict_lars(ds, lars_model, timing, verbose)
-
-
-def predict_lars(ds: DataSplit, lars_model: LarsModel, timing: TimingData, verbose: bool = False):
-
-  # First, predict local sqft the normal way using the LocalSqftModel
-  results = predict_local_sqft(ds, lars_model.sqft_model, timing, verbose)
-
-  # Timer was just stopped in the above call, so start it again
-  timing.start("total")
-
-  # Now, calculate the L.A.R.S. adjustments for each prediction set
-
-  timing.start("predict_test")
-  X_test = ds.df_test[ds.ind_vars + ["impr_he_id", "land_he_id"]].copy()
-
-  #ds.X_test.copy()
-
-  # For each cluster, there is a unique improvement and land adjustment rate, look it up and apply it
-  # (If a particular cluster was out of the training sample, we will have no adjustment for it, i.e. it will be 0.0)
-  # Once we have the right rate, we multiply it by the appropriate size unit
-  X_test["impr_adjustment"] = X_test["impr_he_id"].map(lars_model.impr_adjustments).fillna(0.0) * X_test["bldg_area_finished_sqft"].to_numpy()
-  X_test["land_adjustment"] = X_test["land_he_id"].map(lars_model.land_adjustments).fillna(0.0) * X_test["land_area_sqft"].to_numpy()
-
-  # The total local adjustment is the sum of the local land and improvement adjustment
-  X_test["total_adjustment"] = X_test["impr_adjustment"] + X_test["land_adjustment"]
-
-  # We take the baseline prediction and add the local adjustment
-  y_pred_test = results.pred_test.y_pred + X_test["total_adjustment"]
+  y_pred_test = X_test["prediction"].to_numpy()
+  # TODO: later, don't drop these columns, use them to predict land value everywhere
+  X_test.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_unit_ft"], inplace=True)
   timing.stop("predict_test")
 
-  # Do the same thing for everything else:
-
   timing.start("predict_sales")
+  X_sales = ds.X_sales
 
-  X_sales = ds.df_sales[ds.ind_vars + ["impr_he_id", "land_he_id"]].copy()
-  #X_sales = ds.X_sales.copy()
+  # merge the df_sqft_land/impr values into the X_sales dataframe:
+  X_sales["key_sale"] = ds.df_sales["key_sale"]
+  X_sales["key"] = ds.df_sales["key"]
+  X_sales = X_sales.merge(df_land, on="key", how="left")
+  X_sales = X_sales.merge(df_impr, on="key", how="left")
+  X_sales.loc[X_sales["per_impr_sqft"].isna() | X_sales["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
+  X_sales.loc[X_sales["per_land_unit_ft"].isna() | X_sales["per_land_unit_ft"].eq(0), "per_land_unit_ft"] = overall_land_unit_ft
+  X_sales = X_sales.drop(columns=["key_sale", "key"])
 
-  X_sales["impr_adjustment"] = X_sales["impr_he_id"].map(lars_model.impr_adjustments).fillna(0.0) * X_sales["bldg_area_finished_sqft"].to_numpy()
-  X_sales["land_adjustment"] = X_sales["land_he_id"].map(lars_model.land_adjustments).fillna(0.0) * X_sales["land_area_sqft"].to_numpy()
-  X_sales["total_adjustment"] = X_sales["impr_adjustment"] + X_sales["land_adjustment"]
-  y_pred_sales = results.pred_sales.y_pred + X_sales["total_adjustment"]
+  X_sales["prediction_impr"] = X_sales["bldg_area_finished_sqft"] * X_sales["per_impr_sqft"]
+
+  X_sales["prediction_land"] = get_lot_value_ft(
+    X_sales["per_land_unit_ft"],
+    X_sales["frontage_ft_1"],
+    X_sales["depth_ft_1"]
+  )
+
+  X_sales["prediction"] = np.where(X_sales["bldg_area_finished_sqft"].gt(0), X_sales["prediction_impr"], X_sales["prediction_land"])
+  y_pred_sales = X_sales["prediction"].to_numpy()
+  X_sales.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_unit_ft"], inplace=True)
   timing.stop("predict_sales")
 
   timing.start("predict_univ")
-  X_univ = ds.df_universe[ds.ind_vars + ["impr_he_id", "land_he_id"]].copy()
-  X_univ["impr_adjustment"] = X_univ["impr_he_id"].map(lars_model.impr_adjustments).fillna(0.0) * X_univ["bldg_area_finished_sqft"].to_numpy()
-  X_univ["land_adjustment"] = X_univ["land_he_id"].map(lars_model.land_adjustments).fillna(0.0) * X_univ["land_area_sqft"].to_numpy()
-  X_univ["total_adjustment"] = X_univ["impr_adjustment"] + X_univ["land_adjustment"]
-  y_pred_univ = results.pred_univ + X_univ["total_adjustment"]
+  X_univ = ds.X_univ
+
+  # merge the df_sqft_land/impr values into the X_univ dataframe:
+  X_univ["key"] = ds.df_universe["key"]
+  X_univ = X_univ.merge(df_land, on="key", how="left")
+  X_univ = X_univ.merge(df_impr, on="key", how="left")
+  X_univ.loc[X_univ["per_impr_sqft"].isna() | X_univ["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
+  X_univ.loc[X_univ["per_land_unit_ft"].isna() | X_univ["per_land_unit_ft"].eq(0), "per_land_unit_ft"] = overall_land_unit_ft
+  X_univ = X_univ.drop(columns=["key"])
+
+  X_univ["prediction_impr"] = X_univ["bldg_area_finished_sqft"] * X_univ["per_impr_sqft"]
+  X_univ["prediction_land"] = get_lot_value_ft(
+    X_univ["per_land_unit_ft"],
+    X_univ["frontage_ft_1"],
+    X_univ["depth_ft_1"]
+  )
+
+  X_univ.loc[X_univ["prediction_impr"].isna() | X_univ["prediction_impr"].eq(0), "prediction_impr"] = overall_per_impr_sqft
+  X_univ.loc[X_univ["prediction_land"].isna() | X_univ["prediction_land"].eq(0), "prediction_land"] = overall_land_unit_ft
+  X_univ["prediction"] = np.where(X_univ["bldg_area_finished_sqft"].gt(0), X_univ["prediction_impr"], X_univ["prediction_land"])
+  y_pred_univ = X_univ["prediction"].to_numpy()
+  X_univ.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_unit_ft"], inplace=True)
   timing.stop("predict_univ")
 
   timing.stop("total")
 
-  name = "lars"
+  df = ds.df_universe
+  dep_var = ds.dep_var
+
+  if sales_chase:
+    y_pred_test = ds.y_test * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_test))
+    y_pred_sales = ds.y_sales * np.random.choice([1-sales_chase, 1+sales_chase], len(ds.y_sales))
+    y_pred_univ = _sales_chase_univ(df, dep_var, y_pred_univ) * np.random.choice([1-sales_chase, 1+sales_chase], len(y_pred_univ))
+
+  name = "local_somers"
+
+  if sales_chase:
+    name += "*"
 
   results = SingleModelResults(
     ds,
     "prediction",
     "he_id",
     name,
-    lars_model,
+    sqft_model,
     y_pred_test,
     y_pred_sales,
     y_pred_univ,
@@ -3118,202 +3051,10 @@ def predict_lars(ds: DataSplit, lars_model: LarsModel, timing: TimingData, verbo
 
   return results
 
-# Private functions:
 
-
-def _run_lars_sqft(ds: DataSplit, location_fields: list[str], sales_chase: float = 0.0, verbose: bool = False)->(LocalSqftModel, TimingData):
-  """
-  Run a local per-square-foot model that predicts values based on location-specific median $/sqft.
-
-  :param ds: DataSplit object.
-  :type ds: DataSplit
-  :param location_fields: List of location field names to use.
-  :type location_fields: list[str]
-  :param sales_chase: Factor for simulating sales chasing (default 0.0 means no adjustment).
-  :type sales_chase: float, optional
-  :param verbose: Whether to print verbose output.
-  :type verbose: bool, optional
-  :returns: LocalSqftModel instance and TimingData object.
-  :rtype: (LocalSqftModel, TimingData)
-  """
-  timing = TimingData()
-
-  timing.start("total")
-
-  timing.start("parameter_search")
-  timing.stop("parameter_search")
-
-  timing.start("setup")
-  ds.split()
-  timing.stop("setup")
-
-  timing.start("train")
-
-  X_train = ds.X_train
-
-  # filter out vacant land where bldg_area_finished_sqft is zero:
-  X_train_improved = X_train[X_train["bldg_area_finished_sqft"].gt(0)]
-  y_train_improved = ds.y_train[X_train["bldg_area_finished_sqft"].gt(0)]
-
-  # filter out improved land where bldg_area_finished_sqft is > zero:
-  X_train_vacant = X_train[X_train["bldg_area_finished_sqft"].eq(0)]
-  y_train_vacant = ds.y_train[X_train["bldg_area_finished_sqft"].eq(0)]
-
-  # our aim is to construct a dataframe which will contain the local $/sqft values for each individual location value,
-  # for multiple location fields. We will then use this to calculate final values for every permutation, and merge
-  # that onto our main dataframe to assign $/sqft values from which to generate our final predictions
-
-  loc_map = {}
-
-  # Calculate a very generic prior for the median land allocation
-  # median land size x median price/land sqft --> median land value
-  # median impr size x median price/impr sqft --> median total value
-  median_impr_sqft = X_train_improved["bldg_area_finished_sqft"].median()
-  median_land_sqft = X_train_improved["land_area_sqft"].median()
-  median_per_impr_sqft = div_field_z_safe(y_train_improved, X_train_improved["bldg_area_finished_sqft"]).median()
-  median_per_land_sqft = div_field_z_safe(y_train_vacant, X_train_vacant["land_area_sqft"]).median()
-  median_total_value = median_per_impr_sqft * median_impr_sqft
-  median_land_value = median_per_land_sqft * median_land_sqft
-  median_land_alloc = median_land_value / median_total_value
-
-  if verbose:
-    print("Prior median values:")
-    print(f"-->impr_sqft: {median_impr_sqft}")
-    print(f"-->land_sqft: {median_land_sqft}")
-    print(f"-->per_impr_sqft: {median_per_impr_sqft}")
-    print(f"-->per_land_sqft: {median_per_land_sqft}")
-    print(f"-->total_value: {median_total_value}")
-    print(f"-->land_value: {median_land_value}")
-    print(f"-->land_alloc: {median_land_alloc}")
-
-  # If it winds up whacky then just pick a conservative value for the baseline
-  if median_land_alloc >= 1.0 or median_land_alloc <= 0:
-    median_land_alloc = 0.15
-
-  for location_field in location_fields:
-    data_sqft_land = {}
-
-    if location_field not in ds.df_train:
-      print(f"Location field {location_field} not found in dataset")
-      continue
-
-    data_sqft_land[location_field] = []
-    data_sqft_land[f"{location_field}_per_land_sqft"] = []
-
-    # for every specific location, calculate the local median $/sqft for vacant property
-    for loc in ds.df_train[location_field].unique():
-      y_train_loc = ds.y_train[ds.df_train[location_field].eq(loc)]
-      X_train_loc = ds.X_train[ds.df_train[location_field].eq(loc)]
-      X_train_loc_vacant = X_train_loc[X_train_loc["bldg_area_finished_sqft"].eq(0)]
-
-      if len(X_train_loc_vacant) > 0:
-        local_per_land_sqft = (y_train_loc / X_train_loc_vacant["land_area_sqft"]).median()
-      else:
-        local_per_land_sqft = 0
-
-      # some values will be null so replace them with zeros
-      if pd.isna(local_per_land_sqft):
-        local_per_land_sqft = 0
-
-      data_sqft_land[location_field].append(loc)
-      data_sqft_land[f"{location_field}_per_land_sqft"].append(local_per_land_sqft)
-
-    # create dataframes from the calculated values
-    df_sqft_land = pd.DataFrame(data=data_sqft_land)
-    loc_map[location_field] = [None, df_sqft_land]
-
-  for location_field in location_fields:
-    data_sqft_impr = {}
-    if location_field not in ds.df_train:
-      print(f"Location field {location_field} not found in dataset")
-      continue
-
-    data_sqft_impr[location_field] = []
-    data_sqft_impr[f"{location_field}_per_impr_sqft"] = []
-
-    df_sqft_land = loc_map[location_field][1]
-
-    # for every specific location, calculate the local median $/sqft for improved property
-    for loc in ds.df_train[location_field].unique():
-      y_train_loc = ds.y_train[ds.df_train[location_field].eq(loc)]
-      X_train_loc = ds.X_train[ds.df_train[location_field].eq(loc)]
-
-      X_train_loc_improved = X_train_loc[X_train_loc["bldg_area_finished_sqft"].gt(0)]
-
-      if len(X_train_loc_improved) > 0:
-        local_per_impr_sqft = (y_train_loc / X_train_loc_improved["bldg_area_finished_sqft"]).median()
-      else:
-        local_per_impr_sqft = 0
-
-      # some values will be null so replace them with zeros
-      if pd.isna(local_per_impr_sqft):
-        local_per_impr_sqft = 0
-
-      # Now we try to make the land fit
-      local_per_land_sqft = df_sqft_land[df_sqft_land[location_field].eq(loc)][f"{location_field}_per_land_sqft"].values[0]
-      X_train_loc["prediction"] = X_train_loc["bldg_area_finished_sqft"] * local_per_impr_sqft
-
-      # We need to make sure the land value is not greater than the total value
-      failsafe = 99
-      done = False
-      land_changed = False
-      while (not done) and (failsafe > 0):
-        X_train_loc["prediction_land"] = X_train_loc["land_area_sqft"] * local_per_land_sqft
-        X_train_loc["prediction_impr"] = X_train_loc["prediction"] - X_train_loc["prediction_land"]
-
-        # if no "prediction_impr" values are zero, we're good:
-        if X_train_loc["prediction_impr"].lt(0).any():
-          done = True
-        else:
-          local_per_land_sqft *= 0.9 # reduce by 10% and try again
-          land_changed = True
-
-        # update local $/impr sqft rate
-        local_per_impr_sqft = div_field_z_safe(X_train_loc["prediction_impr"], X_train_loc["bldg_area_finished_sqft"]).median()
-
-        failsafe -= 1
-
-      if failsafe <= 0:
-        warnings.warn(f"Land value failed to converge for '{location_field}' = '{loc}")
-        local_per_land_sqft = 0.0
-        land_changed = True
-
-      # Store the improved sqft value
-      data_sqft_impr[location_field].append(loc)
-      data_sqft_impr[f"{location_field}_per_impr_sqft"].append(local_per_impr_sqft)
-
-      if land_changed:
-        # Update the land sqft value:
-        df_sqft_land.loc[df_sqft_land[location_field].eq(loc), f"{location_field}_per_land_sqft"] = local_per_land_sqft
-        if verbose:
-          print(f"--> Land changed for '{location_field}' = '{loc}' to {local_per_land_sqft:0.2f}")
-
-    # create dataframes from the calculated values
-    df_sqft_impr = pd.DataFrame(data=data_sqft_impr)
-
-    if verbose:
-      print("")
-      print("df sqft land")
-      display(df_sqft_land)
-      print("")
-      print("df sqft impr")
-      display(df_sqft_impr)
-
-    loc_map[location_field][0] = df_sqft_impr
-    loc_map[location_field][1] = df_sqft_land
-
-  # guaranteed to "fit" properly
-  overall_per_land_sqft = median_per_impr_sqft * median_land_alloc
-  overall_per_impr_sqft = median_per_impr_sqft - overall_per_land_sqft
-
-  timing.stop("train")
-  if verbose:
-    print("Tuning L.A.R.S. Sqft: searching for optimal parameters...")
-    print(f"--> optimal improved $/finished sqft (overall) = {overall_per_impr_sqft:0.2f}")
-    print(f"--> optimal vacant   $/land     sqft (overall) = {overall_per_land_sqft:0.2f}")
-
-  return LocalSqftModel(loc_map, location_fields, overall_per_impr_sqft, overall_per_land_sqft, sales_chase), timing
-
+def run_local_sqft(ds: DataSplit, location_fields: list[str], sales_chase: float = 0.0, verbose: bool = False):
+  sqft_model, timing = _run_local_sqft(ds, location_fields, sales_chase, verbose)
+  return predict_local_sqft(ds, sqft_model, timing, verbose)
 
 
 def _run_local_sqft(ds: DataSplit, location_fields: list[str], sales_chase: float = 0.0, verbose: bool = False)->(LocalSqftModel, TimingData):
@@ -3424,69 +3165,121 @@ def _run_local_sqft(ds: DataSplit, location_fields: list[str], sales_chase: floa
   return LocalSqftModel(loc_map, location_fields, overall_per_impr_sqft, overall_per_land_sqft, sales_chase), timing
 
 
-def _objective_lars(params, land_he_ids: np.ndarray, impr_he_ids: np.ndarray, X_train: pd.DataFrame, y_train: np.ndarray, verbose=False):
+def run_local_somers(ds: DataSplit, location_fields: list[str], sales_chase: float = 0.0, verbose: bool = False):
+  somers_model, timing = _run_local_somers(ds, location_fields, sales_chase, verbose)
+  return predict_local_somers(ds, somers_model, timing, verbose)
 
-  # Get unique clusters and inverse indices for vectorized mapping
-  unique_land, inv_idx_land = np.unique(land_he_ids, return_inverse=True)
-  unique_impr, inv_idx_impr = np.unique(impr_he_ids, return_inverse=True)
 
-  n_land = len(unique_land)
-  n_impr = len(unique_impr)
+def _run_local_somers(ds: DataSplit, location_fields: list[str], sales_chase: float = 0.0, verbose: bool = False)->(LocalSomersModel, TimingData):
+  """
+  Run a local somers-unit-foot model that predicts values based on location-specific median $/somers-unit-foot.
 
-  # First n_loc parameters correspond to adjustments to the land rate,
-  # and the next n_impr parameters to adjustments to the improvement rate.
-  # we unpack these into separate variables
-  land_rate_adj = params[:n_land]
-  impr_rate_adj = params[n_land:n_land+n_impr]
+  :param ds: DataSplit object.
+  :type ds: DataSplit
+  :param location_fields: List of location field names to use.
+  :type location_fields: list[str]
+  :param sales_chase: Factor for simulating sales chasing (default 0.0 means no adjustment).
+  :type sales_chase: float, optional
+  :param verbose: Whether to print verbose output.
+  :type verbose: bool, optional
+  :returns: LocalSomersModel instance and TimingData object.
+  :rtype: (LocalSomersModel, TimingData)
+  """
+  timing = TimingData()
 
-  # Vectorized adjustment of the unit rates
-  adjusted_land_rate = X_train['baseline_land_rate'].to_numpy() + land_rate_adj[inv_idx_land]
-  adjusted_impr_rate = X_train['baseline_impr_rate'].to_numpy() + impr_rate_adj[inv_idx_impr]
+  timing.start("total")
 
-  # Multiply by the land/impr sizes to get land, improvement, and total value predictions
-  adjusted_land_value = adjusted_land_rate * X_train['land_area_sqft'].to_numpy()
-  adjusted_impr_value = adjusted_impr_rate * X_train['bldg_area_finished_sqft'].to_numpy()
+  timing.start("parameter_search")
+  timing.stop("parameter_search")
 
-  total_prediction = adjusted_land_value + adjusted_impr_value
+  timing.start("setup")
+  ds.split()
+  timing.stop("setup")
 
-  neg_land_values = adjusted_land_value < 0
-  neg_impr_values = adjusted_impr_value < 0
+  timing.start("train")
 
-  # Penalize negative predictions
-  abs_neg_values = np.sum(np.abs(adjusted_land_value[neg_land_values]) / X_train[neg_land_values]["land_area_sqft"]) + \
-  np.sum(np.abs(adjusted_impr_value[neg_impr_values]) / X_train[neg_impr_values]["bldg_area_finished_sqft"])
+  X_train = ds.X_train
 
-  # Mean Absolute Error between the total prediction and observed ground truth
-  mae = np.mean(np.abs(total_prediction - y_train)) / np.mean(X_train["bldg_area_finished_sqft"])
+  # filter out vacant land where bldg_area_finished_sqft is zero:
+  X_train_improved = X_train[X_train["bldg_area_finished_sqft"].gt(0)]
 
-  # Compute uniformity penalties: variance within each cluster
-  land_variances = []
-  for land_id in unique_land:
-    mask = (land_he_ids == land_id)
-    if np.sum(mask) > 1:
-      land_variances.append(np.var(adjusted_land_rate[mask]))
+  # filter out improved land where bldg_area_finished_sqft is > zero:
+  X_train_vacant = X_train[X_train["bldg_area_finished_sqft"].eq(0)]
 
-  impr_variances = []
-  for impr_id in unique_impr:
-    mask = (impr_he_ids == impr_id)
-    if np.sum(mask) > 1:
-      impr_variances.append(np.var(adjusted_impr_rate[mask]))
+  # our aim is to construct a dataframe which will contain the local $/somers-unit-foot values for each individual location value,
+  # for multiple location fields. We will then use this to calculate final values for every permutation, and merge
+  # that onto our main dataframe to assign $/somers-unit-foot values from which to generate our final predictions
 
-  # Average variance within clusters (if any clusters have >1 member)
-  land_var = np.mean(land_variances) if len(land_variances) > 0 else 0.0
-  impr_var = np.mean(impr_variances) if len(impr_variances) > 0 else 0.0
+  loc_map = {}
 
-  # Weights to balance the prediction error and uniformity penalties
-  alpha = 1.00  # weight for MAE
-  beta  = 0.00  # weight for land uniformity penalty
-  gamma = 1.00  # weight for improvement uniformity penalty
-  delta = 10.00  # weight for negative prediction penalty
+  for location_field in location_fields:
 
-  total_loss = alpha * mae + beta * land_var + gamma * impr_var + delta * abs_neg_values
+    data_unit_ft_land = {}
+    data_sqft_impr = {}
 
+    if location_field not in ds.df_train:
+      print(f"Location field {location_field} not found in dataset")
+      continue
+
+    data_unit_ft_land[location_field] = []
+    data_unit_ft_land[f"{location_field}_per_land_unit_ft"] = []
+
+    data_sqft_impr[location_field] = []
+    data_sqft_impr[f"{location_field}_per_impr_sqft"] = []
+
+    # for every specific location, calculate the local median $/sqft for improved property & local median $/unitft vacant property
+    for loc in ds.df_train[location_field].unique():
+      y_train_loc = ds.y_train[ds.df_train[location_field].eq(loc)]
+      X_train_loc = ds.X_train[ds.df_train[location_field].eq(loc)]
+
+      X_train_loc_improved = X_train_loc[X_train_loc["bldg_area_finished_sqft"].gt(0)]
+      X_train_loc_vacant = X_train_loc[X_train_loc["bldg_area_finished_sqft"].eq(0)]
+
+      if len(X_train_loc_improved) > 0:
+        y_train_loc_improved = y_train_loc[X_train_loc["bldg_area_finished_sqft"].gt(0)]
+        local_per_impr_sqft = (y_train_loc_improved / X_train_loc_improved["bldg_area_finished_sqft"]).median()
+      else:
+        local_per_impr_sqft = 0.0
+
+      if len(X_train_loc_vacant) > 0:
+        y_train_loc_vacant = y_train_loc[X_train_loc["bldg_area_finished_sqft"].eq(0)]
+
+        local_land_unit_ft = get_unit_ft(
+          y_train_loc_vacant,
+          X_train_loc_vacant["frontage_ft_1"],
+          X_train_loc_vacant["depth_ft_1"]).median()
+      else:
+        local_land_unit_ft = 0.0
+
+      # some values will be null so replace them with zeros
+      if pd.isna(local_per_impr_sqft):
+        local_per_impr_sqft = 0.0
+      if pd.isna(local_land_unit_ft):
+        local_land_unit_ft = 0.0
+
+      data_sqft_impr[location_field].append(loc)
+      data_unit_ft_land[location_field].append(loc)
+
+      data_sqft_impr[f"{location_field}_per_impr_sqft"].append(local_per_impr_sqft)
+      data_unit_ft_land[f"{location_field}_per_land_unit_ft"].append(local_land_unit_ft)
+
+    # create dataframes from the calculated values
+    df_sqft_impr = pd.DataFrame(data=data_sqft_impr)
+    df_unit_ft_land = pd.DataFrame(data=data_unit_ft_land)
+
+    loc_map[location_field] = (df_sqft_impr, df_unit_ft_land)
+
+  # calculate the median overall values
+  overall_per_impr_sqft = (ds.y_train / X_train_improved["bldg_area_finished_sqft"]).median()
+  overall_land_unit_ft = get_unit_ft(ds.y_train, X_train_vacant["frontage_ft_1"], X_train_vacant["depth_ft_1"]).median()
+
+  timing.stop("train")
   if verbose:
-    print(f"params.sum() = {params.sum()} mae = {mae:,.2f} abs_neg_values = {abs_neg_values:,.2f} land_var = {land_var:,.4f} impr_var = {impr_var:,.2f} total_loss = {total_loss:,.2f}")
-  return total_loss
+    print("Tuning Local Somers: searching for optimal parameters...")
+    print(f"--> optimal improved $/finished sqft (overall) = {overall_per_impr_sqft:0.2f}")
+    print(f"--> optimal vacant   $/land  unit-ft (overall) = {overall_land_unit_ft:0.2f}")
+
+  return LocalSomersModel(loc_map, location_fields, overall_per_impr_sqft, overall_land_unit_ft, sales_chase), timing
 
 
 def _sales_chase_univ(df_in, dep_var, y_pred_univ):

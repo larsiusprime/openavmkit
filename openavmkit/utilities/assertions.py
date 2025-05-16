@@ -152,10 +152,18 @@ def series_are_equal(a: pd.Series, b: pd.Series):
 	b_is_int = "int" in str(b_type).lower()
 
 	if a_is_float and b_is_float:
+
+		if a.isna().sum() != b.isna().sum():
+			print(f"Number of NaN values do not match: a={a.isna().sum()} b={b.isna().sum()}")
+			return False
+
+		a_fill_na = a.fillna(0)
+		b_fill_na = b.fillna(0)
+
 		# compare floats with epsilon:
-		result = a.subtract(b).abs().max() < 1e-6
+		result = a_fill_na.subtract(b_fill_na).abs().max() < 1e-6
 		if result == False:
-			print(f"Comparing floats with epsilon:\n{a.subtract(b).abs().max()}")
+			print(f"Comparing floats with epsilon:\n{a_fill_na.subtract(b_fill_na).abs().max()}")
 		return result
 
 	if a_is_int and b_is_int:

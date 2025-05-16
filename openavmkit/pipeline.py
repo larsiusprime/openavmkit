@@ -472,7 +472,6 @@ def load_dataframes(settings: dict, verbose: bool = False) -> dict:
    fields_bool = get_fields_boolean(settings)
    fields_num = get_fields_numeric(settings, include_boolean=False)
 
-
    for key in s_load:
       entry = s_load[key]
       df = _load_dataframe(entry, settings, verbose=verbose,
