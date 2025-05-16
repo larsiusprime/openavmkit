@@ -4,6 +4,12 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 import colorsys
+import mpld3
+from mpld3 import plugins
+
+from openavmkit.modeling import simple_ols
+from IPython.display import display, HTML
+
 
 def get_nice_random_colors(n: int, shuffle=False, seed=1337):
   """
@@ -39,6 +45,7 @@ def get_nice_random_colors(n: int, shuffle=False, seed=1337):
 
   return colors
 
+
 def _get_color_by(df: pd.DataFrame, style: dict):
   color = None
   if style is not None:
@@ -52,46 +59,74 @@ def _get_color_by(df: pd.DataFrame, style: dict):
   return color
 
 def plot_scatterplot(
-    df: pd.DataFrame,
+    df,
     x: str,
     y: str,
-    xlabel: str = "",
-    ylabel: str = "",
-    title: str = "",
-    x_lim: tuple = None,
-    y_lim: tuple = None,
+    xlabel: str = None,
+    ylabel: str = None,
+    title: str = None,
     out_file: str = None,
-    style: dict = None
+    style: dict = None,
+    best_fit_line: bool = False,
+    perfect_fit_line: bool = False,
+    metadata_field: str = None
 ):
-  plt.close('all')
+  """
+  Scatterplot with inline mpld3 tooltips showing df[metadata_field].
+  """
+  # 1) Defaults
+  xlabel = xlabel or x
+  ylabel = ylabel or y
+  title   = title   or f"{x} vs {y}"
 
-  if xlabel == "":
-    xlabel = x
-  if ylabel == "":
-    ylabel = y
-  if title == "":
-    title = f"{x} vs {y}"
+  # 2) New figure & axis
+  fig, ax = plt.subplots()
 
+  # 3) Color/style helper (your existing function)
   color = _get_color_by(df, style)
 
-  plt.scatter(df[x], df[y], alpha=0.25, c=color)
-  plt.xlabel(xlabel)
-  plt.ylabel(ylabel)
-  plt.title(title)
-  if x_lim is not None:
-    plt.xlim(x_lim[0], x_lim[1])
-  if y_lim is not None:
-    plt.ylim(y_lim[0], y_lim[1])
-  if out_file is not None:
-    plt.savefig(out_file)
-  plt.show()
+  # 4) Scatter
+  sc = ax.scatter(df[x], df[y], s=4, c=color)
+
+  # 5) Optional best‐fit line
+  if best_fit_line:
+    results = simple_ols(df, x, y)
+    slope, intercept, r2 = results["slope"], results["intercept"], results["r2"]
+    ax.plot(df[x], slope * df[x] + intercept,
+      color="red", alpha=0.5, label=f"Best fit line (r²={r2:.2f})")
+
+  if perfect_fit_line:
+    # Add a perfect line (y=x)
+    ax.plot(df[x], df[x], color="blue", alpha=0.5, label="Perfect Line (y=x)")
+
+  # 6) Labels & title
+  ax.set_xlabel(xlabel)
+  ax.set_ylabel(ylabel)
+  ax.set_title(title)
+
+  # 7) Save if requested
+  if out_file:
+    fig.savefig(out_file)
+
+  # 8) Build tooltip labels from your metadata field
+  if metadata_field is not None:
+    labels = df[metadata_field].astype(str).tolist()
+    tooltip = plugins.PointLabelTooltip(sc, labels=labels)
+    plugins.connect(fig, tooltip)
+
+  # 9) Display the interactive HTML
+  html = mpld3.fig_to_html(fig)
+  display(HTML(html))
+
+
+  return fig
 
 
 def plot_bar(
     df: pd.DataFrame,
     data_field: str,
-    height = 1.0,
-    width = 1.0,
+    height=1.0,
+    width=1.0,
     xlabel: str = "",
     ylabel: str = "",
     title: str = "",
@@ -114,9 +149,8 @@ def plot_bar(
   plt.show()
 
 
-
-
-def plot_histogram_df(df: pd.DataFrame, fields: list[str], xlabel: str = "", ylabel: str = "", title: str = "", bins = 500, x_lim=None, out_file: str = None):
+def plot_histogram_df(df: pd.DataFrame, fields: list[str], xlabel: str = "", ylabel: str = "", title: str = "",
+    bins=500, x_lim=None, out_file: str = None):
   entries = []
   for field in fields:
     data = df[field]
@@ -128,7 +162,8 @@ def plot_histogram_df(df: pd.DataFrame, fields: list[str], xlabel: str = "", yla
   plot_histogram_mult(entries, xlabel, ylabel, title, bins, x_lim, out_file)
 
 
-def plot_histogram_mult(entries: list[dict],  xlabel:str = "", ylabel: str = "", title: str = "", bins=500, x_lim=None, out_file: str = None):
+def plot_histogram_mult(entries: list[dict], xlabel: str = "", ylabel: str = "", title: str = "", bins=500, x_lim=None,
+    out_file: str = None):
   plt.close('all')
   ylim_min = 0
   ylim_max = 0
@@ -146,7 +181,7 @@ def plot_histogram_mult(entries: list[dict],  xlabel:str = "", ylabel: str = "",
     data = data[~data.isna()]
     counts, _, _ = plt.hist(data, bins=_bins, label=label, alpha=alpha)
     _ylim_max = np.percentile(counts, 95)
-    if(_ylim_max > ylim_max):
+    if (_ylim_max > ylim_max):
       ylim_max = _ylim_max
   plt.xlabel(xlabel)
   plt.ylabel(ylabel)
@@ -158,4 +193,3 @@ def plot_histogram_mult(entries: list[dict],  xlabel:str = "", ylabel: str = "",
   if out_file is not None:
     plt.savefig(out_file)
   plt.show()
-

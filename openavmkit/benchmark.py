@@ -21,14 +21,15 @@ from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run
 	run_garbage, run_average, run_naive_sqft, predict_garbage, \
 	run_kernel, run_local_sqft, run_pass_through, predict_average, predict_naive_sqft, predict_local_sqft, \
 	predict_pass_through, predict_kernel, predict_gwr, predict_xgboost, predict_catboost, predict_lightgbm, \
-	GarbageModel, AverageModel, DataSplit, predict_lars, run_ground_truth, predict_ground_truth, run_spatial_lag, \
-	predict_spatial_lag
+	GarbageModel, AverageModel, DataSplit, run_ground_truth, predict_ground_truth, run_spatial_lag, \
+	predict_spatial_lag, predict_local_somers, run_local_somers
 from openavmkit.reports import MarkdownReport, _markdown_to_pdf
 from openavmkit.time_adjustment import enrich_time_adjustment
 from openavmkit.utilities.data import div_z_safe, dataframe_to_markdown, do_per_model_group
 from openavmkit.utilities.format import fancy_format, dig2_fancy_format
-from openavmkit.utilities.modeling import NaiveSqftModel, LocalSqftModel, PassThroughModel, GWRModel, MRAModel, \
-	LarsModel, GroundTruthModel, SpatialLagModel
+from openavmkit.utilities.modeling import NaiveSqftModel, LocalSqftModel, LocalSomersModel, PassThroughModel, GWRModel, MRAModel, \
+	GroundTruthModel, SpatialLagModel
+from openavmkit.utilities.plotting import plot_scatterplot
 from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions, get_valuation_date, \
 	get_model_group, apply_dd_to_df_rows, get_model_group_ids, get_fields_boolean
 from openavmkit.utilities.stats import calc_vif_recursive_drop, calc_t_values_recursive_drop, \
@@ -46,13 +47,11 @@ class BenchmarkResults:
   Attributes:
       df_time (pd.DataFrame): DataFrame containing timing information.
       df_stats_test (pd.DataFrame): DataFrame with statistics for the test set.
+      df_stats_test_post_val (pd.DataFrame): DataFrame with statistics for the test set (post-valuation-date only).
       df_stats_full (pd.DataFrame): DataFrame with statistics for the full universe.
   """
-	df_time: pd.DataFrame
-	df_stats_test: pd.DataFrame
-	df_stats_full: pd.DataFrame
 
-	def __init__(self, df_time: pd.DataFrame, df_stats_test: pd.DataFrame, df_stats_full: pd.DataFrame):
+	def __init__(self, df_time: pd.DataFrame, df_stats_test: pd.DataFrame, df_stats_test_post_val: pd.DataFrame, df_stats_full: pd.DataFrame):
 		"""
     Initialize a BenchmarkResults instance.
 
@@ -60,11 +59,14 @@ class BenchmarkResults:
     :type df_time: pandas.DataFrame
     :param df_stats_test: DataFrame with test set statistics.
     :type df_stats_test: pandas.DataFrame
+    :param df_stats_test_post_val: DataFrame with test set (post-valuation-date only) statistics
+    :type df_stats_test_post_val: pandas.DataFrame
     :param df_stats_full: DataFrame with full universe statistics.
     :type df_stats_full: pandas.DataFrame
     """
 		self.df_time = df_time
 		self.df_stats_test = df_stats_test
+		self.df_stats_test_post_val = df_stats_test_post_val
 		self.df_stats_full = df_stats_full
 
 	def print(self) -> str:
@@ -77,6 +79,10 @@ class BenchmarkResults:
 		result = "Timings:\n"
 		result += _format_benchmark_df(self.df_time)
 		result += "\n\n"
+		if self.df_stats_test_post_val is not None and len(self.df_stats_test_post_val) > 0:
+			result += "Test set (post-valuation-date only):\n"
+			result += _format_benchmark_df(self.df_stats_test_post_val)
+			result += "\n\n"
 		result += "Test set:\n"
 		result += _format_benchmark_df(self.df_stats_test)
 		result += "\n\n"
@@ -779,18 +785,22 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 		"chd": []
 	}
 	for key in model_results:
-		for kind in ["test", "univ"]:
+		for kind in ["test", "test_post_val", "univ"]:
 			results = model_results[key]
 			if kind == "test":
 				pred_results = results.pred_test
 				subset = "Test set"
+			elif kind == "test_post_val":
+				results = _get_post_valuation_smr(results)
+				pred_results = results.pred_test
+				subset = "Test set (post-valuation date)"
 			else:
 				pred_results = results.pred_sales
 				subset = "Universe set"
 
 			data["model"].append(key)
 			data["subset"].append(subset)
-			if kind == "test":
+			if kind == "test" or kind == "test_post_val":
 				data["utility_score"].append(results.utility_test)
 			else:
 				data["utility_score"].append(results.utility_train)
@@ -818,18 +828,22 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
 			data["chd"].append(chd_results)
 
 	df = pd.DataFrame(data)
+	df_time = pd.DataFrame(data_time)
 	df_test = df[df["subset"].eq("Test set")].drop(columns=["subset"])
+	df_test_post_val = df[df["subset"].eq("Test set (post-valuation date)")].drop(columns=["subset"])
 	df_full = df[df["subset"].eq("Universe set")].drop(columns=["subset"])
 	df_time = pd.DataFrame(data_time)
 
 	df_test.set_index("model", inplace=True)
+	df_test_post_val.set_index("model", inplace=True)
 	df_full.set_index("model", inplace=True)
 	df_time.set_index("model", inplace=True)
 
 	results = BenchmarkResults(
 		df_time,
 		df_test,
-		df_full
+    df_test_post_val,
+    df_full
 	)
 	return results
 
@@ -2639,23 +2653,124 @@ def _run_hedonic_models(
 	print(all_hedonic_results.benchmark.print())
 
 	title = "HEDONIC"
-	perf_metrics = _model_performance_metrics(model_group, all_hedonic_results, title, settings)
+	perf_metrics = _model_performance_metrics(model_group, all_hedonic_results, title)
 	print(perf_metrics)
+	print("")
+
+	_model_performance_plots(model_group, all_hedonic_results, title)
+	print("")
 
 	# Post-valuation metrics
 	title = f"{title} (POST-VALUATION DATE)"
-	perf_metrics = _model_performance_metrics(model_group, _get_post_valuation_mmr(all_hedonic_results), title, settings)
+	post_val_results = _get_post_valuation_mmr(all_hedonic_results)
+	perf_metrics = _model_performance_metrics(model_group, post_val_results, title)
 	print(perf_metrics)
+	print("")
+
+	_model_performance_plots(model_group, post_val_results, title)
+	print("")
+
+
+def _model_performance_plots(
+		model_group: str,
+		all_results: MultiModelResults,
+		title: str
+):
+	# Get first model_results from all_results:
+	first_results:SingleModelResults = list(all_results.model_results.values())[0]
+	test_count = len(first_results.df_test)
+	sales_count = len(first_results.df_sales)
+
+	sale_date = first_results.df_test["sale_date"]
+	if sale_date is None:
+		print("WARNING: sale_date is None, using index instead")
+		earliest_date = "???"
+		latest_date = "???"
+	elif sale_date.dtype == "datetime64[ns]":
+		earliest_date = sale_date.min()
+		latest_date = sale_date.max()
+	else:
+		# Convert to datetime if not already
+		first_results.df_test["sale_date"] = pd.to_datetime(first_results.df_test["sale_date"], errors="coerce")
+		if first_results.df_test["sale_date"].isna().any():
+			print("WARNING: sale_date has NaN values after conversion")
+		# Get min and max dates
+		# using the converted column
+		earliest_date = first_results.df_test["sale_date"].min()
+		latest_date = first_results.df_test["sale_date"].max()
+
+	for model_name, model_result in all_results.model_results.items():
+
+		dfs = {
+			"test": model_result.df_test.copy(),
+			"sales": model_result.df_sales.copy(),
+		}
+
+		for key in dfs:
+			df = dfs[key]
+
+			label = key.upper()
+
+			if key == "test":
+				df["y_pred"] = model_result.pred_test.y_pred
+				df["y_true"] = model_result.pred_test.y
+			else:
+				df["y_pred"] = model_result.pred_sales.y_pred
+				df["y_true"] = model_result.pred_sales.y
+
+			# Note any NA predictions:
+			if df["y_pred"].isna().any():
+				mask_na = df["y_pred"].isna()
+				count_na = mask_na.count()
+				print(f"WARNING: y_pred has {count_na} NaN values!")
+				df = df[~mask_na]
+
+			df["metadata"] = df["key_sale"] + "\n" + df["address"]
+			plot_scatterplot(
+				df,
+				"y_true",
+				"y_pred",
+				"Sale price",
+				"Prediction",
+				title=f"{label}/{title}/{model_group}: {model_name}\n{test_count}/{sales_count} sales from {earliest_date} to {latest_date}",
+				best_fit_line=True,
+				perfect_fit_line=True,
+				metadata_field="metadata"
+			)
+
 
 
 def _model_performance_metrics(
 		model_group: str,
 		all_results: MultiModelResults,
-		title: str,
-		settings: dict
+		title: str
 ):
+	# Get first model_results from all_results:
+	first_results:SingleModelResults = list(all_results.model_results.values())[0]
+	test_count = len(first_results.df_test)
+	sales_count = len(first_results.df_sales)
+
+	sale_date = first_results.df_test["sale_date"]
+	if sale_date is None:
+		print("WARNING: sale_date is None, using index instead")
+		earliest_date = "???"
+		latest_date = "???"
+	elif sale_date.dtype == "datetime64[ns]":
+		earliest_date = sale_date.min()
+		latest_date = sale_date.max()
+	else:
+		# Convert to datetime if not already
+		first_results.df_test["sale_date"] = pd.to_datetime(first_results.df_test["sale_date"], errors="coerce")
+		if first_results.df_test["sale_date"].isna().any():
+			print("WARNING: sale_date has NaN values after conversion")
+		# Get min and max dates
+		# using the converted column
+		earliest_date = first_results.df_test["sale_date"].min()
+		latest_date = first_results.df_test["sale_date"].max()
+
 	# Add performance metrics table
 	text = (f"\n{title} Model Performance Metrics for {model_group}: (* = trimmed)\n")
+	text += (f"Testing {test_count}/{sales_count} sales from ({earliest_date} to {latest_date})\n")
 	text += ("=" * 80) + "\n"
 	metrics_data = {
 		"Model": [],
@@ -2665,20 +2780,12 @@ def _model_performance_metrics(
 		"Slope*": [],
 	}
 
-	rs = settings.get("analysis", {}).get("ratio_study", {})
-	look_back_years = rs.get("look_back_years", 1)
-	val_date = get_valuation_date(settings)
-	look_back_year = val_date.year - look_back_years
-
 	for model_name, model_result in all_results.model_results.items():
 
 		df_test = model_result.df_test.copy()
 
 		df_test["y_pred"] = model_result.pred_test.y_pred
 		df_test["y_true"] = model_result.pred_test.y
-
-		# Filter to just the lookback period
-		df_test = df_test[df_test["sale_year"].ge(look_back_year)]
 
 		# Note any NA predictions:
 		if df_test["y_pred"].isna().any():
@@ -2963,14 +3070,22 @@ def _run_models(
 	title = "VACANT" if vacant_only else "MAIN"
 
 	# Add performance metrics table
-	perf_metrics = _model_performance_metrics(model_group, all_results, title, settings)
+	perf_metrics = _model_performance_metrics(model_group, all_results, title)
 	print(perf_metrics)
+	print("")
+
+	_model_performance_plots(model_group, all_results, title)
 	print("")
 
 	# Post-valuation metrics
 	title = f"{title} (POST-VALUATION DATE)"
-	perf_metrics = _model_performance_metrics(model_group, _get_post_valuation_mmr(all_results), title, settings)
+	post_val_results = _get_post_valuation_mmr(all_results)
+	perf_metrics = _model_performance_metrics(model_group, post_val_results, title)
 	print(perf_metrics)
+	print("")
+
+	_model_performance_plots(model_group, all_results, title)
+	print("")
 
 	if not vacant_only and run_hedonic:
 		t.start("run hedonic models")
