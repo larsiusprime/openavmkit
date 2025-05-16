@@ -281,8 +281,13 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0, rename_map: dict = None)
     for key in rhs:
       old = key
       new = rhs[key]
-      is_regex = rhs.get("regex", False)
-      lhs = lhs.astype(str).str.replace(old, new, regex=is_regex)
+      lhs = lhs.astype(str).str.replace(old, new, regex=False)
+    return lhs
+  elif op == "replace_regex":
+    for key in rhs:
+      old = key
+      new = rhs[key]
+      lhs = lhs.astype(str).str.replace(old, new, regex=True)
     return lhs
   elif op == "contains":
     result = lhs.astype(str).str.contains(str(rhs), na=False)

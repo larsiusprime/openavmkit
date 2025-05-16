@@ -99,9 +99,14 @@ def get_fields_other_as_list(s: dict, df: pd.DataFrame=None):
 def get_fields_date(s: dict, df: pd.DataFrame):
   # TODO: add to this as necessary
   all_date_fields = [
-    "sale_date"
+    "sale_date",
+    "date"
   ]
   date_fields = [field for field in all_date_fields if field in df]
+  for field in df:
+    if "_date" in field and field not in date_fields:
+      date_fields.append(field)
+
   return date_fields
 
 

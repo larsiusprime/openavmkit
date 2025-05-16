@@ -211,7 +211,22 @@
 				"osm_frontage_trunk_m",
 				"osm_frontage_unclassified_m",
 				"osm_total_frontage_ft",
-				"osm_total_frontage_m"
+				"osm_total_frontage_m",
+				"spatial_lag_sale_price",
+				"spatial_lag_sale_price_vacant",
+				"spatial_lag_sale_price_impr_sqft",
+				"spatial_lag_sale_price_land_sqft",
+				"spatial_lag_bldg_area_finished_sqft",
+				"spatial_lag_land_area_sqft",
+				"vacant_buildings",
+				"vacant_buildings_pct",
+				"total_parcels",
+				"vacant_parcels",
+				"vacant_parcels_pct",
+				"dist_to_osm_educational",
+				"dist_to_osm_golf_courses",
+				"dist_to_osm_parks",
+				"dist_to_osm_water_bodies"
 			],
 			"+categorical": [
 				"land_class",
@@ -276,7 +291,8 @@
 		"+impr": {
 			"+boolean": [
 				"new_construction",
-				"newish_construction"
+				"newish_construction",
+				"is_renovated"
 			],
 			"+numeric": [
 				"bldg_count",
@@ -299,7 +315,9 @@
 				"assr_impr_value",
 				"assr_impr_value_impr_sqft",
 				"true_impr_value",
-				"true_impr_value_impr_sqft"
+				"true_impr_value_impr_sqft",
+				"renovation_num",
+				"days_to_reno"
 			],
 			"+categorical": [
 				"bldg_fixtures",
@@ -313,7 +331,9 @@
 				"bldg_ac",
 				"bldg_foundation",
 				"bldg_quality_txt",
-				"bldg_condition_txt"
+				"bldg_condition_txt",
+				"renovation_txt",
+				"reno_date"
 			]
 		},
 		"+other": {
@@ -336,7 +356,8 @@
 				"sale_month",
 				"sale_day",
 				"floor_area_ratio",
-				"sale_quarter"
+				"sale_quarter",
+				"days_to_demo"
 			],
 			"+categorical": [
 				"he_id",
@@ -346,6 +367,7 @@
 				"warning_vacant_positive_impr_numeric",
 				"warning_vacant_has_impr_categorical",
 				"sale_date",
+				"demo_date",
 				"sale_year_month",
 				"sale_year_quarter",
 				"key",
@@ -355,6 +377,7 @@
 				"is_vacant",
 				"valid_sale",
 				"vacant_sale",
+				"is_teardown_sale",
 				"valid_for_ratio_study",
 				"valid_for_land_ratio_study",
 				"valid_for_modeling",

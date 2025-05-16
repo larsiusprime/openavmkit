@@ -671,11 +671,12 @@ def enrich_data(sup: SalesUniversePair, s_enrich: dict, dataframes: dict[str, pd
         df = _enrich_spatial_inference(df, s_enrich_local, dataframes, settings, verbose=verbose)
 
         # TODO: Universe Permit enrichment
+        # if "permits" in s_enrich_local:
         # df = _enrich_permits(df, s_enrich_local, dataframes, settings, False, verbose=verbose)
 
       elif supkey == "sales":
-
-        df = _enrich_permits(df, s_enrich_local, dataframes, settings, True, verbose=verbose)
+        if "permits" in s_enrich_local:
+          df = _enrich_permits(df, s_enrich_local, dataframes, settings, True, verbose=verbose)
 
     # User calcs apply at the VERY end of enrichment, after all automatic enrichments have been applied
     if s_enrich_local is not None:
@@ -1888,8 +1889,6 @@ def enrich_sup_spatial_lag(sup: SalesUniversePair, settings: dict, verbose: bool
 
   df_hydrated = get_hydrated_sales_from_sup(sup)
   train_keys, test_keys = get_train_test_keys(df_hydrated, settings)
-
-  df_train = df_hydrated.loc[df_hydrated["key_sale"].isin(train_keys)].copy()
 
   sale_field = get_sale_field(settings)
   sale_field_vacant = f"{sale_field}_vacant"
@@ -3169,6 +3168,9 @@ def _load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_c
         na_handling = extra_map[col]
       df = _boolify_column_in_df(df, col, na_handling)
     elif col in fields_num:
+      mask_non_numeric = ~df[col].apply(lambda x: isinstance(x, (int, float)))
+      if mask_non_numeric.sum() > 0:
+        df.loc[mask_non_numeric, col] = np.nan
       df[col] = df[col].astype("Float64")
 
   date_fields = get_fields_date(settings, df)
@@ -3176,6 +3178,7 @@ def _load_dataframe(entry: dict, settings: dict, verbose: bool = False, fields_c
   for xkey in extra_map:
     if xkey in date_fields:
       time_format_map[xkey] = extra_map[xkey]
+
   for dkey in date_fields:
     if dkey not in time_format_map:
       example_value = df[~df[dkey].isna()][dkey].iloc[0]
@@ -4348,7 +4351,7 @@ def _process_permits_sales(
     df_sales = df_sales.merge(df[["key", "is_teardown_sale", "demo_date", "days_to_demo"]], on="key", how="left")
 
     # Set is_vacant_sale to True for teardown sales
-    df_sales.loc[df_sales["is_teardown_sale"].eq(True), "is_vacant_sale"] = True
+    df_sales.loc[df_sales["is_teardown_sale"].eq(True), "vacant_sale"] = True
 
     if verbose:
       teardown_sales = df[df["is_teardown_sale"]]
