@@ -1081,7 +1081,7 @@ def test_permits_reno_sales():
 		"reno_date": ["2020-05-01", None, "2010-06-01", "2020-05-20", "2020-05-01"],
 		"renovation_num": [2, None, 3, 3, 3],
 		"renovation_txt": ["medium", None, "major", "major", "major"],
-		"days_to_reno": [-31.0, None, -3653.0, None, -31.0]
+		"days_to_reno": [-31.0, None, -3653.0, -12.0, -31.0]
 	}
 
 	df_expected = pd.DataFrame(data=expected)
