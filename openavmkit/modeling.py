@@ -1453,38 +1453,48 @@ def predict_spatial_lag(ds: DataSplit, model: SpatialLagModel, timing: TimingDat
     # predict on test set:
     timing.start("predict_test")
     idx_vacant_test = ds.X_test["bldg_area_finished_sqft"].le(0)
-    y_pred_test = ds.X_test[field_impr_sqft].to_numpy() * ds.X_test["bldg_area_finished_sqft"].to_numpy()
-    y_pred_test[idx_vacant_test] = (
-        ds.X_test[field_land_sqft].to_numpy()[idx_vacant_test] *
-        ds.X_test["land_area_sqft"].to_numpy()[idx_vacant_test]
-    )
+    if ds.vacant_only or ds.hedonic:
+      y_pred_test = ds.X_test[field_land_sqft].to_numpy() * ds.X_test["land_area_sqft"].to_numpy()
+    else:
+      y_pred_test = ds.X_test[field_impr_sqft].to_numpy() * ds.X_test["bldg_area_finished_sqft"].to_numpy()
+      y_pred_test[idx_vacant_test] = (
+          ds.X_test[field_land_sqft].to_numpy()[idx_vacant_test] *
+          ds.X_test["land_area_sqft"].to_numpy()[idx_vacant_test]
+      )
     timing.stop("predict_test")
 
     # predict on the sales set:
     timing.start("predict_sales")
     idx_vacant_sales = ds.X_sales["bldg_area_finished_sqft"].le(0)
-    y_pred_sales = ds.X_sales[field_impr_sqft].to_numpy() * ds.X_sales["bldg_area_finished_sqft"].to_numpy()
-    y_pred_sales[idx_vacant_sales] = (
-        ds.X_sales[field_land_sqft].to_numpy()[idx_vacant_sales] *
-        ds.X_sales["land_area_sqft"].to_numpy()[idx_vacant_sales]
-    )
+    if ds.vacant_only or ds.hedonic:
+      y_pred_sales = ds.X_sales[field_land_sqft].to_numpy() * ds.X_sales["land_area_sqft"].to_numpy()
+    else:
+      y_pred_sales = ds.X_sales[field_impr_sqft].to_numpy() * ds.X_sales["bldg_area_finished_sqft"].to_numpy()
+      y_pred_sales[idx_vacant_sales] = (
+          ds.X_sales[field_land_sqft].to_numpy()[idx_vacant_sales] *
+          ds.X_sales["land_area_sqft"].to_numpy()[idx_vacant_sales]
+      )
     timing.stop("predict_sales")
 
     # predict on the universe set:
     timing.start("predict_univ")
     idx_vacant_univ = ds.X_univ["bldg_area_finished_sqft"].le(0)
-    y_pred_univ = ds.X_univ[field_impr_sqft].to_numpy() * ds.X_univ["bldg_area_finished_sqft"].to_numpy()
-    y_pred_univ[idx_vacant_univ] = (
-        ds.X_univ[field_land_sqft].to_numpy()[idx_vacant_univ] *
-        ds.X_univ["land_area_sqft"].to_numpy()[idx_vacant_univ]
-    )
+
+    if ds.vacant_only or ds.hedonic:
+      y_pred_univ = ds.X_univ[field_land_sqft].to_numpy() * ds.X_univ["land_area_sqft"].to_numpy()
+    else:
+      y_pred_univ = ds.X_univ[field_impr_sqft].to_numpy() * ds.X_univ["bldg_area_finished_sqft"].to_numpy()
+      y_pred_univ[idx_vacant_univ] = (
+          ds.X_univ[field_land_sqft].to_numpy()[idx_vacant_univ] *
+          ds.X_univ["land_area_sqft"].to_numpy()[idx_vacant_univ]
+      )
     timing.stop("predict_univ")
 
   timing.stop("total")
 
   name = "spatial_lag"
   if model.per_sqft:
-    name = "spatial_lag_per_sqft"
+    name = "spatial_lag_sqft"
 
   results = SingleModelResults(
     ds,
@@ -2802,7 +2812,11 @@ def predict_local_sqft(ds: DataSplit, sqft_model: LocalSqftModel, timing: Timing
 
   X_test["prediction_impr"] = X_test["bldg_area_finished_sqft"] * X_test["per_impr_sqft"]
   X_test["prediction_land"] = X_test["land_area_sqft"] * X_test["per_land_sqft"]
-  X_test["prediction"] = np.where(X_test["bldg_area_finished_sqft"].gt(0), X_test["prediction_impr"], X_test["prediction_land"])
+
+  if ds.vacant_only or ds.hedonic:
+    X_test["prediction"] = X_test["prediction_land"]
+  else:
+    X_test["prediction"] = np.where(X_test["bldg_area_finished_sqft"].gt(0), X_test["prediction_impr"], X_test["prediction_land"])
 
   y_pred_test = X_test["prediction"].to_numpy()
   # TODO: later, don't drop these columns, use them to predict land value everywhere
@@ -2823,7 +2837,12 @@ def predict_local_sqft(ds: DataSplit, sqft_model: LocalSqftModel, timing: Timing
 
   X_sales["prediction_impr"] = X_sales["bldg_area_finished_sqft"] * X_sales["per_impr_sqft"]
   X_sales["prediction_land"] = X_sales["land_area_sqft"] * X_sales["per_land_sqft"]
-  X_sales["prediction"] = np.where(X_sales["bldg_area_finished_sqft"].gt(0), X_sales["prediction_impr"], X_sales["prediction_land"])
+
+  if ds.vacant_only or ds.hedonic:
+    X_sales["prediction"] = X_sales["prediction_land"]
+  else:
+    X_sales["prediction"] = np.where(X_sales["bldg_area_finished_sqft"].gt(0), X_sales["prediction_impr"], X_sales["prediction_land"])
+
   y_pred_sales = X_sales["prediction"].to_numpy()
   X_sales.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_sqft"], inplace=True)
   timing.stop("predict_sales")
@@ -2837,13 +2856,19 @@ def predict_local_sqft(ds: DataSplit, sqft_model: LocalSqftModel, timing: Timing
   X_univ = X_univ.merge(df_impr, on="key", how="left")
   X_univ.loc[X_univ["per_impr_sqft"].isna() | X_univ["per_impr_sqft"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
   X_univ.loc[X_univ["per_land_sqft"].isna() | X_univ["per_land_sqft"].eq(0), "per_land_sqft"] = overall_per_land_sqft
-  X_univ = X_univ.drop(columns=["key"])
-
   X_univ["prediction_impr"] = X_univ["bldg_area_finished_sqft"] * X_univ["per_impr_sqft"]
   X_univ["prediction_land"] = X_univ["land_area_sqft"] * X_univ["per_land_sqft"]
-  X_univ.loc[X_univ["prediction_impr"].isna() | X_univ["prediction_impr"].eq(0), "prediction_impr"] = overall_per_impr_sqft
-  X_univ.loc[X_univ["prediction_land"].isna() | X_univ["prediction_land"].eq(0), "prediction_land"] = overall_per_land_sqft
-  X_univ["prediction"] = np.where(X_univ["bldg_area_finished_sqft"].gt(0), X_univ["prediction_impr"], X_univ["prediction_land"])
+  X_univ = X_univ.drop(columns=["key"])
+
+  X_univ.loc[X_univ["prediction_impr"].isna() | X_univ["prediction_impr"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
+  X_univ.loc[X_univ["prediction_land"].isna() | X_univ["prediction_land"].eq(0), "per_land_sqft"] = overall_per_land_sqft
+  X_univ["prediction_impr"] = X_univ["bldg_area_finished_sqft"] * X_univ["per_impr_sqft"]
+  X_univ["prediction_land"] = X_univ["land_area_sqft"] * X_univ["per_land_sqft"]
+
+  if ds.vacant_only or ds.hedonic:
+    X_univ["prediction"] = X_univ["prediction_land"]
+  else:
+    X_univ["prediction"] = np.where(X_univ["bldg_area_finished_sqft"].gt(0), X_univ["prediction_impr"], X_univ["prediction_land"])
   y_pred_univ = X_univ["prediction"].to_numpy()
   X_univ.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_sqft"], inplace=True)
   timing.stop("predict_univ")
@@ -2963,7 +2988,10 @@ def predict_local_somers(ds: DataSplit, sqft_model: LocalSomersModel, timing: Ti
     X_test["depth_ft_1"]
   )
 
-  X_test["prediction"] = np.where(X_test["bldg_area_finished_sqft"].gt(0), X_test["prediction_impr"], X_test["prediction_land"])
+  if ds.vacant_only or ds.hedonic:
+    X_test["prediction"] = X_test["prediction_land"]
+  else:
+    X_test["prediction"] = np.where(X_test["bldg_area_finished_sqft"].gt(0), X_test["prediction_impr"], X_test["prediction_land"])
 
   y_pred_test = X_test["prediction"].to_numpy()
   # TODO: later, don't drop these columns, use them to predict land value everywhere
@@ -2990,7 +3018,10 @@ def predict_local_somers(ds: DataSplit, sqft_model: LocalSomersModel, timing: Ti
     X_sales["depth_ft_1"]
   )
 
-  X_sales["prediction"] = np.where(X_sales["bldg_area_finished_sqft"].gt(0), X_sales["prediction_impr"], X_sales["prediction_land"])
+  if ds.vacant_only or ds.hedonic:
+    X_sales["prediction"] = X_sales["prediction_land"]
+  else:
+    X_sales["prediction"] = np.where(X_sales["bldg_area_finished_sqft"].gt(0), X_sales["prediction_impr"], X_sales["prediction_land"])
   y_pred_sales = X_sales["prediction"].to_numpy()
   X_sales.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_unit_ft"], inplace=True)
   timing.stop("predict_sales")
@@ -3013,9 +3044,19 @@ def predict_local_somers(ds: DataSplit, sqft_model: LocalSomersModel, timing: Ti
     X_univ["depth_ft_1"]
   )
 
-  X_univ.loc[X_univ["prediction_impr"].isna() | X_univ["prediction_impr"].eq(0), "prediction_impr"] = overall_per_impr_sqft
-  X_univ.loc[X_univ["prediction_land"].isna() | X_univ["prediction_land"].eq(0), "prediction_land"] = overall_land_unit_ft
-  X_univ["prediction"] = np.where(X_univ["bldg_area_finished_sqft"].gt(0), X_univ["prediction_impr"], X_univ["prediction_land"])
+  X_univ.loc[X_univ["prediction_impr"].isna() | X_univ["prediction_impr"].eq(0), "per_impr_sqft"] = overall_per_impr_sqft
+  X_univ.loc[X_univ["prediction_land"].isna() | X_univ["prediction_land"].eq(0), "per_land_unit_ft"] = overall_land_unit_ft
+  X_univ["prediction_impr"] = X_univ["bldg_area_finished_sqft"] * X_univ["per_impr_sqft"]
+  X_univ["prediction_land"] = get_lot_value_ft(
+    X_univ["per_land_unit_ft"],
+    X_univ["frontage_ft_1"],
+    X_univ["depth_ft_1"]
+  )
+
+  if ds.vacant_only or ds.hedonic:
+    X_univ["prediction"] = X_univ["prediction_land"]
+  else:
+    X_univ["prediction"] = np.where(X_univ["bldg_area_finished_sqft"].gt(0), X_univ["prediction_impr"], X_univ["prediction_land"])
   y_pred_univ = X_univ["prediction"].to_numpy()
   X_univ.drop(columns=["prediction_impr", "prediction_land", "prediction", "per_impr_sqft", "per_land_unit_ft"], inplace=True)
   timing.stop("predict_univ")
