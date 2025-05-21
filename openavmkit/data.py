@@ -1255,7 +1255,8 @@ def _enrich_df_streets(
 
   # 3) Select only those matching rows, preserving order
   parcels_sel = gdf.iloc[parcel_idxs].reset_index(drop=True)
-  rays_sel   = rays_gdf.iloc[ray_idxs].reset_index(drop=True)
+  rays_sel   = rays_gdf.iloc[ray_idxs].reset_index(drop=False)
+  rays_sel   = rays_sel.rename(columns={"index":"ray_id"})
   rays_gdf = None
   gc.collect()
 
@@ -1377,9 +1378,6 @@ def _enrich_df_streets(
   diffs = None
   origins_all = None
   distances = None
-
-  # make sure we have an explicit "ray_id" to group on
-  ray_par = ray_par.reset_index().rename(columns={"index": "ray_id"})
 
   # keep only the closest-hit per ray
   first_hits = ray_par.loc[
