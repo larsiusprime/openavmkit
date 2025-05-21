@@ -1477,6 +1477,15 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
 	results.df_sales.to_csv(f"{path}/sales.csv", index=False)
 	results.df_universe.to_csv(f"{path}/universe.csv", index=False)
 
+	with open (f"{path}/pred_test.pkl", "wb") as f:
+		pickle.dump(results.pred_test, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+	with open (f"{path}/pred_sales.pkl", "wb") as f:
+		pickle.dump(results.pred_sales, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+	with open (f"{path}/pred_universe.pkl", "wb") as f:
+		pickle.dump(results.pred_univ, f, protocol=pickle.HIGHEST_PROTOCOL)
+
 
 def _write_ensemble_model_results(
 		results: SingleModelResults,
