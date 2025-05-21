@@ -113,6 +113,7 @@
 				"latitude_norm",
 				"longitude",
 				"latitude",
+				"land_area_somers_ft",
 				"land_area_sqft",
 				"land_area_sqft2",
 				"land_area_sqft3",
