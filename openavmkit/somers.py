@@ -71,3 +71,22 @@ def get_depth_percent_m(depth_m: np.ndarray | float):
   """
   depth_ft = depth_m / 0.3048
   return get_depth_percent_ft(depth_ft)
+
+
+def get_size_in_somers_units_ft(frontage_ft: np.ndarray | float, depth_ft: np.ndarray | float):
+  # How big is a lot, in somers unit-feet?
+
+  # Normalize the depth:
+  depth_percent = get_depth_percent_ft(depth_ft)
+
+  # Multiply by frontage:
+  somers_units = depth_percent * frontage_ft
+
+  return somers_units
+
+
+def get_size_in_somers_units_m(frontage_m: np.ndarray | float, depth_m: np.ndarray | float, land_area_sqm: np.ndarray | float):
+  frontage_ft = frontage_m / 0.3048
+  depth_ft = depth_m / 0.3048
+  land_area_sqft = land_area_sqm / 0.092903
+  return get_size_in_somers_units_ft(frontage_ft, depth_ft, land_area_sqft)

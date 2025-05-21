@@ -33,6 +33,7 @@ from shapely.strtree import STRtree
 
 from openavmkit.calculations import _crawl_calc_dict_for_fields, perform_calculations, perform_tweaks
 from openavmkit.filters import resolve_filter, select_filter
+from openavmkit.somers import get_size_in_somers_units_ft
 from openavmkit.utilities.cache import check_cache, write_cache, read_cache, get_cached_df, write_cached_df
 from openavmkit.utilities.data import combine_dfs, div_field_z_safe, merge_and_stomp_dfs
 from openavmkit.utilities.geometry import get_crs, clean_geometry, identify_irregular_parcels, \
@@ -1003,7 +1004,25 @@ def _enrich_df_openstreetmap(df_in: pd.DataFrame | gpd.GeoDataFrame, osm_setting
         warnings.warn(f"Failed to enrich with OpenStreetMap data: {str(e)}")
         return df
 
+
 def enrich_df_streets(
+  df_in: gpd.GeoDataFrame,
+  settings: dict,
+  spacing: float = 1.0,          # in meters
+  max_ray_length: float = 25.0,  # meters to shoot rays
+  network_buffer: float = 500.0, # buffer for street network
+  verbose: bool = False
+) -> gpd.GeoDataFrame:
+
+  df_out = _enrich_df_streets(df_in, settings, spacing, max_ray_length, network_buffer, verbose)
+
+  # add somers unit land size normalization using frontage & depth
+  df_out["land_area_somers_ft"] = get_size_in_somers_units_ft(df_out["frontage_ft_1"], df_out["depth_ft_1"])
+
+  return df_out
+
+
+def _enrich_df_streets(
     df_in: gpd.GeoDataFrame,
     settings: dict,
     spacing: float = 1.0,          # in meters

@@ -916,8 +916,6 @@ class DataSplit:
     self.y_test = _df_test[self.dep_var_test]
 
 
-
-
 class SingleModelResults:
   """
   Container for results from a single model prediction.
