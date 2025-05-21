@@ -2665,7 +2665,7 @@ def _run_hedonic_models(
 	print(perf_metrics)
 	print("")
 
-	_model_performance_plots(model_group, all_hedonic_results, title)
+	#_model_performance_plots(model_group, all_hedonic_results, title)
 	print("")
 
 	# Post-valuation metrics
@@ -2675,7 +2675,7 @@ def _run_hedonic_models(
 	print(perf_metrics)
 	print("")
 
-	_model_performance_plots(model_group, post_val_results, title)
+	#_model_performance_plots(model_group, post_val_results, title)
 	print("")
 
 
@@ -3097,6 +3097,7 @@ def _run_models(
 	if do_shaps:
 		_model_shaps(model_group, all_results, title)
 
+	#_model_performance_plots(model_group, all_results, title)
 	print("")
 
 	# Post-valuation metrics
@@ -3106,7 +3107,7 @@ def _run_models(
 	print(perf_metrics)
 	print("")
 
-	_model_performance_plots(model_group, all_results, title)
+	#_model_performance_plots(model_group, all_results, title)
 	print("")
 
 	if not vacant_only and run_hedonic:
