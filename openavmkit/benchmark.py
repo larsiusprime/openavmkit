@@ -24,6 +24,7 @@ from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run
 	GarbageModel, AverageModel, DataSplit, run_ground_truth, predict_ground_truth, run_spatial_lag, \
 	predict_spatial_lag, predict_local_somers, run_local_somers
 from openavmkit.reports import MarkdownReport, _markdown_to_pdf
+from openavmkit.shap_analysis import compute_shap
 from openavmkit.time_adjustment import enrich_time_adjustment
 from openavmkit.utilities.data import div_z_safe, dataframe_to_markdown, do_per_model_group
 from openavmkit.utilities.format import fancy_format, dig2_fancy_format
@@ -566,7 +567,8 @@ def run_models(
 		run_main: bool = True,
 		run_vacant: bool = True,
 		run_hedonic: bool = True,
-		run_ensemble: bool = True
+		run_ensemble: bool = True,
+		do_shaps: bool = False
 ):
 	"""
   Runs predictive models on the given SalesUniversePair. This function takes detailed instructions from the provided
@@ -595,6 +597,12 @@ def run_models(
   :type run_main: bool, optional
   :param run_vacant: Whether to run vacant models.
   :type run_vacant: bool, optional
+  :param run_hedonic: Whether to run hedonic models.
+  :type run_hedonic: bool, optional
+  :param run_ensemble: Whether to run ensemble models.
+  :type run_ensemble: bool, optional
+  :param do_shaps: Whether to compute SHAP values.
+  :type do_shaps: bool, optional
   :returns: The MultiModelResults containing all model results and benchmarks.
   :rtype: MultiModelResults
   """
@@ -631,7 +639,7 @@ def run_models(
 				continue
 			if not vacant_only and not run_main:
 				continue
-			mg_results = _run_models(sup, model_group, settings, vacant_only, save_params, use_saved_params, save_results, verbose, run_hedonic, run_ensemble)
+			mg_results = _run_models(sup, model_group, settings, vacant_only, save_params, use_saved_params, save_results, verbose, run_hedonic, run_ensemble, do_shaps=do_shaps)
 			if mg_results is not None:
 				dict_all_results[model_group] = mg_results
 		t.stop(f"model group: {model_group}")
@@ -2739,6 +2747,17 @@ def _model_performance_plots(
 			)
 
 
+def _model_shaps(
+		model_group: str,
+		all_results: MultiModelResults,
+		title: str
+):
+
+	for key in all_results.model_results:
+		smr:SingleModelResults = all_results.model_results[key]
+		title = f"{title}/{model_group}/{key}"
+		compute_shap(smr, True, title)
+
 
 def _model_performance_metrics(
 		model_group: str,
@@ -2861,7 +2880,8 @@ def _run_models(
 		save_results: bool = False,
 		verbose: bool = False,
 		run_hedonic: bool = True,
-		run_ensemble: bool = True
+		run_ensemble: bool = True,
+		do_shaps: bool = False
 ):
 	"""
   Run models for a given model group and process ensemble results.
@@ -3074,7 +3094,9 @@ def _run_models(
 	print(perf_metrics)
 	print("")
 
-	_model_performance_plots(model_group, all_results, title)
+	if do_shaps:
+		_model_shaps(model_group, all_results, title)
+
 	print("")
 
 	# Post-valuation metrics

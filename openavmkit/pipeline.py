@@ -850,7 +850,8 @@ def try_models(
     run_main: bool = True,
     run_vacant: bool = True,
     run_hedonic: bool = True,
-    run_ensemble: bool = True
+    run_ensemble: bool = True,
+    do_shaps: bool = False
 ):
    """
    Tries out predictive models on the given SalesUniversePair. Optimized for speed and iteration, doesn't finalize
@@ -884,6 +885,8 @@ def try_models(
    :type run_hedonic: bool, optional
    :param run_ensemble: Flag to run ensemble models.
    :type run_ensemble: bool, optional
+    :param do_shaps: Flag to run SHAP analysis.
+    :type do_shaps: bool, optional
    """
 
    openavmkit.benchmark.run_models(
@@ -896,7 +899,8 @@ def try_models(
       run_main=run_main,
       run_vacant=run_vacant,
       run_hedonic=run_hedonic,
-      run_ensemble=run_ensemble
+      run_ensemble=run_ensemble,
+      do_shaps=do_shaps
    )
 
 
@@ -943,7 +947,8 @@ def finalize_models(
       run_main=True,
       run_vacant=True,
       run_hedonic=True,
-      run_ensemble=True
+      run_ensemble=True,
+      do_shaps=False
    )
 
 def run_models(
@@ -956,7 +961,8 @@ def run_models(
     run_main: bool = True,
     run_vacant: bool = True,
     run_hedonic: bool = True,
-    run_ensemble: bool = True
+    run_ensemble: bool = True,
+    do_shaps: bool = False
 ):
    """
    Runs predictive models on the given SalesUniversePair. This function takes detailed instructions from the provided
@@ -990,9 +996,11 @@ def run_models(
    :type run_hedonic: bool, optional
    :param run_ensemble: Flag to run ensemble models.
    :type run_ensemble: bool, optional
+    :param do_shaps: Flag to run SHAP analysis.
+    :type do_shaps: bool, optional
    :returns: FILL_IN_HERE: Describe the output.
    """
-   return openavmkit.benchmark.run_models(sup, settings, save_params, use_saved_params, save_results, verbose, run_main, run_vacant, run_hedonic, run_ensemble)
+   return openavmkit.benchmark.run_models(sup, settings, save_params, use_saved_params, save_results, verbose, run_main, run_vacant, run_hedonic, run_ensemble, do_shaps)
 
 
 def finalize_land_values_sup(sup: SalesUniversePair, settings: dict, generate_boundaries: bool = False, verbose: bool = False):
