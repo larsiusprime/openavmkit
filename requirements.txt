@@ -47,3 +47,4 @@ xlsxwriter==3.1.9
 pillow==11.2.1
 census==0.8.23
 overturemaps==0.14.0
+shap==0.47.2
