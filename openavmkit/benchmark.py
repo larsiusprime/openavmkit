@@ -1522,8 +1522,8 @@ def _write_ensemble_model_results(
 		df_ensemble = dfs[key]
 		df_ensemble = df_ensemble[prim_keys + ensemble_list]
 		df = df_basic.merge(df_ensemble, on=merge_key, how="left")
-		df.to_parquet(f"{path}/pred_ensemble_{key}.parquet")
-		df.to_csv(f"{path}/pred_ensemble_{key}.csv", index=False)
+		df.to_parquet(f"{path}/pred_{key}.parquet")
+		df.to_csv(f"{path}/pred_{key}.csv", index=False)
 
 
 def _optimize_ensemble_allocation(
