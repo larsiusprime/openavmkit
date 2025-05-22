@@ -1,5 +1,5 @@
 import numpy as np
-from openavmkit.somers import get_depth_percent_ft, get_unit_ft, get_lot_value_ft
+from openavmkit.utilities.somers import get_depth_percent_ft, get_unit_ft, get_lot_value_ft
 
 
 def test_get_depth():

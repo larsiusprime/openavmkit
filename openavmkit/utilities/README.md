@@ -1,6 +1,6 @@
-The purpose of the utilities folder is to solve issues with circular imports. Here are the rules:
+The purpose of the utilities folder is to solve issues with circular imports.
 
 Modules in the utilities folder:
-- May not import each other.
-- May not import any other module in the openavmkit package.
-- May import modules not from the openavmkit package.
+- May NOT import each other.
+- May NOT import any other module from the openavmkit package.
+- MAY import modules NOT from the openavmkit package.

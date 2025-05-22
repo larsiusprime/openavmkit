@@ -1,8 +1,7 @@
 from IPython.core.display_functions import display
 
-from openavmkit.data import SalesUniversePair, get_hydrated_sales_from_sup
-from openavmkit.horizontal_equity_study import make_clusters, mark_horizontal_equity_clusters, \
-	mark_horizontal_equity_clusters_per_model_group_sup
+from openavmkit.data import SalesUniversePair
+from openavmkit.horizontal_equity_study import mark_horizontal_equity_clusters_per_model_group_sup
 from openavmkit.pipeline import load_settings
 from openavmkit.synthetic.basic import generate_basic
 

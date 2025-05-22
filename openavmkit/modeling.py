@@ -8,6 +8,8 @@ from IPython.core.display import display
 import polars as pl
 from joblib import Parallel, delayed
 from typing import Union, Any, Dict
+
+from scipy.spatial._ckdtree import cKDTree
 from sklearn.preprocessing import OneHotEncoder
 
 import numpy as np
@@ -33,10 +35,12 @@ from statsmodels.regression.linear_model import RegressionResults
 from xgboost import XGBRegressor
 
 from openavmkit.data import get_sales, simulate_removed_buildings, _enrich_time_field, _enrich_sale_age_days, \
-  SalesUniversePair, get_hydrated_sales_from_sup
+  SalesUniversePair, get_hydrated_sales_from_sup, get_sale_field, get_train_test_keys
 from openavmkit.filters import select_filter
 from openavmkit.ratio_study import RatioStudy
-from openavmkit.somers import get_unit_ft, get_lot_value_ft
+from openavmkit.utilities.plotting import plot_scatterplot
+from openavmkit.utilities.somers import get_unit_ft, get_lot_value_ft, get_size_in_somers_units_ft, \
+  get_size_in_somers_units_m
 from openavmkit.utilities.format import fancy_format
 from openavmkit.utilities.modeling import GarbageModel, AverageModel, NaiveSqftModel, LocalSqftModel, LocalSomersModel, \
   PassThroughModel, GWRModel, MRAModel, GroundTruthModel, SpatialLagModel
@@ -271,6 +275,8 @@ class PredictionResults:
     # select only values that are not NaN in either:
     y_clean = y[y_mask & y_pred_mask]
     y_pred_clean = y_pred[y_mask & y_pred_mask]
+    y_clean         = pd.to_numeric(y_clean, errors="coerce")
+    y_pred_clean    = pd.to_numeric(y_pred_clean, errors="coerce")
 
     if len(y_clean) > 0 and len (y_pred_clean) > 0:
       self.mse = mean_squared_error(y_clean, y_pred_clean)
@@ -278,8 +284,10 @@ class PredictionResults:
       var_y = np.var(y_clean)
       if var_y == 0:
         self.r2 = float('nan')  # R² undefined when variance is 0
+        self.slope = float('nan')
       else:
         self.r2 = 1 - self.mse / var_y
+        self.slope, _ = np.polyfit(y_clean, y_pred_clean, 1)
 
       y_ratio = y_pred_clean / y_clean
       mask = trim_outliers_mask(y_ratio)
@@ -293,12 +301,15 @@ class PredictionResults:
         var_y_trim = np.var(y_clean_trim)
         if var_y_trim == 0:
           self.r2_trim = float('nan')
+          self.slope_trim = float('nan')
         else:
           self.r2_trim = 1 - self.mse_trim / var_y_trim
+          self.r2_slope, _ = np.polyfit(y_clean_trim, y_pred_trim, 1)
       else:
         self.mse_trim = float('nan')
         self.rmse_trim = float('nan')
         self.r2_trim = float('nan')
+        self.slope_trim = float('nan')
 
       n_trim = len(y_pred_trim)
       k = len(ind_vars)
@@ -313,9 +324,12 @@ class PredictionResults:
       self.mse = float('nan')
       self.rmse = float('nan')
       self.r2 = float('nan')
+      self.adj_r2 = float('nan')
+      self.slope = float('nan')
       self.mse_trim = float('nan')
       self.rmse_trim = float('nan')
       self.r2_trim = float('nan')
+      self.slope_trim = float('nan')
       self.adj_r2_trim = float('nan')
 
     n = len(y_pred)
@@ -1095,21 +1109,23 @@ class SingleModelResults:
     """
     str = ""
     str += f"Model type: {self.type}\n"
-    # Print the # of rows in test & universe set
-    # Print the MSE, RMSE, R2, and Adj R2 for test & universe set
+    # Print the # of rows in test & all sales set
+    # Print the MSE, RMSE, R2, and Adj R2 for test & all sales set
     str += f"-->Test set, rows: {len(self.pred_test.y)}\n"
     str += f"---->RMSE   : {self.pred_test.rmse:8.0f}\n"
     str += f"---->R2     : {self.pred_test.r2:8.4f}\n"
     str += f"---->Adj R2 : {self.pred_test.adj_r2:8.4f}\n"
+    str += f"---->Slope  : {self.pred_test.slope:8.4f}\n"
     str += f"---->M.Ratio: {self.pred_test.ratio_study.median_ratio:8.4f}\n"
     str += f"---->COD    : {self.pred_test.ratio_study.cod:8.4f}\n"
     str += f"---->PRD    : {self.pred_test.ratio_study.prd:8.4f}\n"
     str += f"---->PRB    : {self.pred_test.ratio_study.prb:8.4f}\n"
     str += f"\n"
-    str += f"-->Universe set, rows: {len(self.pred_sales.y)}\n"
+    str += f"-->All sales set, rows: {len(self.pred_sales.y)}\n"
     str += f"---->RMSE   : {self.pred_sales.rmse:8.0f}\n"
     str += f"---->R2     : {self.pred_sales.r2:8.4f}\n"
     str += f"---->Adj R2 : {self.pred_sales.adj_r2:8.4f}\n"
+    str += f"---->Slope  : {self.pred_sales.slope:8.4f}\n"
     str += f"---->M.Ratio: {self.pred_sales.ratio_study.median_ratio:8.4f}\n"
     str += f"---->COD    : {self.pred_sales.ratio_study.cod:8.4f}\n"
     str += f"---->PRD    : {self.pred_sales.ratio_study.prd:8.4f}\n"
@@ -3659,3 +3675,398 @@ def simple_ols(
     "rmse": np.sqrt(model.mse_resid),
     "std_err": model.bse[ind_var]
   }
+
+
+def coarse_grid_order(lat, lon, cell_meters=100):
+  lat = np.asarray(lat)
+  lon = np.asarray(lon)
+
+  mean_lat_rad  = np.deg2rad(lat.mean())
+  m_per_deg_lat = 111_320.0
+  m_per_deg_lon = 111_320.0 * np.cos(mean_lat_rad)
+
+  cell_deg_lat = cell_meters / m_per_deg_lat
+  cell_deg_lon = cell_meters / m_per_deg_lon
+
+  lat_bucket = np.floor((lat - lat.min()) / cell_deg_lat).astype(np.int32)
+  lon_bucket = np.floor((lon - lon.min()) / cell_deg_lon).astype(np.int32)
+
+  # one lexsort call: first bucket keys, then raw lat/lon for tie-break
+  return np.lexsort((lon, lat, lon_bucket, lat_bucket))
+
+
+def choose_m(n_obs: int) -> int:
+  if n_obs < 3_000:         return 1
+  elif n_obs < 30_000:      return 2
+  elif n_obs < 300_000:     return 3
+  else:                     return 4
+
+
+def yatchew_estimate(
+    m,
+    y,
+    Z,
+    Xs,
+    cell_meters:float=100,
+    robust=True
+):
+  if Z.ndim == 1:
+    Z = Z.reshape(-1, 1)
+  if Xs.shape[1] != 2:
+    raise ValueError("smooth_vars must have exactly two columns (lat, lon)")
+
+  lat, lon = Xs.T
+  order    = coarse_grid_order(lat, lon, cell_meters)
+  y, Z     = y[order], Z[order]
+
+  for _ in range(m):
+    y = y[m:] - y[:-m]
+    Z = Z[m:] - Z[:-m]
+
+  res = sm.OLS(y, Z).fit()
+  return res.get_robustcov_results("HC1") if robust else res
+
+
+def kolbe_et_al_transform(
+    df_in: pd.DataFrame,
+    sale_field: str,
+    bldg_fields: list[str],
+    units: str = "ft",
+    log: bool = True,
+    drop_zeros: bool = True,      # ← new flag
+):
+  """
+  Adds Somers-unit size (SU) and returns:
+      y  – price per SU  (log or level)
+      Z  – building vars per SU  (log or level, shape n×k)
+      df – *clean* DataFrame (same row order as y, Z)
+  Rows that would give log(0) / log(neg) are dropped when drop_zeros=True.
+  """
+
+  df = df_in.copy()                          # keep original untouched
+
+  # -- 1. Somers units ----------------------------------------------------
+  if units == "ft":
+    frontage, depth = "frontage_ft_1", "depth_ft_1"
+    df["SU"] = get_size_in_somers_units_ft(df[frontage], df[depth])
+  else:
+    frontage, depth = "frontage_m_1", "depth_m_1"
+    df["SU"] = get_size_in_somers_units_m(df[frontage], df[depth])
+
+  # -- 2. Raw ratios ------------------------------------------------------
+  df["_price_per_SU"] = df[sale_field] / df["SU"]
+  for col in bldg_fields:
+    df[f"_{col}_per_SU"] = df[col] / df["SU"]
+
+  # -- 3. Optionally drop rows that would break the log -------------------
+  if log and drop_zeros:
+    keep = (df["_price_per_SU"] > 0)
+    for col in bldg_fields:
+      keep &= (df[f"_{col}_per_SU"] > 0)
+    df = df.loc[keep].reset_index(drop=True)
+
+  # -- 4. Build y and Z ---------------------------------------------------
+  if log:
+    y = np.log(df["_price_per_SU"].to_numpy(float))
+    Z = np.log(df[[f"_{c}_per_SU" for c in bldg_fields]].to_numpy(float))
+  else:
+    y = df["_price_per_SU"].to_numpy(float)
+    Z = df[[f"_{c}_per_SU" for c in bldg_fields]].to_numpy(float)
+
+  # drop the helper columns
+  df.drop(columns=[c for c in df.columns if c.startswith("_")], inplace=True)
+
+  return y, Z, df
+
+
+def kolbe_yatchew_somers(
+    df_train: pd.DataFrame,
+    df_test: pd.DataFrame,
+    df_univ: pd.DataFrame,
+    bldg_fields: list[str],
+    settings: dict,
+    units: str = "ft",
+    cell_size: float = 300,
+    log: bool = False,
+    robust: bool = True,
+    verbose: bool = False
+):
+  if units == "ft":
+    cell_meters = cell_size * 0.3048
+  elif units == "m":
+    cell_meters = cell_size
+  else:
+    raise ValueError("units must be either 'ft' or 'm'")
+
+  sale_field = get_sale_field(settings)
+
+  df = df_train.copy()
+  df_univ = df_univ.copy()
+
+  # 1. Transform variables according to Kolbe, et al. (but with Somers units)
+  y, Z, df = kolbe_et_al_transform(df, sale_field, bldg_fields, units=units, log=log)
+  y_test, Z_test, df_test = kolbe_et_al_transform(df_test, sale_field, bldg_fields, units=units, log=log)
+  y_univ, Z_univ, df_univ = kolbe_et_al_transform(df_univ, sale_field, bldg_fields, units=units, log=log)
+
+  # 2. Run Yatchew
+  m = choose_m(len(df))
+  Xs = df[["latitude", "longitude"]].to_numpy(float)
+
+  res = yatchew_estimate(
+    m,
+    y,
+    Z,
+    Xs,
+    cell_meters,
+    robust=robust
+  )
+
+  def kys_predict_impr(_df, _Z, _res, _log:bool):
+    # ------- 1. improvement prediction (β̂′Z) ------------------------------
+    _df["impr_pred"] = _Z @ _res.params
+    if _log:
+      _df["impr_value_per_SU"] = np.exp(_df["impr_pred"])
+    else:
+      _df["impr_value_per_SU"] = _df["impr_pred"]
+    _df["impr_value"] = _df["impr_value_per_SU"] * _df["SU"]
+    return _df
+
+
+  def kys_predict_land(_df, _y, _Z, _res, _log: bool):
+    # ------- 2. land residual ----------------------------------------
+    _df["land_resid"] = _y - (_Z @ _res.params)
+
+    # ------- 3. Improvement + land in $/SU -------------------------------
+    if _log:
+      _df["land_value_per_SU"] = np.exp(_df["land_resid"])
+    else:
+      _df["land_value_per_SU"] = _df["land_resid"]
+
+    # ------- 4. Dollar values per parcel ---------------------------------
+    _df["land_value"] = _df["land_value_per_SU"] * _df["SU"]
+    return _df
+
+
+  def kys_predict_market_value(_df, _log: bool):
+    # ------- 5. Total market value ---------------------------------------
+    if _log:
+      _df["market_value_per_SU"] = np.exp(_df["impr_pred"] + _df["land_resid"])
+    else:
+      _df["market_value_per_SU"] = _df["impr_pred"] + _df["land_resid"]
+
+    _df["market_value"] = _df["market_value_per_SU"] * _df["SU"]
+
+    # Optional: sanity check (should be ~0 except for FP round-off)
+    _df["market_value_check"] = _df["market_value"] - (_df["impr_value"] + _df["land_value"])
+
+    return _df
+
+
+  # 3.  Add structure and location components ------------------------------
+  df = kys_predict_impr(df, Z, res, log)
+  df = kys_predict_land(df, y, Z, res, log)
+  df = kys_predict_market_value(df, log)
+
+  mse, r2, adj_r2 = calc_mse_r2_adj_r2(df["market_value"].to_numpy(), df[sale_field].to_numpy(), len(bldg_fields))
+  slope, _ = np.polyfit(df["market_value"], df[sale_field], 1)
+
+  # plot "market_value" vs. sale_field:
+  plot_scatterplot(
+    df,
+    "market_value",
+    sale_field,
+    title="Kolbe Yatchew Somers",
+    xlabel="Predicted Value ($)",
+    ylabel="Observed Value ($)",
+    best_fit_line=True,
+    perfect_fit_line=True
+  )
+
+  if verbose:
+    print(f"Kolbe Yatchew Somers: {units} units")
+    print(f"  MSE    = {mse:.2f}")
+    print(f"  R2     = {r2:.4f}")
+    print(f"  Adj R2 = {adj_r2:.4f}")
+    print(f"  Slope  = {slope:.4f}")
+
+  # Predict on the test set
+
+  # Get spatial lag of land value per SU
+  df_univ = _calc_spatial_lag(df, df_univ, ["land_value_per_SU"])
+  df_univ = df_univ.rename(columns={"spatial_lag_land_value_per_SU": "land_value_per_SU"})
+  df_univ["land_value"] = df_univ["land_value_per_SU"] * df_univ["SU"]
+  df_univ.to_parquet("out/kolbe_yatchew_somers.parquet")
+
+  # Merge this onto the test set
+  df_test = df_test.merge(df_univ[["key","land_value_per_SU"]], on="key", how="left")
+
+  df_test = kys_predict_impr(df_test, Z_test, res, log)
+  df_test["land_value"] = df_test["land_value_per_SU"] * df_test["SU"]
+  df_test["market_value"] = df_test["impr_value"] + df_test["land_value"]
+
+  mse, r2, adj_r2 = calc_mse_r2_adj_r2(df_test["market_value"].to_numpy(), df_test[sale_field].to_numpy(), len(bldg_fields))
+  slope, _ = np.polyfit(df_test["market_value"], df_test[sale_field], 1)
+
+  # plot "market_value" vs. sale_field:
+  plot_scatterplot(
+    df_test,
+    "market_value",
+    sale_field,
+    title="Kolbe Yatchew Somers (Test Set)",
+    xlabel="Predicted Value ($)",
+    ylabel="Observed Value ($)",
+    best_fit_line=True,
+    perfect_fit_line=True
+  )
+
+  if verbose:
+    print(f"Kolbe Yatchew Somers (Test Set): {units} units")
+    print(f"  MSE    = {mse:.2f}")
+    print(f"  R2     = {r2:.4f}")
+    print(f"  Adj R2 = {adj_r2:.4f}")
+    print(f"  Slope  = {slope:.4f}")
+
+  return res, df
+
+
+def _calc_spatial_lag(df_sample: pd.DataFrame, df_univ: pd.DataFrame, value_fields:list[str]) -> pd.DataFrame:
+
+  df = df_univ.copy()
+
+  # Build a cKDTree from df_sales coordinates
+
+  # we TRAIN on these coordinates -- coordinates that are NOT in the test set
+  coords_train = df_sample[['latitude', 'longitude']].values
+  tree = cKDTree(coords_train)
+
+  # we PREDICT on these coordinates -- all the coordinates in the universe
+  coords_all = df[['latitude', 'longitude']].values
+
+  for value_field in value_fields:
+    print(f"Value field = {value_field}")
+    if value_field not in df_sample:
+      print("Value field not in df_sample, skipping")
+      continue
+
+    # Choose the number of nearest neighbors to use
+    k = 5  # You can adjust this number as needed
+
+    # Query the tree: for each parcel in df_universe, find the k nearest parcels
+    # distances: shape (n_universe, k); indices: corresponding indices in df_sales
+    distances, indices = tree.query(coords_all, k=k)
+
+    # Ensure that distances and indices are 2D arrays (if k==1, reshape them)
+    if k == 1:
+      distances = distances[:, None]
+      indices = indices[:, None]
+
+    # For each universe parcel, compute sigma as the mean distance to its k neighbors.
+    sigma = distances.mean(axis=1, keepdims=True)
+
+    # Handle zeros in sigma
+    sigma[sigma == 0] = np.finfo(float).eps  # Avoid division by zero
+
+    # Compute Gaussian kernel weights for all neighbors
+    weights = np.exp(- (distances ** 2) / (2 * sigma ** 2))
+
+    # Normalize the weights so that they sum to 1 for each parcel
+    weights_norm = weights / weights.sum(axis=1, keepdims=True)
+
+    # Get the values corresponding to the neighbor indices
+    parcel_values = df_sample[value_field].values
+    neighbor_values = parcel_values[indices]  # shape (n_universe, k)
+
+    # Compute the weighted average (spatial lag) for each parcel in the universe
+    spatial_lag = (np.asarray(weights_norm) * np.asarray(neighbor_values)).sum(axis=1)
+
+    # Add the spatial lag as a new column
+    df[f"spatial_lag_{value_field}"] = spatial_lag
+
+    median_value = df_sample[value_field].median()
+    df[f"spatial_lag_{value_field}"] = df[f"spatial_lag_{value_field}"].fillna(median_value)
+
+  return df
+
+
+
+def derive_somers_unit_values(
+    sup: SalesUniversePair,
+    bldg_fields: list[str],
+    model_group: str,
+    settings: dict,
+    log: bool = True,
+    verbose: bool = False
+):
+
+  necessary_fields = [
+    "frontage_ft_1",
+    "frontage_ft_2",
+    "frontage_ft_3",
+    "frontage_ft_4",
+    "block",
+    "depth_ft_1",
+    "osm_road_name_1",
+    "geom_rectangularity_num"
+  ] + bldg_fields
+
+  t = TimingData()
+
+  for field in necessary_fields:
+    if field not in sup.universe.columns:
+      raise ValueError(f"Universe dataframe must have a '{field}' field")
+
+  df_sales = get_hydrated_sales_from_sup(sup)
+
+  # Filter only to our current model group
+  df_sales = df_sales[df_sales["model_group"].eq(model_group)].copy()
+
+  # Filter sales to only those with exactly one street frontage (no corner influences)
+  # Service road frontage doesn't count
+  df_sales = df_sales[
+    (df_sales["frontage_ft_1"].gt(0) & df_sales["osm_road_type_1"].ne("service")) &
+    (df_sales["frontage_ft_2"].eq(0) | df_sales["frontage_ft_2"].isna() | df_sales["osm_road_type_2"].eq("service")) &
+    (df_sales["frontage_ft_3"].eq(0) | df_sales["frontage_ft_3"].isna() | df_sales["osm_road_type_3"].eq("service")) &
+    (df_sales["frontage_ft_4"].eq(0) | df_sales["frontage_ft_4"].isna() | df_sales["osm_road_type_4"].eq("service"))
+  ]
+
+  # Filter sales to only those with decent rectangularity:
+  df_sales = df_sales[
+    df_sales["geom_rectangularity_num"].ge(0.9)
+  ]
+
+  # Filter out outliers in terms of price:
+  sale_field = get_sale_field(settings)
+  df_sales = df_sales[
+    df_sales[sale_field].gt(df_sales[sale_field].quantile(0.05)) &
+    df_sales[sale_field].lt(df_sales[sale_field].quantile(0.95))
+  ]
+
+  # Filter out outliers in terms of size:
+  df_sales = df_sales[
+    df_sales["frontage_ft_1"].ge(df_sales["frontage_ft_1"].quantile(0.05)) &
+    df_sales["frontage_ft_1"].le(df_sales["frontage_ft_1"].quantile(0.95)) &
+    df_sales["depth_ft_1"].ge(df_sales["depth_ft_1"].quantile(0.05)) &
+    df_sales["depth_ft_1"].le(df_sales["depth_ft_1"].quantile(0.95))
+  ]
+
+  # Label all the block/street combinations
+  df_sales["block_street"] = df_sales["osm_road_name_1"] + " @ block " + df_sales["block"]
+
+  train_keys, test_keys = get_train_test_keys(df_sales, settings)
+  df_train = df_sales[df_sales["key_sale"].isin(test_keys)]
+  df_test = df_sales[df_sales["key_sale"].isin(train_keys)]
+
+  results, df = kolbe_yatchew_somers(
+    df_train,
+    df_test,
+    sup.universe,
+    bldg_fields,
+    settings,
+    log=log,
+    verbose=verbose
+  )
+
+  if verbose:
+    print(results.summary())
+
+  return results, df

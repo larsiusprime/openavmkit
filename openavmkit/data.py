@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-import pygeos
 import shapely
 
 from shapely.geometry import Point
@@ -20,32 +19,30 @@ import pandas as pd
 import pyarrow.parquet as pq
 import geopandas as gpd
 
-from pandas import Series
 from scipy.spatial._ckdtree import cKDTree
 from shapely.geometry import Polygon
 from shapely.geometry import LineString
-from shapely.ops import unary_union, nearest_points
+from shapely.ops import unary_union
 import warnings
 import traceback
 
-from shapely.prepared import prep
 from shapely.strtree import STRtree
 
 from openavmkit.calculations import _crawl_calc_dict_for_fields, perform_calculations, perform_tweaks
 from openavmkit.filters import resolve_filter, select_filter
-from openavmkit.somers import get_size_in_somers_units_ft
-from openavmkit.utilities.cache import check_cache, write_cache, read_cache, get_cached_df, write_cached_df
+from openavmkit.utilities.somers import get_size_in_somers_units_ft
+from openavmkit.utilities.cache import get_cached_df, write_cached_df
 from openavmkit.utilities.data import combine_dfs, div_field_z_safe, merge_and_stomp_dfs
 from openavmkit.utilities.geometry import get_crs, clean_geometry, identify_irregular_parcels, \
   geolocate_point_to_polygon, is_likely_epsg4326
-from openavmkit.utilities.settings import get_fields_categorical, get_fields_impr, get_fields_boolean, \
+from openavmkit.utilities.settings import get_fields_categorical, get_fields_boolean, \
   get_fields_numeric, get_model_group_ids, get_fields_date, get_long_distance_unit, get_valuation_date, get_center, \
-  get_short_distance_unit
+  get_short_distance_unit, get_sales, simulate_removed_buildings
 
 from openavmkit.utilities.census import get_creds_from_env_census, init_service_census, match_to_census_blockgroups
 from openavmkit.utilities.openstreetmap import init_service_openstreetmap
 from openavmkit.utilities.overture import init_service_overture
-from openavmkit.inference import get_inference_model, perform_spatial_inference
+from openavmkit.inference import perform_spatial_inference
 from openavmkit.utilities.timing import TimingData
 from pyproj import CRS
 import lightgbm as lgb
@@ -216,64 +213,6 @@ def enrich_time(df: pd.DataFrame, time_formats: dict, settings: dict) -> pd.Data
   return df
 
 
-def simulate_removed_buildings(df: pd.DataFrame, settings: dict, idx_vacant: Series = None):
-  """
-  Simulate removed buildings by changing improvement fields to values that reflect the absence of a building.
-
-  For all improvement fields, fills categorical fields with "UNKNOWN", numeric fields with 0, and boolean fields with
-  False for the rows specified by idx_vacant (or all rows if idx_vacant is None).
-
-  :param df: Input DataFrame.
-  :type df: pandas.DataFrame
-  :param settings: Settings dictionary.
-  :type settings: dict
-  :param idx_vacant: Optional Series indicating which rows are vacant.
-  :type idx_vacant: pandas.Series, optional
-  :returns: Updated DataFrame.
-  :rtype: pandas.DataFrame
-  """
-  if idx_vacant is None:
-    # do the whole thing:
-    idx_vacant = df.index
-
-  fields_impr = get_fields_impr(settings, df)
-
-  # fill unknown values for categorical improvements:
-  fields_impr_cat = fields_impr["categorical"]
-  fields_impr_num = fields_impr["numeric"]
-  fields_impr_bool = fields_impr["boolean"]
-
-  for field in fields_impr_cat:
-    if not isinstance(df[field].dtype, pd.CategoricalDtype):
-      df[field] = df[field].astype("category")
-    # add UNKNOWN if needed
-    if "UNKNOWN" not in df[field].cat.categories:
-      df[field] = df[field].cat.add_categories(["UNKNOWN"])
-
-  for field in fields_impr_cat:
-    df.loc[idx_vacant, field] = "UNKNOWN"
-
-  for field in fields_impr_num:
-    df.loc[idx_vacant, field] = 0
-
-  for field in fields_impr_bool:
-    # Convert to boolean type first if needed
-    if df[field].dtype != bool:
-      df[field] = df[field].astype(bool)
-    df.loc[idx_vacant, field] = False
-
-  # just to be safe, ensure that the "bldg_area_finished_sqft" field is set to 0 for vacant sales
-  # and update "is_vacant" to perfectly match
-  # TODO: if we add support for a custom vacancy filter, we will need to adjust this
-  if "bldg_area_finished_sqft" in df:
-    df.loc[idx_vacant, "bldg_area_finished_sqft"] = 0
-    # Convert is_vacant to boolean first
-    if "is_vacant" not in df or df["is_vacant"].dtype != bool:
-      df["is_vacant"] = False
-    df.loc[idx_vacant, "is_vacant"] = True
-
-  return df
-
 
 def get_sale_field(settings: dict, df:pd.DataFrame=None) -> str:
   """
@@ -320,18 +259,6 @@ def get_vacant_sales(df_in: pd.DataFrame, settings: dict, invert: bool = False) 
   return df_vacant_sales
 
 
-def is_series_all_bools(series: pd.Series) -> bool:
-  dtype = series.dtype
-  if dtype == bool:
-    return True
-  # check all unique values:
-  uniques = series.unique()
-  for unique in uniques:
-    if type(unique) != bool:
-      return False
-  return True
-
-
 def get_vacant(df_in: pd.DataFrame, settings: dict, invert: bool = False) -> pd.DataFrame:
   """
   Filter the DataFrame based on the 'is_vacant' column.
@@ -356,67 +283,6 @@ def get_vacant(df_in: pd.DataFrame, settings: dict, invert: bool = False) -> pd.
   df_vacant = df[idx_vacant].copy()
   return df_vacant
 
-
-def get_sales(df_in: pd.DataFrame, settings: dict, vacant_only: bool = False, df_univ: pd.DataFrame = None) -> pd.DataFrame:
-  """
-  Retrieve valid sales from the input DataFrame. Also simulates removed buildings if applicable.
-
-  Filters for sales with a positive sale price, valid_sale marked True.
-  If vacant_only is True, only includes rows where vacant_sale is True.
-
-  :param df_in: Input DataFrame containing sales.
-  :type df_in: pandas.DataFrame
-  :param settings: Settings dictionary.
-  :type settings: dict
-  :param vacant_only: If True, return only vacant sales.
-  :type vacant_only: bool, optional
-  :returns: Filtered DataFrame of valid sales.
-  :rtype: pandas.DataFrame
-  :raises ValueError: If required boolean columns are not of boolean type.
-  """
-  df = df_in.copy()
-  valid_sale_dtype = df["valid_sale"].dtype
-  if valid_sale_dtype != bool:
-    if is_series_all_bools(df["valid_sale"]):
-      df["valid_sale"] = df["valid_sale"].astype(bool)
-    else:
-      raise ValueError(f"The 'valid_sale' column must be a boolean type (found: {valid_sale_dtype}) with values: {df['valid_sale'].unique()}")
-
-  if "vacant_sale" in df:
-    vacant_sale_dtype = df["vacant_sale"].dtype
-    if vacant_sale_dtype != bool:
-      if is_series_all_bools(df["vacant_sale"]):
-        df["vacant_sale"] = df["vacant_sale"].astype(bool)
-      else:
-        raise ValueError(f"The 'vacant_sale' column must be a boolean type (found: {vacant_sale_dtype}) with values: {df['vacant_sale'].unique()}")
-    # check for vacant sales:
-    idx_vacant_sale = df["vacant_sale"].eq(True)
-
-    # simulate removed buildings for vacant sales
-    # (if we KNOW it was a vacant sale, then the building characteristics have to go)
-    df = simulate_removed_buildings(df, settings, idx_vacant_sale)
-
-    # TODO: smell
-    if "is_vacant" not in df and df_univ is not None:
-      df = df.merge(df_univ[["key", "is_vacant"]], on="key", how="left")
-
-    if "model_group" not in df and df_univ is not None:
-      df = df.merge(df_univ[["key", "model_group"]], on="key", how="left")
-
-    # if a property was NOT vacant at time of sale, but is vacant now, then the sale is invalid:
-    idx_is_vacant = df["is_vacant"].eq(True)
-    df.loc[~idx_vacant_sale & idx_is_vacant, "valid_sale"] = False
-  
-  # Use sale_price_time_adj if it exists, otherwise use sale_price
-  sale_field = "sale_price_time_adj" if "sale_price_time_adj" in df else "sale_price"
-  idx_sale_price = df[sale_field].gt(0)
-  idx_valid_sale = df["valid_sale"].eq(True)
-  idx_is_vacant = df["vacant_sale"].eq(True)
-  idx_all = idx_sale_price & idx_valid_sale & (idx_is_vacant if vacant_only else True)
-
-  df_sales: pd.DataFrame = df[idx_all].copy()
-
-  return df_sales
 
 
 def get_report_locations(settings: dict, df: pd.DataFrame = None) -> list[str]:
@@ -1083,7 +949,7 @@ def _enrich_df_streets(
   lat_buf = network_buffer / 111000
   lon_buf = network_buffer / (111000 * math.cos(math.radians((miny+maxy)/2)))
 
-  # # DEBUG
+  # DEBUG
   # lat_buf = 0
   # lon_buf = 0
   # pad_size = 0.25
@@ -1093,7 +959,7 @@ def _enrich_df_streets(
   # miny += size_y * (pad_size)
   # maxx -= size_x * (pad_size)
   # maxy -= size_y * (pad_size)
-  # # DEBUG
+  # DEBUG
 
   north, south = maxy + lat_buf, miny - lat_buf
   east, west   = maxx + lon_buf, minx - lon_buf
@@ -1768,6 +1634,8 @@ def _enrich_time_field(df: pd.DataFrame, prefix: str, add_year_month: bool = Tru
             n_diff = df[f"{prefix}{check}"].ne(date_value).sum()
             raise ValueError(f"Derived field '{prefix}{check}' does not match the date field '{prefix}_date' in {n_diff} rows.")
   return df
+
+
 def _boolify_series(series: pd.Series, na_handling: str = None):
     """
     Convert a series with potential string representations of booleans into actual booleans.
@@ -4435,4 +4303,3 @@ def _process_permits_sales(
       print(f"--> {len(renovations_1)} minor renovations.")
 
   return df_sales
-

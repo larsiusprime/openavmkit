@@ -8,15 +8,13 @@ import pandas as pd
 from catboost import CatBoostRegressor
 from lightgbm import Booster
 from sklearn.linear_model import Ridge
-from sklearn.model_selection import train_test_split
 from statsmodels.nonparametric.kernel_regression import KernelReg
 from xgboost import XGBRegressor
 from IPython.display import display
 import numpy as np
-from sklearn.preprocessing import OneHotEncoder
 
 from openavmkit.data import get_important_field, get_locations, _read_split_keys, SalesUniversePair, \
-	get_hydrated_sales_from_sup, get_report_locations, get_sales, get_sale_field, simulate_removed_buildings
+	get_hydrated_sales_from_sup, get_report_locations, get_sale_field
 from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run_catboost, SingleModelResults, \
 	run_garbage, run_average, run_naive_sqft, predict_garbage, \
 	run_kernel, run_local_sqft, run_pass_through, predict_average, predict_naive_sqft, predict_local_sqft, \
@@ -32,7 +30,7 @@ from openavmkit.utilities.modeling import NaiveSqftModel, LocalSqftModel, LocalS
 	GroundTruthModel, SpatialLagModel
 from openavmkit.utilities.plotting import plot_scatterplot
 from openavmkit.utilities.settings import get_fields_categorical, get_variable_interactions, get_valuation_date, \
-	get_model_group, apply_dd_to_df_rows, get_model_group_ids, get_fields_boolean
+	get_model_group, apply_dd_to_df_rows, get_model_group_ids, get_fields_boolean, get_sales, simulate_removed_buildings
 from openavmkit.utilities.stats import calc_vif_recursive_drop, calc_t_values_recursive_drop, \
 	calc_p_values_recursive_drop, calc_elastic_net_regularization, calc_correlations, calc_r2, \
 	calc_cross_validation_score, calc_cod, trim_outliers_mask

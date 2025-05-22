@@ -1,12 +1,11 @@
 import pandas as pd
-import numpy as np
 import lightgbm as lgb
 
-from openavmkit.data import SalesUniversePair, get_field_classifications, is_series_all_bools
+from openavmkit.data import SalesUniversePair
 from openavmkit.utilities.data import ensure_categories, align_categories
 from openavmkit.utilities.settings import get_valuation_date, get_fields_categorical, get_fields_boolean, \
-	get_grouped_fields_from_data_dictionary, get_data_dictionary, get_model_group_ids
-from openavmkit.utilities.cache import write_cache, read_cache, check_cache
+	get_grouped_fields_from_data_dictionary, get_data_dictionary, get_model_group_ids, is_series_all_bools
+from openavmkit.utilities.cache import write_cache
 from openavmkit.calculations import resolve_filter
 
 

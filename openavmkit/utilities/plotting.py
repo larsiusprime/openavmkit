@@ -5,10 +5,35 @@ import pandas as pd
 import numpy as np
 import colorsys
 import mpld3
+import statsmodels.api as sm
 from mpld3 import plugins
 
-from openavmkit.modeling import simple_ols
 from IPython.display import display, HTML
+
+
+def _simple_ols(
+    df: pd.DataFrame,
+    ind_var: str,
+    dep_var: str,
+    intercept: bool = True
+):
+  y = df[dep_var].copy()
+  X = df[ind_var].copy()
+  if intercept:
+    X = sm.add_constant(X)
+  X = X.astype(np.float64)
+  model = sm.OLS(y, X).fit()
+
+  return {
+    "slope": model.params[ind_var],
+    "intercept": model.params["const"] if "const" in model.params else 0,
+    "r2": model.rsquared,
+    "adj_r2": model.rsquared_adj,
+    "pval": model.pvalues[ind_var],
+    "mse": model.mse_resid,
+    "rmse": np.sqrt(model.mse_resid),
+    "std_err": model.bse[ind_var]
+  }
 
 
 def get_nice_random_colors(n: int, shuffle=False, seed=1337):
@@ -90,9 +115,9 @@ def plot_scatterplot(
 
   # 5) Optional best‐fit line
   if best_fit_line:
-    results = simple_ols(df, x, y)
+    results = _simple_ols(df, x, y, intercept=False)
     slope, intercept, r2 = results["slope"], results["intercept"], results["r2"]
-    ax.plot(df[x], slope * df[x] + intercept,
+    ax.plot(df[x], slope * df[x],
       color="red", alpha=0.5, label=f"Best fit line (r²={r2:.2f})")
 
   if perfect_fit_line:
@@ -118,6 +143,8 @@ def plot_scatterplot(
   html = mpld3.fig_to_html(fig)
   display(HTML(html))
 
+  # Close the plot without showing it:
+  plt.close(fig)
 
   return fig
 
