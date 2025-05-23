@@ -1466,6 +1466,10 @@ def _finish_df_streets(df: gpd.GeoDataFrame, settings: dict) -> gpd.GeoDataFrame
 
   return df
 
+
+
+
+
 def identify_parcels_with_holes(df: gpd.GeoDataFrame) -> (gpd.GeoDataFrame, gpd.GeoDataFrame):
   """
   Identify parcels with holes (interior rings) in their geometries.

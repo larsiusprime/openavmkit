@@ -3732,6 +3732,7 @@ def kolbe_et_al_transform(
     sale_field: str,
     bldg_fields: list[str],
     units: str = "ft",
+    somers: bool = True,
     log: bool = True,
     drop_zeros: bool = True,      # ← new flag
 ):
@@ -3745,33 +3746,39 @@ def kolbe_et_al_transform(
 
   df = df_in.copy()                          # keep original untouched
 
-  # -- 1. Somers units ----------------------------------------------------
+  # -- 1. Normalize by size units ----------------------------------------------------
   if units == "ft":
     frontage, depth = "frontage_ft_1", "depth_ft_1"
-    df["SU"] = get_size_in_somers_units_ft(df[frontage], df[depth])
+    if somers:
+      df["SIZE"] = get_size_in_somers_units_ft(df[frontage], df[depth])
+    else:
+      df["SIZE"] = df["land_area_sqft"]
   else:
     frontage, depth = "frontage_m_1", "depth_m_1"
-    df["SU"] = get_size_in_somers_units_m(df[frontage], df[depth])
+    if somers:
+      df["SIZE"] = get_size_in_somers_units_m(df[frontage], df[depth])
+    else:
+      df["SIZE"] = df["land_area_m2"]
 
   # -- 2. Raw ratios ------------------------------------------------------
-  df["_price_per_SU"] = df[sale_field] / df["SU"]
+  df["_price_per_SIZE"] = df[sale_field] / df["SIZE"]
   for col in bldg_fields:
-    df[f"_{col}_per_SU"] = df[col] / df["SU"]
+    df[f"_{col}_per_SIZE"] = df[col] / df["SIZE"]
 
   # -- 3. Optionally drop rows that would break the log -------------------
   if log and drop_zeros:
-    keep = (df["_price_per_SU"] > 0)
+    keep = (df["_price_per_SIZE"] > 0)
     for col in bldg_fields:
-      keep &= (df[f"_{col}_per_SU"] > 0)
+      keep &= (df[f"_{col}_per_SIZE"] > 0)
     df = df.loc[keep].reset_index(drop=True)
 
   # -- 4. Build y and Z ---------------------------------------------------
   if log:
-    y = np.log(df["_price_per_SU"].to_numpy(float))
-    Z = np.log(df[[f"_{c}_per_SU" for c in bldg_fields]].to_numpy(float))
+    y = np.log(df["_price_per_SIZE"].to_numpy(float))
+    Z = np.log(df[[f"_{c}_per_SIZE" for c in bldg_fields]].to_numpy(float))
   else:
-    y = df["_price_per_SU"].to_numpy(float)
-    Z = df[[f"_{c}_per_SU" for c in bldg_fields]].to_numpy(float)
+    y = df["_price_per_SIZE"].to_numpy(float)
+    Z = df[[f"_{c}_per_SIZE" for c in bldg_fields]].to_numpy(float)
 
   # drop the helper columns
   df.drop(columns=[c for c in df.columns if c.startswith("_")], inplace=True)
@@ -3779,12 +3786,13 @@ def kolbe_et_al_transform(
   return y, Z, df
 
 
-def kolbe_yatchew_somers(
+def kolbe_yatchew(
     df_train: pd.DataFrame,
     df_test: pd.DataFrame,
     df_univ: pd.DataFrame,
     bldg_fields: list[str],
     settings: dict,
+    somers: bool = True,
     units: str = "ft",
     cell_size: float = 300,
     log: bool = False,
@@ -3804,9 +3812,9 @@ def kolbe_yatchew_somers(
   df_univ = df_univ.copy()
 
   # 1. Transform variables according to Kolbe, et al. (but with Somers units)
-  y, Z, df = kolbe_et_al_transform(df, sale_field, bldg_fields, units=units, log=log)
-  y_test, Z_test, df_test = kolbe_et_al_transform(df_test, sale_field, bldg_fields, units=units, log=log)
-  y_univ, Z_univ, df_univ = kolbe_et_al_transform(df_univ, sale_field, bldg_fields, units=units, log=log)
+  y, Z, df = kolbe_et_al_transform(df, sale_field, bldg_fields, units=units, somers=somers, log=log)
+  y_test, Z_test, df_test = kolbe_et_al_transform(df_test, sale_field, bldg_fields, units=units, somers=somers, log=log)
+  y_univ, Z_univ, df_univ = kolbe_et_al_transform(df_univ, sale_field, bldg_fields, units=units, somers=somers, log=log)
 
   # 2. Run Yatchew
   m = choose_m(len(df))
@@ -3825,10 +3833,10 @@ def kolbe_yatchew_somers(
     # ------- 1. improvement prediction (β̂′Z) ------------------------------
     _df["impr_pred"] = _Z @ _res.params
     if _log:
-      _df["impr_value_per_SU"] = np.exp(_df["impr_pred"])
+      _df["impr_value_per_SIZE"] = np.exp(_df["impr_pred"])
     else:
-      _df["impr_value_per_SU"] = _df["impr_pred"]
-    _df["impr_value"] = _df["impr_value_per_SU"] * _df["SU"]
+      _df["impr_value_per_SIZE"] = _df["impr_pred"]
+    _df["impr_value"] = _df["impr_value_per_SIZE"] * _df["SIZE"]
     return _df
 
 
@@ -3838,23 +3846,23 @@ def kolbe_yatchew_somers(
 
     # ------- 3. Improvement + land in $/SU -------------------------------
     if _log:
-      _df["land_value_per_SU"] = np.exp(_df["land_resid"])
+      _df["land_value_per_SIZE"] = np.exp(_df["land_resid"])
     else:
-      _df["land_value_per_SU"] = _df["land_resid"]
+      _df["land_value_per_SIZE"] = _df["land_resid"]
 
     # ------- 4. Dollar values per parcel ---------------------------------
-    _df["land_value"] = _df["land_value_per_SU"] * _df["SU"]
+    _df["land_value"] = _df["land_value_per_SIZE"] * _df["SIZE"]
     return _df
 
 
   def kys_predict_market_value(_df, _log: bool):
     # ------- 5. Total market value ---------------------------------------
     if _log:
-      _df["market_value_per_SU"] = np.exp(_df["impr_pred"] + _df["land_resid"])
+      _df["market_value_per_SIZE"] = np.exp(_df["impr_pred"] + _df["land_resid"])
     else:
-      _df["market_value_per_SU"] = _df["impr_pred"] + _df["land_resid"]
+      _df["market_value_per_SIZE"] = _df["impr_pred"] + _df["land_resid"]
 
-    _df["market_value"] = _df["market_value_per_SU"] * _df["SU"]
+    _df["market_value"] = _df["market_value_per_SIZE"] * _df["SIZE"]
 
     # Optional: sanity check (should be ~0 except for FP round-off)
     _df["market_value_check"] = _df["market_value"] - (_df["impr_value"] + _df["land_value"])
@@ -3875,7 +3883,7 @@ def kolbe_yatchew_somers(
     df,
     "market_value",
     sale_field,
-    title="Kolbe Yatchew Somers",
+    title="Kolbe Yatchew",
     xlabel="Predicted Value ($)",
     ylabel="Observed Value ($)",
     best_fit_line=True,
@@ -3883,7 +3891,7 @@ def kolbe_yatchew_somers(
   )
 
   if verbose:
-    print(f"Kolbe Yatchew Somers: {units} units")
+    print(f"Kolbe Yatchew: {units} units")
     print(f"  MSE    = {mse:.2f}")
     print(f"  R2     = {r2:.4f}")
     print(f"  Adj R2 = {adj_r2:.4f}")
@@ -3892,16 +3900,19 @@ def kolbe_yatchew_somers(
   # Predict on the test set
 
   # Get spatial lag of land value per SU
-  df_univ = _calc_spatial_lag(df, df_univ, ["land_value_per_SU"])
-  df_univ = df_univ.rename(columns={"spatial_lag_land_value_per_SU": "land_value_per_SU"})
-  df_univ["land_value"] = df_univ["land_value_per_SU"] * df_univ["SU"]
-  df_univ.to_parquet("out/kolbe_yatchew_somers.parquet")
+  df_univ = _calc_spatial_lag(df, df_univ, ["land_value_per_SIZE"])
+  df_univ = df_univ.rename(columns={"spatial_lag_land_value_per_SIZE": "land_value_per_SIZE"})
+  df_univ["land_value"] = df_univ["land_value_per_SIZE"] * df_univ["SIZE"]
+
+  suffix = "_somers" if somers else "_area"
+
+  df_univ.to_parquet(f"out/kolbe_yatchew{suffix}.parquet")
 
   # Merge this onto the test set
-  df_test = df_test.merge(df_univ[["key","land_value_per_SU"]], on="key", how="left")
+  df_test = df_test.merge(df_univ[["key","land_value_per_SIZE"]], on="key", how="left")
 
   df_test = kys_predict_impr(df_test, Z_test, res, log)
-  df_test["land_value"] = df_test["land_value_per_SU"] * df_test["SU"]
+  df_test["land_value"] = df_test["land_value_per_SIZE"] * df_test["SIZE"]
   df_test["market_value"] = df_test["impr_value"] + df_test["land_value"]
 
   mse, r2, adj_r2 = calc_mse_r2_adj_r2(df_test["market_value"].to_numpy(), df_test[sale_field].to_numpy(), len(bldg_fields))
@@ -3912,7 +3923,7 @@ def kolbe_yatchew_somers(
     df_test,
     "market_value",
     sale_field,
-    title="Kolbe Yatchew Somers (Test Set)",
+    title="Kolbe Yatchew (Test Set)",
     xlabel="Predicted Value ($)",
     ylabel="Observed Value ($)",
     best_fit_line=True,
@@ -3920,7 +3931,7 @@ def kolbe_yatchew_somers(
   )
 
   if verbose:
-    print(f"Kolbe Yatchew Somers (Test Set): {units} units")
+    print(f"Kolbe Yatchew (Test Set): {units} units")
     print(f"  MSE    = {mse:.2f}")
     print(f"  R2     = {r2:.4f}")
     print(f"  Adj R2 = {adj_r2:.4f}")
@@ -4056,12 +4067,60 @@ def derive_somers_unit_values(
   df_train = df_sales[df_sales["key_sale"].isin(test_keys)]
   df_test = df_sales[df_sales["key_sale"].isin(train_keys)]
 
-  results, df = kolbe_yatchew_somers(
+  results, df = kolbe_yatchew(
     df_train,
     df_test,
     sup.universe,
     bldg_fields,
     settings,
+    somers=True,
+    log=log,
+    verbose=verbose
+  )
+
+  if verbose:
+    print(results.summary())
+
+  return results, df
+
+
+def derive_land_values(
+    sup: SalesUniversePair,
+    bldg_fields: list[str],
+    model_group: str,
+    settings: dict,
+    log: bool = True,
+    verbose: bool = False
+):
+  df_sales = get_hydrated_sales_from_sup(sup)
+
+  # Filter only to our current model group
+  df_sales = df_sales[df_sales["model_group"].eq(model_group)].copy()
+
+  # Filter out outliers in terms of price:
+  sale_field = get_sale_field(settings)
+  df_sales = df_sales[
+    df_sales[sale_field].gt(df_sales[sale_field].quantile(0.05)) &
+    df_sales[sale_field].lt(df_sales[sale_field].quantile(0.95))
+  ]
+
+  # Filter out outliers in terms of size:
+  df_sales = df_sales[
+    df_sales["land_area_sqft"].ge(df_sales["land_area_sqft"].quantile(0.05)) &
+    df_sales["land_area_sqft"].le(df_sales["land_area_sqft"].quantile(0.95))
+  ]
+
+  train_keys, test_keys = get_train_test_keys(df_sales, settings)
+  df_train = df_sales[df_sales["key_sale"].isin(test_keys)]
+  df_test = df_sales[df_sales["key_sale"].isin(train_keys)]
+
+  results, df = kolbe_yatchew(
+    df_train,
+    df_test,
+    sup.universe,
+    bldg_fields,
+    settings,
+    somers=False,
     log=log,
     verbose=verbose
   )
