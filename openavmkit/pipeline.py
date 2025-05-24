@@ -35,7 +35,7 @@ from openavmkit.sales_scrutiny_study import run_sales_scrutiny_per_model_group, 
 from openavmkit.time_adjustment import enrich_time_adjustment
 from openavmkit.utilities.data import combine_dfs
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_numeric, get_fields_boolean, \
-   get_fields_land, get_fields_impr, get_fields_other
+   get_fields_land, get_fields_impr, get_fields_other, get_unclassified_fields
 
 
 # Basic data stuff
@@ -206,6 +206,7 @@ def examine_df_in_ridiculous_detail(df: pd.DataFrame, s: dict):
    fields_land = get_fields_land(s, df)
    fields_impr = get_fields_impr(s, df)
    fields_other = get_fields_other(s, df)
+
 
    fields_noted = []
 
