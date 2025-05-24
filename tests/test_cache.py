@@ -200,3 +200,43 @@ def test_cache_df2():
   assert was_cached == "cached"
   assert dfs_are_equal(gdf_enriched, gdf, "key")
   clear_cache("synthetic", "df")
+
+
+def test_cache_df3():
+
+  clear_cache("synthetic", "df")
+
+  synthetic = generate_basic(100)
+  gdf = synthetic.df_universe
+
+  gdf_extra_rows = gdf.copy()
+  gdf_extra_rows["key"] = gdf_extra_rows["key"].astype(str) + "_extra"
+
+  gdf_skinny = gdf[["key", "geometry"]].copy()
+  gdf_stuff = gdf.drop(columns=["geometry"]).copy()
+
+  # Also stick a bunch of extra rows on
+  gdf = pd.concat([gdf, gdf_extra_rows], ignore_index=False)
+
+  def enrich_gdf(gdf_in: geopandas.GeoDataFrame):
+    gdf_out = get_cached_df(gdf_in, "synthetic", "key")
+    if gdf_out is not None:
+      return gdf_out, "cached"
+
+    # Enrichment merges the skinny gdf with the stuff gdf, and adds some extra rows
+    gdf_out = gdf_in.copy()
+    gdf_out = gdf_out.merge(gdf_stuff, on="key", how="left")
+    gdf_out = pd.concat([gdf_out, gdf_extra_rows], ignore_index=False)
+
+    write_cached_df(gdf_in, gdf_out, "synthetic", "key")
+    return gdf_out, "uncached"
+
+  gdf_enriched, was_cached = enrich_gdf(gdf_skinny)
+
+  assert was_cached == "uncached"
+  assert dfs_are_equal(gdf_enriched, gdf, "key")
+
+  gdf_enriched, was_cached = enrich_gdf(gdf_skinny)
+  assert was_cached == "cached"
+  assert dfs_are_equal(gdf_enriched, gdf, "key")
+  clear_cache("synthetic", "df")

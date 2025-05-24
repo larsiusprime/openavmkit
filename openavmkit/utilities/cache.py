@@ -102,8 +102,16 @@ def clear_cache(
   path = f"cache/{filename}"
   if os.path.exists(f"{path}.{ext}"):
     os.remove(f"{path}.{ext}")
+  if os.path.exists(f"{path}.cols{ext}"):
+    os.remove(f"{path}..cols.{ext}")
+  if os.path.exists(f"{path}.rows{ext}"):
+    os.remove(f"{path}.rows{ext}")
   if os.path.exists(f"{path}.signature.json"):
     os.remove(f"{path}.signature.json")
+  if os.path.exists(f"{path}.cols.signature.json"):
+    os.remove(f"{path}.cols.signature.json")
+  if os.path.exists(f"{path}.rows.signature.json"):
+    os.remove(f"{path}.rows.signature.json")
 
 
 def write_cached_df(
@@ -114,9 +122,29 @@ def write_cached_df(
     extra_signature: dict | str = None
 )-> pd.DataFrame | None:
 
+  df_new = df_new.copy()
+
   orig_cols = set(df_orig.columns)
   new_cols  = [c for c in df_new.columns if c not in orig_cols]
   common    = [c for c in df_new.columns if c in orig_cols]
+
+  orig_rows_by_key = df_orig[key].values
+  new_rows_by_key = df_new[key].values
+  if len(orig_rows_by_key) > len(new_rows_by_key):
+    added_rows = [key for key in new_rows_by_key if key not in orig_rows_by_key]
+    orig_set = set(orig_rows_by_key)
+    new_set = set(new_rows_by_key)
+    added_rows = []
+    deleted_rows = list(orig_set - new_set)
+  elif len(orig_rows_by_key) < len(new_rows_by_key):
+    orig_set = set(orig_rows_by_key)
+    new_set = set(new_rows_by_key)
+    added_rows = list(new_set - orig_set)
+    deleted_rows = []
+  else:
+    added_rows = []
+    deleted_rows = []
+
 
   modified = []
   for c in common:
@@ -152,17 +180,22 @@ def write_cached_df(
   if key not in the_cols:
     the_cols = [key]+changed_cols
 
-  df_diff = df_new[the_cols].copy()
-
+  df_diff_cols = df_new[the_cols].copy()
+  df_diff_cols = df_diff_cols[~df_diff_cols[key].isin(added_rows)]
   signature = _get_df_signature(df_orig, extra_signature)
-
   df_type = "df"
+  write_cache(f"{filename}.cols", df_diff_cols, signature, df_type)
+  if len(deleted_rows) > 0:
+    df_new = df_new[~df_new[key].isin(deleted_rows)].copy()
 
-  write_cache(filename, df_diff, signature, df_type)
+  if len(added_rows) > 0:
+    df_diff_rows = df_new[df_new[key].isin(added_rows)].copy()
+    if not df_diff_rows.empty:
+      write_cache(f"{filename}.rows", df_diff_rows, signature, df_type)
 
   df_cached = get_cached_df(df_orig, filename, key, extra_signature)
 
-  are_equal = dfs_are_equal(df_new, df_cached, allow_weak=True)
+  are_equal = dfs_are_equal(df_new, df_cached, allow_weak=True, primary_key=key)
   if not are_equal:
     raise ValueError(f"Cached DataFrame does not match the original DataFrame.")
 
@@ -182,25 +215,45 @@ def get_cached_df(
   else:
     signature = _get_df_signature(df, extra_signature)
 
-  if check_cache(filename, signature, "df"):
-    df_diff = read_cache(filename, "df")
-    if df_diff is None or df_diff.empty:
-      return None
+  filename_rows = f"{filename}.rows"
+  filename_cols = f"{filename}.cols"
 
-    df_diff[key] = df_diff[key].astype(df[key].dtype)
+  df_merged = None
 
-    cols_to_replace = [c for c in df_diff.columns if c != key]
-    df_base = df.drop(columns=cols_to_replace, errors="ignore")
+  if check_cache(filename_cols, signature, "df"):
+    # Merge new columns
+    df_diff = read_cache(filename_cols, "df")
+    if not df_diff is None and not df_diff.empty:
+      df_diff[key] = df_diff[key].astype(df[key].dtype)
 
-    df_merged = df_base.merge(df_diff, how="left", on=key)
+      cols_to_replace = [c for c in df_diff.columns if c != key]
 
-    if isinstance(df_diff, gpd.GeoDataFrame):
-      df_merged = gpd.GeoDataFrame(df_merged, geometry="geometry")
-      df_merged = ensure_geometries(df_merged, "geometry", df_diff.crs)
+      # Drop the columns that are going to be replaced
+      df_base = df.drop(columns=cols_to_replace, errors="ignore")
 
-    return df_merged
+      # Drop the keys that are not in the diff
+      df_base = df_base[df_base["key"].isin(df_diff[key])].copy()
 
-  return None
+      df_merged = df_base.merge(df_diff, how="left", on=key)
+
+      if isinstance(df_diff, gpd.GeoDataFrame):
+        df_merged = gpd.GeoDataFrame(df_merged, geometry="geometry")
+        df_merged = ensure_geometries(df_merged, "geometry", df_diff.crs)
+
+  if check_cache(filename_rows, signature, "df"):
+    # Add new rows
+    df_diff = read_cache(filename_rows, "df")
+    if not df_diff is None and not df_diff.empty:
+      df_diff[key] = df_diff[key].astype(df[key].dtype)
+
+      if df_merged is None:
+        df_merged = df.copy()
+
+      # add the new rows onto the end of the DataFrame
+      df_merged = pd.concat([df_merged, df_diff], ignore_index=True)
+
+
+  return df_merged
 
 
 def _get_df_signature(df: pd.DataFrame, extra: dict | str = None):

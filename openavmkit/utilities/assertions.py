@@ -87,6 +87,9 @@ def dicts_are_equal(a: dict, b: dict):
 
 
 def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None, allow_weak=False):
+	a = a.copy()
+	b = b.copy()
+
 	if primary_key is not None:
 		a = a.sort_values(by=primary_key)
 		b = b.sort_values(by=primary_key)
@@ -99,42 +102,79 @@ def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None, allow_weak
 	if not a.columns.equals(b.columns):
 		print(f"Columns do not match:\nA={a.columns}\nB={b.columns}")
 		return False
-	if not a.index.equals(b.index):
-		print("Indices do not match")
-		print(a.index)
-		print("VS")
-		print(b.index)
-		return False
-	for col in a.columns:
-		if not series_are_equal(a[col], b[col]):
-			old_val = pd.get_option('display.max_columns')
-			pd.set_option('display.max_columns', None)
 
-			bad_rows_a = a[~a[col].eq(b[col])]
-			bad_rows_b = b[~a[col].eq(b[col])]
+	a_sorted_index = a.index.sort_values()
+	b_sorted_index = b.index.sort_values()
 
-			weak_fail = False
-
-			if len(bad_rows_a) == 0 and len(bad_rows_b) == 0:
-				weak_fail = True
-				if not allow_weak:
-					print(f"Column '{col}' does not match even though rows are naively equal, look:")
-					print(a[col])
-					print(b[col])
+	if not a_sorted_index.equals(b_sorted_index):
+		if primary_key is not None:
+			a_not_in_b = a[~a[primary_key].isin(b[primary_key])][primary_key].values
+			b_not_in_a = b[~b[primary_key].isin(a[primary_key])][primary_key].values
+			if len(a_not_in_b) > 0:
+				print(f"{len(a_not_in_b)} keys in A not in B: {a_not_in_b}")
+				return False
+			if len(b_not_in_a) > 0:
+				print(f"{len(b_not_in_a)} keys in B not in A: {b_not_in_a}")
+				print(f"len(a) = {len(a)} VS len(b) = {len(b)}")
+				return False
 			else:
-				print(f"Column '{col}' does not match, look:")
-				# print rows that are not equal:
-				print(bad_rows_a[col])
-				print(bad_rows_b[col])
-
-			pd.set_option('display.max_columns', old_val)
-
-			if weak_fail and allow_weak:
-				continue
-
-			print(f"Column '{col}' does not match for some reason.")
-
+				# we're going to reindex on primary key and proceed with comparisons on that basis
+				a = a.set_index(primary_key)
+				b = b.set_index(primary_key)
+		else:
+			print("Indices do not match")
+			print(a_sorted_index)
+			print("VS")
+			print(b_sorted_index)
 			return False
+
+	for col in a.columns:
+		no_match = False
+		if col == primary_key:
+			# skip the primary key column:
+			continue
+
+		if not series_are_equal(a[col], b[col]):
+			# try again using primary key as the index:
+			if primary_key is not None:
+				a = a.set_index(primary_key)
+				b = b.set_index(primary_key)
+				# try again:
+				if not series_are_equal(a[col], b[col]):
+					no_match = True
+			else:
+				no_match = True
+
+			if no_match:
+
+				old_val = pd.get_option('display.max_columns')
+				pd.set_option('display.max_columns', None)
+
+				bad_rows_a = a[~a[col].eq(b[col])]
+				bad_rows_b = b[~a[col].eq(b[col])]
+
+				weak_fail = False
+
+				if len(bad_rows_a) == 0 and len(bad_rows_b) == 0:
+					weak_fail = True
+					if not allow_weak:
+						print(f"Column '{col}' does not match even though rows are naively equal, look:")
+						print(a[col])
+						print(b[col])
+				else:
+					print(f"Column '{col}' does not match, look:")
+					# print rows that are not equal:
+					print(bad_rows_a[col])
+					print(bad_rows_b[col])
+
+				pd.set_option('display.max_columns', old_val)
+
+				if weak_fail and allow_weak:
+					continue
+
+				print(f"Column '{col}' does not match for some reason.")
+				return False
+
 	return True
 
 
@@ -176,11 +216,13 @@ def series_are_equal(a: pd.Series, b: pd.Series):
 	# ensure that the two series contain the same information:
 	if not a.equals(b):
 
-		# They're not strictly equal. Edge case check -- NaN values:
+		# Check for "NONE" values in either one and replace with NaN:
+		a.loc[a.isna()] = np.nan
+		b.loc[b.isna()] = np.nan
 
 		# check which values are NaN:
-		a_is_nan = a.isna()
-		b_is_nan = b.isna()
+		a_is_nan = pd.isna(a) | a.isna() | a.isnull() | a.eq(None)
+		b_is_nan = pd.isna(b) | b.isna() | b.isnull() | b.eq(None)
 
 		# mask out the NaN values and see if those sections are equal:
 		a_masked = a[~a_is_nan]
