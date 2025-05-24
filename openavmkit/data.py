@@ -2010,6 +2010,12 @@ def _enrich_df_spatial_joins(df_in: pd.DataFrame, s_enrich_this: dict, dataframe
   # geometry
   gdf = _perform_spatial_joins(s_geom, dataframes, verbose=verbose)
 
+  gdf_keys_not_in_df = gdf[~gdf["key"].isin(df["key"].values)]["key"].values
+  df_keys_not_in_gdf = df[~df["key"].isin(gdf["key"].values)]["key"].values
+
+
+  gdf = gdf[gdf["key"].isin(df["key"].values)]
+
   # Merge everything together:
   try_keys = ["key", "key2", "key3"]
   success = False
@@ -2040,7 +2046,12 @@ def _enrich_df_spatial_joins(df_in: pd.DataFrame, s_enrich_this: dict, dataframe
   if not success:
     raise ValueError(f"Could not find a common key between geo_parcels and base dataframe. Tried keys: {try_keys}")
 
+  # drop null keys
+  gdf_merged = gdf_merged[gdf_merged["key"].notna()]
+
+
   write_cached_df(df_in, gdf_merged, "geom/spatial_joins", "key", s_enrich_this)
+
 
   return gdf_merged
 
@@ -3424,6 +3435,9 @@ def _merge_dict_of_dfs(dataframes: dict[str, pd.DataFrame], merge_list: list, se
     elif col in fields_cat:
       if "date" not in col:
         df_merged[col] = df_merged[col].astype("string")
+
+  # drop null keys
+  df_merged = df_merged.dropna(subset=[required_key])
 
   return df_merged
 
