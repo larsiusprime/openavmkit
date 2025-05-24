@@ -379,7 +379,7 @@ def get_field_classifications(settings: dict):
   field_map = {}
   for ftype in ["land", "impr", "other"]:
     nums = get_fields_numeric(settings, df=None, include_boolean=False, types=[ftype])
-    cats = get_fields_categorical(settings,df=None, include_boolean=False, types=[ftype])
+    cats = get_fields_categorical(settings, df=None, include_boolean=False, types=[ftype])
     bools = get_fields_boolean(settings, df=None, types=[ftype])
     for field in nums:
       field_map[field] = {"type": ftype, "class": "numeric"}
@@ -2153,9 +2153,22 @@ def _enrich_df_user_distances(gdf_in: gpd.GeoDataFrame, s_enrich_this: dict, dat
   s_dist = s_enrich_this.get("distances", [])
   # Filter out OSM distances
   # These are handled directly within the open street map enrichment call
-  s_dist_no_osm = [d for d in s_dist if d.get("id", "").startswith("osm_") == False]
-  print(f"s_dist_no_osm: {s_dist_no_osm}")
-  return _perform_distance_calculations(gdf_in, s_dist_no_osm, dataframes, get_long_distance_unit(settings), verbose=verbose, cache_key="geom/distance")
+
+  entries = []
+  for d in s_dist:
+    if isinstance(d, str):
+      entry = {"id": d}
+    elif isinstance(d, dict):
+      entry = d
+    else:
+      raise ValueError(f"Invalid entry in distances: {d}")
+    if entry.get("id").startswith("osm_"):
+      # Skip OSM distances
+      warnings.warn(f"Skipping OSM distance entry: {entry['id']}, handle that via data.process.enrich.universe.openstreetmap instead")
+      continue
+    entries.append(entry)
+
+  return _perform_distance_calculations(gdf_in, entries, dataframes, get_long_distance_unit(settings), verbose=verbose, cache_key="geom/distance")
 
 
 def _enrich_polar_coordinates(gdf_in: gpd.GeoDataFrame, settings: dict, verbose: bool = False) -> gpd.GeoDataFrame:
