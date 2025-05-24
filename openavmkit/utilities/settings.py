@@ -70,7 +70,16 @@ def get_center(s: dict, gdf: gpd.GeoDataFrame=None)-> tuple[float, float]:
 
 
 def get_fields_land(s: dict, df: pd.DataFrame=None):
-  return _get_fields(s, "land", df)
+  fields_land = _get_fields(s, "land", df)
+  fields_unclassified = get_unclassified_fields(s, df)
+
+
+  for field in fields_unclassified:
+    if field.startswith("dist_to_") or field.startswith("within_"):
+      fields_land["numeric"].append(field)
+
+  return fields_land
+
 
 
 def get_fields_land_as_list(s: dict, df: pd.DataFrame=None):
@@ -319,6 +328,24 @@ def apply_dd_to_df_rows(
   return df
 
 
+def get_unclassified_fields(s: dict, df: pd.DataFrame = None):
+  # Get all fields that are not classified as categorical, numeric, or boolean
+  all = []
+  for t in ["land", "impr", "other"]:
+    cats = s.get("field_classification", {}).get(t, {}).get("categorical", [])
+    nums = s.get("field_classification", {}).get(t, {}).get("numeric", [])
+    bools = s.get("field_classification", {}).get(t, {}).get("boolean", [])
+    all += cats + nums + bools
+
+  if df is not None:
+    all = [f for f in all if f in df]
+    for col in df:
+      if col not in all:
+        all.append(col)
+
+  return all
+
+
 def _get_fields(s: dict, type: str, df: pd.DataFrame = None):
   cats = s.get("field_classification", {}).get(type, {}).get("categorical", [])
   nums = s.get("field_classification", {}).get(type, {}).get("numeric", [])
@@ -328,6 +355,7 @@ def _get_fields(s: dict, type: str, df: pd.DataFrame = None):
     cats = [c for c in cats if c in df]
     nums = [n for n in nums if n in df]
     bools = [b for b in bools if b in df]
+
   return {
     "categorical": cats,
     "numeric": nums,
