@@ -21,6 +21,9 @@ class RatioStudy:
 		cod_trim: float
 		prd: float
 		prb: float
+		median_ratio_trim: float
+		mean_ratio: float
+		mean_ratio_trim: float
 
 		def __init__(
 				self,
@@ -42,6 +45,9 @@ class RatioStudy:
 				self.prb = float("nan")
 				self.prd_trim = float("nan")
 				self.prb_trim = float("nan")
+				self.median_ratio_trim = float("nan")
+				self.mean_ratio = float("nan")
+				self.mean_ratio_trim = float("nan")
 				return
 
 			self.count = len(predictions)
@@ -68,6 +74,9 @@ class RatioStudy:
 			prb_trim, _, _ = stats.calc_prb(trim_predictions, trim_ground_truth)
 
 			self.median_ratio = median_ratio
+			self.median_ratio_trim = float(np.median(trim_ratios))
+			self.mean_ratio = float(np.mean(ratios))
+			self.mean_ratio_trim = float(np.mean(trim_ratios))
 			self.cod = cod
 			self.cod_trim = cod_trim
 

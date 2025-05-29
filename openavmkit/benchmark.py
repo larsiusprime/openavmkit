@@ -2900,10 +2900,13 @@ def _model_performance_metrics(
 	metrics_data = {
 		"Model": [],
 		"R²": [],
-		"m.ratio": [],
+		"m.ratio": [], # Added trimmed median ratio
+		"mean.ratio": [],
 		"Slope": [],
 		"R²*": [],
 		"Slope*": [],
+		"m.ratio*": [], 
+		"mean.ratio*": [],
 	}
 
 	for model_name, model_result in all_results.model_results.items():
@@ -2933,9 +2936,11 @@ def _model_performance_metrics(
 		if len(mask) == 0:
 			y_true_trim = y_true
 			y_pred_trim = y_pred
+			y_ratio_trim = y_ratio
 		else:
 			y_true_trim = y_true[mask]
 			y_pred_trim = y_pred[mask]
+			y_ratio_trim = y_ratio[mask]
 
 		# Calculate R²
 		r2 = model_result.pred_test.r2
@@ -2964,7 +2969,10 @@ def _model_performance_metrics(
 
 		metrics_data["Model"].append(model_name)
 		metrics_data["R²"].append(r2)
-		metrics_data["m.ratio"].append(np.median(y_ratio))
+		metrics_data["m.ratio"].append(model_result.pred_test.ratio_study.median_ratio)
+		metrics_data["mean.ratio"].append(model_result.pred_test.ratio_study.mean_ratio)
+		metrics_data["m.ratio*"].append(model_result.pred_test.ratio_study.median_ratio_trim)
+		metrics_data["mean.ratio*"].append(model_result.pred_test.ratio_study.mean_ratio_trim)
 		metrics_data["R²*"].append(r2_trim)
 		metrics_data["Slope"].append(slope)
 		metrics_data["Slope*"].append(slope_trim)
@@ -2975,6 +2983,9 @@ def _model_performance_metrics(
 	metrics_df["R²"] = metrics_df["R²"].apply(lambda x: f"{x:.4f}")
 	metrics_df["Slope"] = metrics_df["Slope"].apply(lambda x: f"{x:.4f}")
 	metrics_df["m.ratio"] = metrics_df["m.ratio"].apply(lambda x: f"{x:.4f}")
+	metrics_df["mean.ratio"] = metrics_df["mean.ratio"].apply(lambda x: f"{x:.4f}")
+	metrics_df["m.ratio*"] = metrics_df["m.ratio*"].apply(lambda x: f"{x:.4f}")  # Format trimmed median ratio
+	metrics_df["mean.ratio*"] = metrics_df["mean.ratio*"].apply(lambda x: f"{x:.4f}")
 	metrics_df["R²*"] = metrics_df["R²*"].apply(lambda x: f"{x:.4f}")
 	metrics_df["Slope*"] = metrics_df["Slope*"].apply(lambda x: f"{x:.4f}")
 
