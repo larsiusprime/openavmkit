@@ -12,13 +12,20 @@ from IPython.display import display, HTML
 
 
 def _simple_ols(
-    df: pd.DataFrame,
+    df_in: pd.DataFrame,
     ind_var: str,
     dep_var: str,
     intercept: bool = True
 ):
-  y = df[dep_var].copy()
-  X = df[ind_var].copy()
+
+  # check for nans/nulls in y:
+  df = df_in[
+    ~df_in[dep_var].isna() &
+    ~df_in[ind_var].isna()
+  ].copy()
+
+  y = df[dep_var]
+  X = df[ind_var]
   if intercept:
     X = sm.add_constant(X)
   X = X.astype(np.float64)

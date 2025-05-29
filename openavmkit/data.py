@@ -225,7 +225,7 @@ def get_sale_field(settings: dict, df:pd.DataFrame=None) -> str:
   :returns: Field name to be used for sale price.
   :rtype: str
   """
-  ta = settings.get("modeling", {}).get("instructions", {}).get("time_adjustment", {})
+  ta = settings.get("data", {}).get("process", {}).get("time_adjustment", {})
   use = ta.get("use", True)
   if use:
     sale_field = "sale_price_time_adj"
@@ -234,7 +234,7 @@ def get_sale_field(settings: dict, df:pd.DataFrame=None) -> str:
   if df is not None:
     if sale_field == "sale_price_time_adj" and "sale_price_time_adj" in df:
       return "sale_price_time_adj"
-  return "sale_price"
+  return sale_field
 
 
 def get_vacant_sales(df_in: pd.DataFrame, settings: dict, invert: bool = False) -> pd.DataFrame:
@@ -1787,14 +1787,10 @@ def enrich_sup_spatial_lag(sup: SalesUniversePair, settings: dict, verbose: bool
 
   if per_land_field not in df_hydrated:
     df_hydrated[per_land_field] = div_field_z_safe(df_hydrated[sale_field], df_hydrated["land_area_sqft"])
-    df_hydrated[per_land_field] = div_field_z_safe(df_hydrated[sale_field], df_hydrated["land_area_sqft"])
   if per_impr_field not in df_hydrated:
-    df_hydrated[per_impr_field] = div_field_z_safe(df_hydrated[sale_field], df_hydrated["bldg_area_finished_sqft"])
     df_hydrated[per_impr_field] = div_field_z_safe(df_hydrated[sale_field], df_hydrated["bldg_area_finished_sqft"])
   if sale_field_vacant not in df_hydrated:
     df_hydrated[sale_field_vacant] = None
-    df_hydrated[sale_field_vacant] = None
-    df_hydrated[sale_field_vacant] = df_hydrated[sale_field].where(df_hydrated["bldg_area_finished_sqft"].le(0) & df_hydrated["land_area_sqft"].gt(0))
     df_hydrated[sale_field_vacant] = df_hydrated[sale_field].where(df_hydrated["bldg_area_finished_sqft"].le(0) & df_hydrated["land_area_sqft"].gt(0))
 
   value_fields = [sale_field, sale_field_vacant, per_land_field, per_impr_field]

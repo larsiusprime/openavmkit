@@ -73,10 +73,13 @@ def get_fields_land(s: dict, df: pd.DataFrame=None):
   fields_land = _get_fields(s, "land", df)
   fields_unclassified = get_unclassified_fields(s, df)
 
-
   for field in fields_unclassified:
     if field.startswith("dist_to_") or field.startswith("within_"):
       fields_land["numeric"].append(field)
+
+  for key in fields_land:
+    # remove duplicates:
+    fields_land[key] = list(set(fields_land[key]))
 
   return fields_land
 

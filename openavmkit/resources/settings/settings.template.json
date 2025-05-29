@@ -18,7 +18,6 @@
 			"modeler": "Modeler"
 		},
 		"instructions": {
-			"time_adjustment": {},
 			"feature_selection": {
 				"thresholds": {
 					"correlation": 0.1,

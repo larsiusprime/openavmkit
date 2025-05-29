@@ -3,7 +3,7 @@ import os
 import pickle
 import warnings
 
-import numpy.linalg
+from numpy.linalg import LinAlgError
 from IPython.core.display import display
 import polars as pl
 from joblib import Parallel, delayed
@@ -11,6 +11,7 @@ from typing import Union, Any, Dict
 
 from scipy.spatial._ckdtree import cKDTree
 from sklearn.preprocessing import OneHotEncoder
+from hilbertcurve.hilbertcurve import HilbertCurve
 
 import numpy as np
 import statsmodels.api as sm
@@ -44,7 +45,7 @@ from openavmkit.utilities.somers import get_unit_ft, get_lot_value_ft, get_size_
 from openavmkit.utilities.format import fancy_format
 from openavmkit.utilities.modeling import GarbageModel, AverageModel, NaiveSqftModel, LocalSqftModel, LocalSomersModel, \
   PassThroughModel, GWRModel, MRAModel, GroundTruthModel, SpatialLagModel
-from openavmkit.utilities.data import clean_column_names, div_field_z_safe
+from openavmkit.utilities.data import clean_column_names, div_field_z_safe, calc_spatial_lag
 from openavmkit.utilities.settings import get_valuation_date
 from openavmkit.utilities.stats import quick_median_chd_pl, calc_mse_r2_adj_r2, calc_prb, trim_outliers_mask
 from openavmkit.tuning import tune_lightgbm, tune_xgboost, tune_catboost
@@ -282,12 +283,15 @@ class PredictionResults:
       self.mse = mean_squared_error(y_clean, y_pred_clean)
       self.rmse = np.sqrt(self.mse)
       var_y = np.var(y_clean)
+
       if var_y == 0:
         self.r2 = float('nan')  # R² undefined when variance is 0
         self.slope = float('nan')
       else:
-        self.r2 = 1 - self.mse / var_y
-        self.slope, _ = np.polyfit(y_clean, y_pred_clean, 1)
+        df = pd.DataFrame(data={"y": y_clean, "y_pred": y_pred_clean})
+        ols_results = simple_ols(df, "y", "y_pred")
+        self.r2 = ols_results["r2"]
+        self.slope = ols_results["slope"]
 
       y_ratio = y_pred_clean / y_clean
       mask = trim_outliers_mask(y_ratio)
@@ -303,8 +307,10 @@ class PredictionResults:
           self.r2_trim = float('nan')
           self.slope_trim = float('nan')
         else:
-          self.r2_trim = 1 - self.mse_trim / var_y_trim
-          self.r2_slope, _ = np.polyfit(y_clean_trim, y_pred_trim, 1)
+          df = pd.DataFrame(data={"y": y_clean_trim, "y_pred": y_pred_trim})
+          ols_results = simple_ols(df, "y", "y_pred")
+          self.r2_trim = ols_results["r2"]
+          self.slope_trim = ols_results["slope"]
       else:
         self.mse_trim = float('nan')
         self.rmse_trim = float('nan')
@@ -960,7 +966,7 @@ class SingleModelResults:
       y_pred_test: np.ndarray,
       y_pred_sales: np.ndarray | None,
       y_pred_univ: np.ndarray,
-      timing: TimingData,
+      timing: TimingData | None = None,
       verbose: bool = False,
       sale_filter: list = None
   ):
@@ -984,7 +990,7 @@ class SingleModelResults:
     :param y_pred_univ: Predictions on the universe set
     :type y_pred_univ: numpy.ndarray
     :param timing: TimingData object.
-    :type timing: TimingData
+    :type timing: TimingData, optional
     :param verbose: Whether to print verbose output.
     :type verbose: bool, optional
     :param sale_filter: Filter to apply to sales
@@ -1013,6 +1019,9 @@ class SingleModelResults:
         print(f"{sales_after}/{sales_before} sales records passed filter")
         print(f"{test_after}/{test_before} test records passed filter")
 
+    self.verbose = verbose
+    self.sale_filter = sale_filter
+
     self.df_universe = df_univ
     self.df_test = df_test
 
@@ -1026,6 +1035,8 @@ class SingleModelResults:
     self.ind_vars = ds.ind_vars.copy()
     self.model = model
 
+    if timing is None:
+      timing = TimingData()
     timing.start("stats_test")
     self.pred_test = PredictionResults(self.dep_var_test, self.ind_vars, field_prediction, df_test)
     timing.stop("stats_test")
@@ -1466,6 +1477,9 @@ def predict_spatial_lag(ds: DataSplit, model: SpatialLagModel, timing: TimingDat
     if field_land_sqft == "":
       raise ValueError("No field found for spatial lag with 'land_sqft'")
 
+    if verbose:
+      print(f"Spatial lag SQFT model, impr={field_impr_sqft}, land={field_land_sqft}")
+
     # predict on test set:
     timing.start("predict_test")
     idx_vacant_test = ds.X_test["bldg_area_finished_sqft"].le(0)
@@ -1727,7 +1741,7 @@ def predict_kernel(ds: DataSplit, kr: KernelReg, timing: TimingData, verbose: bo
   if kr is not None:
     try:
       y_pred_test, _ = kr.fit(X_test)
-    except numpy.linalg.LinAlgError as e:
+    except LinAlgError as e:
       print(f"--> Error in kernel regression: {e}")
       y_pred_test = np.zeros(X_test.shape[0])
   timing.stop("predict_test")
@@ -1739,7 +1753,7 @@ def predict_kernel(ds: DataSplit, kr: KernelReg, timing: TimingData, verbose: bo
   if kr is not None:
     try:
       y_pred_sales, _ = kr.fit(X_sales)
-    except numpy.linalg.LinAlgError as e:
+    except LinAlgError as e:
       print(f"--> Error in kernel regression: {e}")
       y_pred_sales = np.zeros(X_sales.shape[0])
   timing.stop("predict_sales")
@@ -1751,7 +1765,7 @@ def predict_kernel(ds: DataSplit, kr: KernelReg, timing: TimingData, verbose: bo
   if kr is not None:
     try:
       y_pred_univ, _ = kr.fit(X_univ)
-    except numpy.linalg.LinAlgError as e:
+    except LinAlgError as e:
       print(f"--> Error in kernel regression: {e}")
       y_pred_univ = np.zeros(X_univ.shape[0])
   timing.stop("predict_univ")
@@ -1845,7 +1859,7 @@ def run_kernel(ds: DataSplit, outpath: str, save_params: bool = False, use_saved
       os.makedirs(outpath, exist_ok=True)
       with open(f"{outpath}/kernel_bw.pkl", "wb") as f:
         pickle.dump(kernel_bw, f)
-  except numpy.linalg.LinAlgError as e:
+  except LinAlgError as e:
     print(f"--> Error in kernel regression: {e}")
     print("Kernel regression failed. Please check your data.")
     kr = None
@@ -3667,7 +3681,7 @@ def simple_ols(
 
   return {
     "slope": model.params[ind_var],
-    "intercept": model.params["const"],
+    "intercept": model.params.get("const", 0.0),
     "r2": model.rsquared,
     "adj_r2": model.rsquared_adj,
     "pval": model.pvalues[ind_var],
@@ -3677,22 +3691,65 @@ def simple_ols(
   }
 
 
-def coarse_grid_order(lat, lon, cell_meters=100):
+def greedy_nn_limited(lat, lon, start_idx=0, k=16):
+  """
+  Greedy nearest-neighbor on flat coords with limited-k search.
+  - Projects lat/lon to (x,y) in meters via equirectangular.
+  - At each step, queries up to k nearest; if all are visited, tries more,
+    but never requests more than n-1, and if still stuck picks the first
+    unvisited.
+  """
   lat = np.asarray(lat)
   lon = np.asarray(lon)
+  n = len(lat)
 
-  mean_lat_rad  = np.deg2rad(lat.mean())
-  m_per_deg_lat = 111_320.0
-  m_per_deg_lon = 111_320.0 * np.cos(mean_lat_rad)
+  # 1) project to x,y in meters
+  mean_lat = np.deg2rad(lat.mean())
+  m_per_deg = 111_320.0
+  xs = (lon - lon.mean()) * m_per_deg * np.cos(mean_lat)
+  ys = (lat - lat.mean()) * m_per_deg
+  pts = np.vstack((xs, ys)).T
 
-  cell_deg_lat = cell_meters / m_per_deg_lat
-  cell_deg_lon = cell_meters / m_per_deg_lon
+  # 2) build tree once
+  tree = cKDTree(pts)
 
-  lat_bucket = np.floor((lat - lat.min()) / cell_deg_lat).astype(np.int32)
-  lon_bucket = np.floor((lon - lon.min()) / cell_deg_lon).astype(np.int32)
+  visited = np.zeros(n, bool)
+  order = np.empty(n, int)
+  current = start_idx
 
-  # one lexsort call: first bucket keys, then raw lat/lon for tie-break
-  return np.lexsort((lon, lat, lon_bucket, lat_bucket))
+  for i in range(n):
+    order[i] = current
+    visited[current] = True
+
+    # if this was the last point, break
+    if i == n-1:
+      break
+
+    kk = k
+    next_pt = None
+    while True:
+      # never ask for more than n-1 neighbors (excluding self)
+      kk = min(kk, n-1)
+      dists, idxs = tree.query(pts[current], kk+1)  # +1 to skip self
+      # scan for the first unvisited
+      for cand in idxs[1:]:       # skip idxs[0] == current
+        if cand < n and not visited[cand]:
+          next_pt = cand
+          break
+      if next_pt is not None:
+        break
+      if kk >= n-1:
+        # all other points must be visited? or we're at the very end.
+        # fallback: pick the first unvisited by simple search.
+        unvis = np.nonzero(~visited)[0]
+        next_pt = unvis[0]
+        break
+      # otherwise, try a bigger neighborhood
+      kk *= 2
+
+    current = next_pt
+
+  return order
 
 
 def choose_m(n_obs: int) -> int:
@@ -3707,7 +3764,6 @@ def yatchew_estimate(
     y,
     Z,
     Xs,
-    cell_meters:float=100,
     robust=True
 ):
   if Z.ndim == 1:
@@ -3716,7 +3772,7 @@ def yatchew_estimate(
     raise ValueError("smooth_vars must have exactly two columns (lat, lon)")
 
   lat, lon = Xs.T
-  order    = coarse_grid_order(lat, lon, cell_meters)
+  order    = greedy_nn_limited(lat, lon, k=16)
   y, Z     = y[order], Z[order]
 
   for _ in range(m):
@@ -3761,23 +3817,34 @@ def kolbe_et_al_transform(
       df["SIZE"] = df["land_area_m2"]
 
   # -- 2. Raw ratios ------------------------------------------------------
-  df["_price_per_SIZE"] = df[sale_field] / df["SIZE"]
+  if sale_field in df:
+    df["_price_per_SIZE"] = df[sale_field] / df["SIZE"]
+
   for col in bldg_fields:
     df[f"_{col}_per_SIZE"] = df[col] / df["SIZE"]
 
   # -- 3. Optionally drop rows that would break the log -------------------
   if log and drop_zeros:
-    keep = (df["_price_per_SIZE"] > 0)
+    if sale_field in df:
+      keep = (df["_price_per_SIZE"] > 0)
+    else:
+      keep = pd.Series(True, index=df.index)
     for col in bldg_fields:
       keep &= (df[f"_{col}_per_SIZE"] > 0)
     df = df.loc[keep].reset_index(drop=True)
 
   # -- 4. Build y and Z ---------------------------------------------------
   if log:
-    y = np.log(df["_price_per_SIZE"].to_numpy(float))
+    if sale_field in df:
+      y = np.log(df["_price_per_SIZE"].to_numpy(float))
+    else:
+      y = np.zeros(df.shape[0])
     Z = np.log(df[[f"_{c}_per_SIZE" for c in bldg_fields]].to_numpy(float))
   else:
-    y = df["_price_per_SIZE"].to_numpy(float)
+    if sale_field in df:
+      y = df["_price_per_SIZE"].to_numpy(float)
+    else:
+      y = np.zeros(df.shape[0])
     Z = df[[f"_{c}_per_SIZE" for c in bldg_fields]].to_numpy(float)
 
   # drop the helper columns
@@ -3787,33 +3854,25 @@ def kolbe_et_al_transform(
 
 
 def kolbe_yatchew(
-    df_train: pd.DataFrame,
-    df_test: pd.DataFrame,
-    df_univ: pd.DataFrame,
+    df_train_in: pd.DataFrame,
+    df_test_in: pd.DataFrame,
+    df_univ_in: pd.DataFrame,
     bldg_fields: list[str],
     settings: dict,
     somers: bool = True,
     units: str = "ft",
-    cell_size: float = 300,
     log: bool = False,
     robust: bool = True,
     verbose: bool = False
 ):
-  if units == "ft":
-    cell_meters = cell_size * 0.3048
-  elif units == "m":
-    cell_meters = cell_size
-  else:
-    raise ValueError("units must be either 'ft' or 'm'")
-
   sale_field = get_sale_field(settings)
 
-  df = df_train.copy()
-  df_univ = df_univ.copy()
+  df = df_train_in.copy()
+  df_univ = df_univ_in.copy()
 
   # 1. Transform variables according to Kolbe, et al. (but with Somers units)
   y, Z, df = kolbe_et_al_transform(df, sale_field, bldg_fields, units=units, somers=somers, log=log)
-  y_test, Z_test, df_test = kolbe_et_al_transform(df_test, sale_field, bldg_fields, units=units, somers=somers, log=log)
+  y_test, Z_test, df_test = kolbe_et_al_transform(df_test_in, sale_field, bldg_fields, units=units, somers=somers, log=log)
   y_univ, Z_univ, df_univ = kolbe_et_al_transform(df_univ, sale_field, bldg_fields, units=units, somers=somers, log=log)
 
   # 2. Run Yatchew
@@ -3825,7 +3884,6 @@ def kolbe_yatchew(
     y,
     Z,
     Xs,
-    cell_meters,
     robust=robust
   )
 
@@ -3900,11 +3958,13 @@ def kolbe_yatchew(
   # Predict on the test set
 
   # Get spatial lag of land value per SU
-  df_univ = _calc_spatial_lag(df, df_univ, ["land_value_per_SIZE"])
+  df_univ = calc_spatial_lag(df, df_univ, ["land_value_per_SIZE"])
   df_univ = df_univ.rename(columns={"spatial_lag_land_value_per_SIZE": "land_value_per_SIZE"})
   df_univ["land_value"] = df_univ["land_value_per_SIZE"] * df_univ["SIZE"]
 
   suffix = "_somers" if somers else "_area"
+
+  df_univ = df_univ.merge(df_univ_in[["key","model_group"]], on="key", how="left")
 
   df_univ.to_parquet(f"out/kolbe_yatchew{suffix}.parquet")
 
@@ -3916,7 +3976,11 @@ def kolbe_yatchew(
   df_test["market_value"] = df_test["impr_value"] + df_test["land_value"]
 
   mse, r2, adj_r2 = calc_mse_r2_adj_r2(df_test["market_value"].to_numpy(), df_test[sale_field].to_numpy(), len(bldg_fields))
-  slope, _ = np.polyfit(df_test["market_value"], df_test[sale_field], 1)
+  try:
+    slope, _ = np.polyfit(df_test["market_value"], df_test[sale_field], 1)
+  except LinAlgError as e:
+    print(f"LinAlgError in np.polyfit: {e}")
+    slope = np.nan
 
   # plot "market_value" vs. sale_field:
   plot_scatterplot(
@@ -3940,7 +4004,7 @@ def kolbe_yatchew(
   return res, df
 
 
-def _calc_spatial_lag(df_sample: pd.DataFrame, df_univ: pd.DataFrame, value_fields:list[str]) -> pd.DataFrame:
+def _calc_spatial_lag(df_sample: pd.DataFrame, df_univ: pd.DataFrame, value_fields:list[str], neighbors:int = 5, exclude_self_in_sample: bool = False) -> pd.DataFrame:
 
   df = df_univ.copy()
 
@@ -3960,16 +4024,19 @@ def _calc_spatial_lag(df_sample: pd.DataFrame, df_univ: pd.DataFrame, value_fiel
       continue
 
     # Choose the number of nearest neighbors to use
-    k = 5  # You can adjust this number as needed
+    k = neighbors  # You can adjust this number as needed
 
     # Query the tree: for each parcel in df_universe, find the k nearest parcels
     # distances: shape (n_universe, k); indices: corresponding indices in df_sales
     distances, indices = tree.query(coords_all, k=k)
 
+    if exclude_self_in_sample:
+      distances = distances[:, 1:]  # Exclude self-distance
+      indices = indices[:, 1:]  # Exclude self-index
+
     # Ensure that distances and indices are 2D arrays (if k==1, reshape them)
-    if k == 1:
-      distances = distances[:, None]
-      indices = indices[:, None]
+    if k < 2:
+      raise ValueError("k must be at least 2 to compute spatial lag.")
 
     # For each universe parcel, compute sigma as the mean distance to its k neighbors.
     sigma = distances.mean(axis=1, keepdims=True)
@@ -3997,7 +4064,6 @@ def _calc_spatial_lag(df_sample: pd.DataFrame, df_univ: pd.DataFrame, value_fiel
     df[f"spatial_lag_{value_field}"] = df[f"spatial_lag_{value_field}"].fillna(median_value)
 
   return df
-
 
 
 def derive_somers_unit_values(
@@ -4129,3 +4195,6 @@ def derive_land_values(
     print(results.summary())
 
   return results, df
+
+
+##############################

@@ -3,6 +3,10 @@ import pickle
 
 import numpy as np
 import pandas as pd
+import osmnx as ox
+from collections import defaultdict
+
+from scipy.spatial._ckdtree import cKDTree
 
 from openavmkit.utilities.settings import get_model_group_ids
 
@@ -448,3 +452,181 @@ def align_categories(
       df_right[col] = df_right[col].cat.set_categories(cats)
 
   return df_left, df_right
+
+
+def encode_city_blocks():
+
+  # ─── 1. Download & simplify the OSM network ────────────────────────────────────
+  place = "Cambridge, MA, USA"
+  highway_types = [
+    "motorway","trunk","primary","secondary",
+    "tertiary","unclassified","residential","service"
+  ]
+  custom_filter = f'["highway"~"{"|".join(highway_types)}"]'
+  G = ox.graph_from_place(
+    place,
+    network_type="drive",
+    simplify=True,
+    custom_filter=custom_filter
+  )
+
+  # ─── 2. Extract edges GeoDataFrame with u/v node IDs ───────────────────────────
+  edges = ox.graph_to_gdfs(G, nodes=False, edges=True).reset_index()[[
+    "u", "v", "geometry", "name", "highway", "osmid"
+  ]]
+
+  # ─── 3. Explode multilines, drop empties, reproject to metric CRS ─────────────
+  #    (choose a suitable projected CRS for distance-based ops)
+  crs_eq = "EPSG:3857"
+  edges = (
+    edges
+    .explode(index_parts=False)
+    .dropna(subset=["geometry"])
+    .to_crs(crs_eq)
+    .reset_index(drop=True)
+  )
+
+  # ─── 4. Unwrap any list‐values & fill missing names ───────────────────────────
+  edges["road_name"] = edges["name"].apply(
+    lambda v: v[0] if isinstance(v, (list, tuple)) else v
+  )
+  edges["road_type"] = edges["highway"].apply(
+    lambda v: v[0] if isinstance(v, (list, tuple)) else v
+  )
+  # fallback: use osmid as a string if name was null
+  edges["road_name"] = edges["road_name"].fillna(edges["osmid"].astype(str))
+
+  # ─── 5. Build node→roads mapping, skipping service‐type roads ──────────────────
+  node_to_names = defaultdict(set)
+  for _, row in edges[["u","v","road_name","road_type"]].iterrows():
+    if row["road_type"] == "service":
+      # never include service roads as cross‐streets
+      continue
+    node_to_names[row.u].add(row.road_name)
+    node_to_names[row.v].add(row.road_name)
+
+  # ─── 6. Helper: pick the first “other” road at a junction ─────────────────────
+  def first_other(names_set, self_name):
+    for nm in names_set:
+      if nm != self_name:
+        return nm
+    return "?"
+
+  # ─── 7. Compute cross‐street names at each end ────────────────────────────────
+  edges["cross_w"] = [
+    first_other(node_to_names[u], rn)
+    for u, rn in zip(edges["u"], edges["road_name"])
+  ]
+  edges["cross_e"] = [
+    first_other(node_to_names[v], rn)
+    for v, rn in zip(edges["v"], edges["road_name"])
+  ]
+
+  # ─── 8. Build the final name_loc field ────────────────────────────────────────
+  edges["name_loc"] = (
+      edges["road_name"]
+      + " between "
+      + edges["cross_w"]
+      + " and "
+      + edges["cross_e"]
+  )
+
+  # ─── 9. (Optional) drop service‐road segments entirely ────────────────────────
+  # edges = edges[edges.road_type != "service"]
+
+  # ─── Done! ─────────────────────────────────────────────────────────────────────
+  print(edges[["u","v","road_name","cross_w","cross_e","name_loc"]].head())
+
+
+def calc_spatial_lag(df_sample: pd.DataFrame, df_univ: pd.DataFrame, value_fields:list[str], neighbors:int = 5, exclude_self_in_sample: bool = False) -> pd.DataFrame:
+
+  df = df_univ.copy()
+
+  # Build a cKDTree from df_sales coordinates
+
+  # we TRAIN on these coordinates -- coordinates that are NOT in the test set
+  coords_train = df_sample[['latitude', 'longitude']].values
+  tree = cKDTree(coords_train)
+
+  # we PREDICT on these coordinates -- all the coordinates in the universe
+  coords_all = df[['latitude', 'longitude']].values
+
+  for value_field in value_fields:
+    if value_field not in df_sample:
+      print("Value field not in df_sample, skipping")
+      continue
+
+    # Choose the number of nearest neighbors to use
+    k = neighbors  # You can adjust this number as needed
+
+    # Query the tree: for each parcel in df_universe, find the k nearest parcels
+    # distances: shape (n_universe, k); indices: corresponding indices in df_sales
+    distances, indices = tree.query(coords_all, k=k)
+
+    if exclude_self_in_sample:
+      distances = distances[:, 1:]  # Exclude self-distance
+      indices = indices[:, 1:]  # Exclude self-index
+
+    # Ensure that distances and indices are 2D arrays (if k==1, reshape them)
+    if k < 2:
+      raise ValueError("k must be at least 2 to compute spatial lag.")
+
+    # For each universe parcel, compute sigma as the mean distance to its k neighbors.
+    sigma = distances.mean(axis=1, keepdims=True)
+
+    # Handle zeros in sigma
+    sigma[sigma == 0] = np.finfo(float).eps  # Avoid division by zero
+
+    # Compute Gaussian kernel weights for all neighbors
+    weights = np.exp(- (distances ** 2) / (2 * sigma ** 2))
+
+    # Normalize the weights so that they sum to 1 for each parcel
+    weights_norm = weights / weights.sum(axis=1, keepdims=True)
+
+    # Get the values corresponding to the neighbor indices
+    parcel_values = df_sample[value_field].values
+    neighbor_values = parcel_values[indices]  # shape (n_universe, k)
+
+    # Compute the weighted average (spatial lag) for each parcel in the universe
+    spatial_lag = (np.asarray(weights_norm) * np.asarray(neighbor_values)).sum(axis=1)
+
+    # Add the spatial lag as a new column
+    df[f"spatial_lag_{value_field}"] = spatial_lag
+
+    median_value = df_sample[value_field].median()
+    df[f"spatial_lag_{value_field}"] = df[f"spatial_lag_{value_field}"].fillna(median_value)
+
+  return df
+
+
+def load_model_results(model_group: str, model_name: str, subset: str = "universe", model_type: str = "main"):
+  outpath = f"out/models/{model_group}/{model_type}"
+
+  filepath = f"{outpath}/{model_name}"
+  if os.path.exists(filepath):
+    fpred = f"{filepath}/pred_{subset}.parquet"
+    if not os.path.exists(fpred):
+      fpred = f"{filepath}/pred_{model_name}_{subset}.parquet"
+
+    if os.path.exists(fpred):
+      df = pd.read_parquet(fpred)
+      if "key_x" in df:
+        # If the DataFrame has a 'key_x' column, rename it to 'key'
+        df.rename(columns={"key_x": "key"}, inplace=True)
+      df = df[["key", "prediction"]].copy()
+      return df
+
+  fpred_results = f"{filepath}/pred_{subset}.pkl"
+  if os.path.exists(fpred_results):
+    if model_type != "main":
+      with open (fpred_results, "rb") as file:
+        results = pickle.load(file)
+        if subset == "universe":
+          df = results.df_universe[["key", "prediction"]].copy()
+        elif subset == "sales":
+          df = results.df_sales[["key", "prediction"]].copy()
+        elif subset == "test":
+          df = results.df_test[["key", "prediction"]].copy()
+        return df
+
+  return None

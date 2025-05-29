@@ -24,7 +24,7 @@ from openavmkit.modeling import run_mra, run_gwr, run_xgboost, run_lightgbm, run
 from openavmkit.reports import MarkdownReport, _markdown_to_pdf
 from openavmkit.shap_analysis import compute_shap
 from openavmkit.time_adjustment import enrich_time_adjustment
-from openavmkit.utilities.data import div_z_safe, dataframe_to_markdown, do_per_model_group
+from openavmkit.utilities.data import div_z_safe, dataframe_to_markdown, do_per_model_group, load_model_results
 from openavmkit.utilities.format import fancy_format, dig2_fancy_format
 from openavmkit.utilities.modeling import NaiveSqftModel, LocalSqftModel, LocalSomersModel, PassThroughModel, GWRModel, MRAModel, \
 	GroundTruthModel, SpatialLagModel
@@ -225,6 +225,10 @@ def try_variables(
 			pd.set_option('display.max_rows', None)
 			results = results[~results["corr_strength"].isna()]
 			display(results)
+			file_out = f"out/try/{model_group}/{vacant_status}.csv"
+			if not os.path.exists(os.path.dirname(file_out)):
+				os.makedirs(os.path.dirname(file_out))
+			results.to_csv(file_out, index=False)
 			pd.set_option('display.max_rows', 15)
 
 			for var in results["variable"].unique():
@@ -1007,10 +1011,101 @@ def _predict_one_model(
 		catboost_regressor: CatBoostRegressor = smr.model
 		results = predict_catboost(ds, catboost_regressor, timing, verbose)
 
+	if ds.vacant_only or ds.hedonic:
+		# If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
+		results = clamp_land_predictions(results, smr.ds.model_group, model_name)
+
 	if save_results:
 		_write_model_results(results, outpath, settings)
 
 	return results
+
+
+def clamp_land_predictions(
+		results: SingleModelResults,
+		model_group: str,
+		model_name: str
+):
+	# Look for the corresponding universe, sales, and test predictions for the land value model.
+	df_univ = load_model_results(model_group, model_name, "universe", "main")
+	if df_univ is not None:
+		# There's a match for this model name (ex: "xgboost" or "lightgbm") in the set of main models
+		df_sales = load_model_results(model_group, model_name, "sales", "main")
+		df_test = load_model_results(model_group, model_name, "test", "main")
+	else:
+		# There's not a match for this model name, so we look for the ensemble as the baseline
+		df_univ = load_model_results(model_group, "ensemble", "universe", "main")
+		if df_univ is not None:
+			df_sales = load_model_results(model_group, "ensemble", "sales", "main")
+			df_test = load_model_results(model_group, "ensemble", "test", "main")
+		else:
+			warnings.warn(f"Couldn't find main baseline for {model_group}/{model_name} land value predictions, skipping clamping. Run finalize and try again!")
+			return results
+
+	field_pred = results.field_prediction
+
+	# Get our predictions and interpet as land value
+	df_land_univ = results.df_universe[["key", field_pred]].copy().rename(columns={field_pred: "land_value"})
+	df_land_sales = results.df_sales[["key", field_pred]].copy().rename(columns={field_pred: "land_value"})
+	df_land_test = results.df_test[["key", field_pred]].copy().rename(columns={field_pred: "land_value"})
+
+	# Merge the baseline (full market value) prediction onto our land value predictions
+	df_land_univ = df_land_univ.merge(df_univ[["key", "prediction"]], on="key", how="left")
+	df_land_sales = df_land_sales.merge(df_sales[["key", "prediction"]], on="key", how="left")
+	df_land_test = df_land_test.merge(df_test[["key", "prediction"]], on="key", how="left")
+
+	# Clamp land value to the range of (0.0, prediction)
+	# - No negative land values are allowed
+	# - Land value cannot exceed the full market value prediction
+	# - NOTE: this does *not* look at any sales data, so it's not cheating, just another step in the prediction algorithm
+	#         we're just looking at another prediction we made earlier in the pipeline and using that to judge land value
+
+	count_univ_clipped = df_land_univ[df_land_univ["land_value"].lt(0) | df_land_univ["land_value"].gt(df_land_univ["prediction"])].shape[0]
+	count_sales_clipped = df_land_sales[df_land_sales["land_value"].lt(0) | df_land_sales["land_value"].gt(df_land_sales["prediction"])].shape[0]
+	count_test_clipped = df_land_test[df_land_test["land_value"].lt(0) | df_land_test["land_value"].gt(df_land_test["prediction"])].shape[0]
+
+	df_land_univ["land_value"] = df_land_univ["land_value"].clip(lower=0.0, upper=df_land_univ["prediction"])
+	df_land_sales["land_value"] = df_land_sales["land_value"].clip(lower=0.0, upper=df_land_sales["prediction"])
+	df_land_test["land_value"] = df_land_test["land_value"].clip(lower=0.0, upper=df_land_test["prediction"])
+
+	# Extract the land value predictions
+	y_pred_test = df_land_test["land_value"].values
+	y_pred_sales = df_land_sales["land_value"].values
+	y_pred_univ = df_land_univ["land_value"].values
+
+	# turn to ndarray
+	y_pred_test = np.asarray(y_pred_test)
+	y_pred_sales = np.asarray(y_pred_sales)
+	y_pred_univ = np.asarray(y_pred_univ)
+
+	# Create a new SingleModelResults object with the clamped land value predictions
+	results = SingleModelResults(
+		results.ds,
+		field_pred,
+		results.field_horizontal_equity_id,
+		model_name,
+		results.model,
+		y_pred_test,
+		y_pred_sales,
+		y_pred_univ,
+		results.timing,
+		results.verbose,
+		results.sale_filter
+	)
+
+	count_univ = len(results.df_universe)
+	count_sales = len(results.df_sales)
+	count_test = len(results.df_test)
+
+	print(f"--> univ  : {count_univ_clipped}/{count_univ} clamped land values")
+	print(f"--> sales : {count_sales_clipped}/{count_sales} clamped land values")
+	print(f"--> test  : {count_test_clipped}/{count_test} clamped land values")
+
+	return results
+
+
+
+
 
 
 def clean_categoricals(df_in: pd.DataFrame, fields: list[str], settings: dict):
@@ -1316,6 +1411,10 @@ def run_one_model(
 	else:
 		raise ValueError(f"Model {model_name} not found!")
 	t.stop("run")
+
+	if ds.vacant_only or ds.hedonic:
+		# If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
+		results = clamp_land_predictions(results, results.ds.model_group, model_name)
 
 	if save_results:
 		t.start("write")
@@ -2762,8 +2861,8 @@ def _model_shaps(
 
 	for key in all_results.model_results:
 		smr:SingleModelResults = all_results.model_results[key]
-		title = f"{title}/{model_group}/{key}"
-		compute_shap(smr, True, title)
+		_title = f"{title}/{model_group}/{key}"
+		compute_shap(smr, True, _title)
 
 
 def _model_performance_metrics(
@@ -2801,6 +2900,7 @@ def _model_performance_metrics(
 	metrics_data = {
 		"Model": [],
 		"R²": [],
+		"m.ratio": [],
 		"Slope": [],
 		"R²*": [],
 		"Slope*": [],
@@ -2829,8 +2929,13 @@ def _model_performance_metrics(
 
 		y_ratio = y_pred / y_true
 		mask = trim_outliers_mask(y_ratio)
-		y_true_trim = y_true[mask]
-		y_pred_trim = y_pred[mask]
+
+		if len(mask) == 0:
+			y_true_trim = y_true
+			y_pred_trim = y_pred
+		else:
+			y_true_trim = y_true[mask]
+			y_pred_trim = y_pred[mask]
 
 		# Calculate R²
 		r2 = model_result.pred_test.r2
@@ -2840,8 +2945,7 @@ def _model_performance_metrics(
 		try:
 			if len(y_true_trim) <= 0 or len(y_pred_trim) <= 0:
 				print(f"Model({model_name}) -- 0 length array!")
-				print(f"--> y_true_trim: {y_true_trim}")
-				print(f"--> y_pred_trim: {y_pred_trim}")
+				return None
 
 			slope, _ = np.polyfit(y_true, y_pred, 1)
 			slope_trim, _ = np.polyfit(y_true_trim, y_pred_trim, 1)
@@ -2860,6 +2964,7 @@ def _model_performance_metrics(
 
 		metrics_data["Model"].append(model_name)
 		metrics_data["R²"].append(r2)
+		metrics_data["m.ratio"].append(np.median(y_ratio))
 		metrics_data["R²*"].append(r2_trim)
 		metrics_data["Slope"].append(slope)
 		metrics_data["Slope*"].append(slope_trim)
@@ -2869,6 +2974,7 @@ def _model_performance_metrics(
 	metrics_df.set_index("Model", inplace=True)
 	metrics_df["R²"] = metrics_df["R²"].apply(lambda x: f"{x:.4f}")
 	metrics_df["Slope"] = metrics_df["Slope"].apply(lambda x: f"{x:.4f}")
+	metrics_df["m.ratio"] = metrics_df["m.ratio"].apply(lambda x: f"{x:.4f}")
 	metrics_df["R²*"] = metrics_df["R²*"].apply(lambda x: f"{x:.4f}")
 	metrics_df["Slope*"] = metrics_df["Slope*"].apply(lambda x: f"{x:.4f}")
 
@@ -3111,11 +3217,12 @@ def _run_models(
 	title = f"{title} (POST-VALUATION DATE)"
 	post_val_results = _get_post_valuation_mmr(all_results)
 	perf_metrics = _model_performance_metrics(model_group, post_val_results, title)
-	print(perf_metrics)
-	print("")
+	if perf_metrics is not None:
+		print(perf_metrics)
+		print("")
 
-	#_model_performance_plots(model_group, all_results, title)
-	print("")
+		#_model_performance_plots(model_group, all_results, title)
+		print("")
 
 	if not vacant_only and run_hedonic:
 		t.start("run hedonic models")

@@ -40,6 +40,8 @@ class RatioStudy:
 				self.cod_trim = float("nan")
 				self.prd = float("nan")
 				self.prb = float("nan")
+				self.prd_trim = float("nan")
+				self.prb_trim = float("nan")
 				return
 
 			self.count = len(predictions)
