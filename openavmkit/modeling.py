@@ -3671,11 +3671,13 @@ def simple_mra(
 def simple_ols(
     df: pd.DataFrame,
     ind_var: str,
-    dep_var: str
+    dep_var: str,
+    intercept: bool = True
 ):
   y = df[dep_var].copy()
   X = df[ind_var].copy()
-  X = sm.add_constant(X)
+  if intercept:
+    X = sm.add_constant(X)
   X = X.astype(np.float64)
   model = sm.OLS(y, X).fit()
 

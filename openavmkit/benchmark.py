@@ -676,7 +676,7 @@ def write_out_all_results(sup:SalesUniversePair, all_results:dict):
       continue
 
     # Collect all ensemble types to output
-      output_models = []
+    output_models = []
     if "ensemble" in mm_results.model_results:
       output_models.append("ensemble")
     if "stacked_ensemble" in mm_results.model_results:

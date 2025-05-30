@@ -1169,7 +1169,7 @@ def _convolve_land_analysis(
             median_ratio = dfv["sales_ratio"].median()
             cod = calc_cod(dfv["sales_ratio"].values)
 
-            results = simple_ols(dfv, "prediction_land_smooth", sale_field)
+            results = simple_ols(dfv, "prediction_land_smooth", sale_field, intercept=False)
 
             slope = results["slope"]
             r2 = results["r2"]
