@@ -12,6 +12,7 @@ from statsmodels.nonparametric.kernel_regression import KernelReg
 from xgboost import XGBRegressor
 from IPython.display import display
 import numpy as np
+from sklearn.linear_model import LinearRegression
 
 from openavmkit.data import get_important_field, get_locations, _read_split_keys, SalesUniversePair, \
 	get_hydrated_sales_from_sup, get_report_locations, get_sale_field
@@ -673,20 +674,28 @@ def write_out_all_results(sup:SalesUniversePair, all_results:dict):
 			t.stop("read")
 			t.stop(f"model group: {model_group}")
 			continue
-			
-		# Skip if no ensemble results
-		if "ensemble" not in mm_results.model_results:
+		
+		# Collect all ensemble types to output
+		output_models = []
+		if "ensemble" in mm_results.model_results:
+			output_models.append("ensemble")
+		if "stacked_ensemble" in mm_results.model_results:
+			output_models.append("stacked_ensemble")
+		if not output_models:
 			t.stop("read")
 			t.stop(f"model group: {model_group}")
 			continue
-			
-		ensemble:SingleModelResults = mm_results.model_results["ensemble"]
-		t.stop("read")
 
-		t.start("rename")
-		df_univ_local = ensemble.df_universe[["key", ensemble.field_prediction]].rename(columns={ensemble.field_prediction: "market_value"})
-		t.stop("rename")
-
+		# For each output model, extract predictions and add to df_univ_local
+		df_univ_local = None
+		for model_type in output_models:
+			smr = mm_results.model_results[model_type]
+			col_name = f"market_value_{model_type}" if model_type != "ensemble" else "market_value"
+			df_pred = smr.df_universe[["key", smr.field_prediction]].rename(columns={smr.field_prediction: col_name})
+			if df_univ_local is None:
+				df_univ_local = df_pred
+			else:
+				df_univ_local = df_univ_local.merge(df_pred, on="key", how="outer")
 		df_univ_local["model_group"] = model_group
 
 		if df_all is None:
@@ -2761,7 +2770,22 @@ def _run_hedonic_models(
 			pickle.dump(ensemble_results, file)
 
 		# Calculate final results, including ensemble
-			all_hedonic_results.add_model("ensemble", ensemble_results)
+		all_hedonic_results.add_model("ensemble", ensemble_results)
+
+	# --- ADD THIS BLOCK: Run stacked ensemble for hedonic ---
+	_run_stacked_ensemble_for_model_group(
+		t=TimingData(),
+		model_group=model_group,
+		vacant_only=False,
+		all_results=all_hedonic_results,
+		df_sales=df_sales,
+		df_univ=df_universe,
+		outpath=outpath,
+		settings=settings,
+		save_results=save_results,
+		verbose=verbose
+	)
+	# --- END BLOCK ---
 
 	print(f"HEDONIC BENCHMARK ({model_group})")
 	print(all_hedonic_results.benchmark.print())
@@ -2864,7 +2888,6 @@ def _model_shaps(
 		_title = f"{title}/{model_group}/{key}"
 		compute_shap(smr, True, _title)
 
-
 def _model_performance_metrics(
 		model_group: str,
 		all_results: MultiModelResults,
@@ -2900,10 +2923,15 @@ def _model_performance_metrics(
 	metrics_data = {
 		"Model": [],
 		"R²": [],
-		"m.ratio": [],
+		"R²_raw": [], # Added raw R²
+		"m.ratio": [], 
+		"mean.ratio": [],
 		"Slope": [],
 		"R²*": [],
+		"R²_raw*": [], # Added trimmed raw R²
 		"Slope*": [],
+		"m.ratio*": [], 
+		"mean.ratio*": []
 	}
 
 	for model_name, model_result in all_results.model_results.items():
@@ -2934,38 +2962,65 @@ def _model_performance_metrics(
 			y_true_trim = y_true
 			y_pred_trim = y_pred
 		else:
-			y_true_trim = y_true[mask]
+			y_true_trim = y_true[mask] 
 			y_pred_trim = y_pred[mask]
 
-		# Calculate R²
-		r2 = model_result.pred_test.r2
-		r2_trim = model_result.pred_test.r2_trim
+		# Calculate raw R² for untrimmed
+		if len(y_true) > 1 and len(y_pred) > 1:
+			# OLS regression
+			reg = LinearRegression()
+			reg.fit(y_true.reshape(-1, 1), y_pred)
+			slope = reg.coef_[0]
+			intercept = reg.intercept_
+			r2 = reg.score(y_true.reshape(-1, 1), y_pred)
+			
+			# Raw R² calculation
+			ss_res = np.sum((y_true - y_pred) ** 2)
+			ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+			r2_raw = 1 - (ss_res / ss_tot)
+		else:
+			slope = np.nan
+			intercept = np.nan
+			r2 = np.nan
+			r2_raw = np.nan
 
-		# Calculate slope using numpy polyfit
-		try:
-			if len(y_true_trim) <= 0 or len(y_pred_trim) <= 0:
-				print(f"Model({model_name}) -- 0 length array!")
-				return None
+		# Calculate raw R² for trimmed
+		if len(y_true_trim) > 1 and len(y_pred_trim) > 1:
+			# OLS regression
+			reg_trim = LinearRegression()
+			reg_trim.fit(y_true_trim.reshape(-1, 1), y_pred_trim)
+			slope_trim = reg_trim.coef_[0]
+			intercept_trim = reg_trim.intercept_
+			r2_trim = reg_trim.score(y_true_trim.reshape(-1, 1), y_pred_trim)
+			
+			# Raw R² calculation for trimmed data
+			ss_res_trim = np.sum((y_true_trim - y_pred_trim) ** 2)
+			ss_tot_trim = np.sum((y_true_trim - np.mean(y_true_trim)) ** 2)
+			r2_raw_trim = 1 - (ss_res_trim / ss_tot_trim)
+		else:
+			slope_trim = np.nan
+			intercept_trim = np.nan
+			r2_trim = np.nan
+			r2_raw_trim = np.nan
 
-			slope, _ = np.polyfit(y_true, y_pred, 1)
-			slope_trim, _ = np.polyfit(y_true_trim, y_pred_trim, 1)
-		except numpy.linalg.LinAlgError as e:
-			print(f"Model({model_name}) -- Error calculating slope:", e)
-			slope = np.nan
-			slope_trim = np.nan
-		except numpy.core._exceptions.UFuncTypeError as e:
-			print(f"Model({model_name}) -- Error calculating slope:", e)
-			slope = np.nan
-			slope_trim = np.nan
-		except TypeError as e:
-			print(f"Model({model_name}) -- Error calculating slope:", e)
-			slope = np.nan
-			slope_trim = np.nan
+		if model_result.pred_test.r2 is not None:
+			r2_0 = model_result.pred_test.r2
+		else:
+			r2_0 = np.nan
+		if model_result.pred_test.r2_trim is not None:
+			r2_trim_0 = model_result.pred_test.r2_trim
+		else:
+			r2_trim_0 = np.nan
 
 		metrics_data["Model"].append(model_name)
-		metrics_data["R²"].append(r2)
-		metrics_data["m.ratio"].append(np.median(y_ratio))
+		metrics_data["R²"].append(r2_0)
+		metrics_data["R²_raw"].append(r2_raw)
+		metrics_data["m.ratio"].append(model_result.pred_test.ratio_study.median_ratio)
+		metrics_data["mean.ratio"].append(model_result.pred_test.ratio_study.mean_ratio)
+		metrics_data["m.ratio*"].append(model_result.pred_test.ratio_study.median_ratio_trim)
+		metrics_data["mean.ratio*"].append(model_result.pred_test.ratio_study.mean_ratio_trim)
 		metrics_data["R²*"].append(r2_trim)
+		metrics_data["R²_raw*"].append(r2_raw_trim)
 		metrics_data["Slope"].append(slope)
 		metrics_data["Slope*"].append(slope_trim)
 
@@ -2973,9 +3028,14 @@ def _model_performance_metrics(
 	metrics_df = pd.DataFrame(metrics_data)
 	metrics_df.set_index("Model", inplace=True)
 	metrics_df["R²"] = metrics_df["R²"].apply(lambda x: f"{x:.4f}")
+	metrics_df["R²_raw"] = metrics_df["R²_raw"].apply(lambda x: f"{x:.4f}")
 	metrics_df["Slope"] = metrics_df["Slope"].apply(lambda x: f"{x:.4f}")
 	metrics_df["m.ratio"] = metrics_df["m.ratio"].apply(lambda x: f"{x:.4f}")
+	metrics_df["mean.ratio"] = metrics_df["mean.ratio"].apply(lambda x: f"{x:.4f}")
+	metrics_df["m.ratio*"] = metrics_df["m.ratio*"].apply(lambda x: f"{x:.4f}")
+	metrics_df["mean.ratio*"] = metrics_df["mean.ratio*"].apply(lambda x: f"{x:.4f}")
 	metrics_df["R²*"] = metrics_df["R²*"].apply(lambda x: f"{x:.4f}")
+	metrics_df["R²_raw*"] = metrics_df["R²_raw*"].apply(lambda x: f"{x:.4f}")
 	metrics_df["Slope*"] = metrics_df["Slope*"].apply(lambda x: f"{x:.4f}")
 
 	text += metrics_df.to_string() + "\n"
