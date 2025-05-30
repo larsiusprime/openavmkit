@@ -2888,7 +2888,6 @@ def _model_shaps(
 		_title = f"{title}/{model_group}/{key}"
 		compute_shap(smr, True, _title)
 
-
 def _model_performance_metrics(
 		model_group: str,
 		all_results: MultiModelResults,
@@ -2924,10 +2923,12 @@ def _model_performance_metrics(
 	metrics_data = {
 		"Model": [],
 		"R²": [],
-		"m.ratio": [], # Added trimmed median ratio
+		"R²_raw": [], # Added raw R²
+		"m.ratio": [], 
 		"mean.ratio": [],
 		"Slope": [],
 		"R²*": [],
+		"R²_raw*": [], # Added trimmed raw R²
 		"Slope*": [],
 		"m.ratio*": [], 
 		"mean.ratio*": []
@@ -2964,29 +2965,44 @@ def _model_performance_metrics(
 			y_true_trim = y_true[mask] 
 			y_pred_trim = y_pred[mask]
 
-		# OLS for untrimmed
+		# Calculate raw R² for untrimmed
 		if len(y_true) > 1 and len(y_pred) > 1:
+			# OLS regression
 			reg = LinearRegression()
 			reg.fit(y_true.reshape(-1, 1), y_pred)
 			slope = reg.coef_[0]
 			intercept = reg.intercept_
 			r2 = reg.score(y_true.reshape(-1, 1), y_pred)
+			
+			# Raw R² calculation
+			ss_res = np.sum((y_true - y_pred) ** 2)
+			ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+			r2_raw = 1 - (ss_res / ss_tot)
 		else:
 			slope = np.nan
 			intercept = np.nan
 			r2 = np.nan
+			r2_raw = np.nan
 
-		# OLS for trimmed
+		# Calculate raw R² for trimmed
 		if len(y_true_trim) > 1 and len(y_pred_trim) > 1:
+			# OLS regression
 			reg_trim = LinearRegression()
 			reg_trim.fit(y_true_trim.reshape(-1, 1), y_pred_trim)
 			slope_trim = reg_trim.coef_[0]
 			intercept_trim = reg_trim.intercept_
 			r2_trim = reg_trim.score(y_true_trim.reshape(-1, 1), y_pred_trim)
+			
+			# Raw R² calculation for trimmed data
+			ss_res_trim = np.sum((y_true_trim - y_pred_trim) ** 2)
+			ss_tot_trim = np.sum((y_true_trim - np.mean(y_true_trim)) ** 2)
+			r2_raw_trim = 1 - (ss_res_trim / ss_tot_trim)
 		else:
 			slope_trim = np.nan
 			intercept_trim = np.nan
 			r2_trim = np.nan
+			r2_raw_trim = np.nan
+
 		if model_result.pred_test.r2 is not None:
 			r2_0 = model_result.pred_test.r2
 		else:
@@ -2998,11 +3014,13 @@ def _model_performance_metrics(
 
 		metrics_data["Model"].append(model_name)
 		metrics_data["R²"].append(r2_0)
+		metrics_data["R²_raw"].append(r2_raw)
 		metrics_data["m.ratio"].append(model_result.pred_test.ratio_study.median_ratio)
 		metrics_data["mean.ratio"].append(model_result.pred_test.ratio_study.mean_ratio)
 		metrics_data["m.ratio*"].append(model_result.pred_test.ratio_study.median_ratio_trim)
 		metrics_data["mean.ratio*"].append(model_result.pred_test.ratio_study.mean_ratio_trim)
 		metrics_data["R²*"].append(r2_trim)
+		metrics_data["R²_raw*"].append(r2_raw_trim)
 		metrics_data["Slope"].append(slope)
 		metrics_data["Slope*"].append(slope_trim)
 
@@ -3010,12 +3028,14 @@ def _model_performance_metrics(
 	metrics_df = pd.DataFrame(metrics_data)
 	metrics_df.set_index("Model", inplace=True)
 	metrics_df["R²"] = metrics_df["R²"].apply(lambda x: f"{x:.4f}")
+	metrics_df["R²_raw"] = metrics_df["R²_raw"].apply(lambda x: f"{x:.4f}")
 	metrics_df["Slope"] = metrics_df["Slope"].apply(lambda x: f"{x:.4f}")
 	metrics_df["m.ratio"] = metrics_df["m.ratio"].apply(lambda x: f"{x:.4f}")
 	metrics_df["mean.ratio"] = metrics_df["mean.ratio"].apply(lambda x: f"{x:.4f}")
-	metrics_df["m.ratio*"] = metrics_df["m.ratio*"].apply(lambda x: f"{x:.4f}")  # Format trimmed median ratio
+	metrics_df["m.ratio*"] = metrics_df["m.ratio*"].apply(lambda x: f"{x:.4f}")
 	metrics_df["mean.ratio*"] = metrics_df["mean.ratio*"].apply(lambda x: f"{x:.4f}")
 	metrics_df["R²*"] = metrics_df["R²*"].apply(lambda x: f"{x:.4f}")
+	metrics_df["R²_raw*"] = metrics_df["R²_raw*"].apply(lambda x: f"{x:.4f}")
 	metrics_df["Slope*"] = metrics_df["Slope*"].apply(lambda x: f"{x:.4f}")
 
 	text += metrics_df.to_string() + "\n"
