@@ -1773,11 +1773,24 @@ def _enrich_universe_spatial_lag(df_univ_in: pd.DataFrame, df_test: pd.DataFrame
 
 def enrich_sup_spatial_lag(sup: SalesUniversePair, settings: dict, verbose: bool = False) -> SalesUniversePair:
 
+  BANDWIDTH_MILES   = 0.5          # distance at which confidence → 0
+  METRES_PER_MILE   = 1609.344
+  D_SCALE           = BANDWIDTH_MILES * METRES_PER_MILE
+
   df_sales = sup.sales.copy()
   df_universe = sup.universe.copy()
 
+  s_sl = settings.get("data",{}).get("process", {}).get("enrich", {}).get("universe", {}).get("spatial_lag", {})
+  ex_model_groups = s_sl.get("exclude_model_groups", [])
+
+
   df_hydrated = get_hydrated_sales_from_sup(sup)
   train_keys, test_keys = get_train_test_keys(df_hydrated, settings)
+
+  for mg in ex_model_groups:
+    df_hydrated = df_hydrated[
+      df_hydrated["model_group"].ne(mg)
+    ]
 
   sale_field = get_sale_field(settings)
   sale_field_vacant = f"{sale_field}_vacant"
@@ -1816,17 +1829,31 @@ def enrich_sup_spatial_lag(sup: SalesUniversePair, settings: dict, verbose: bool
       ~pd.isna(df_sub["longitude"])
     ]
 
-    df_sub_train = df_sub.loc[df_sub["key_sale"].isin(train_keys)].copy()
-
-    # Build a cKDTree from df_sales coordinates -- but ONLY from the training set
-    sales_coords_train = df_sub_train[['latitude', 'longitude']].values
-    sales_tree = cKDTree(sales_coords_train)
-
     # Choose the number of nearest neighbors to use
     k = 5  # adjust this number as needed
 
+    df_sub_train = df_sub.loc[df_sub["key_sale"].isin(train_keys)].copy()
+
     # Get the coordinates for the universe parcels
-    universe_coords = df_universe[['latitude', 'longitude']].values
+    crs_equal_distance = get_crs(df_universe, "equal_distance")
+    df_proj = df_universe.to_crs(crs_equal_distance)
+
+    # Use the projected coordinates for the universe parcels
+    universe_coords = np.vstack([
+      df_proj.geometry.centroid.x.values,
+      df_proj.geometry.centroid.y.values
+    ]).T
+
+    # Get the coordinates for the sales training parcels
+    df_sub_train_proj = df_sub_train.to_crs(crs_equal_distance)
+
+    sales_coords_train = np.vstack([
+      df_sub_train_proj.centroid.geometry.x.values,
+      df_sub_train_proj.centroid.geometry.y.values
+    ]).T
+
+    # Build a cKDTree from df_sales coordinates -- but ONLY from the training set
+    sales_tree = cKDTree(sales_coords_train)
 
     # count any NA coordinates in the universe
     n_na_coords = universe_coords.shape[0] - np.count_nonzero(pd.isna(universe_coords).any(axis=1))
@@ -1863,11 +1890,31 @@ def enrich_sup_spatial_lag(sup: SalesUniversePair, settings: dict, verbose: bool
     # Add the spatial lag as a new column
     df_universe[f"spatial_lag_{value_field}"] = spatial_lag
 
+    # Fill NaN values in the spatial lag with the median value of the original field
     median_value = df_sub_train[value_field].median()
     df_universe[f"spatial_lag_{value_field}"] = df_universe[f"spatial_lag_{value_field}"].fillna(median_value)
 
     # Add the new field to sales:
     df_sales = df_sales.merge(df_universe[["key", f"spatial_lag_{value_field}"]], on="key", how="left")
+
+    # ------------------------------------------------
+    # Calculate confidence:
+
+    # Raw inverse-square information mass
+    distances_safe = distances.copy()
+    distances_safe[distances_safe == 0] = np.finfo(float).eps     # protect ÷ 0
+
+    inv_sq = 1.0 / distances_safe**2        # shape (n_parcel, 5)
+    info_mass = inv_sq.sum(axis=1)          # Σ 1/d²
+
+    # Fixed-bandwidth confidence
+    conf = 1.0 - (k / D_SCALE**2) / info_mass
+    spatial_lag_confidence = np.clip(conf, 0.0, 1.0)              # keep in [0, 1]
+
+    # store
+    df_universe[f"spatial_lag_{value_field}_confidence"] = spatial_lag_confidence
+    df_sales = df_sales.merge(df_universe[["key", f"spatial_lag_{value_field}_confidence"]], on="key", how="left")
+    # ------------------------------------------------
 
   df_test = df_sales.loc[df_sales["key_sale"].isin(test_keys)].copy()
   df_universe = _enrich_universe_spatial_lag(df_universe, df_test, settings, verbose=verbose)

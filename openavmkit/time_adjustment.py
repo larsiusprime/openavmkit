@@ -368,8 +368,6 @@ def calculate_time_adjustment(df_sales_in: pd.DataFrame, settings: dict, period:
   :returns: DataFrame with time adjustment values per day.
   :rtype: pandas.DataFrame
   """
-  if verbose:
-    print("Calculating time adjustment...")
 
   # We assume that all the sales we are presented with are valid sales, and for a single modeling group
 

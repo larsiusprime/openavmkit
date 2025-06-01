@@ -16,7 +16,14 @@ def clean_valid_sales(sup: SalesUniversePair, settings : dict):
 	val_date = get_valuation_date(settings)
 	val_year = val_date.year
 	metadata = settings.get("modeling", {}).get("metadata", {})
-	use_sales_from = metadata.get("use_sales_from", val_year - 5)
+	use_sales_from = metadata.get("use_sales_from", {})
+
+	if isinstance(use_sales_from, int):
+		use_sales_from_impr = use_sales_from
+		use_sales_from_vacant = use_sales_from
+	else:
+		use_sales_from_impr = use_sales_from.get("improved", val_year - 5)
+		use_sales_from_vacant = use_sales_from.get("vacant", val_year - 5)
 
 	df_sales = sup["sales"].copy()
 	df_univ = sup["universe"]
@@ -37,8 +44,11 @@ def clean_valid_sales(sup: SalesUniversePair, settings : dict):
 
 	print(f"After univ merge len = {len(df_sales)}")
 
+	oldest_sale_threshold = min(use_sales_from_impr, use_sales_from_vacant)
+
 	# mark which sales are to be used (only those that are valid and within the specified time frame)
-	df_sales.loc[df_sales["sale_year"].lt(use_sales_from), "valid_sale"] = False
+	df_sales.loc[df_sales["sale_year"].lt(oldest_sale_threshold) & df_sales["vacant_sale"].eq(False), "valid_sale"] = False
+	df_sales.loc[df_sales["sale_year"].lt(oldest_sale_threshold) & df_sales["vacant_sale"].eq(True), "valid_sale"] = False
 
 	# sale prices of 0 and negative and null are invalid
 	df_sales.loc[

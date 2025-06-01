@@ -74,9 +74,15 @@ class RatioStudy:
 			prb_trim, _, _ = stats.calc_prb(trim_predictions, trim_ground_truth)
 
 			self.median_ratio = median_ratio
-			self.median_ratio_trim = float(np.median(trim_ratios))
 			self.mean_ratio = float(np.mean(ratios))
-			self.mean_ratio_trim = float(np.mean(trim_ratios))
+			try:
+				self.median_ratio_trim = float(np.median(trim_ratios))
+			except TypeError:
+				self.median_ratio_trim = float("nan")
+			try:
+				self.mean_ratio_trim = float(np.mean(trim_ratios))
+			except TypeError:
+				self.mean_ratio_trim = float("nan")
 			self.cod = cod
 			self.cod_trim = cod_trim
 

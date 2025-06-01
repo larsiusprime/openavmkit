@@ -35,7 +35,7 @@ from openavmkit.sales_scrutiny_study import run_sales_scrutiny_per_model_group, 
 from openavmkit.time_adjustment import enrich_time_adjustment
 from openavmkit.utilities.data import combine_dfs
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_numeric, get_fields_boolean, \
-   get_fields_land, get_fields_impr, get_fields_other, get_unclassified_fields
+   get_fields_land, get_fields_impr, get_fields_other, get_unclassified_fields, get_valuation_date
 
 
 # Basic data stuff
@@ -560,10 +560,37 @@ def process_sales(sup: SalesUniversePair, settings: dict, verbose: bool = False)
 
    print(f"len after enrich = {len(df_sales_enriched)}")
 
+   df_sales_clipped = clip_sales_to_use(df_sales_enriched, settings, verbose)
+
+   print(f"len after clip = {len(df_sales_clipped)}")
+
    # update the SUP sales
-   sup.update_sales(df_sales_enriched, allow_remove_rows=True)
+   sup.update_sales(df_sales_clipped, allow_remove_rows=True)
 
    return sup
+
+
+def clip_sales_to_use(df_sales: pd.DataFrame, settings: dict, verbose: bool = False) -> pd.DataFrame:
+
+   val_year = get_valuation_date(settings).year
+
+   metadata = settings.get("modeling", {}).get("metadata", {})
+   use_sales_from = metadata.get("use_sales_from", {})
+
+   if isinstance(use_sales_from, int):
+      use_sales_from_impr = use_sales_from
+      use_sales_from_vacant = use_sales_from
+   else:
+      use_sales_from_impr = use_sales_from.get("improved", val_year - 5)
+      use_sales_from_vacant = use_sales_from.get("vacant", val_year - 5)
+
+   # mark which sales are to be used (only those that are valid and within the specified time frame)
+   df_sales.loc[df_sales["sale_year"].lt(use_sales_from_impr) & df_sales["vacant_sale"].eq(False), "valid_sale"] = False
+   df_sales.loc[df_sales["sale_year"].lt(use_sales_from_vacant) & df_sales["vacant_sale"].eq(True), "valid_sale"] = False
+
+   df_sales = df_sales[df_sales["valid_sale"].eq(True)].copy()
+
+   return df_sales
 
 
 def enrich_sup_spatial_lag(sup: SalesUniversePair, settings: dict, verbose: bool=False):

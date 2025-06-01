@@ -1093,7 +1093,8 @@ def _convolve_land_analysis(
 
   data_results = {
     "model": [],
-    "r2": [],
+    "r2_ols": [],
+    "r2_raw": [],
     "slope": [],
     "med_ratio": [],
     "cod": []
@@ -1101,7 +1102,8 @@ def _convolve_land_analysis(
 
   data_results_test = {
     "model": [],
-    "r2": [],
+    "r2_ols": [],
+    "r2_raw": [],
     "slope": [],
     "med_ratio": [],
     "cod": []
@@ -1169,29 +1171,38 @@ def _convolve_land_analysis(
             median_ratio = dfv["sales_ratio"].median()
             cod = calc_cod(dfv["sales_ratio"].values)
 
-            results = simple_ols(dfv, "prediction_land_smooth", sale_field, intercept=False)
+            results = simple_ols(dfv, "prediction_land_smooth", "sale_price", intercept=True)
 
             slope = results["slope"]
             r2 = results["r2"]
+
+            y_true = dfv["sale_price"].values
+            y_pred = dfv["prediction_land_smooth"].values
+
+            ss_res = np.sum((y_true - y_pred) ** 2)
+            ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+            r2_raw = 1 - (ss_res / ss_tot)
 
             selfword = "exself" if exclude_self else "self"
 
             if full_or_test == "full":
               data_results["model"].append(f"{neighbors}_{key}_{model}_{selfword}")
               data_results["slope"].append(f"{slope:.2f}")
-              data_results["r2"].append(f"{r2:.2f}")
+              data_results["r2_ols"].append(f"{r2:.2f}")
+              data_results["r2_raw"].append(f"{r2_raw:.2f}")
               data_results["med_ratio"].append(f"{median_ratio:.2f}")
               data_results["cod"].append(f"{cod:.1f}")
             else:
               data_results_test["model"].append(f"{neighbors}_{key}_{model}_{selfword}")
               data_results_test["slope"].append(f"{slope:.2f}")
-              data_results_test["r2"].append(f"{r2:.2f}")
+              data_results_test["r2_ols"].append(f"{r2:.2f}")
+              data_results_test["r2_raw"].append(f"{r2_raw:.2f}")
               data_results_test["med_ratio"].append(f"{median_ratio:.2f}")
               data_results_test["cod"].append(f"{cod:.1f}")
 
   df_results = pd.DataFrame(data_results)
 
-  df_results["r2_"] = np.floor(df_results["r2"].astype('float').fillna(0.0) * 10)
+  df_results["r2_"] = np.floor(df_results["r2_raw"].astype('float').fillna(0.0) * 10)
   df_results["slope_"] = np.abs(1.0 - df_results["slope"].astype('float').fillna(0.0))
 
   df_results = df_results.sort_values(by=["r2_", "slope_"], ascending=False)
@@ -1210,7 +1221,7 @@ def _convolve_land_analysis(
 
   df_results_test = pd.DataFrame(data_results_test)
   if len(df_results_test) > 0:
-    df_results_test["r2_"] = np.floor(df_results_test["r2"].astype('float').fillna(0.0) * 10)
+    df_results_test["r2_"] = np.floor(df_results_test["r2_raw"].astype('float').fillna(0.0) * 10)
     df_results_test["slope_"] = np.abs(1.0 - df_results_test["slope"].astype('float').fillna(0.0))
     df_results_test = df_results_test.sort_values(by=["r2_", "slope_"], ascending=False)
     df_results_test = df_results_test.drop(columns=["r2_", "slope_"])
