@@ -38,7 +38,8 @@ If you don't have Python on your machine, you'll need to install it.
 The specific version of Python that openavmkit has been tested on is:
 > 3.10.6
 
-You can download that version of Python [here](https://www.python.org/downloads/release/python-3129/).
+
+You can download that version of Python [here](https://www.python.org/downloads/release/python-3106/).
 
 If you already have Python installed, but you're not sure which version of Python you have installed, you can check by running this command:
 
