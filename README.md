@@ -36,7 +36,7 @@ This command will clone the repository to your local machine, store it under a f
 If you don't have Python on your machine, you'll need to install it.
 
 The specific version of Python that openavmkit has been tested on is:
-> 3.12.9
+> 3.10.6
 
 You can download that version of Python [here](https://www.python.org/downloads/release/python-3129/).
 
