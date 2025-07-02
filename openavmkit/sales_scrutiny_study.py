@@ -1,10 +1,11 @@
 import os
+import warnings
 
 import pandas as pd
 from diptest import diptest
 
 from openavmkit.data import get_sales, get_sale_field, get_important_fields, get_locations, \
-  get_vacant_sales
+  get_vacant_sales, SalesUniversePair, get_hydrated_sales_from_sup
 from openavmkit.horizontal_equity_study import HorizontalEquityStudy
 from openavmkit.reports import start_report, finish_report
 from openavmkit.utilities.clustering import make_clusters
@@ -38,7 +39,6 @@ class SalesScrutinyStudy:
     settings: dict,
     model_group: str
   ):
-
     self.model_group = model_group
 
     df = df[df["model_group"].eq(model_group)]
@@ -63,7 +63,7 @@ class SalesScrutinyStudy:
     for key in stuff:
       df = stuff[key]
       df, cluster_fields = mark_sales_scrutiny_clusters(df, settings)
-      df["ss_id"] = key + "_" + df["ss_id"].astype(str)
+      df["ss_id"] = df["model_group"] + "_" + key + "_" + df["ss_id"].astype(str)
       per_sqft = ""
       denominator = ""
       if key == "i":
@@ -78,7 +78,7 @@ class SalesScrutinyStudy:
 
       other_fields = cluster_fields + location_fields + important_fields
       other_fields = list(dict.fromkeys(other_fields))
-      other_fields += ["address", "sale_date", "valid_sale", "vacant_sale"]
+      other_fields += ["address", "deed_book", "deed_page", "sale_date", "valid_sale", "vacant_sale"]
 
       other_fields = [f for f in other_fields if f in df]
 
@@ -323,7 +323,9 @@ def calc_sales_scrutiny(df_in: pd.DataFrame, sales_field: str):
     # drop low_thresh/high_thresh:
     df = df.drop(columns=["low_thresh", "high_thresh"])
 
-    df = df[["key_sale", "ss_id", "count", sales_field, base_sales_field, "median", "max", "min", "chd", "stdev", "relative_ratio", "med_dist_stdevs", "flagged", "bimodal", "anomaly_1", "anomaly_2", "anomaly_3", "anomaly_4", "anomaly_5"]]
+    the_cols = ["key_sale", "ss_id", "count", sales_field, base_sales_field, "chd", "stdev", "relative_ratio", "med_dist_stdevs", "flagged", "bimodal", "anomaly_1", "anomaly_2", "anomaly_3", "anomaly_4", "anomaly_5"]
+
+    df = df[the_cols]
 
     return df
 
@@ -349,6 +351,218 @@ def mark_sales_scrutiny_clusters(df: pd.DataFrame, settings: dict, verbose: bool
   df_sales["ss_id"] = cluster_ids.astype(str)
 
   return df_sales, fields_used
+
+
+
+def run_land_percentiles(sup: SalesUniversePair, settings: dict):
+  df_sales = get_hydrated_sales_from_sup(sup)
+
+  df_sales = df_sales[df_sales["vacant_sale"].eq(True)]
+
+  df_sales["sale_price_time_adj_land_sqft"] = div_field_z_safe(df_sales["sale_price_time_adj"], df_sales["land_area_sqft"])
+  locations = get_locations(settings, df_sales)
+
+  def _run_land_percentiles(df: pd.DataFrame, model_group: str):
+    df.sort_values(by="sale_price_time_adj_land_sqft", inplace=True, ascending=False)
+    df["sale_price_time_adj_land_sqft_percentile"] = df["sale_price_time_adj_land_sqft"].rank(pct=True)
+    cols = [
+       "key_sale",
+       "sale_date",
+       "sale_price",
+       "sale_price_time_adj",
+       "sale_price_time_adj_land_sqft",
+       "sale_price_time_adj_land_sqft_percentile",
+       "deed_book",
+       "deed_page",
+       "deed_id",
+       "sale_year",
+       "bldg_year_built",
+       "bldg_area_finished_sqft",
+       "land_area_sqft",
+       "valid_sale",
+       "vacant_sale",
+       "address"
+    ] + locations
+    cols = [col for col in cols if col in df]
+    df = df[cols]
+    os.makedirs(f"out/sales_scrutiny/{model_group}", exist_ok=True)
+    df.to_csv(f"out/sales_scrutiny/{model_group}/land_price_percentiles.csv", index=False)
+
+  do_per_model_group(df_sales, settings, _run_land_percentiles, {}, key="key_sale")
+
+
+def drop_manual_exclusions(sup: SalesUniversePair, settings: dict, verbose: bool = False):
+  invalid_key_file:str|None = settings.get("analysis", {}).get("sales_scrutiny", {}).get("invalid_key_file", None)
+  if invalid_key_file is not None:
+    if os.path.exists(invalid_key_file):
+      df_invalid_keys = pd.read_csv(invalid_key_file, dtype={"key_sale": str})
+      bad_keys = df_invalid_keys["key_sale"].tolist()
+    else:
+      warnings.warn(f"--> Invalid key file {invalid_key_file} does not exist, skipping manual exclusions")
+      bad_keys = []
+    df_sales = sup.sales.copy()
+    len_before = len(df_sales)
+    df_sales = df_sales[~df_sales["key_sale"].isin(bad_keys)]
+    len_after = len(df_sales)
+    num_dropped = len_before - len_after
+    if verbose:
+      print("")
+      print(f"Dropping {num_dropped} manual exclusions from sales scrutiny")
+    sup.sales = df_sales
+  else:
+    if verbose:
+      print("")
+      print(f"No manual exclusions file specified in settings, skipping manual exclusions")
+  return sup
+
+
+def run_heuristics(sup: SalesUniversePair, settings: dict, drop: bool = True, verbose: bool = False):
+
+  ss = settings.get("analysis", {}).get("sales_scrutiny", {})
+  deed_id = ss.get("deed_id", "deed_id")
+
+  df_sales = get_hydrated_sales_from_sup(sup)
+
+  #### Multi-parcel sales detection heuristics
+
+  # 1 -- Flag sales with identical deed ids
+  vcs = df_sales[deed_id].value_counts()
+  idx_dupe_deeds = vcs[vcs > 1].index.values
+  df_sales.loc[df_sales[deed_id].isin(idx_dupe_deeds), "flag_dupe_deed"] = True
+
+  # 2 -- Flag sales made on the same date for the same price
+  vcs = df_sales["sale_date"].value_counts()
+  idx_dupe_dates = vcs[vcs > 1].index.values
+  vcs = df_sales["sale_price"].value_counts()
+  idx_dupe_prices = vcs[vcs > 1].index.values
+  df_sales.loc[
+    df_sales["sale_date"].isin(idx_dupe_dates) &
+    df_sales["sale_price"].isin(idx_dupe_prices), "flag_dupe_date_price"
+  ] = True
+
+  #### Misclassified vacant sales detection heuristics
+
+  # 3 -- Flag vacant sales with a building year built older than the sale year
+  idx_false_vacant = (
+      df_sales["vacant_sale"].eq(1) &
+      df_sales["bldg_year_built"].gt(0) &
+      df_sales["bldg_year_built"].lt(df_sales["sale_year"])
+  )
+  df_sales.loc[idx_false_vacant, "flag_false_vacant"] = True
+
+  files = {
+    "flag_dupe_deed": "duplicated_deeds",
+    "flag_dupe_date_price": "duplicated_dates_and_prices",
+    "flag_false_vacant": "classified_vacant_but_bldg_older_than_sale_year"
+  }
+
+  locations = get_locations(settings, df_sales)
+
+  bad_keys = []
+
+  if verbose:
+    print(f"Validating sales by heuristic, {len(df_sales)} total sales")
+
+  for key in files:
+    if key in df_sales.columns:
+      df = df_sales[df_sales[key].eq(True)]
+      if len(df) > 0:
+        path = f"out/sales_scrutiny/{files[key]}.xlsx"
+
+        cols = [
+          "key_sale",
+          "sale_date",
+          "sale_price",
+          "sale_price_time_adj",
+          "deed_book",
+          "deed_page",
+          "deed_id",
+          "sale_year",
+          "bldg_year_built",
+          "bldg_area_finished_sqft",
+          "land_area_sqft",
+          "valid_sale",
+          "vacant_sale",
+          "address"
+        ] + locations + [key]
+
+        cols = [col for col in cols if col in df]
+        df = df[cols]
+
+        _bad_keys = df["key_sale"].tolist()
+
+        if verbose:
+          print(f"--> {len(_bad_keys)} bad keys for heuristic: {key}")
+
+        bad_keys = list(set(bad_keys + _bad_keys))
+
+        df = df.rename(columns={
+          "key_sale": "Sale key",
+          "sale_date": "Sale date",
+          "sale_price": "Sale price",
+          "sale_price_time_adj": "Sale price\n(Time adj.)",
+          "deed_book": "Deed book",
+          "deed_page": "Deed page",
+          "deed_id": "Deed ID",
+          "sale_year": "Year sold",
+          "bldg_year_built": "Year built",
+          "bldg_area_finished_sqft": "Impr sqft",
+          "land_area_sqft": "Land sqft",
+          "valid_sale": "Valid sale",
+          "vacant_sale": "Vacant sale",
+          "flag_dupe_deed": "Repeated\ndeed ID",
+          "flag_dupe_date_price": "Repeated\nsale date & price",
+          "flag_false_vacant": "Bldg older\nthan sale year",
+        })
+
+        _curr_0 = {"num_format": "#,##0"}
+        _date = {"num_format": "yyyy-mm-dd"}
+
+        columns = {
+          "Sale date": _date,
+          "Sale price": _curr_0,
+          "Sale price\n(Time adj.)": _curr_0,
+        }
+
+        column_conditions = {
+          "Repeated\ndeed ID": {
+            "type": "cell",
+            "criteria": "==",
+            "value": "TRUE",
+            "format": {"bold": True, "font_color": "red"}
+          },
+          "Repeated\nsale date & price": {
+            "type": "cell",
+            "criteria": "==",
+            "value": "TRUE",
+            "format": {"bold": True, "font_color": "red"}
+          },
+          "Bldg older\nthan sale year": {
+            "type": "cell",
+            "criteria": "==",
+            "value": "TRUE",
+            "format": {"bold": True, "font_color": "red"}
+          }
+        }
+
+        write_to_excel(df, path, {
+          "columns": {
+            "formats": columns,
+            "conditions": column_conditions
+          }
+        })
+
+  if drop:
+    print(f"Dropped {len(bad_keys)} invalid sales keys identified by heuristic")
+    df_sales = sup.sales.copy()
+    df_sales = df_sales[~df_sales["key_sale"].isin(bad_keys)]
+    sup.df_sales = df_sales
+  else:
+    print(f"Identified {len(bad_keys)} invalid sales keys identified by heuristic, but not dropping them")
+
+  run_land_percentiles(sup, settings)
+
+  return sup
 
 
 # def identify_suspicious_characteristics(df: pd.DataFrame, settings: dict, is_vacant: bool = False, verbose: bool = False):

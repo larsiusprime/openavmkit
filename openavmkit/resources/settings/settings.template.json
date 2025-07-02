@@ -371,7 +371,10 @@
 				"sale_year_month",
 				"sale_year_quarter",
 				"key",
-				"key_sale"
+				"key2",
+				"key_sale",
+				"deed_book",
+				"deed_page"
 			],
 			"+boolean": [
 				"is_vacant",

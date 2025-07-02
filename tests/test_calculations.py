@@ -6,6 +6,28 @@ from openavmkit.filters import resolve_filter
 from openavmkit.utilities.assertions import dfs_are_equal
 
 
+def test_calculations_str():
+  data = {
+    "neighborhood": ["a", "a", "a", "b", "b", "b", "c", "c", "c", "", " ", None],
+    "census_tract": ["1", "1", "1", "2", "2", "2", "3", "3", "3", "4", "4", "4"]
+  }
+  df = pd.DataFrame(data=data)
+  calc = {
+    "fillna": ["fillna", "neighborhood", "census_tract"],
+    "fillempty": ["fillempty", "neighborhood", "census_tract"]
+  }
+  expected = {
+    "neighborhood": ["a", "a", "a", "b", "b", "b", "c", "c", "c", "", " ", None],
+    "census_tract": ["1", "1", "1", "2", "2", "2", "3", "3", "3", "4", "4", "4"],
+    "fillna": ["a", "a", "a", "b", "b", "b", "c", "c", "c", "", " ", "4"],
+    "fillempty": ["a", "a", "a", "b", "b", "b", "c", "c", "c", "4", "4", "4"]
+  }
+  df_expected = pd.DataFrame(data=expected)
+  df_results = perform_calculations(df, calc)
+
+  assert dfs_are_equal(df_results, df_expected, allow_weak = True)
+
+
 def test_calculations_math():
   data = {
     "a": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],

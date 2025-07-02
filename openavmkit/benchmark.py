@@ -142,7 +142,8 @@ def try_variables(
     sup: SalesUniversePair,
     settings: dict,
     verbose: bool = False,
-    plot: bool = False
+    plot: bool = False,
+    do_report: bool = False
 ):
 
   df_hydrated = get_hydrated_sales_from_sup(sup)
@@ -157,13 +158,12 @@ def try_variables(
   df_hydrated.update(df_vacant)
 
   all_best_variables = {}
-  base_path = "out/reports"
 
   def _try_variables(
       df_in: pd.DataFrame,
       model_group: str,
       df_univ: pd.DataFrame,
-      outpath: str,
+      do_report: bool,
       settings: dict,
       verbose: bool,
       results: dict
@@ -197,7 +197,7 @@ def try_variables(
         model_group,
         variables_to_use=variables_to_use,
         tests_to_run=["corr", "r2"],
-        do_report=False,
+        do_report=True,
         verbose=verbose
       )
 
@@ -211,7 +211,7 @@ def try_variables(
 
     results[model_group] = bests
 
-  do_per_model_group(df_hydrated, settings, _try_variables, params={"settings": settings, "df_univ": sup.universe, "outpath":base_path, "verbose": verbose, "results": all_best_variables}, key="key_sale")
+  do_per_model_group(df_hydrated, settings, _try_variables, params={"settings": settings, "df_univ": sup.universe, "do_report": do_report, "verbose": verbose, "results": all_best_variables}, key="key_sale")
 
   sale_field = get_sale_field(settings)
 
@@ -2036,7 +2036,19 @@ def _optimize_ensemble_iteration(
   for m_key in ensemble_list:
     m_results = all_results.model_results[m_key]
     df_test_ensemble[m_key] = m_results.pred_test.y_pred
-    df_univ_ensemble[m_key] = m_results.pred_univ
+
+
+  for m_key in ensemble_list:
+    m_results : SingleModelResults = all_results.model_results[m_key]
+    field_prediction = m_results.field_prediction
+    df_pred_test = m_results.df_test[["key_sale", field_prediction]].copy()
+    df_pred_test = df_pred_test.rename(columns={field_prediction: m_key})
+
+    df_pred_univ = m_results.df_universe[["key", field_prediction]].copy()
+    df_pred_univ = df_pred_univ.rename(columns={field_prediction: m_key})
+
+    df_test_ensemble = df_test_ensemble.merge(df_pred_test, on="key_sale", how="left")
+    df_univ_ensemble = df_univ_ensemble.merge(df_pred_univ, on="key", how="left")
   timing.stop("train")
 
   timing.start("predict_test")

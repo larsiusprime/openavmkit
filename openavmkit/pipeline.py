@@ -31,9 +31,11 @@ from openavmkit.benchmark import get_variable_recommendations
 from openavmkit.cleaning import clean_valid_sales, validate_arms_length_sales
 from openavmkit.cloud import cloud
 from openavmkit.data import _load_dataframe, process_data, SalesUniversePair, get_hydrated_sales_from_sup
-from openavmkit.sales_scrutiny_study import run_sales_scrutiny_per_model_group, mark_ss_ids_per_model_group
+from openavmkit.sales_scrutiny_study import run_sales_scrutiny_per_model_group, mark_ss_ids_per_model_group, \
+   run_heuristics, drop_manual_exclusions
 from openavmkit.time_adjustment import enrich_time_adjustment
-from openavmkit.utilities.data import combine_dfs
+from openavmkit.utilities.data import combine_dfs, rename_dict
+from openavmkit.utilities.excel import write_to_excel
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_numeric, get_fields_boolean, \
    get_fields_land, get_fields_impr, get_fields_other, get_unclassified_fields, get_valuation_date
 
@@ -315,6 +317,7 @@ def examine_df(df: pd.DataFrame, s: dict):
 
    :note: This function contains several helper functions to format the output.
    """
+
    def fill_str(char: str, size: int):
       text = ""
       for _i in range(0, size):
@@ -347,10 +350,35 @@ def examine_df(df: pd.DataFrame, s: dict):
 
       return f"{fit_str(col, 30)} {dtype:^10} {count_non_zero:>10} {p:>5.0%} {count_non_null:>10} {pnn:>5.0%} {uniques:>40}"
 
+   buffer = ""
+   lines = 0
+   chunk_size = 3
+
    def print_horz_line(char: str):
-      print(fill_str(char, 30) + " " + fill_str(char, 10) + " " + fill_str(char, 10) +
+      nonlocal buffer
+      nonlocal lines
+      if buffer != "":
+         buffer += "\n"
+      buffer += (fill_str(char, 30) + " " + fill_str(char, 10) + " " + fill_str(char, 10) +
             " " + fill_str(char, 5) + " " + fill_str(char, 10) + " " + fill_str(char, 5) +
             " " + fill_str(char, 40))
+      lines += 1
+      if lines >= chunk_size:
+         print(buffer)
+         lines = 0
+         buffer = ""
+
+   def print_buffer(text: str):
+      nonlocal buffer
+      nonlocal lines
+      if buffer != "":
+         buffer += "\n"
+      buffer += text
+      lines += 1
+      if lines >= chunk_size:
+          print(buffer)
+          buffer = ""
+          lines = 0
 
    print(f"{'FIELD':^30} {'TYPE':^10} {'NON-ZERO':^10} {'%':^5} {'NON-NULL':^10} {'%':^5} {'UNIQUE':^40}")
 
@@ -381,10 +409,10 @@ def examine_df(df: pd.DataFrame, s: dict):
          continue
 
       if i != 0:
-         print("")
+         print_buffer("")
 
       print_horz_line("=")
-      print(f"{name:^30}")
+      print_buffer(f"{name:^30}")
       print_horz_line("=")
 
       nums.sort()
@@ -393,7 +421,7 @@ def examine_df(df: pd.DataFrame, s: dict):
 
       if len(nums) > 0:
          print_horz_line("-")
-         print(f"{'NUMERIC':^30}")
+         print_buffer(f"{'NUMERIC':^30}")
          print_horz_line("-")
          for n in nums:
             fields_noted.append(n)
@@ -402,11 +430,11 @@ def examine_df(df: pd.DataFrame, s: dict):
             perc = non_zero / len(df)
             non_null = len(df_non_null)
             perc_non_null = non_null / len(df)
-            print(get_line(n, df[n].dtype, non_zero, perc, non_null, perc_non_null, ""))
+            print_buffer(get_line(n, df[n].dtype, non_zero, perc, non_null, perc_non_null, ""))
 
       if len(bools) > 0:
          print_horz_line("-")
-         print(f"{'BOOLEAN':^30}")
+         print_buffer(f"{'BOOLEAN':^30}")
          print_horz_line("-")
          for b in bools:
             fields_noted.append(b)
@@ -415,17 +443,17 @@ def examine_df(df: pd.DataFrame, s: dict):
             perc = non_zero / len(df)
             non_null = len(df_non_null)
             perc_non_null = non_null / len(df)
-            print(get_line(b, df[b].dtype, non_zero, perc, non_null, perc_non_null, df[b].unique().tolist()))
+            print_buffer(get_line(b, df[b].dtype, non_zero, perc, non_null, perc_non_null, df[b].unique().tolist()))
 
       if len(cats) > 0:
          print_horz_line("-")
-         print(f"{'CATEGORICAL':^30}")
+         print_buffer(f"{'CATEGORICAL':^30}")
          print_horz_line("-")
          for c in cats:
             fields_noted.append(c)
             non_zero = (~pd.isna(df[c])).sum()
             perc = non_zero / len(df)
-            print(get_line(c, df[c].dtype, non_zero, perc, non_zero, perc, df[c].unique().tolist()))
+            print_buffer(get_line(c, df[c].dtype, non_zero, perc, non_zero, perc, df[c].unique().tolist()))
       i += 1
 
    fields_unclassified = []
@@ -436,15 +464,20 @@ def examine_df(df: pd.DataFrame, s: dict):
 
    if len(fields_unclassified) > 0:
       fields_unclassified.sort()
-      print("")
+      print_buffer("")
       print_horz_line("=")
-      print(f"{'UNCLASSIFIED:':<30}")
+      print_buffer(f"{'UNCLASSIFIED:':<30}")
       print_horz_line("=")
       for u in fields_unclassified:
          non_zero = (~pd.isna(df[u])).sum()
          perc = non_zero / len(df)
          perc_non_null = non_zero / len(df)
-         print(get_line(u, df[u].dtype, non_zero, perc, non_zero, perc, list(df[u].unique())))
+         print_buffer(get_line(u, df[u].dtype, non_zero, perc, non_zero, perc, list(df[u].unique())))
+
+   if len(buffer) > 0:
+      print(buffer)
+      buffer = ""
+      lines = 0
 
 
 # Data loading & processing stuff
@@ -677,7 +710,24 @@ def mark_horizontal_equity_clusters_per_model_group_sup(
    )
 
 
-def run_sales_scrutiny_per_model_group_sup(sup: SalesUniversePair, settings: dict, verbose: bool = False) -> SalesUniversePair:
+def run_sales_scrutiny(
+    sup: SalesUniversePair,
+    settings: dict,
+    drop_outliers: bool = False,
+    drop_heuristics: bool = True,
+    verbose: bool = False
+) -> SalesUniversePair:
+   sup = run_heuristics(sup, settings, drop_heuristics, verbose)
+   sup = drop_manual_exclusions(sup, settings, verbose)
+   sup = run_sales_scrutiny_per_model_group_sup(sup, settings, drop_outliers, verbose)
+   return sup
+
+
+def run_sales_scrutiny_heuristics(sup: SalesUniversePair, settings: dict, drop: bool = True, verbose: bool = False) -> SalesUniversePair:
+   run_heuristics(sup, settings, drop, verbose)
+
+
+def run_sales_scrutiny_per_model_group_sup(sup: SalesUniversePair, settings: dict, drop: bool = True, verbose: bool = False) -> SalesUniversePair:
    """
    Run sales scrutiny analysis for each model group within a SalesUniversePair. Assumes that the SalesUniversePair has
    already been processed and marked with sales scrutiny ids.
@@ -686,6 +736,8 @@ def run_sales_scrutiny_per_model_group_sup(sup: SalesUniversePair, settings: dic
    :type sup: SalesUniversePair
    :param settings: Configuration settings.
    :type settings: dict
+   :param drop: If True, drops invalid sales after scrutiny.
+   :type drop: bool, optional
    :param verbose: If True, enables verbose logging.
    :type verbose: bool, optional
    :returns: Updated SalesUniversePair after sales scrutiny analysis.
@@ -695,20 +747,23 @@ def run_sales_scrutiny_per_model_group_sup(sup: SalesUniversePair, settings: dic
    df_sales_hydrated = get_hydrated_sales_from_sup(sup)
    df_scrutinized = run_sales_scrutiny_per_model_group(df_sales_hydrated, settings, verbose)
 
-   # Drop all invalid sales
-   df_scrutinized = df_scrutinized[df_scrutinized["valid_sale"].eq(True)]
-   sup_num_valid_before = len(sup.sales[sup.sales["valid_sale"].eq(True)])
+   if drop:
+      # Drop all invalid sales
+      df_scrutinized = df_scrutinized[df_scrutinized["valid_sale"].eq(True)]
+      sup_num_valid_before = len(sup.sales[sup.sales["valid_sale"].eq(True)])
 
-   sup.update_sales(df_scrutinized, allow_remove_rows=True)
+      sup.update_sales(df_scrutinized, allow_remove_rows=True)
 
-   sup_num_valid_after = len(sup.sales[sup.sales["valid_sale"].eq(True)])
+      sup_num_valid_after = len(sup.sales[sup.sales["valid_sale"].eq(True)])
 
-   if verbose:
-      diff = sup_num_valid_before - sup_num_valid_after
-      print("")
-      print(f"Number of valid sales in SUP before scrutiny: {sup_num_valid_before}")
-      print(f"Number of valid sales in SUP after scrutiny: {sup_num_valid_after}")
-      print(f"Difference in valid sales in SUP: {diff}")
+      if verbose:
+         diff = sup_num_valid_before - sup_num_valid_after
+         print("")
+         print(f"Number of valid sales in SUP before scrutiny: {sup_num_valid_before}")
+         print(f"Number of valid sales in SUP after scrutiny: {sup_num_valid_after}")
+         print(f"Difference in valid sales in SUP: {diff}")
+   else:
+      sup.update_sales(df_scrutinized, allow_remove_rows=False)
 
    return sup
 
@@ -857,7 +912,8 @@ def try_variables(
     sup: SalesUniversePair,
     settings: dict,
     verbose: bool = False,
-    plot: bool = False
+    plot: bool = False,
+    do_report: bool = False
 ):
 
    sup = fill_unknown_values_sup(sup, settings)
@@ -865,7 +921,8 @@ def try_variables(
       sup,
       settings,
       verbose,
-      plot
+      plot,
+      do_report
    )
 
 

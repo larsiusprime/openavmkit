@@ -2042,20 +2042,11 @@ def _enrich_df_spatial_joins(df_in: pd.DataFrame, s_enrich_this: dict, dataframe
 
   df = df_in.copy()
   s_geom = s_enrich_this.get("geometry", [])
-  gdf_out = get_cached_df(df_in, "geom/spatial_joins", "key", s_enrich_this)
-  if gdf_out is not None:
-    if verbose:
-      print("--> found cached data...")
-    return gdf_out
 
   gdf: gpd.GeoDataFrame
 
   # geometry
   gdf = _perform_spatial_joins(s_geom, dataframes, verbose=verbose)
-
-  gdf_keys_not_in_df = gdf[~gdf["key"].isin(df["key"].values)]["key"].values
-  df_keys_not_in_gdf = df[~df["key"].isin(gdf["key"].values)]["key"].values
-
 
   gdf = gdf[gdf["key"].isin(df["key"].values)]
 
@@ -2091,10 +2082,6 @@ def _enrich_df_spatial_joins(df_in: pd.DataFrame, s_enrich_this: dict, dataframe
 
   # drop null keys
   gdf_merged = gdf_merged[gdf_merged["key"].notna()]
-
-
-  write_cached_df(df_in, gdf_merged, "geom/spatial_joins", "key", s_enrich_this)
-
 
   return gdf_merged
 

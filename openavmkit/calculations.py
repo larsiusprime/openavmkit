@@ -275,8 +275,14 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i:int=0, rename_map: dict = None)
   elif op == "map":
     lhs = lhs.astype(str)
     return lhs.map(rhs).fillna(lhs)
+  elif op == "fillempty":
+    lhs_str = lhs.astype(str).str.strip()
+    mask = pd.isna(lhs_str) | lhs_str.eq("") | lhs_str.str.lower().isin(["none", "null", "n/a", "na", "nan", "<na>"])
+    result = lhs.copy()
+    result.loc[mask] = rhs
+    return result
   elif op == "fillna":
-    lhs.loc[pd.isna(lhs)]
+    return lhs.fillna(rhs)
   elif op == "replace":
     for key in rhs:
       old = key

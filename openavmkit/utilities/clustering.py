@@ -19,7 +19,6 @@ def make_clusters(
   iteration = 0
   # We are assigning a unique id to each cluster
 
-
   t.start("categoricals")
   # Phase 1: split the data into clusters based on the location:
   if field_location is not None and field_location in df:
@@ -115,11 +114,6 @@ def make_clusters(
 
   list_fields_used = [field for field in fields_used]
   t.stop("make clusters")
-
-  print("")
-  print(f"Timing Clusters:")
-  print(t.print())
-  print("")
 
   # return the new cluster ID's
   return df["cluster_id"], list_fields_used, df["cluster"]

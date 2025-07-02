@@ -106,7 +106,11 @@ def kolbe_et_al_estimate(
   n_iter = params.get("n_iter", 4)
 
   df_sales = get_hydrated_sales_from_sup(sup)
-  df_univ = sup.universe.copy()
+  df_univ = sup.universe
+
+  # Select the model group:
+  df_sales = df_sales[df_sales["model_group"].eq(model_group)].copy()
+  df_univ = df_univ[df_univ["model_group"].eq(model_group)].copy()
 
   sale_field = get_sale_field(settings)
 
@@ -126,15 +130,17 @@ def kolbe_et_al_estimate(
       else:
         raise ValueError(f"Universe dataframe must have a '{field}' field")
 
-  # 0. Construct the DataFrame ----------------------------------------
+  # ------------------------------------------
+  # 0. Construct the DataFrame
+  # ------------------------------------------
 
   # Get only the fields we care about:
   df_univ = df_univ[["key"]+necessary_cols]
 
   # DF base is the sales dataframe
-  df = df_sales[["key", "key_sale", "sale_date"]+ necessary_cols].copy()
+  df = df_sales[["key", "key_sale", "sale_date"] + necessary_cols].copy()
 
-  # Determine which keys are not in df but are in df_univ:
+  # Determine which keys are not in sales but are in univ:
   df_univ_to_add = df_univ[~df_univ["key"].isin(df["key"])].copy()
 
   df_univ_to_add["key_sale"] = None
@@ -144,7 +150,10 @@ def kolbe_et_al_estimate(
   df = pd.concat([df, df_univ_to_add], ignore_index=True)
   df = df[~df["latitude"].isna() & ~df["longitude"].isna()]
 
-  # 1. Convert to price-per-area and building-per-area ---------------------------
+  # ----------------------------------------------
+  # 1. Convert to price-per-area and building-per-area
+  # ----------------------------------------------
+
   df["p"] = div_z_safe(df, sale_field, "land_area_sqft")
   p_area_cols: list[str] = []
   for col in bldg_fields:
@@ -152,11 +161,17 @@ def kolbe_et_al_estimate(
     df[p_area] = div_z_safe(df, col, "land_area_sqft")
     p_area_cols.append(p_area)
 
-  # 2. Spatial ordering ----------------------------------------------------
+  # ---------------------------------------------
+  # 2. Spatial ordering
+  # ---------------------------------------------
+
   order = hilbert_order(df["latitude"].values, df["longitude"].values)
   df = df.iloc[order].reset_index(drop=True)
 
-  # 3. Higher‑order differences -------------------------------------------
+  # ----------------------------------------------
+  # 3. Higher‑order differences
+  # ----------------------------------------------
+
   d = difference_weights(diff_order)
 
   def diff_series(s: pd.Series) -> pd.Series:
@@ -174,7 +189,10 @@ def kolbe_et_al_estimate(
 
   ols_res = sm.OLS(y_d, X_d, hasconst=True).fit(cov_type="HC1")
 
-  # 4. AWS residual smoothing ---------------------------------------------
+  # ----------------------------------------------
+  # 4. AWS residual smoothing
+  # ----------------------------------------------
+
   resid = df["p"].iloc[diff_order:] - (
       df.loc[diff_order:, p_area_cols] @ ols_res.params[p_area_cols] + ols_res.params["const"]
   )

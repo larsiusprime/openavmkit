@@ -769,6 +769,30 @@
 		"type": "number",
 		"groups": ["sale"]
 	},
+	"deed_book": {
+		"name": "Deed book",
+		"description": "Book number of the deed",
+		"type": "string",
+		"groups": ["deed"]
+	},
+	"deed_page": {
+		"name": "Deed page",
+		"description": "Page number of the deed",
+		"type": "string",
+		"groups": ["deed"]
+	},
+	"deed_grantor": {
+		"name": "Deed grantor",
+		"description": "Name of the person or entity granting the deed",
+		"type": "string",
+		"groups": ["deed"]
+	},
+	"deed_grantee": {
+		"name": "Deed grantee",
+		"description": "Name of the person or entity receiving the deed",
+		"type": "string",
+		"groups": ["deed"]
+	},
 	"sale_date":{
 		"name": "Sale date",
 		"description": "Date of sale",

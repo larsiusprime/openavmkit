@@ -454,10 +454,11 @@ def align_categories(
   return df_left, df_right
 
 
-def encode_city_blocks():
+def encode_city_blocks(
+    place: str
+):
 
-  # ─── 1. Download & simplify the OSM network ────────────────────────────────────
-  place = "Cambridge, MA, USA"
+  # 1. Download & simplify the OSM network
   highway_types = [
     "motorway","trunk","primary","secondary",
     "tertiary","unclassified","residential","service"
@@ -470,12 +471,12 @@ def encode_city_blocks():
     custom_filter=custom_filter
   )
 
-  # ─── 2. Extract edges GeoDataFrame with u/v node IDs ───────────────────────────
+  # 2. Extract edges GeoDataFrame with u/v node IDs
   edges = ox.graph_to_gdfs(G, nodes=False, edges=True).reset_index()[[
     "u", "v", "geometry", "name", "highway", "osmid"
   ]]
 
-  # ─── 3. Explode multilines, drop empties, reproject to metric CRS ─────────────
+  # 3. Explode multilines, drop empties, reproject to metric CRS
   #    (choose a suitable projected CRS for distance-based ops)
   crs_eq = "EPSG:3857"
   edges = (
@@ -486,7 +487,7 @@ def encode_city_blocks():
     .reset_index(drop=True)
   )
 
-  # ─── 4. Unwrap any list‐values & fill missing names ───────────────────────────
+  # 4. Unwrap any list‐values & fill missing names
   edges["road_name"] = edges["name"].apply(
     lambda v: v[0] if isinstance(v, (list, tuple)) else v
   )
@@ -496,7 +497,7 @@ def encode_city_blocks():
   # fallback: use osmid as a string if name was null
   edges["road_name"] = edges["road_name"].fillna(edges["osmid"].astype(str))
 
-  # ─── 5. Build node→roads mapping, skipping service‐type roads ──────────────────
+  # 5. Build node-->roads mapping, skipping service‐type roads
   node_to_names = defaultdict(set)
   for _, row in edges[["u","v","road_name","road_type"]].iterrows():
     if row["road_type"] == "service":
@@ -505,14 +506,14 @@ def encode_city_blocks():
     node_to_names[row.u].add(row.road_name)
     node_to_names[row.v].add(row.road_name)
 
-  # ─── 6. Helper: pick the first “other” road at a junction ─────────────────────
+  # 6. Helper: pick the first “other” road at a junction
   def first_other(names_set, self_name):
     for nm in names_set:
       if nm != self_name:
         return nm
     return "?"
 
-  # ─── 7. Compute cross‐street names at each end ────────────────────────────────
+  # 7. Compute cross‐street names at each end
   edges["cross_w"] = [
     first_other(node_to_names[u], rn)
     for u, rn in zip(edges["u"], edges["road_name"])
@@ -522,7 +523,7 @@ def encode_city_blocks():
     for v, rn in zip(edges["v"], edges["road_name"])
   ]
 
-  # ─── 8. Build the final name_loc field ────────────────────────────────────────
+  # 8. Build the final name_loc field
   edges["name_loc"] = (
       edges["road_name"]
       + " between "
@@ -531,10 +532,10 @@ def encode_city_blocks():
       + edges["cross_e"]
   )
 
-  # ─── 9. (Optional) drop service‐road segments entirely ────────────────────────
+  # 9. (Optional) drop service‐road segments entirely
   # edges = edges[edges.road_type != "service"]
 
-  # ─── Done! ─────────────────────────────────────────────────────────────────────
+  # Done!
   print(edges[["u","v","road_name","cross_w","cross_e","name_loc"]].head())
 
 
