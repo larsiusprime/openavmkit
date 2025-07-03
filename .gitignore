@@ -19,6 +19,8 @@ notebooks/examples/land_value/out*
 .ipynb_checkpoints/
 .venv/*
 venv/*
+.venvdocs/*
+site/*
 *catboost_info*
 testing.ipynb
 check_files_encoding.py
