@@ -13,6 +13,10 @@ plugins:
       handlers:
         python:
           paths: [openavmkit]
+          options:
+            docstring_style: numpy
+            merge_init_into_class: true
+            separate_signature: true
   - gen-files:
       scripts:
         - docs/reference/gen.py
