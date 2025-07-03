@@ -16,7 +16,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-import geopandas as gpd
 
 import openavmkit
 import openavmkit.data
@@ -26,7 +25,6 @@ import openavmkit.checkpoint
 import openavmkit.ratio_study
 import openavmkit.horizontal_equity_study
 import openavmkit.cleaning
-from openavmkit.benchmark import get_variable_recommendations
 
 from openavmkit.cleaning import clean_valid_sales, validate_arms_length_sales
 from openavmkit.cloud import cloud
@@ -34,10 +32,9 @@ from openavmkit.data import _load_dataframe, process_data, SalesUniversePair, ge
 from openavmkit.sales_scrutiny_study import run_sales_scrutiny_per_model_group, mark_ss_ids_per_model_group, \
    run_heuristics, drop_manual_exclusions
 from openavmkit.time_adjustment import enrich_time_adjustment
-from openavmkit.utilities.data import combine_dfs, rename_dict
-from openavmkit.utilities.excel import write_to_excel
+from openavmkit.utilities.data import combine_dfs
 from openavmkit.utilities.settings import get_fields_categorical, get_fields_numeric, get_fields_boolean, \
-   get_fields_land, get_fields_impr, get_fields_other, get_unclassified_fields, get_valuation_date
+   get_fields_land, get_fields_impr, get_fields_other, get_valuation_date
 
 
 # Basic data stuff

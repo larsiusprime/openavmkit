@@ -5,11 +5,10 @@ import pandas as pd
 from scipy.spatial._ckdtree import cKDTree
 
 from openavmkit.data import SalesUniversePair, get_hydrated_sales_from_sup, get_sale_field
-from openavmkit.filters import select_filter, resolve_filter
+from openavmkit.filters import resolve_filter
 from openavmkit.utilities.data import div_z_safe
 from openavmkit.utilities.geometry import get_crs
 from openavmkit.utilities.plotting import plot_bar
-from openavmkit.utilities.stats import calc_cod, trim_outliers
 
 
 def spatial_paired_sales(

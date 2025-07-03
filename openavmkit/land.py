@@ -25,10 +25,10 @@ from scipy.ndimage import gaussian_filter
 from skimage.feature import canny
 from skimage.measure import label, regionprops, find_contours
 
-from openavmkit.benchmark import _model_performance_metrics, MultiModelResults, _calc_benchmark
+from IPython.display import display
 from openavmkit.data import get_sales, get_hydrated_sales_from_sup, SalesUniversePair, get_train_test_keys, \
   get_sale_field
-from openavmkit.modeling import SingleModelResults, plot_value_surface, DataSplit, simple_ols
+from openavmkit.modeling import SingleModelResults, plot_value_surface, simple_ols
 from openavmkit.quality_control import check_land_values
 from openavmkit.utilities.data import div_field_z_safe, add_sqft_fields, calc_spatial_lag
 from openavmkit.utilities.geometry import select_grid_size_from_size_str, get_crs
@@ -1112,7 +1112,7 @@ def _convolve_land_analysis(
   # STEP 2: Calculate smoothed values for each surface
   for full_or_test in ["full", "test"]:
     for exclude_self in [True, False]:
-      for neighbors in [0, 5, 10]:
+      for neighbors in [0]:
         for key in ["hedonic", "vacant"]:
           entries = results_map[key]
 
@@ -1446,7 +1446,14 @@ def _process_county(county_name, min_area_threshold=500, min_width_threshold=10)
   return poly_gdf_cleaned
 
 
-def compute_kernel_stat_raster(geo_df, target_field, bandwidth, pixel_size, stat='density', output_path="output.tif"):
+def compute_kernel_stat_raster(
+    geo_df : gpd.GeoDataFrame,
+    target_field: str,
+    bandwidth: float,
+    pixel_size: float,
+    stat: str ='density',
+    output_path: str ="output.tif"
+):
   """
   Computes a raster surface where each cell contains the local (mean or median) statistic of the target field,
   computed over sample points (parcel centroids) that lie within a circular kernel of a specified area.

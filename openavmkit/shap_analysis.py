@@ -9,7 +9,7 @@ import lightgbm as lgb
 import catboost as cb
 import matplotlib.pyplot as plt
 
-from openavmkit.modeling import SingleModelResults, PredictionModel
+from openavmkit.modeling import SingleModelResults
 
 
 def compute_shap(

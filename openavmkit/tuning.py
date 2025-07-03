@@ -4,7 +4,7 @@ import numpy as np
 import optuna
 import pandas as pd
 from catboost import Pool, CatBoostRegressor
-from optuna import Trial
+
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_absolute_error
 from optuna.integration import CatBoostPruningCallback

@@ -16,7 +16,6 @@ from openavmkit.modeling import SingleModelResults, LandPredictionResults
 from openavmkit.synthetic.synthetic import make_geo_blocks
 from openavmkit.utilities.data import div_field_z_safe
 from openavmkit.utilities.geometry import get_crs_from_lat_lon
-from openavmkit.utilities.stats import calc_mse_r2_adj_r2
 
 
 def trial_simple_plane(params: dict):

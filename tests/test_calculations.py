@@ -1,8 +1,6 @@
 import pandas as pd
-from IPython.core.display_functions import display
 
 from openavmkit.calculations import perform_calculations, _crawl_calc_dict_for_fields, perform_tweaks
-from openavmkit.filters import resolve_filter
 from openavmkit.utilities.assertions import dfs_are_equal
 
 

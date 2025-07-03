@@ -11,9 +11,6 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import cross_val_score, train_test_split, KFold
 import itertools
 from sklearn.impute import SimpleImputer
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import lightgbm as lgb
 import xgboost as xgb

@@ -1,4 +1,4 @@
-from IPython.core.display_functions import display
+from IPython.display import display
 
 from openavmkit.data import SalesUniversePair
 from openavmkit.horizontal_equity_study import mark_horizontal_equity_clusters_per_model_group_sup

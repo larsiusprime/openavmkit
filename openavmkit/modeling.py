@@ -1,17 +1,14 @@
 import json
 import os
 import pickle
-import warnings
 
 from numpy.linalg import LinAlgError
-from IPython.core.display import display
 import polars as pl
 from joblib import Parallel, delayed
 from typing import Union, Any, Dict
 
 from scipy.spatial._ckdtree import cKDTree
 from sklearn.preprocessing import OneHotEncoder
-from hilbertcurve.hilbertcurve import HilbertCurve
 
 import numpy as np
 import statsmodels.api as sm
@@ -51,8 +48,6 @@ from openavmkit.utilities.stats import quick_median_chd_pl, calc_mse_r2_adj_r2, 
 from openavmkit.tuning import tune_lightgbm, tune_xgboost, tune_catboost
 from openavmkit.utilities.timing import TimingData
 
-
-from scipy.optimize import minimize
 
 PredictionModel = Union[
   MRAModel,
@@ -953,7 +948,8 @@ class SingleModelResults:
       pred_sales (PredictionResults, optional): Results for the sales set
       pred_univ: Predictions for the universe (all parcels in the current scope, such as a model group)
       chd (float): Calculated CHD value
-      utility (float): Composite utility score, used for comparing models
+      utility_test (float): Composite utility score for the test set, used for comparing models
+      utility_train (float): Composite utility score for the training set, used for comparing models
       timing (TimingData): Timing data for different phases of the model run
   """
 
@@ -1080,10 +1076,8 @@ class SingleModelResults:
 
     timing.start("utility")
     self.utility_test = (1.0 - self.pred_test.adj_r2) * 1000
-    #self.utility_test = model_utility_score(self, test_set=True)
     if y_pred_sales is not None:
       self.utility_train = (1.0 - self.pred_train.adj_r2) * 1000
-      #self.utility_train = model_utility_score(self, test_set=False)
     else:
       self.utility_train = float('nan')
     timing.stop("utility")

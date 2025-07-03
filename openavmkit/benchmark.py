@@ -2,7 +2,6 @@ import os
 import pickle
 import warnings
 
-import numpy
 from matplotlib import pyplot as plt
 import pandas as pd
 from catboost import CatBoostRegressor
@@ -427,7 +426,7 @@ def get_variable_recommendations(
       vif_X = vif_X.drop(columns=bool_cols)
 
     # Don't run VIF if we have no columns left or too few rows
-    if vif_X.shape[1] > 0 and len(vif_X) > vif_X.shape[1]:
+    if 0 < vif_X.shape[1] < len(vif_X):
       vif = calc_vif_recursive_drop(vif_X, thresh.get("vif", 10), settings)
 
       # Add boolean columns back to the final VIF results with NaN VIF values
