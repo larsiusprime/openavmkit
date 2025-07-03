@@ -184,8 +184,6 @@ def clean_valid_sales(sup: SalesUniversePair, settings: dict)->SalesUniversePair
 def fill_unknown_values_sup(sup: SalesUniversePair, settings: dict)->SalesUniversePair:
     """Fill unknown values with default values as specified in settings.
 
-    This function fills unknown values in both sales and universe dataframes within the SalesUniversePair.
-
     Parameters
     ----------
     sup : SalesUniversePair
