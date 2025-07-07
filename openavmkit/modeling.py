@@ -3196,8 +3196,8 @@ def predict_naive_sqft(
 
     timing.start("predict_test")
 
-    ind_per_built_sqft = sqft_model.ind_per_built_sqft
-    ind_per_land_sqft = sqft_model.ind_per_land_sqft
+    ind_per_built_sqft = sqft_model.dep_per_built_sqft
+    ind_per_land_sqft = sqft_model.dep_per_land_sqft
     sales_chase = sqft_model.sales_chase
 
     X_test = ds.X_test
