@@ -2,7 +2,7 @@ import warnings
 
 import pandas as pd
 
-from openavmkit.utilities.data import div_field_z_safe
+from openavmkit.utilities.data import div_series_z_safe
 
 
 def check_land_values(df_in: pd.DataFrame, model_group: str) -> pd.DataFrame:
@@ -20,7 +20,6 @@ def check_land_values(df_in: pd.DataFrame, model_group: str) -> pd.DataFrame:
     pd.DataFrame
         A copy of the original dataframe, with any necessary amendments to land value
     """
-
 
     df = df_in.copy()
 
@@ -75,15 +74,15 @@ def check_land_values(df_in: pd.DataFrame, model_group: str) -> pd.DataFrame:
     # Derive the final improvement values and make sure everything is consistent
     df.loc[df["model_land_value"].lt(0), "model_land_value"] = 0.0
 
-    df["model_land_alloc"] = div_field_z_safe(
+    df["model_land_alloc"] = div_series_z_safe(
         df["model_land_value"], df["model_market_value"]
     )
     df["model_impr_value"] = df["model_market_value"] - df["model_land_value"]
-    df["model_impr_alloc"] = div_field_z_safe(
+    df["model_impr_alloc"] = div_series_z_safe(
         df["model_impr_value"], df["model_market_value"]
     )
 
-    derived_land_alloc = div_field_z_safe(
+    derived_land_alloc = div_series_z_safe(
         df["model_land_value"], df["model_market_value"]
     )
     assert derived_land_alloc.equals(df["model_land_alloc"])

@@ -56,6 +56,7 @@ from openavmkit.utilities.settings import (
 
 # Basic data stuff
 
+
 class NotebookState:
     """Represents the state of a notebook session including the base path and locality.
 
@@ -122,8 +123,7 @@ def init_notebook(locality: str):
 
 
 def load_settings(
-    settings_file: str = "in/settings.json",
-    settings_object: dict = None
+    settings_file: str = "in/settings.json", settings_object: dict = None
 ) -> dict:
     """
     Load and return the settings dictionary for the locality.
@@ -208,6 +208,7 @@ def examine_df_in_ridiculous_detail(df: pd.DataFrame, s: dict):
     s : dict
         Settings dictionary.
     """
+
     def fill_str(char: str, size: int):
         text = ""
         for _i in range(0, size):
@@ -701,9 +702,7 @@ def load_and_process_data(settings: dict) -> SalesUniversePair:
 
 
 def tag_model_groups_sup(
-    sup: SalesUniversePair,
-    settings: dict,
-    verbose: bool = False
+    sup: SalesUniversePair, settings: dict, verbose: bool = False
 ) -> SalesUniversePair:
     """
     Tag model groups for a SalesUniversePair.
@@ -728,7 +727,9 @@ def tag_model_groups_sup(
     return openavmkit.data._tag_model_groups_sup(sup, settings, verbose)
 
 
-def process_sales(sup: SalesUniversePair, settings: dict, verbose: bool = False) -> SalesUniversePair:
+def process_sales(
+    sup: SalesUniversePair, settings: dict, verbose: bool = False
+) -> SalesUniversePair:
     """
     Process sales data within a SalesUniversePair.
 
@@ -778,8 +779,6 @@ def process_sales(sup: SalesUniversePair, settings: dict, verbose: bool = False)
     sup.update_sales(df_sales_clipped, allow_remove_rows=True)
 
     return sup
-
-
 
 
 def enrich_sup_spatial_lag(
@@ -867,9 +866,7 @@ def fill_unknown_values_sup(
 
 
 def mark_ss_ids_per_model_group_sup(
-    sup: SalesUniversePair,
-    settings: dict,
-    verbose: bool = False
+    sup: SalesUniversePair, settings: dict, verbose: bool = False
 ) -> SalesUniversePair:
     """
     Cluster parcels for a sales scrutiny study by assigning sales scrutiny IDs.
@@ -973,15 +970,14 @@ def run_sales_scrutiny(
     """
     sup = run_heuristics(sup, settings, drop_heuristic_outliers, verbose)
     sup = drop_manual_exclusions(sup, settings, verbose)
-    sup = run_sales_scrutiny_per_model_group_sup(sup, settings, drop_cluster_outliers, verbose)
+    sup = run_sales_scrutiny_per_model_group_sup(
+        sup, settings, drop_cluster_outliers, verbose
+    )
     return sup
 
 
 def run_sales_scrutiny_per_model_group_sup(
-    sup: SalesUniversePair,
-    settings: dict,
-    drop: bool = True,
-    verbose: bool = False
+    sup: SalesUniversePair, settings: dict, drop: bool = True, verbose: bool = False
 ) -> SalesUniversePair:
     """
     Run sales scrutiny analysis for each model group within a SalesUniversePair.
@@ -1093,8 +1089,7 @@ def write_checkpoint(data: Any, path: str):
 
 
 def write_notebook_output_sup(
-    sup: SalesUniversePair,
-    prefix: str = "1-assemble"
+    sup: SalesUniversePair, prefix: str = "1-assemble"
 ) -> None:
     """
     Write notebook output to disk.

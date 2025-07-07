@@ -1,6 +1,6 @@
 """This module contains various inference models for predicting missing values in spatial datasets (e.g. you are missing
 some amount of building square footage). It uses proxy variables supplied by the user (e.g. building footprint size) and
-works out geospatial correlations to predict the missing values. 
+works out geospatial correlations to predict the missing values.
 
 `perform_spatial_inference()` is the main function that orchestrates the inference process based on user settings.
 
@@ -53,12 +53,12 @@ class InferenceModel(ABC):
     @abstractmethod
     def predict(self, df: pd.DataFrame) -> pd.Series:
         """Make predictions on new data.
-        
+
         Parameters
         ----------
         df : pd.DataFrame
             Data to perform predictions on.
-            
+
         Returns
         -------
         pd.Series
@@ -69,14 +69,14 @@ class InferenceModel(ABC):
     @abstractmethod
     def evaluate(self, df: pd.DataFrame, target: str) -> Dict[str, float]:
         """Evaluate model performance on training data.
-        
+
         Parameters
         ----------
         df : pd.DataFrame
             Training data.
         target : str
             Field name of the target variable.
-        
+
         Returns
         -------
         Dict[str, float]
@@ -287,13 +287,13 @@ class CategoricalEncoder:
 
     def fit(self, series: pd.Series) -> None:
         """Fit encoder adding a special unknown value.
-        
+
         Parameters
         ----------
         series : pd.Series
             data series to fit
         """
-        
+
         # Get unique non-null values
         unique_values = series.dropna().unique()
 
@@ -303,12 +303,12 @@ class CategoricalEncoder:
 
     def transform(self, series: pd.Series) -> np.ndarray:
         """Transform values, mapping unseen categories to unknown.
-        
+
         Parameters
         ----------
         series : pd.Series
             data series to transform
-        
+
         Returns
         -------
         np.ndarray
@@ -331,17 +331,17 @@ class CategoricalEncoder:
 
     def fit_transform(self, series: pd.Series) -> np.ndarray:
         """Fit and transform in one step.
-        
+
         Parameters
         ----------
         series : pd.Series
             data series to fit & transform
-        
+
         Returns
         -------
         np.ndarray
             the transformed data series
-        
+
         """
         self.fit(series)
         return self.transform(series)
@@ -683,12 +683,12 @@ class LightGBMModel(InferenceModel):
 
     def predict(self, df: pd.DataFrame) -> pd.Series:
         """Make predictions on new data.
-        
+
         Parameters
         ----------
         df : pd.DataFrame
             Data to perform predictions on.
-            
+
         Returns
         -------
         pd.Series
@@ -876,12 +876,12 @@ class XGBoostModel(InferenceModel):
 
     def predict(self, df: pd.DataFrame) -> pd.Series:
         """Make predictions on new data.
-        
+
         Parameters
         ----------
         df : pd.DataFrame
             Data to perform predictions on.
-            
+
         Returns
         -------
         pd.Series
@@ -1001,7 +1001,7 @@ class EnsembleModel(InferenceModel):
 
     def fit(self, df: pd.DataFrame, target: str, settings: Dict[str, Any]) -> None:
         """Fit ensemble model and determine optimal weights.
-        
+
         Parameters
         ----------
         df : pd.DataFrame
@@ -1075,12 +1075,12 @@ class EnsembleModel(InferenceModel):
 
     def predict(self, df: pd.DataFrame) -> pd.Series:
         """Make predictions on new data.
-        
+
         Parameters
         ----------
         df : pd.DataFrame
             Data to perform predictions on.
-            
+
         Returns
         -------
         pd.Series

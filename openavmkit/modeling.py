@@ -66,7 +66,7 @@ from openavmkit.utilities.modeling import (
 )
 from openavmkit.utilities.data import (
     clean_column_names,
-    div_field_z_safe,
+    div_series_z_safe,
     calc_spatial_lag,
 )
 from openavmkit.utilities.settings import get_valuation_date
@@ -153,10 +153,10 @@ class LandPredictionResults:
 
         df_univ = sup.universe.copy()
 
-        df_univ["land_allocation"] = div_field_z_safe(
+        df_univ["land_allocation"] = div_series_z_safe(
             df_univ[land_prediction_field], df_univ[total_prediction_field]
         )
-        df_univ["impr_allocation"] = div_field_z_safe(
+        df_univ["impr_allocation"] = div_series_z_safe(
             df_univ[impr_prediction_field], df_univ[total_prediction_field]
         )
 
@@ -290,7 +290,6 @@ class PredictionResults:
     ratio_study : RatioStudy
         RatioStudy object.
     """
-
 
     def __init__(
         self, dep_var: str, ind_vars: list[str], prediction_field: str, df: pd.DataFrame
@@ -439,7 +438,6 @@ class DataSplit:
     ...
         Other attributes storing configuration, validation splits, and settings.
     """
-
 
     counter: int = 0
 
@@ -1321,7 +1319,7 @@ class SingleModelResults:
         return str
 
 
-def land_utility_score(land_results: LandPredictionResults)->float:
+def land_utility_score(land_results: LandPredictionResults) -> float:
     """Calculates a "land utility score", based on the following:
 
     1. Accuracy:
@@ -1426,7 +1424,9 @@ def land_utility_score(land_results: LandPredictionResults)->float:
     return final_score
 
 
-def model_utility_score(model_results: SingleModelResults, test_set: bool = False) -> float:
+def model_utility_score(
+    model_results: SingleModelResults, test_set: bool = False
+) -> float:
     """
     Compute a utility score for a model based on error, median ratio, COD, and CHD.
 
@@ -1509,10 +1509,7 @@ def safe_predict(callable, X: Any, params: Dict[str, Any] = None) -> np.ndarray:
 
 
 def predict_mra(
-    ds: DataSplit,
-    model: MRAModel,
-    timing: TimingData,
-    verbose: bool = False
+    ds: DataSplit, model: MRAModel, timing: TimingData, verbose: bool = False
 ) -> SingleModelResults:
     """
     Generate predictions using a Multiple Regression Analysis (MRA) model.
@@ -1719,7 +1716,6 @@ def predict_spatial_lag(
     SingleModelResults
         Container with spatial lag predictions and associated performance metrics.
     """
-
 
     if model.per_sqft == False:
         field = ds.ind_vars[0]
@@ -2311,13 +2307,7 @@ def predict_gwr(
 
     timing.start("predict_univ")
     y_pred_univ = _run_gwr_prediction(
-        coords_univ,
-        coords_train,
-        X_univ,
-        X_train,
-        gwr_bw,
-        y_train,
-        intercept=intercept
+        coords_univ, coords_train, X_univ, X_train, gwr_bw, y_train, intercept=intercept
     ).flatten()
     timing.stop("predict_univ")
 
@@ -4258,7 +4248,9 @@ def _run_local_somers(
     )
 
 
-def _sales_chase_univ(df_in: pd.DataFrame, dep_var: str, y_pred_univ: np.ndarray) -> np.ndarray:
+def _sales_chase_univ(
+    df_in: pd.DataFrame, dep_var: str, y_pred_univ: np.ndarray
+) -> np.ndarray:
     """
     Simulate sales chasing behavior for universe predictions.
 
@@ -4290,8 +4282,7 @@ def _sales_chase_univ(df_in: pd.DataFrame, dep_var: str, y_pred_univ: np.ndarray
 
 
 def _gwr_predict(model, points, P, exog_scale=None, exog_resid=None, fit_params=None):
-    """Standalone function for GWR predictions for multiple samples.
-    """
+    """Standalone function for GWR predictions for multiple samples."""
     if fit_params is None:
         fit_params = {}
 
@@ -4325,8 +4316,7 @@ def _gwr_predict(model, points, P, exog_scale=None, exog_resid=None, fit_params=
 
 
 def _local_gwr_predict_external(model, point, predictors):
-    """Helper function for GWR prediction on a single point.
-    """
+    """Helper function for GWR prediction on a single point."""
     point = np.asarray(point).reshape(1, -1)
     predictors = np.asarray(predictors)
     weights = Kernel(
@@ -4356,8 +4346,7 @@ def _run_gwr_prediction(
     y_train,
     intercept: bool = True,
 ):
-    """Run GWR predictions for a set of points.
-    """
+    """Run GWR predictions for a set of points."""
     gwr = GWR(coords_train, y_train, X_train, gwr_bw, constant=intercept)
     gwr_results = _gwr_predict(gwr, coords, X)
     y_pred = gwr_results["y_pred"]
@@ -4375,8 +4364,7 @@ def _get_params(
     verbose: bool,
     **kwargs,
 ):
-    """Obtain model parameters by tuning, with option to save or load saved parameters.
-    """
+    """Obtain model parameters by tuning, with option to save or load saved parameters."""
     if verbose:
         print(f"Tuning {name}: searching for optimal parameters...")
 
@@ -4429,7 +4417,7 @@ def plot_value_surface(
         Normalization method: "two_slope", "log", or None.
     """
 
-    #TODO: Why is this in modeling and not somewhere related to plotting?
+    # TODO: Why is this in modeling and not somewhere related to plotting?
 
     plt.clf()
     plt.figure(figsize=(12, 8))
@@ -4570,7 +4558,9 @@ def simple_ols(df: pd.DataFrame, ind_var: str, dep_var: str, intercept: bool = T
     }
 
 
-def _greedy_nn_limited(lat : float, lon : float, start_idx:int=0, k:int=16)->np.ndarray:
+def _greedy_nn_limited(
+    lat: float, lon: float, start_idx: int = 0, k: int = 16
+) -> np.ndarray:
     """Greedy nearest-neighbor on flat coords with limited-k search.
 
     - Projects lat/lon to (x,y) in meters via equirectangular.
@@ -4979,7 +4969,7 @@ def _derive_somers_unit_values(
     log: bool = True,
     verbose: bool = False,
 ):
-    #TODO: Experimental
+    # TODO: Experimental
 
     necessary_fields = [
         "frontage_ft_1",
@@ -5076,7 +5066,7 @@ def _derive_land_values(
     log: bool = True,
     verbose: bool = False,
 ):
-    #TODO: Experimental
+    # TODO: Experimental
 
     df_sales = get_hydrated_sales_from_sup(sup)
 

@@ -8,7 +8,7 @@ from pandas import read_pickle
 import openavmkit.utilities.stats as stats
 from openavmkit.data import get_vacant_sales, get_important_field
 from openavmkit.reports import start_report, finish_report
-from openavmkit.utilities.data import dataframe_to_markdown
+from openavmkit.utilities.data import df_to_markdown
 from openavmkit.utilities.settings import (
     get_fields_categorical,
     get_data_dictionary,
@@ -637,7 +637,7 @@ def _write_ratio_study_report(
                 md_chunk = f"#### By {by_name}, {vacant_name} only\n\n"
                 df = pd.DataFrame(data=data)
                 if len(df) > 1:
-                    md_chunk += dataframe_to_markdown(df)
+                    md_chunk += df_to_markdown(df)
                     md_chunk += "\n\n"
 
                     if modeler == "assessor":
@@ -649,10 +649,10 @@ def _write_ratio_study_report(
     df_trim = pd.DataFrame(data=data_overall_trim)
 
     overall_results = "#### Untrimmed\n\n"
-    overall_results += dataframe_to_markdown(df_untrim)
+    overall_results += df_to_markdown(df_untrim)
     overall_results += "\n\n"
     overall_results += "#### Trimmed\n\n"
-    overall_results += dataframe_to_markdown(df_trim)
+    overall_results += df_to_markdown(df_trim)
 
     report.set_var("overall_results", overall_results)
     report.set_var("locality_results", locality_results)

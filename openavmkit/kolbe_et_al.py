@@ -21,7 +21,7 @@ from openavmkit.data import (
     get_hydrated_sales_from_sup,
     get_sale_field,
 )
-from openavmkit.utilities.data import div_z_safe
+from openavmkit.utilities.data import div_df_z_safe
 
 
 def difference_weights(m: int) -> np.ndarray:
@@ -72,9 +72,7 @@ def hilbert_order(lat: np.ndarray, lon: np.ndarray, n_bits: int = 16) -> np.ndar
         (lon - lon.min()) / (lon.max() - lon.min()) * (2**n_bits - 1)
     ).astype(int)
 
-    coords_int = np.stack(
-        (lat_scaled, lon_scaled), axis=1
-    ).tolist()
+    coords_int = np.stack((lat_scaled, lon_scaled), axis=1).tolist()
 
     hc = HilbertCurve(n_bits, 2)
     dist_1d = hc.distances_from_points(coords_int, match_type=True)
@@ -254,11 +252,11 @@ def kolbe_et_al_estimate(
     # 1. Convert to price-per-area and building-per-area
     # ----------------------------------------------
 
-    df["p"] = div_z_safe(df, sale_field, "land_area_sqft")
+    df["p"] = div_df_z_safe(df, sale_field, "land_area_sqft")
     p_area_cols: list[str] = []
     for col in bldg_fields:
         p_area = f"{col}_per_land_sqft"
-        df[p_area] = div_z_safe(df, col, "land_area_sqft")
+        df[p_area] = div_df_z_safe(df, col, "land_area_sqft")
         p_area_cols.append(p_area)
 
     # ---------------------------------------------

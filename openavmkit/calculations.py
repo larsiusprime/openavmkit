@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 from openavmkit.filters import resolve_filter
-from openavmkit.utilities.data import div_field_z_safe
+from openavmkit.utilities.data import div_series_z_safe
 from openavmkit.utilities.geometry import get_crs
 
 
@@ -300,7 +300,7 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i: int = 0, rename_map: dict = No
     elif op == "//":
         return (lhs // rhs).astype(int)
     elif op == "/0":
-        return div_field_z_safe(lhs, rhs)
+        return div_series_z_safe(lhs, rhs)
     elif op == "round_nearest":
         value = lhs / rhs
         value = np.round(value)

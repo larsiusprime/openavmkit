@@ -12,11 +12,7 @@ import matplotlib.pyplot as plt
 from openavmkit.modeling import SingleModelResults
 
 
-def compute_shap(
-    smr: SingleModelResults,
-    plot: bool = False,
-    title: str = ""
-):
+def compute_shap(smr: SingleModelResults, plot: bool = False, title: str = ""):
     """
     Compute SHAP values for a given model and dataset.
 
@@ -35,7 +31,6 @@ def compute_shap(
         SHAP values array for the evaluation dataset.
     """
 
-
     if smr.type not in ["xgboost", "catboost", "lightgbm"]:
         # SHAP is not supported for this model type
         return
@@ -48,11 +43,8 @@ def compute_shap(
         plot_full_beeswarm(shaps, title=title)
 
 
-
 def plot_full_beeswarm(
-    explanation: shap.Explanation,
-    title: str = "SHAP Beeswarm",
-    wrap_width: int = 20
+    explanation: shap.Explanation, title: str = "SHAP Beeswarm", wrap_width: int = 20
 ) -> None:
     """
     Plot a full SHAP beeswarm for a tree-based model with wrapped feature names.

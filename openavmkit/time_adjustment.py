@@ -5,14 +5,11 @@ import numpy as np
 import pandas as pd
 
 from openavmkit.data import get_sales
-from openavmkit.utilities.data import div_z_safe
+from openavmkit.utilities.data import div_df_z_safe
 
 
 def calculate_time_adjustment(
-    df_sales_in: pd.DataFrame,
-    settings: dict,
-    period: str = "M",
-    verbose: bool = False
+    df_sales_in: pd.DataFrame, settings: dict, period: str = "M", verbose: bool = False
 ) -> pd.DataFrame:
     """
     Calculate a time adjustment multiplier for sales data.
@@ -67,10 +64,10 @@ def calculate_time_adjustment(
             + df_sales["sale_quarter"].astype(str)
         )
 
-    df_sales["sale_price_per_impr_sqft"] = div_z_safe(
+    df_sales["sale_price_per_impr_sqft"] = div_df_z_safe(
         df_sales, "sale_price", "bldg_area_finished_sqft"
     )
-    df_sales["sale_price_per_land_sqft"] = div_z_safe(
+    df_sales["sale_price_per_land_sqft"] = div_df_z_safe(
         df_sales, "sale_price", "land_area_sqft"
     )
 
@@ -98,10 +95,7 @@ def calculate_time_adjustment(
 
 
 def apply_time_adjustment(
-    df_sales_in: pd.DataFrame,
-    settings: dict,
-    period: str = "M",
-    verbose: bool = False
+    df_sales_in: pd.DataFrame, settings: dict, period: str = "M", verbose: bool = False
 ) -> pd.DataFrame:
     """
     Compute time adjustment multipliers and apply them to adjust sale prices forward in time.
@@ -161,11 +155,11 @@ def apply_time_adjustment(
     df_sales = df_sales.drop(columns=["time_adjustment"])
 
     if "sale_price_per_impr_sqft" in df_sales:
-        df_sales["sale_price_time_adj_per_impr_sqft"] = div_z_safe(
+        df_sales["sale_price_time_adj_per_impr_sqft"] = div_df_z_safe(
             df_sales, "sale_price_time_adj", "bldg_area_finished_sqft"
         )
     if "sale_price_per_land_sqft" in df_sales:
-        df_sales["sale_price_time_adj_per_land_sqft"] = div_z_safe(
+        df_sales["sale_price_time_adj_per_land_sqft"] = div_df_z_safe(
             df_sales, "sale_price_time_adj", "land_area_sqft"
         )
 
@@ -173,9 +167,7 @@ def apply_time_adjustment(
 
 
 def enrich_time_adjustment(
-    df_in: pd.DataFrame,
-    settings: dict,
-    verbose: bool = False
+    df_in: pd.DataFrame, settings: dict, verbose: bool = False
 ) -> pd.DataFrame:
     """
     Enrich the sales data by generating time-adjusted sales if not already present.
@@ -215,8 +207,7 @@ def enrich_time_adjustment(
 
 
 def _generate_days(start_date: datetime, end_date: datetime):
-    """Generate a list of days between two dates, inclusive.
-    """
+    """Generate a list of days between two dates, inclusive."""
     days = []
     date = start_date
     while date <= end_date:
@@ -437,10 +428,10 @@ def _determine_value_driver(df_in: pd.DataFrame, settings: dict):
     df_impr = df[df["bldg_area_finished_sqft"].gt(0)]
     df_land = df[df["land_area_sqft"].gt(0)]
 
-    df_impr["sale_price_per_impr_sqft"] = div_z_safe(
+    df_impr["sale_price_per_impr_sqft"] = div_df_z_safe(
         df_impr, "sale_price", "bldg_area_finished_sqft"
     )
-    df_land["sale_price_per_land_sqft"] = div_z_safe(
+    df_land["sale_price_per_land_sqft"] = div_df_z_safe(
         df_land, "sale_price", "land_area_sqft"
     )
 

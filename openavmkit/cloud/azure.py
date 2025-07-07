@@ -10,8 +10,7 @@ from azure.storage.blob import BlobServiceClient
 
 
 class AzureCredentials(CloudCredentials):
-    """Authentication credentials for Azure
-    """
+    """Authentication credentials for Azure"""
 
     def __init__(self, connection_string: str):
         """Initialize AzureCredentials object
@@ -37,6 +36,7 @@ class AzureService(CloudService):
     container_client : ContainerClient
         Azure Container Client
     """
+
     def __init__(
         self, credentials: AzureCredentials, container_name: str, access: CloudAccess
     ):
@@ -60,7 +60,6 @@ class AzureService(CloudService):
             container_name
         )
 
-
     def list_files(self, remote_path: str) -> list[CloudFile]:
         """List all the files at the given path on Azure
 
@@ -82,7 +81,6 @@ class AzureService(CloudService):
             for blob in blob_list
         ]
 
-
     def download_file(self, remote_file: CloudFile, local_file_path: str):
         """Download a remote file from the Azure service
 
@@ -98,7 +96,6 @@ class AzureService(CloudService):
         with open(local_file_path, "wb") as f:
             download_stream = blob_client.download_blob()
             f.write(download_stream.readall())
-
 
     def upload_file(self, remote_file_path: str, local_file_path: str):
         """Upload a local file to the Azure service

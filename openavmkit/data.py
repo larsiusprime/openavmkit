@@ -36,7 +36,11 @@ from openavmkit.calculations import (
 from openavmkit.filters import resolve_filter, select_filter
 from openavmkit.utilities.somers import get_size_in_somers_units_ft
 from openavmkit.utilities.cache import get_cached_df, write_cached_df
-from openavmkit.utilities.data import combine_dfs, div_field_z_safe, merge_and_stomp_dfs
+from openavmkit.utilities.data import (
+    combine_dfs,
+    div_series_z_safe,
+    merge_and_stomp_dfs,
+)
 from openavmkit.utilities.geometry import (
     get_crs,
     clean_geometry,
@@ -678,8 +682,6 @@ def enrich_df_streets(
     return df_out
 
 
-
-
 def enrich_sup_spatial_lag(
     sup: SalesUniversePair, settings: dict, verbose: bool = False
 ) -> SalesUniversePair:
@@ -736,11 +738,11 @@ def enrich_sup_spatial_lag(
     per_impr_field = f"{sale_field}_impr_sqft"
 
     if per_land_field not in df_hydrated:
-        df_hydrated[per_land_field] = div_field_z_safe(
+        df_hydrated[per_land_field] = div_series_z_safe(
             df_hydrated[sale_field], df_hydrated["land_area_sqft"]
         )
     if per_impr_field not in df_hydrated:
-        df_hydrated[per_impr_field] = div_field_z_safe(
+        df_hydrated[per_impr_field] = div_series_z_safe(
             df_hydrated[sale_field], df_hydrated["bldg_area_finished_sqft"]
         )
     if sale_field_vacant not in df_hydrated:
@@ -761,12 +763,12 @@ def enrich_sup_spatial_lag(
                 df_hydrated["valid_sale"].eq(True)
                 & df_hydrated["vacant_sale"].eq(True)
                 & df_hydrated["land_area_sqft"].gt(0)
-                ].copy()
+            ].copy()
         elif value_field == per_impr_field:
             df_sub = df_hydrated.loc[
                 df_hydrated["valid_sale"].eq(True)
                 & df_hydrated["bldg_area_finished_sqft"].gt(0)
-                ].copy()
+            ].copy()
         else:
             raise ValueError(f"Unknown value field: {value_field}")
 
@@ -886,7 +888,6 @@ def enrich_sup_spatial_lag(
     sup.set("sales", df_sales)
     sup.set("universe", df_universe)
     return sup
-
 
 
 def get_train_test_keys(df_in: pd.DataFrame, settings: dict):
@@ -1094,7 +1095,7 @@ def _enrich_data(
                 settings,
                 supkey == "sales",
                 verbose=verbose,
-                )
+            )
 
         # Enforce vacant status
         df = _enrich_vacant(df, settings)
@@ -2069,7 +2070,6 @@ def _identify_parcels_with_holes(
         GeoDataFrame with parcels containing interior rings.
     """
 
-
     # Identify parcels with holes
     def has_holes(geom):
         if geom.is_valid:
@@ -2103,8 +2103,7 @@ def _enrich_sale_age_days(df: pd.DataFrame, settings: dict) -> pd.DataFrame:
 
 
 def _enrich_year_built(df: pd.DataFrame, settings: dict, is_sales: bool = False):
-    """Enrich the DataFrame with building age information based on year built.
-    """
+    """Enrich the DataFrame with building age information based on year built."""
     val_date = get_valuation_date(settings)
     for prefix in ["bldg", "bldg_effective"]:
         col = f"{prefix}_year_built"
@@ -2117,8 +2116,7 @@ def _enrich_year_built(df: pd.DataFrame, settings: dict, is_sales: bool = False)
 def _do_enrich_year_built(
     df: pd.DataFrame, col: str, new_col: str, val_date: datetime, is_sales: bool = False
 ) -> pd.DataFrame:
-    """Calculate building age and add it as a new column.
-    """
+    """Calculate building age and add it as a new column."""
     if not is_sales:
         val_year = val_date.year
         df[new_col] = val_year - df[col]
@@ -2138,8 +2136,7 @@ def _enrich_time_field(
     add_year_month: bool = True,
     add_year_quarter: bool = True,
 ) -> pd.DataFrame:
-    """Enrich a DataFrame with time-related fields based on a prefix.
-    """
+    """Enrich a DataFrame with time-related fields based on a prefix."""
     if f"{prefix}_date" not in df:
         # Check if we have _year, _month, and _day:
         if f"{prefix}_year" in df and f"{prefix}_month" in df and f"{prefix}_day" in df:
@@ -2237,8 +2234,7 @@ def _boolify_series(series: pd.Series, na_handling: str = None):
 
 
 def _boolify_column_in_df(df: pd.DataFrame, field: str, na_handling: str = None):
-    """Convert a specified column in a DataFrame to boolean.
-    """
+    """Convert a specified column in a DataFrame to boolean."""
     series = df[field]
 
     # Determine NA handling based on settings
@@ -2262,18 +2258,17 @@ def _boolify_column_in_df(df: pd.DataFrame, field: str, na_handling: str = None)
 
 
 def _enrich_universe_spatial_lag(
-    df_univ_in: pd.DataFrame,
-    df_test: pd.DataFrame
+    df_univ_in: pd.DataFrame, df_test: pd.DataFrame
 ) -> pd.DataFrame:
 
     df = df_univ_in.copy()
 
     if "floor_area_ratio" not in df:
-        df["floor_area_ratio"] = div_field_z_safe(
+        df["floor_area_ratio"] = div_series_z_safe(
             df["bldg_area_finished_sqft"], df["land_area_sqft"]
         )
     if "bedroom_density" not in df and "bldg_rooms_bed" in df:
-        df["bedroom_density"] = div_field_z_safe(
+        df["bedroom_density"] = div_series_z_safe(
             df["bldg_rooms_bed"], df["land_area_sqft"]
         )
 
@@ -2432,8 +2427,7 @@ def _enrich_df_spatial_joins(
     settings: dict,
     verbose: bool = False,
 ) -> gpd.GeoDataFrame:
-    """Perform basic geometric enrichment on a DataFrame by adding spatial features.
-    """
+    """Perform basic geometric enrichment on a DataFrame by adding spatial features."""
 
     df = df_in.copy()
     s_geom = s_enrich_this.get("geometry", [])
@@ -2695,8 +2689,7 @@ def _enrich_polar_coordinates(
 def _basic_geo_enrichment(
     gdf_in: gpd.GeoDataFrame, settings: dict, verbose: bool = False
 ) -> gpd.GeoDataFrame:
-    """Perform basic geometric enrichment on a GeoDataFrame by adding spatial features.
-    """
+    """Perform basic geometric enrichment on a GeoDataFrame by adding spatial features."""
     t = TimingData()
 
     if verbose:
@@ -2753,7 +2746,7 @@ def _basic_geo_enrichment(
     ] = gdf["land_area_gis_sqft"]
 
     gdf["land_area_gis_delta_sqft"] = gdf["land_area_gis_sqft"] - gdf["land_area_sqft"]
-    gdf["land_area_gis_delta_percent"] = div_field_z_safe(
+    gdf["land_area_gis_delta_percent"] = div_series_z_safe(
         gdf["land_area_gis_delta_sqft"], gdf["land_area_sqft"]
     )
     t.stop("area")
@@ -2782,8 +2775,7 @@ def _basic_geo_enrichment(
 def _calc_geom_stuff(
     gdf_in: gpd.GeoDataFrame, verbose: bool = False
 ) -> gpd.GeoDataFrame:
-    """Compute additional geometric properties for a GeoDataFrame, such as rectangularity
-    """
+    """Compute additional geometric properties for a GeoDataFrame, such as rectangularity"""
 
     gdf = get_cached_df(gdf_in, "geom/stuff", "key")
     if gdf is not None:
@@ -2794,7 +2786,7 @@ def _calc_geom_stuff(
     gdf = gdf_in.copy()
     min_rotated_rects = gdf.geometry.apply(lambda geom: geom.minimum_rotated_rectangle)
     min_rotated_rects_area_delta = np.abs(min_rotated_rects.area - gdf.geometry.area)
-    min_rotated_rects_area_delta_percent = div_field_z_safe(
+    min_rotated_rects_area_delta_percent = div_series_z_safe(
         min_rotated_rects_area_delta, gdf.geometry.area
     )
     gdf["geom_rectangularity_num"] = 1.0 - min_rotated_rects_area_delta_percent
@@ -2928,8 +2920,7 @@ def _perform_spatial_join(
     predicate: str,
     fields_to_tag: list[str],
 ):
-    """Perform a spatial join between two GeoDataFrames using the specified predicate.
-    """
+    """Perform a spatial join between two GeoDataFrames using the specified predicate."""
     gdf = gdf_in.copy()
     gdf_overlay = gdf_overlay.to_crs(gdf.crs)
     if "__overlay_id__" in gdf_overlay:
@@ -3206,8 +3197,7 @@ def _perform_distance_calculations(
     verbose: bool = False,
     cache_key: str = "geom/distance",
 ) -> gpd.GeoDataFrame:
-    """Perform distance calculations based on enrichment instructions.
-    """
+    """Perform distance calculations based on enrichment instructions."""
     df = df_in.copy()
     if verbose:
         print(f"Performing distance calculations {cache_key}...")
@@ -3328,8 +3318,7 @@ def _perform_ref_tables(
     dataframes: dict[str, pd.DataFrame],
     verbose: bool = False,
 ) -> pd.DataFrame | gpd.GeoDataFrame:
-    """Perform reference table joins to enrich the input DataFrame.
-    """
+    """Perform reference table joins to enrich the input DataFrame."""
     df = df_in.copy()
     if not isinstance(s_ref, list):
         s_ref = [s_ref]
@@ -3384,8 +3373,7 @@ def _perform_ref_tables(
 
 
 def _get_calc_cols(settings: dict, exclude_loaded_fields: bool = False) -> list[str]:
-    """Retrieve a list of calculated columns based on settings.
-    """
+    """Retrieve a list of calculated columns based on settings."""
     s_load = settings.get("data", {}).get("load", {})
     cols_found = []
     cols_base = []
@@ -3403,8 +3391,7 @@ def _get_calc_cols(settings: dict, exclude_loaded_fields: bool = False) -> list[
 
 
 def _do_get_calc_cols(df_entry: dict) -> list[str]:
-    """Extract column names referenced in a calculation dictionary.
-    """
+    """Extract column names referenced in a calculation dictionary."""
     e_calc = df_entry.get("calc", {})
     fields_in_calc = _crawl_calc_dict_for_fields(e_calc)
     return fields_in_calc
@@ -3593,8 +3580,7 @@ def _load_dataframe(
 
 
 def _snoop_column_names(filename: str) -> list[str]:
-    """Retrieve column names from a file without loading full data.
-    """
+    """Retrieve column names from a file without loading full data."""
     ext = str(filename).split(".")[-1]
     if ext == "parquet":
         parquet_file = pq.ParquetFile(filename)
@@ -3607,8 +3593,7 @@ def _snoop_column_names(filename: str) -> list[str]:
 def _handle_duplicated_rows(
     df_in: pd.DataFrame, dupes: str | dict, verbose: bool = False
 ) -> pd.DataFrame:
-    """Handle duplicated rows in a DataFrame based on specified rules.
-    """
+    """Handle duplicated rows in a DataFrame based on specified rules."""
     if dupes == "allow":
         return df_in
     subset = dupes.get("subset", "key")
@@ -3688,8 +3673,7 @@ def _merge_dict_of_dfs(
     settings: dict,
     required_key="key",
 ) -> pd.DataFrame:
-    """Merge multiple DataFrames according to merge instructions.
-    """
+    """Merge multiple DataFrames according to merge instructions."""
     merges = []
     s_reconcile = settings.get("data", {}).get("process", {}).get("reconcile", {})
 
@@ -3972,8 +3956,7 @@ def _merge_dict_of_dfs(
 
 
 def _write_canonical_splits(sup: SalesUniversePair, settings: dict):
-    """Write canonical split keys for sales data to disk.
-    """
+    """Write canonical split keys for sales data to disk."""
     df_sales_in = sup.sales
     df_univ = sup.universe
     df_sales = get_sales(df_sales_in, settings, df_univ=df_univ)
@@ -4196,10 +4179,8 @@ def _do_write_canonical_split(
     )
 
 
-
 def _read_split_keys(model_group: str):
-    """Read the train and test split keys for a model group from disk.
-    """
+    """Read the train and test split keys for a model group from disk."""
     path = f"out/models/{model_group}/_data"
     train_path = f"{path}/train_keys.csv"
     test_path = f"{path}/test_keys.csv"

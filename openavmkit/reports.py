@@ -62,7 +62,6 @@ class MarkdownReport:
         """
         return self.variables.get(key)
 
-
     def set_var(self, key: str, value, fmt: str = None):
         """
         Set a variable value with optional formatting.
@@ -88,7 +87,6 @@ class MarkdownReport:
             formatted_value = str(value)
         self.variables[key] = formatted_value
 
-
     def render(self) -> str:
         """
         Render the report by substituting variables in the template.
@@ -104,11 +102,7 @@ class MarkdownReport:
         return self.rendered
 
 
-def start_report(
-    report_name: str,
-    settings: dict,
-    model_group: str
-) -> MarkdownReport:
+def start_report(report_name: str, settings: dict, model_group: str) -> MarkdownReport:
     """
     Create and initialize a MarkdownReport with basic variables set.
 
@@ -142,10 +136,7 @@ def start_report(
 
 
 def finish_report(
-    report: MarkdownReport,
-    outpath: str,
-    css_file: str,
-    settings: dict
+    report: MarkdownReport, outpath: str, css_file: str, settings: dict
 ) -> None:
     """
     Render the report and export it in Markdown, HTML, and PDF formats.
@@ -181,10 +172,7 @@ def finish_report(
 
 
 def _markdown_to_pdf(
-    md_text: str,
-    out_path: str,
-    formats: list[str],
-    css_file: str = None
+    md_text: str, out_path: str, formats: list[str], css_file: str = None
 ) -> None:
     """
     Convert Markdown text to PDF (and optionally other formats) via an HTML intermediate.
@@ -216,8 +204,7 @@ def _markdown_to_pdf(
 
 
 def _markdown_to_html(md_text, css_file_stub=None):
-    """Convert Markdown text to a complete HTML document using a CSS file.
-    """
+    """Convert Markdown text to a complete HTML document using a CSS file."""
     html_text = markdown.markdown(md_text, extensions=["extra"])
 
     css_path = _get_resource_path() + f"/reports/css/{css_file_stub}.css"
@@ -252,8 +239,7 @@ def _markdown_to_html(md_text, css_file_stub=None):
 
 
 def _html_to_pdf(html_text, out_path):
-    """Convert an HTML string to a PDF file using pdfkit.
-    """
+    """Convert an HTML string to a PDF file using pdfkit."""
     try:
         pdfkit.from_string(html_text, out_path, options={"quiet": False})
     except OSError:
@@ -263,8 +249,7 @@ def _html_to_pdf(html_text, out_path):
 
 
 def _get_resource_path():
-    """Get the absolute path to the resources directory.
-    """
+    """Get the absolute path to the resources directory."""
     this_files_path = os.path.abspath(__file__)
     this_files_dir = os.path.dirname(this_files_path)
     resources_path = os.path.join(this_files_dir, "resources")

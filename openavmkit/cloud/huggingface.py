@@ -8,8 +8,7 @@ from openavmkit.cloud.base import CloudCredentials, CloudService, CloudFile, Clo
 
 
 class HuggingFaceCredentials(CloudCredentials):
-    """Authentication credentials for HuggingFace
-    """
+    """Authentication credentials for HuggingFace"""
 
     def __init__(self, token: str):
         """
@@ -65,7 +64,6 @@ class HuggingFaceService(CloudService):
         self.revision = revision
         self.token = credentials.token
         self.api = HfApi()
-
 
     def list_files(self, remote_path: str) -> list[CloudFile]:
         """List all the files at the given path on HuggingFace

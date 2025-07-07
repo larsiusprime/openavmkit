@@ -17,7 +17,7 @@ from openavmkit.data import (
 from openavmkit.modeling import SingleModelResults, plot_value_surface, simple_ols
 from openavmkit.quality_control import check_land_values
 from openavmkit.utilities.data import (
-    div_field_z_safe,
+    div_series_z_safe,
     add_sqft_fields,
     calc_spatial_lag,
 )
@@ -104,13 +104,13 @@ def _finalize_land_values(
     # Apply basic sanity check / error correction to land values
     df = check_land_values(df, model_group)
 
-    df["model_land_value_land_sqft"] = div_field_z_safe(
+    df["model_land_value_land_sqft"] = div_series_z_safe(
         df["model_land_value"], df["land_area_sqft"]
     )
-    df["model_market_value_land_sqft"] = div_field_z_safe(
+    df["model_market_value_land_sqft"] = div_series_z_safe(
         df["model_market_value"], df["land_area_sqft"]
     )
-    df["model_market_value_impr_sqft"] = div_field_z_safe(
+    df["model_market_value_impr_sqft"] = div_series_z_safe(
         df["model_market_value"], df["bldg_area_finished_sqft"]
     )
 
@@ -131,10 +131,10 @@ def _finalize_land_values(
         on="key",
         how="left",
     )
-    df_sales["model_market_value_impr_sqft"] = div_field_z_safe(
+    df_sales["model_market_value_impr_sqft"] = div_series_z_safe(
         df_sales["model_market_value"], df_sales["bldg_area_finished_sqft"]
     )
-    df_sales["model_market_value_land_sqft"] = div_field_z_safe(
+    df_sales["model_market_value_land_sqft"] = div_series_z_safe(
         df_sales["model_market_value"], df_sales["land_area_sqft"]
     )
 
@@ -172,10 +172,10 @@ def _finalize_land_values(
     display(corrs["final"])
 
     # Super tiny slivers of land will have insane $/sqft values
-    df["model_market_value_land_sqft"] = div_field_z_safe(
+    df["model_market_value_land_sqft"] = div_series_z_safe(
         df["model_market_value"], df["land_area_sqft"]
     )
-    df["model_market_value_impr_sqft"] = div_field_z_safe(
+    df["model_market_value_impr_sqft"] = div_series_z_safe(
         df["model_market_value"], df["bldg_area_finished_sqft"]
     )
     df_not_tiny = df[df["land_area_sqft"].gt(5000)]
@@ -624,13 +624,13 @@ def _convolve_land_analysis(
                         ] = df["prediction"].astype("Float64")
 
                         # Calculate land area per square foot of land
-                        df["prediction_land_sqft"] = div_field_z_safe(
+                        df["prediction_land_sqft"] = div_series_z_safe(
                             df["prediction_land"], df["land_area_sqft"]
                         )
 
                         # Calculate the sale price per square foot of land
                         sale_field_land_sqft = f"{sale_field}_land_sqft"
-                        dfv[sale_field_land_sqft] = div_field_z_safe(
+                        dfv[sale_field_land_sqft] = div_series_z_safe(
                             dfv[sale_field], dfv["land_area_sqft"]
                         )
 
@@ -653,7 +653,7 @@ def _convolve_land_analysis(
                             if exclude_self:
                                 continue
 
-                        df["prediction_land_smooth_sqft"] = div_field_z_safe(
+                        df["prediction_land_smooth_sqft"] = div_series_z_safe(
                             df["prediction_land_smooth"], df["land_area_sqft"]
                         )
 
@@ -679,7 +679,7 @@ def _convolve_land_analysis(
                         if len(dfv) == 0:
                             continue
 
-                        dfv["sales_ratio"] = div_field_z_safe(
+                        dfv["sales_ratio"] = div_series_z_safe(
                             dfv["prediction_land_smooth"], dfv[sale_field]
                         )
                         # dfv["sales_ratio"] = div_field_z_safe(dfv["prediction_land_smooth_sqft"], dfv[sale_field_land_sqft])
@@ -759,4 +759,3 @@ def _convolve_land_analysis(
         print("=" * 80)
         print(df_results_test.to_string())
         print("")
-

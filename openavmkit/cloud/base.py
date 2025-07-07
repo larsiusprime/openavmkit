@@ -18,8 +18,7 @@ CloudAccess = Literal["read_only", "read_write"]
 
 
 class CloudFile:
-    """Base class that represents a file stored on a remote cloud storage service
-    """
+    """Base class that represents a file stored on a remote cloud storage service"""
 
     def __init__(self, name: str, last_modified_utc: datetime, size: int):
         """Initialize a CloudFile object
@@ -39,8 +38,8 @@ class CloudFile:
 
 
 class CloudCredentials:
-    """Authentication credentials for a cloud storage service
-    """
+    """Authentication credentials for a cloud storage service"""
+
     def __init__(self):
         pass
 
@@ -60,6 +59,7 @@ class CloudService:
         Whether to produce verbose output. Default is False.
 
     """
+
     def __init__(
         self,
         cloud_type: CloudType,

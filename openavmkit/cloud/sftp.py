@@ -72,6 +72,7 @@ class SFTPService(CloudService):
     sftp_client : paramiko.client.SFTPClient
         the SFTP client
     """
+
     def __init__(
         self,
         credentials: SFTPCredentials,
@@ -133,7 +134,6 @@ class SFTPService(CloudService):
                     )
                 time.sleep(2)  # Wait before retry
 
-
     def list_files(self, remote_path: str) -> list[CloudFile]:
         """List all the files at the given path on the SFTP server
 
@@ -181,7 +181,6 @@ class SFTPService(CloudService):
                     print(f"Remote path not found: {full_remote_path}")
         return files
 
-
     def download_file(self, remote_file: CloudFile, local_file_path: str):
         """Download a remote file from the SFTP server
 
@@ -220,7 +219,6 @@ class SFTPService(CloudService):
                 raise IOError(f"Downloaded file not found: {local_file_path}")
         except Exception as e:
             raise IOError(f"Download failed: {str(e)}")
-
 
     def upload_file(self, remote_file_path: str, local_file_path: str):
         """Upload a local file to the SFTP server
@@ -288,7 +286,6 @@ class SFTPService(CloudService):
         except Exception as e:
             raise IOError(f"Upload failed: {str(e)}")
 
-
     def _mkdir_p(self, remote_directory: str):
         # Recursively create remote directories if they do not exist
         if remote_directory == "/" or remote_directory == "":
@@ -334,11 +331,11 @@ class SFTPService(CloudService):
                 print(f"Error during connection cleanup: {str(e)}")
 
     def __enter__(self):
-        #Support for context manager.
+        # Support for context manager.
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        #Clean up resources when used as context manager.
+        # Clean up resources when used as context manager.
         self.close()
 
 

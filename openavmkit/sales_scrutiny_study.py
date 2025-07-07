@@ -16,8 +16,8 @@ from openavmkit.horizontal_equity_study import HorizontalEquityStudy
 from openavmkit.reports import start_report, finish_report
 from openavmkit.utilities.clustering import make_clusters
 from openavmkit.utilities.data import (
-    div_z_safe,
-    div_field_z_safe,
+    div_df_z_safe,
+    div_series_z_safe,
     rename_dict,
     do_per_model_group,
     combine_dfs,
@@ -39,6 +39,7 @@ class SalesScrutinyStudySummary:
     num_flagged_sales_by_type : dict[str:int]
         Dictionary breaking down number of flagged sales by anomaly type
     """
+
     num_sales_flagged: int
     num_sales_total: int
     num_flagged_sales_by_type: dict[str:int]
@@ -122,7 +123,7 @@ class SalesScrutinyStudy:
                 denominator = "land_area_sqft"
 
             sale_field_per = f"{sale_field}_{per_sqft}"
-            df[sale_field_per] = div_z_safe(df, sale_field, denominator)
+            df[sale_field_per] = div_df_z_safe(df, sale_field, denominator)
 
             other_fields = cluster_fields + location_fields + important_fields
             other_fields = list(dict.fromkeys(other_fields))
@@ -451,7 +452,7 @@ def _run_land_percentiles(sup: SalesUniversePair, settings: dict):
 
     df_sales = df_sales[df_sales["vacant_sale"].eq(True)]
 
-    df_sales["sale_price_time_adj_land_sqft"] = div_field_z_safe(
+    df_sales["sale_price_time_adj_land_sqft"] = div_series_z_safe(
         df_sales["sale_price_time_adj"], df_sales["land_area_sqft"]
     )
     locations = get_locations(settings, df_sales)
@@ -493,7 +494,7 @@ def _run_land_percentiles(sup: SalesUniversePair, settings: dict):
 
 def drop_manual_exclusions(
     sup: SalesUniversePair, settings: dict, verbose: bool = False
-)->SalesUniversePair:
+) -> SalesUniversePair:
     """Drops sales that the user has individually marked as invalid
 
     Parameters
@@ -544,7 +545,7 @@ def drop_manual_exclusions(
 
 def run_heuristics(
     sup: SalesUniversePair, settings: dict, drop: bool = True, verbose: bool = False
-)->SalesUniversePair:
+) -> SalesUniversePair:
     """
     Identifies and flags anomalous sales by heuristic. Drops them if the user specifies.
 
@@ -756,9 +757,7 @@ def mark_ss_ids_per_model_group(
 
 
 def run_sales_scrutiny_per_model_group(
-    df_in: pd.DataFrame,
-    settings: dict,
-    verbose=False
+    df_in: pd.DataFrame, settings: dict, verbose=False
 ) -> pd.DataFrame:
     """
     Run sales scrutiny analysis for each model group within a SalesUniversePair.
@@ -919,8 +918,8 @@ def _apply_he_stats(df: pd.DataFrame, cluster_id: str, sales_field: str):
 
     if len(df) > 0:
         df = df.merge(df_cluster, on="ss_id", how="left")
-        df["relative_ratio"] = div_z_safe(df, sales_field, "median")
-        df["med_dist_stdevs"] = div_field_z_safe(
+        df["relative_ratio"] = div_df_z_safe(df, sales_field, "median")
+        df["med_dist_stdevs"] = div_series_z_safe(
             df[sales_field] - df["median"], df["stdev"]
         )
 

@@ -6,7 +6,7 @@ from openavmkit.data import _perform_canonical_split, _handle_duplicated_rows, _
 	_do_enrich_year_built, enrich_time, SalesUniversePair, get_hydrated_sales_from_sup, _enrich_permits
 from openavmkit.modeling import DataSplit, _greedy_nn_limited
 from openavmkit.utilities.assertions import dfs_are_equal, series_are_equal
-from openavmkit.utilities.data import div_z_safe, merge_and_stomp_dfs, combine_dfs
+from openavmkit.utilities.data import div_df_z_safe, merge_and_stomp_dfs, combine_dfs
 from openavmkit.utilities.settings import get_valuation_date
 from openavmkit.data import _boolify_series
 
@@ -16,7 +16,7 @@ def test_div_z_safe():
 		"numerator": [1, 2, 3, 4, 5],
 		"denominator": [0, 1, 2, 0, 4]
 	})
-	result = div_z_safe(df, "numerator", "denominator")
+	result = div_df_z_safe(df, "numerator", "denominator")
 	assert result.isna().sum() == 2
 	assert result.astype(str).eq(["<NA>","2.0","1.5","<NA>","1.25"]).all()
 

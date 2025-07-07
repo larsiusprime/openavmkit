@@ -59,8 +59,8 @@ from openavmkit.reports import MarkdownReport, _markdown_to_pdf
 from openavmkit.shap_analysis import compute_shap
 from openavmkit.time_adjustment import enrich_time_adjustment
 from openavmkit.utilities.data import (
-    div_z_safe,
-    dataframe_to_markdown,
+    div_df_z_safe,
+    df_to_markdown,
     do_per_model_group,
     load_model_results,
 )
@@ -103,6 +103,7 @@ from openavmkit.utilities.timing import TimingData
 #######################################
 # PUBLIC
 #######################################
+
 
 class BenchmarkResults:
     """Container for benchmark results.
@@ -378,7 +379,7 @@ def get_variable_recommendations(
     tests_to_run: list[str] | None = None,
     do_report: bool = False,
     verbose: bool = False,
-)->dict:
+) -> dict:
     """Determine which variables are most likely to be meaningful in a model.
 
     This function examines sales and universe data, applies feature selection via
@@ -1371,7 +1372,7 @@ def run_ensemble(
     all_results: MultiModelResults,
     settings: dict,
     verbose: bool = False,
-    hedonic: bool = False
+    hedonic: bool = False,
 ) -> tuple[SingleModelResults, list[str]]:
     """Run an ensemble model based on the provided parameters.
 
@@ -1858,26 +1859,30 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
 
     for key in dfs:
         df = dfs[key]
-        df["prediction_ratio"] = div_z_safe(df, "prediction", "sale_price_time_adj")
+        df["prediction_ratio"] = div_df_z_safe(df, "prediction", "sale_price_time_adj")
 
         if "bldg_area_finished_sqft" in df:
-            df["prediction_impr_sqft"] = div_z_safe(
+            df["prediction_impr_sqft"] = div_df_z_safe(
                 df, "prediction", "bldg_area_finished_sqft"
             )
         if "land_area_sqft" in df:
-            df["prediction_land_sqft"] = div_z_safe(df, "prediction", "land_area_sqft")
+            df["prediction_land_sqft"] = div_df_z_safe(
+                df, "prediction", "land_area_sqft"
+            )
 
         if "assr_market_value" in df:
-            df["assr_ratio"] = div_z_safe(
+            df["assr_ratio"] = div_df_z_safe(
                 df, "assr_market_value", "sale_price_time_adj"
             )
         else:
             df["assr_ratio"] = None
         if "true_market_value" in df:
-            df["true_vs_sale_ratio"] = div_z_safe(
+            df["true_vs_sale_ratio"] = div_df_z_safe(
                 df, "true_market_value", "sale_price_time_adj"
             )
-            df["pred_vs_true_ratio"] = div_z_safe(df, "prediction", "true_market_value")
+            df["pred_vs_true_ratio"] = div_df_z_safe(
+                df, "prediction", "true_market_value"
+            )
         for location in locations:
             if location in df:
                 df[f"prediction_cod_{location}"] = None
@@ -2165,7 +2170,7 @@ def _optimize_ensemble(
     settings: dict,
     verbose: bool = False,
     hedonic: bool = False,
-    ensemble_list: list[str] = None
+    ensemble_list: list[str] = None,
 ):
     """
     Optimize the ensemble allocation over all iterations.
@@ -2739,7 +2744,7 @@ def _calc_variable_recommendations(
             dfr_corr = apply_dd_to_df_rows(
                 dfr_corr, "Variable", settings, ds.one_hot_descendants
             )
-            report.set_var(f"table_corr_{state}", dataframe_to_markdown(dfr_corr))
+            report.set_var(f"table_corr_{state}", df_to_markdown(dfr_corr))
 
             # TODO: refactor this down to DRY it out a bit
 
@@ -2768,7 +2773,7 @@ def _calc_variable_recommendations(
                 dfr_vif = apply_dd_to_df_rows(
                     dfr_vif, "Variable", settings, ds.one_hot_descendants
                 )
-                report.set_var(f"table_vif_{state}", dataframe_to_markdown(dfr_vif))
+                report.set_var(f"table_vif_{state}", df_to_markdown(dfr_vif))
             else:
                 report.set_var(f"table_vif_{state}", "N/A")
 
@@ -2790,9 +2795,7 @@ def _calc_variable_recommendations(
                 dfr_p_value = apply_dd_to_df_rows(
                     dfr_p_value, "Variable", settings, ds.one_hot_descendants
                 )
-                report.set_var(
-                    f"table_p_value_{state}", dataframe_to_markdown(dfr_p_value)
-                )
+                report.set_var(f"table_p_value_{state}", df_to_markdown(dfr_p_value))
 
             if t_values_results is not None:
                 # T-value:
@@ -2814,9 +2817,7 @@ def _calc_variable_recommendations(
                 dfr_t_value = apply_dd_to_df_rows(
                     dfr_t_value, "Variable", settings, ds.one_hot_descendants
                 )
-                report.set_var(
-                    f"table_t_value_{state}", dataframe_to_markdown(dfr_t_value)
-                )
+                report.set_var(f"table_t_value_{state}", df_to_markdown(dfr_t_value))
 
             if enr_results is not None:
                 # ENR:
@@ -2837,7 +2838,7 @@ def _calc_variable_recommendations(
                 dfr_enr = apply_dd_to_df_rows(
                     dfr_enr, "Variable", settings, ds.one_hot_descendants
                 )
-                report.set_var(f"table_enr_{state}", dataframe_to_markdown(dfr_enr))
+                report.set_var(f"table_enr_{state}", df_to_markdown(dfr_enr))
 
             if r2_values_results is not None:
                 # R-squared
@@ -2858,7 +2859,7 @@ def _calc_variable_recommendations(
                 )
                 if state == "final":
                     dfr_r2 = dfr_r2[dfr_r2["Pass/Fail"].eq("✅")]
-                report.set_var(f"table_adj_r2_{state}", dataframe_to_markdown(dfr_r2))
+                report.set_var(f"table_adj_r2_{state}", df_to_markdown(dfr_r2))
 
             if enr_results is not None and t_values_results is not None:
                 # Coef sign:
@@ -2902,7 +2903,7 @@ def _calc_variable_recommendations(
                 if state == "final":
                     dfr_coef_sign = dfr_coef_sign[dfr_coef_sign["Pass/Fail"].eq("✅")]
                 report.set_var(
-                    f"table_coef_sign_{state}", dataframe_to_markdown(dfr_coef_sign)
+                    f"table_coef_sign_{state}", df_to_markdown(dfr_coef_sign)
                 )
 
         dfr["Rank"] = range(1, len(dfr) + 1)
