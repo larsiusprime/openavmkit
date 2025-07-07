@@ -2225,11 +2225,11 @@ def _boolify_series(series: pd.Series, na_handling: str = None):
 
     # Handle NA values before boolean conversion
     if na_handling == "true":
-        series = series.fillna(1)
+        series = series.fillna(True)
     elif na_handling == "false":
-        series = series.fillna(0)
+        series = series.fillna(False)
     else:
-        series = series.fillna(0)
+        series = series.fillna(False)
 
     # Convert to non-nullable boolean
     series = series.astype(bool)

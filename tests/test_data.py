@@ -5,10 +5,10 @@ from IPython.display import display
 from openavmkit.data import _perform_canonical_split, _handle_duplicated_rows, _perform_ref_tables, _merge_dict_of_dfs, \
 	_do_enrich_year_built, enrich_time, SalesUniversePair, get_hydrated_sales_from_sup, _enrich_permits
 from openavmkit.modeling import DataSplit, _greedy_nn_limited
-from openavmkit.utilities.assertions import dfs_are_equal
+from openavmkit.utilities.assertions import dfs_are_equal, series_are_equal
 from openavmkit.utilities.data import div_z_safe, merge_and_stomp_dfs, combine_dfs
 from openavmkit.utilities.settings import get_valuation_date
-
+from openavmkit.data import _boolify_series
 
 def test_div_z_safe():
 	print("")
@@ -1117,3 +1117,32 @@ def test_permits_reno_sales():
 	)
 
 	assert dfs_are_equal(df_expected, df_results, allow_weak=True)
+
+
+def test_boolify_series():
+
+	bool_series = pd.Series([True, False, True, False, None])
+	boolean_series = pd.Series([True, False, True, False, None]).astype("boolean")
+	int_series = pd.Series([1, 0, 1, 0, None])
+	mixed_series = pd.Series([1, 0, True, False, None])
+	str_series_1 = pd.Series(["true", "false", "t", "f", ""])
+	str_series_2 = pd.Series(["1", "0", "TRUE", "FALSE", "none"])
+	str_series_3 = pd.Series(["T", "F", "y", "n", "unknown"])
+
+	bool_series = _boolify_series(bool_series)
+	boolean_series = _boolify_series(boolean_series)
+	int_series = _boolify_series(int_series)
+	mixed_series = _boolify_series(mixed_series)
+	str_series_1 = _boolify_series(str_series_1)
+	str_series_2 = _boolify_series(str_series_2)
+	str_series_3 = _boolify_series(str_series_3)
+
+	expected_series = pd.Series([True, False, True, False, False])
+
+	series_are_equal(expected_series, bool_series)
+	series_are_equal(expected_series, boolean_series)
+	series_are_equal(expected_series, int_series)
+	series_are_equal(expected_series, mixed_series)
+	series_are_equal(expected_series, str_series_1)
+	series_are_equal(expected_series, str_series_2)
+	series_are_equal(expected_series, str_series_3)
