@@ -12,6 +12,19 @@ from openavmkit.time_adjustment import _generate_days
 
 
 class SyntheticData:
+    """A simple wrapper for holding generated data along with separate land/building inflation/depreciation curves
+
+    Attributes
+    ----------
+    df_universe : pd.DataFrame
+        The parcel universe
+    df_sales : pd.DataFrame
+        The sales observations
+    time_land_mult : pd.DataFrame
+        Land inflation curve over time
+    time_bldg_mult : pd.DataFrame
+        Building depreciation curve over time
+    """
 
     def __init__(
         self,
@@ -20,6 +33,19 @@ class SyntheticData:
         time_land_mult: pd.DataFrame,
         time_bldg_mult: pd.DataFrame,
     ):
+        """Initialize a SyntheticData object
+
+        Parameters
+        ----------
+        df_universe : pd.DataFrame
+            The parcel universe
+        df_sales : pd.DataFrame
+            The sales observations
+        time_land_mult : pd.DataFrame
+            Land inflation curve over time
+        time_bldg_mult : pd.DataFrame
+            Building depreciation curve over time
+        """
         self.df_universe = df_universe
         self.df_sales = df_sales
         self.time_land_mult = time_land_mult
@@ -32,8 +58,50 @@ def generate_depreciation_curve(
     weight_logistic: float = 0.8,
     steepness: float = 0.3,
     inflection_point: int = 20,
-):
-    """Generates a depreciation curve based on the specified parameters."""
+) -> np.ndarray:
+    """Generates a depreciation curve that blends straight-line and logistic ("S-curve")
+    methods.
+
+    The function returns an array whose *i*-th element represents the remaining
+    proportion of value after *i* years.
+
+    A weighted average of straight-line
+    depreciation and a logistic decay is used, giving you control over both the
+    shape (via the logistic parameters) and the relative influence of each curve.
+
+    Parameters
+    ----------
+    lifetime : int
+        Total service life of the asset in years—the point at which the value
+        is considered fully depreciated (zero).
+    weight_linear : float
+        Weight assigned to the straight-line component.
+        Use 1.0 (and set ``weight_logistic`` to 0.0) for pure straight-line
+        depreciation.
+    weight_logistic : float
+        Weight assigned to the logistic (sigmoid) component.
+        Use 1.0 (and set ``weight_linear`` to 0.0) for a pure logistic curve.
+    steepness : float
+        The logistic steepness parameter *k*.
+        Higher values make the "drop-off" around the inflection point sharper;
+        lower values make the curve more gradual.
+    inflection_point : int
+        Year (zero-based index) at which the logistic curve crosses 50 % of its
+        starting value.
+
+        - For years **earlier** than ``inflection_point`` the logistic term is > 0.5,
+          so the asset is still retaining more than half its value.
+        - For years **later** than ``inflection_point`` the logistic term is < 0.5,
+          so the asset value declines faster.
+
+        Adjust this to shift the midpoint of rapid depreciation earlier or later
+        in the asset’s life.
+
+    Returns
+    -------
+    np.ndarray
+        an array whose *i*-th element represents the remaining proportion of value after *i* years.
+    """
 
     depreciation = np.zeros(lifetime)
 
@@ -62,8 +130,51 @@ def generate_inflation_curve(
     seasonality_amplitude: float = 0.10,
     monthly_noise: float = 0.0,
     daily_noise: float = 0.0,
-):
-    """Generates a time series of inflation/deflation values over a given duration."""
+) -> np.ndarray:
+    """
+    Generate a pseudo-random daily price index covering one or more calendar years.
+
+    The curve is built in three passes:
+
+    1. **Annual step** – Each year’s inflation factor is drawn from a normal
+       distribution *N*( ``annual_inflation_rate`` , ``annual_inflation_rate_stdev`` ).
+    2. **Monthly step** – Values are linearly interpolated to month-ends, then
+       modulated by a sinusoidal seasonal component that peaks in late spring
+       and bottoms in mid-winter.  The seasonal deviation is bounded by
+       ``seasonality_amplitude`` (e.g. 0.10 => +/- 10 % around the baseline),
+       after which optional multiplicative monthly noise is applied.
+    3. **Daily step** – Each month is linearly interpolated to daily resolution,
+       and optional multiplicative daily noise is applied.
+
+    Parameters
+    ----------
+    start_year : int
+        First calendar year (January 1) included in the series.
+    end_year : int
+        Last calendar year (December 31) included in the series.
+    annual_inflation_rate : float, default 0.02
+        Mean annual inflation rate (e.g. 0.02 => 2 %).
+    annual_inflation_rate_stdev : float, default 0.01
+        Standard deviation of the *annual* inflation rate used in step 1.
+    seasonality_amplitude : float, default 0.10
+        Maximum proportional deviation caused by intra-year seasonality
+        (positive in spring/summer, negative in winter).  Expressed as a
+        fraction of the underlying price level.
+    monthly_noise : float, default 0.0
+        Standard deviation of multiplicative noise applied once per month:
+        the month-end multiplier is drawn from *N*(1.0, ``monthly_noise``).
+    daily_noise : float, default 0.0
+        Standard deviation of multiplicative noise applied once per day:
+        each daily multiplier is drawn from *N*(1.0, ``daily_noise``).
+
+    Returns
+    -------
+    np.ndarray
+        One-dimensional array of length equal to the number of days from
+        ``start_year``-01-01 through ``end_year``-12-31 inclusive.  The first
+        element is 1.0; subsequent elements represent the cumulative price
+        index (≥ 0) after applying inflation, seasonality, and noise.
+    """
 
     start_date = dt(year=start_year, month=1, day=1)
     end_date = dt(year=end_year, month=12, day=31)
@@ -168,7 +279,26 @@ def generate_inflation_curve(
     return time_mult_days
 
 
-def create_square(x: float, y: float, width: float, height: float):
+def create_rect(x: float, y: float, width: float, height: float):
+    """Create a Shapely Polygon in the shape of a rectangle
+
+    Parameters
+    ----------
+    x : float
+        The x-center of the rectangle
+    y : float
+        The y-center of the rectangle
+    width : float
+        The width of the rectangle
+    height : float
+        The height of the rectangle
+
+    Returns
+    --------
+    Polygon
+        A Shapely polygon representing a rectangle
+    """
+
     half_width = width / 2
     half_height = height / 2
     # Determine the bounds for the square
@@ -188,6 +318,86 @@ def generate_basic(
     land_inflation: dict = None,
     bldg_inflation: dict = None,
 ):
+    """Build a synthetic real-estate data set of parcels and (optionally) sales.
+
+    A square grid of ``size × size`` parcels is laid out around a notional
+    CBD (central business district).  For each parcel the routine simulates—
+
+    * **Land characteristics** (area, latitude/longitude, distance to CBD,
+      land value).
+    * **Improvement characteristics** (finished square footage,
+      quality/condition scores, age, building type, depreciated value).
+    * **Time-varying inflation factors** for land and improvements, generated
+      with :func:`generate_inflation_curve`.
+    * **Optional sale events.**  Each parcel is given a Bernoulli trial with
+      success probability ``percent_sales``.  A successful trial produces one
+      sale whose price is the sum of time-adjusted land and building values
+      plus uniform noise ``+/- noise_sales``.
+
+    A parcel may instead be vacant, controlled by ``percent_vacant``.  Vacant
+    parcels have land value only.  All random draws are reproducible via the
+    ``seed`` argument.
+
+    Parameters
+    ----------
+    size : int
+        Length of one side of the square study area.  The function creates
+        ``size^2`` parcels.
+    percent_sales : float, default ``0.1``
+        Probability (0–1) that a parcel receives *one* valid sale event.
+    percent_vacant : float, default ``0.1``
+        Probability (0–1) that a parcel is vacant (no improvement).
+        Vacant parcels may still transact if selected by ``percent_sales``.
+    noise_sales : float, default ``0.05``
+        Half-width of the uniform noise band applied to the simulated sale
+        price: the multiplier is drawn from
+        :math:`\\mathrm{U}(1-\\text{noise\\_sales},\\;1+\\text{noise\\_sales})`.
+    seed : int, default ``1337``
+        Seed passed to :pyfunc:`numpy.random.seed` for reproducibility.
+    land_inflation : dict or None, optional
+        Keyword arguments forwarded to :func:`generate_inflation_curve` to
+        create a daily land-value index.  If *None*, a preset dict with
+        10 % mean annual inflation (plus mild seasonality) is used.
+    bldg_inflation : dict or None, optional
+        Same as ``land_inflation`` but for building improvements.  Defaults to
+        a preset dict with 2 % mean annual inflation and no seasonality.
+
+    Returns
+    -------
+    SyntheticData
+        An object with four public attributes
+
+        ``parcels`` : geopandas.GeoDataFrame
+            One record per parcel with geometry and static attributes
+            (distance to CBD, quality/condition scores, etc.).
+
+        ``sales`` : pandas.DataFrame
+            One record per simulated sale (may be empty).  Includes sale price,
+            unit-price metrics, sale date, and vacancy flag.
+
+        ``land_index`` : pandas.DataFrame
+            Daily land inflation multipliers (`period`, `value`).
+
+        ``bldg_index`` : pandas.DataFrame
+            Daily building inflation multipliers (`period`, `value`).
+
+    Notes
+    -----
+    * The CBD is assumed to sit at latitude **29.760762° N**, longitude
+      **95.361937° W** (roughly downtown Houston, TX).  Parcel coordinates are
+      spread +/-0.25° lat / +/-0.20° lon from that center.
+    * Land value decreases approximately exponentially with Euclidean
+      (grid-based) distance from the CBD.
+    * Building value per square foot depends on building type
+      (“A”, “B”, “C”), quality, condition, and age depreciation
+      (linear caps at 100 years).
+
+    Examples
+    --------
+    >>> sd = generate_basic(size=25, percent_sales=0.2, seed=42)
+    >>> sd.parcels.head()
+    >>> sd.sales[['key', 'sale_price', 'sale_date']].sample(5)
+    """
     data = {
         "key": [],
         "geometry": [],
@@ -401,7 +611,7 @@ def generate_basic(
 
                 vacant_sale = is_vacant
 
-            geometry = create_square(longitude, latitude, height, width)
+            geometry = create_rect(longitude, latitude, height, width)
 
             data["key"].append(str(key))
             data["neighborhood"].append("")
