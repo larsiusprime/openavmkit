@@ -7,14 +7,13 @@ import numpy as np
 import pandas as pd
 import shapely
 from shapely import wkt, wkb
-from geopy import Point
-from geopy.distance import distance
 from shapely.geometry.base import BaseGeometry
-from pyproj import CRS
+from pyproj import CRS, Geod
 from shapely import Polygon, MultiPolygon, LineString
 
 from openavmkit.utilities.timing import TimingData
 
+geod = Geod(ellps="WGS84")
 
 def get_crs(gdf, projection_type):
   """
@@ -238,17 +237,22 @@ def offset_coordinate_m(lat, lon, lat_m, lon_m) -> (float, float):
 
 
 def offset_coordinate_km(lat, lon, lat_km, lon_km):
-  start = Point(lat, lon)
+  # shift north/south
+  lon_ns, lat_ns, _ = geod.fwd(
+    lon, lat,
+    0 if lat_km >= 0 else 180,
+    abs(lat_km) * 1000
+  )
 
-  # Latitude shift (North/South)
-  new_lat = distance(kilometers=abs(lat_km)).destination(
-    start, bearing=0 if lat_km >= 0 else 180
-  ).latitude
+  # shift east/west
+  lon_ew, lat_ew, _ = geod.fwd(
+    lon, lat,
+    90 if lon_km >= 0 else 270,
+    abs(lon_km) * 1000
+  )
 
-  # Longitude shift (East/West)
-  new_lon = distance(kilometers=abs(lon_km)).destination(
-    start, bearing=90 if lon_km >= 0 else 270
-  ).longitude
+  new_lat = lat_ns
+  new_lon = lon_ew
 
   return new_lat, new_lon
 
@@ -262,7 +266,8 @@ def distance_km(lat1, lon1, lat2, lon2):
   :param lon2: Longitude of the second point.
   :return: Distance in kilometers.
   """
-  return distance((lat1, lon1), (lat2, lon2)).km
+  _, _, dist_m = geod.inv(lon1, lat1, lon2, lat2)
+  return dist_m / 1000.0
 
 
 def create_geo_circle(lat, lon, crs, radius_km, num_points=100):
