@@ -1,6 +1,6 @@
 import pandas as pd
 
-from openavmkit.modeling import simple_ols, greedy_nn_limited, simple_mra
+from openavmkit.modeling import simple_ols, _greedy_nn_limited, simple_mra
 from openavmkit.utilities.assertions import lists_are_equal
 
 
@@ -46,7 +46,7 @@ def test_nearest_neighbor():
 
 	# in your test
 	lats, lons, expected = make_snake()
-	order = greedy_nn_limited(lats, lons, start_idx=0, k=16)
+	order = _greedy_nn_limited(lats, lons, start_idx=0, k=16)
 	assert list(order) == expected
 
 

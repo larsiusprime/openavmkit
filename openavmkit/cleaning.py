@@ -1,5 +1,4 @@
 import pandas as pd
-import lightgbm as lgb
 
 from openavmkit.data import SalesUniversePair
 from openavmkit.utilities.data import ensure_categories, align_categories
@@ -16,7 +15,7 @@ from openavmkit.utilities.cache import write_cache
 from openavmkit.calculations import resolve_filter
 
 
-def clean_valid_sales(sup: SalesUniversePair, settings: dict)->SalesUniversePair:
+def clean_valid_sales(sup: SalesUniversePair, settings: dict) -> SalesUniversePair:
     """Clean and validate sales data in the SalesUniversePair.
 
     This function processes the sales data to ensure that only valid sales are retained.
@@ -181,7 +180,9 @@ def clean_valid_sales(sup: SalesUniversePair, settings: dict)->SalesUniversePair
     return sup
 
 
-def fill_unknown_values_sup(sup: SalesUniversePair, settings: dict)->SalesUniversePair:
+def fill_unknown_values_sup(
+    sup: SalesUniversePair, settings: dict
+) -> SalesUniversePair:
     """Fill unknown values with default values as specified in settings.
 
     Parameters

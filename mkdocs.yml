@@ -12,11 +12,24 @@ plugins:
   - mkdocstrings:
       handlers:
         python:
-          paths: [openavmkit]
+          # where all of the toggles live now
           options:
+            show_root_toc_entry: false
+            # Signing & headings
+            show_root_heading: false
+            show_signature: true
+            separate_signature: true
             docstring_style: numpy
             merge_init_into_class: true
-            separate_signature: true
+
+            # Grouping into “Classes” / “Functions” sections
+            group_by_category: true
+            extra:
+              show_subcategory_heading: false
+
+          # where to find your code
+          paths: [openavmkit]
+
   - gen-files:
       scripts:
         - docs/reference/gen.py

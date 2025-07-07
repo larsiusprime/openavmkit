@@ -5,6 +5,7 @@ from openavmkit.filters import resolve_filter
 from openavmkit.utilities.data import div_field_z_safe
 from openavmkit.utilities.geometry import get_crs
 
+
 def perform_tweaks(df_in: pd.DataFrame, tweak: list, rename_map: dict = None):
     """
     Perform tweaks on a DataFrame based on a list of tweak instructions.
@@ -114,13 +115,13 @@ def perform_calculations(df_in: pd.DataFrame, calc: dict, rename_map: dict = Non
 # PRIVATE
 #######################################
 
+
 def _crawl_calc_dict_for_fields(calc_dict: dict):
     fields = []
     for field in calc_dict:
         calc_list = calc_dict[field]
         fields += _crawl_calc_list_for_fields(calc_list)
     return list(set(fields))
-
 
 
 def _crawl_calc_list_for_fields(calc_list: list):
