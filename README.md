@@ -10,9 +10,9 @@ OpenAVMKit is a python library for real estate mass appraisal. It includes modul
   - [Running Tests](docs/getting_started.md#running-tests)
 ## 2. The basics
   - [Creating a new locality](docs/the_basics.md#creating-a-new-locality)
-  - [Terminology](docs/the_basics.md#terminology)
   - [Code modules](docs/the_basics.md#code-modules)
   - [Jupyter Notebooks](docs/the_basics.md#using-the-jupyter-notebooks)
+  - [Terminology](docs/the_basics.md#terminology)
 ## 3. Configuration
   - [Cloud storage](docs/config.md#configuring-cloud-storage)
   - [PDF report generation](docs/config.md#configuring-pdf-report-generation)
