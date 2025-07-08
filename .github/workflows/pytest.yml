@@ -11,20 +11,21 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ['3.10', '3.11']
+        python-version: ['3.10', '3.11']   # add more versions if you like
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
         with:
           python-version: ${{ matrix.python-version }}
+          cache: 'pip'                     # speeds up successive runs
 
-      - name: Install dependencies
+      - name: Install project + deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install -e .
+          pip install -e .                # editable install of this repo
 
       - name: Check dependency conflicts
         run: |
@@ -34,9 +35,9 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ --junitxml=report.xml
 
-      - name: Upload Test Report
+      - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pytest-report
+          name: pytest-report-${{ matrix.python-version }}   # unique per job
           path: report.xml

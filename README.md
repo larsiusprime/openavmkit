@@ -1,6 +1,6 @@
 # OpenAVMKit
 
-Open AVM kit is a python library for real estate mass appraisal. It includes modules for data cleaning, data enrichment, modeling, and statistical evaluation of predictive models. It also includes Jupyter notebooks that model typical workflows.
+OpenAVMKit is a python library for real estate mass appraisal. It includes modules for data cleaning, data enrichment, modeling, and statistical evaluation of predictive models. It also includes Jupyter notebooks that model typical workflows.
 
 # Table of Contents
 
@@ -35,11 +35,10 @@ This command will clone the repository to your local machine, store it under a f
 
 If you don't have Python on your machine, you'll need to install it.
 
-The specific version of Python that openavmkit has been tested on is:
-> 3.10.6
+OpenAVMKit is tested on **Python 3.10 and 3.11**.
 
-
-You can download that version of Python [here](https://www.python.org/downloads/release/python-3106/).
+* If you are **developing** or running the repo from source, either version works.
+* If you just want to `pip install openavmkit` from PyPI, you’ll need **≥ 3.11** (that’s the minimum version required by the pre-built wheels).
 
 If you already have Python installed, but you're not sure which version of Python you have installed, you can check by running this command:
 
@@ -110,15 +109,10 @@ And you will return to your normal command prompt.
 
 ## 4. Install dependencies
 
-`openavmkit` uses a bunch of third-party libraries that you need to install. Python lets us list these in a text files so you can install them with one command. Here's how you can do that, using python's built-in `pip` tool, which manages your python libraries:
+Install all third-party dependencies in one shot:
 
 ```bash
 pip install -r requirements.txt
-```
-
-Then there's another dependency you have to install manually, ignore the warnings it gives you, it's fine:
-```bash
-pip install tabulate --upgrade
 ```
 
 # Quick Start
@@ -133,15 +127,10 @@ First, make sure you've followed the above steps.
 
 Then, in your command line environment, make sure you are in the top level of the `openavmkit/` directory. That is the same directory which contains the `setup.py` file.
 
-To install `openavmkit` in editable mode (so you can make changes to the library and see them reflected in your code), run this command:
-  ```bash
-  pip install -e .
-  ```
-
-To install `openavmkit` in normal mode, run this command:
-  ```bash
-  pip install .
-  ```
+Install the library from the checked-out source (editable mode is recommended for development):
+```bash
+pip install -e .
+```
 
 The "." in that command is a special symbol that refers to the current directory. So when you run `pip install .`, you are telling `pip` to install the library contained in the current directory. That's why it's important to make sure you're in the right directory when you run this command!
 
