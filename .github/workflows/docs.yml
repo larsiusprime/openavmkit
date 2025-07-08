@@ -27,6 +27,8 @@ jobs:
           python-version: "3.12"
 
       - run: pip install -r requirements-docs.txt
+      - run: pip install --editable .
+
       - run: mkdocs build --strict
 
       - uses: actions/upload-pages-artifact@v3
