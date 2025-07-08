@@ -2263,10 +2263,6 @@ def _optimize_ensemble_iteration(
 
     timing.start("train")
     for m_key in ensemble_list:
-        m_results = all_results.model_results[m_key]
-        df_test_ensemble[m_key] = m_results.pred_test.y_pred
-
-    for m_key in ensemble_list:
         m_results: SingleModelResults = all_results.model_results[m_key]
         field_prediction = m_results.field_prediction
         df_pred_test = m_results.df_test[["key_sale", field_prediction]].copy()
