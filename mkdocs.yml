@@ -4,6 +4,7 @@ repo_url: https://github.com/larsiusprime/openavmkit
 
 theme:
   name: material
+  logo: assets/images/logo.svg
   features:
     - navigation.tabs
 
