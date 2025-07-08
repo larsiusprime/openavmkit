@@ -1,12 +1,10 @@
 import warnings
 
 import polars as pl
-import statsmodels
 import statsmodels.api as sm
 import pandas as pd
 import numpy as np
 import seaborn as sns
-import matplotlib
 from sklearn.model_selection import cross_val_score
 from sklearn.preprocessing import StandardScaler
 

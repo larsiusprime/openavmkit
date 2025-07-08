@@ -139,7 +139,7 @@ The "." in that command is a special symbol that refers to the current directory
 
 Jupyter is a popular tool for running Python code interactively. We've included a few Jupyter notebooks in the `notebooks/` directory that demonstrate how to use `openavmkit` to perform common tasks.
 
-To start using the Jupyter notebooks, you'll first need to have Jupyter installed. That should have already been taken care of in the requirements section above, but if you need to install it, you can do so with this command:
+To use the Jupyter notebooks, you'll first need to install Jupyter:
 
 ```bash
 pip install jupyter
