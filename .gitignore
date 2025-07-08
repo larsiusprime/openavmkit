@@ -2,7 +2,6 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 dist/
-docs/
 build/
 tests/catboost_info/
 tests/out/
