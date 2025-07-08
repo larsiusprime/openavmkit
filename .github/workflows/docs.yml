@@ -1,0 +1,42 @@
+# .github/workflows/docs.yml
+name: Build & deploy docs with GitHub-maintained actions
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+# minimal, principle-of-least-privilege permissions
+permissions:
+  contents: read            # checkout needs this
+  pages:    write           # allow the deploy job to publish
+  id-token: write           # required by actions/deploy-pages
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements-docs.txt
+      - run: mkdocs build --strict
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site            # MkDocs’ default output folder
+
+  deploy:
+    needs: build
+    environment:
+      name: github-pages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/deploy-pages@v4
