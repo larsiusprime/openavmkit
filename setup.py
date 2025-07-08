@@ -19,6 +19,6 @@ setup(
     install_requires=[
         "numpy>=1.26",
         "pandas>=2.2",
-        "tabulate>=0.9.4"
+        "tabulate>=0.9.0"
     ],
 )
