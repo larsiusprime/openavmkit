@@ -15,6 +15,10 @@ setup(
         'License :: OSI Approved :: MIT License',
         'Operating System :: OS Independent',
     ],
-    python_requires='>=3.6',
-    install_requires=[],
+    python_requires='>=3.10',
+    install_requires=[
+        "numpy>=1.26",
+        "pandas>=2.2",
+        "tabulate>=0.9.4"
+    ],
 )

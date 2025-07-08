@@ -81,11 +81,11 @@ from openavmkit.utilities.settings import (
     get_variable_interactions,
     get_valuation_date,
     get_model_group,
-    apply_dd_to_df_rows,
+    _apply_dd_to_df_rows,
     get_model_group_ids,
     get_fields_boolean,
-    get_sales,
-    simulate_removed_buildings,
+    _get_sales,
+    _simulate_removed_buildings,
 )
 from openavmkit.utilities.stats import (
     calc_vif_recursive_drop,
@@ -245,7 +245,7 @@ def try_variables(
 
     df_vacant = df_hydrated[idx_vacant].copy()
 
-    df_vacant = simulate_removed_buildings(df_vacant, settings, idx_vacant)
+    df_vacant = _simulate_removed_buildings(df_vacant, settings, idx_vacant)
 
     # update df_hydrated with *all* the characteristics of df_vacant where their keys match:
     df_hydrated.update(df_vacant)
@@ -636,10 +636,10 @@ def get_variable_recommendations(
     df_best = pd.DataFrame(best_variables, columns=["Variable"])
     df_best["Rank"] = range(1, len(df_best) + 1)
     df_best["Description"] = df_best["Variable"]
-    df_best = apply_dd_to_df_rows(
+    df_best = _apply_dd_to_df_rows(
         df_best, "Variable", settings, ds.one_hot_descendants, "name"
     )
-    df_best = apply_dd_to_df_rows(
+    df_best = _apply_dd_to_df_rows(
         df_best, "Description", settings, ds.one_hot_descendants, "description"
     )
     df_best = df_best[["Rank", "Variable", "Description"]]
@@ -2741,7 +2741,7 @@ def _calc_variable_recommendations(
                 ["Rank", "Variable", "Strength", "Clarity", "Score", "Pass/Fail"]
             ]
             dfr_corr.set_index("Rank", inplace=True)
-            dfr_corr = apply_dd_to_df_rows(
+            dfr_corr = _apply_dd_to_df_rows(
                 dfr_corr, "Variable", settings, ds.one_hot_descendants
             )
             report.set_var(f"table_corr_{state}", df_to_markdown(dfr_corr))
@@ -2770,7 +2770,7 @@ def _calc_variable_recommendations(
                 dfr_vif["Rank"] = range(1, len(dfr_vif) + 1)
                 dfr_vif = dfr_vif[["Rank", "Variable", "VIF", "Pass/Fail"]]
                 dfr_vif.set_index("Rank", inplace=True)
-                dfr_vif = apply_dd_to_df_rows(
+                dfr_vif = _apply_dd_to_df_rows(
                     dfr_vif, "Variable", settings, ds.one_hot_descendants
                 )
                 report.set_var(f"table_vif_{state}", df_to_markdown(dfr_vif))
@@ -2792,7 +2792,7 @@ def _calc_variable_recommendations(
                 dfr_p_value["Rank"] = range(1, len(dfr_p_value) + 1)
                 dfr_p_value = dfr_p_value[["Rank", "Variable", "P-value", "Pass/Fail"]]
                 dfr_p_value.set_index("Rank", inplace=True)
-                dfr_p_value = apply_dd_to_df_rows(
+                dfr_p_value = _apply_dd_to_df_rows(
                     dfr_p_value, "Variable", settings, ds.one_hot_descendants
                 )
                 report.set_var(f"table_p_value_{state}", df_to_markdown(dfr_p_value))
@@ -2814,7 +2814,7 @@ def _calc_variable_recommendations(
                 dfr_t_value["Rank"] = range(1, len(dfr_t_value) + 1)
                 dfr_t_value = dfr_t_value[["Rank", "Variable", "T-value", "Pass/Fail"]]
                 dfr_t_value.set_index("Rank", inplace=True)
-                dfr_t_value = apply_dd_to_df_rows(
+                dfr_t_value = _apply_dd_to_df_rows(
                     dfr_t_value, "Variable", settings, ds.one_hot_descendants
                 )
                 report.set_var(f"table_t_value_{state}", df_to_markdown(dfr_t_value))
@@ -2835,7 +2835,7 @@ def _calc_variable_recommendations(
                 dfr_enr["Rank"] = range(1, len(dfr_enr) + 1)
                 dfr_enr = dfr_enr[["Rank", "Variable", "Coefficient", "Pass/Fail"]]
                 dfr_enr.set_index("Rank", inplace=True)
-                dfr_enr = apply_dd_to_df_rows(
+                dfr_enr = _apply_dd_to_df_rows(
                     dfr_enr, "Variable", settings, ds.one_hot_descendants
                 )
                 report.set_var(f"table_enr_{state}", df_to_markdown(dfr_enr))
@@ -2854,7 +2854,7 @@ def _calc_variable_recommendations(
                 dfr_r2["Rank"] = range(1, len(dfr_r2) + 1)
                 dfr_r2 = dfr_r2[["Rank", "Variable", "R-squared", "Pass/Fail"]]
                 dfr_r2.set_index("Rank", inplace=True)
-                dfr_r2 = apply_dd_to_df_rows(
+                dfr_r2 = _apply_dd_to_df_rows(
                     dfr_r2, "Variable", settings, ds.one_hot_descendants
                 )
                 if state == "final":
@@ -2897,7 +2897,7 @@ def _calc_variable_recommendations(
                         .apply(lambda x: f"{x:.0f}")
                         .astype("string")
                     )
-                dfr_coef_sign = apply_dd_to_df_rows(
+                dfr_coef_sign = _apply_dd_to_df_rows(
                     dfr_coef_sign, "Variable", settings, ds.one_hot_descendants
                 )
                 if state == "final":
@@ -2907,7 +2907,7 @@ def _calc_variable_recommendations(
                 )
 
         dfr["Rank"] = range(1, len(dfr) + 1)
-        dfr = apply_dd_to_df_rows(dfr, "Variable", settings, ds.one_hot_descendants)
+        dfr = _apply_dd_to_df_rows(dfr, "Variable", settings, ds.one_hot_descendants)
 
         the_cols = [
             "Rank",
@@ -3383,7 +3383,7 @@ def _run_models(
     if not os.path.exists(outpath):
         os.makedirs(outpath)
 
-    df_sales_count = get_sales(df_sales, settings, vacant_only, df_univ)
+    df_sales_count = _get_sales(df_sales, settings, vacant_only, df_univ)
 
     if len(df_sales_count) == 0:
         print(

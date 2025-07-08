@@ -58,8 +58,8 @@ from openavmkit.utilities.settings import (
     get_valuation_date,
     get_center,
     get_short_distance_unit,
-    get_sales,
-    simulate_removed_buildings,
+    _get_sales,
+    _simulate_removed_buildings,
 )
 
 from openavmkit.utilities.census import (
@@ -2412,7 +2412,7 @@ def _enrich_vacant(df_in: pd.DataFrame, settings: dict) -> pd.DataFrame:
         idx_vacant = df["is_vacant"].eq(True)
 
         # Remove building characteristics from anything that is vacant:
-        df = simulate_removed_buildings(df, settings, idx_vacant)
+        df = _simulate_removed_buildings(df, settings, idx_vacant)
 
     else:
         df = df_in
@@ -3959,7 +3959,7 @@ def _write_canonical_splits(sup: SalesUniversePair, settings: dict):
     """Write canonical split keys for sales data to disk."""
     df_sales_in = sup.sales
     df_univ = sup.universe
-    df_sales = get_sales(df_sales_in, settings, df_univ=df_univ)
+    df_sales = _get_sales(df_sales_in, settings, df_univ=df_univ)
     model_groups = get_model_group_ids(settings, df_sales)
     instructions = settings.get("modeling", {}).get("instructions", {})
     test_train_frac = instructions.get("test_train_frac", 0.8)

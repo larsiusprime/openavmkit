@@ -33,8 +33,8 @@ from statsmodels.regression.linear_model import RegressionResults
 from xgboost import XGBRegressor
 
 from openavmkit.data import (
-    get_sales,
-    simulate_removed_buildings,
+    _get_sales,
+    _simulate_removed_buildings,
     _enrich_time_field,
     _enrich_sale_age_days,
     SalesUniversePair,
@@ -548,7 +548,7 @@ class DataSplit:
         self.df_universe = _enrich_time_field(self.df_universe, "sale")
         self.df_universe = _enrich_sale_age_days(self.df_universe, settings)
 
-        self.df_sales = get_sales(df_sales, settings, vacant_only).reset_index(
+        self.df_sales = _get_sales(df_sales, settings, vacant_only).reset_index(
             drop=True
         )
 
@@ -568,8 +568,8 @@ class DataSplit:
 
         if hedonic:
             # transform df_universe & df_sales such that all improved characteristics are removed
-            self.df_universe = simulate_removed_buildings(self.df_universe, settings)
-            self.df_sales = simulate_removed_buildings(self.df_sales, settings)
+            self.df_universe = _simulate_removed_buildings(self.df_universe, settings)
+            self.df_sales = _simulate_removed_buildings(self.df_sales, settings)
 
         # we also need to limit the sales set, but we can't do that AFTER we've split
 
@@ -975,7 +975,7 @@ class DataSplit:
             # we have to do this here, AFTER the split, to ensure that the selected rows are from the same subsets
 
             # get the sales that are actually vacant, from the original set of sales
-            _df_sales = get_sales(self._df_sales, self.settings, True).reset_index(
+            _df_sales = _get_sales(self._df_sales, self.settings, True).reset_index(
                 drop=True
             )
 

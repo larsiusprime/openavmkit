@@ -4,7 +4,7 @@ from datetime import timedelta, datetime
 import numpy as np
 import pandas as pd
 
-from openavmkit.data import get_sales
+from openavmkit.data import _get_sales
 from openavmkit.utilities.data import div_df_z_safe
 
 
@@ -423,7 +423,7 @@ def _determine_value_driver(df_in: pd.DataFrame, settings: dict):
     """
     df = df_in.copy()
 
-    df = get_sales(df, settings)
+    df = _get_sales(df, settings)
 
     df_impr = df[df["bldg_area_finished_sqft"].gt(0)]
     df_land = df[df["land_area_sqft"].gt(0)]

@@ -4,13 +4,13 @@ import pandas as pd
 from diptest import diptest
 
 from openavmkit.data import (
-    get_sales,
-    get_sale_field,
-    get_important_fields,
-    get_locations,
-    get_vacant_sales,
-    SalesUniversePair,
-    get_hydrated_sales_from_sup,
+  _get_sales,
+  get_sale_field,
+  get_important_fields,
+  get_locations,
+  get_vacant_sales,
+  SalesUniversePair,
+  get_hydrated_sales_from_sup,
 )
 from openavmkit.horizontal_equity_study import HorizontalEquityStudy
 from openavmkit.reports import start_report, finish_report
@@ -94,7 +94,7 @@ class SalesScrutinyStudy:
         self.model_group = model_group
 
         df = df[df["model_group"].eq(model_group)]
-        df = get_sales(df, settings)
+        df = _get_sales(df, settings)
 
         df_vacant = get_vacant_sales(df, settings)
         df_improved = get_vacant_sales(df, settings, invert=True)
@@ -416,7 +416,7 @@ def _calc_sales_scrutiny(df_in: pd.DataFrame, sales_field: str):
 def _mark_sales_scrutiny_clusters(
     df: pd.DataFrame, settings: dict, verbose: bool = False
 ):
-    df_sales = get_sales(df, settings)
+    df_sales = _get_sales(df, settings)
 
     ss = settings.get("analysis", {}).get("sales_scrutiny", {})
     location = ss.get("location", "neighborhood")

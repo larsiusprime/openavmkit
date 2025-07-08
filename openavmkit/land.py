@@ -8,7 +8,7 @@ from geopandas import GeoDataFrame
 
 from IPython.display import display
 from openavmkit.data import (
-    get_sales,
+    _get_sales,
     get_hydrated_sales_from_sup,
     SalesUniversePair,
     get_train_test_keys,
@@ -117,7 +117,7 @@ def _finalize_land_values(
     # Find variables correlated with land value
 
     df_subset = df_orig[df_orig["model_group"].eq(model_group)]
-    df_sales = get_sales(df_subset, settings)
+    df_sales = _get_sales(df_subset, settings)
     df_sales = df_sales.merge(
         df[
             [

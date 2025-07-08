@@ -3,13 +3,13 @@ import pandas as pd
 from openavmkit.data import SalesUniversePair
 from openavmkit.utilities.data import ensure_categories, align_categories
 from openavmkit.utilities.settings import (
-    get_valuation_date,
-    get_fields_categorical,
-    get_fields_boolean,
-    get_grouped_fields_from_data_dictionary,
-    get_data_dictionary,
-    get_model_group_ids,
-    is_series_all_bools,
+  get_valuation_date,
+  get_fields_categorical,
+  get_fields_boolean,
+  get_grouped_fields_from_data_dictionary,
+  get_data_dictionary,
+  get_model_group_ids,
+  _is_series_all_bools,
 )
 from openavmkit.utilities.cache import write_cache
 from openavmkit.calculations import resolve_filter
@@ -168,7 +168,7 @@ def clean_valid_sales(sup: SalesUniversePair, settings: dict) -> SalesUniversePa
         if b in df_sales:
             dtype = df_sales[b].dtype
             if dtype != bool:
-                if is_series_all_bools(df_sales[b]):
+                if _is_series_all_bools(df_sales[b]):
                     df_sales[b] = df_sales[b].astype(bool)
                 else:
                     raise ValueError(
