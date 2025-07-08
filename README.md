@@ -21,3 +21,4 @@ OpenAVMKit is a python library for real estate mass appraisal. It includes modul
 ## 4. Legal
   - [Contributing](CONTRIBUTING.md)
   - [License](LICENSE)
+  - [License Philosophy](LICENSE-PHILOSOPHY.md)
