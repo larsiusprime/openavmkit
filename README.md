@@ -5,19 +5,19 @@ OpenAVMKit is a python library for real estate mass appraisal. It includes modul
 # Table of Contents
 
 ## 1. Getting started
-  - [Installation](docs/install.md)
-  - [Quick Start](docs/quick_start.md)
-  - [Running Tests](docs/tests.md)
+  - [Installation](docs/getting_started.md#installation)
+  - [Quick Start](docs/getting_started.md#quick-start)
+  - [Running Tests](docs/getting_started.md#running-tests)
 ## 2. The basics
-  - [Creating a new locality](docs/new_locality.md)
-  - [Terminology](docs/terminology.md)
-  - [Code modules](docs/code_modules.md)
-  - [Jupyter Notebooks](docs/jupyter.md)
+  - [Creating a new locality](docs/the_basics.md#creating-a-new-locality)
+  - [Terminology](docs/the_basics.md#terminology)
+  - [Code modules](docs/the_basics.md#code-modules)
+  - [Jupyter Notebooks](docs/the_basics.md#using-the-jupyter-notebooks)
 ## 3. Configuration
-  - [Cloud storage](docs/config_cloud.md)
-  - [PDF report generation](docs/config_report.md)
-  - [US Census API](docs/config_census.md)
-  - [Open Street Map API](docs/config_osm.md)
+  - [Cloud storage](docs/config.md#configuring-cloud-storage)
+  - [PDF report generation](docs/config.md#configuring-pdf-report-generation)
+  - [US Census API](docs/config.md#configuring-census-api-access)
+  - [Open Street Map API](docs/config.md#configuring-openstreetmap-enrichment)
 ## 4. Legal
   - [Contributing](CONTRIBUTING.md)
   - [License](LICENSE)
