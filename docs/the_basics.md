@@ -164,7 +164,7 @@ cod = calc_cod(ratios)
 
 ## Using the Jupyter Notebooks
 
-Make sure that you've already installed the `jupyter` library. If not, see [Quick Start](quick_start.md) for instructions.
+Make sure that you've already installed the `jupyter` library. If not, see [Quick Start](getting_started.md#quick-start) for instructions.
 
 The `notebooks/` directory contains several pre-written Jupyter notebooks that demonstrate how to use the library interactively. These notebooks are especially useful for new users, as they contain step-by-step explanations and examples.
 
