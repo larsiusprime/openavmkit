@@ -7,9 +7,9 @@ Dual licensing is controversial for some in the open source community, so I feel
 These are my goals:
 
 - Be useful to governments, policymakers, researchers, students, and analysts
-- Keep commercial companies from using it while not contributing to its development
+- Require commercial companies to contribute back to its development if they want to use it
 
-Commercial companies are free to use the software for any purpose, they just need to follow the terms of the license. That generally means contributing back any code changes they make. Those who don't want to do that can pay the maintainers some money or work out some other agreement. This is the dual licensing model I have chosen.
+Commercial companies are free to use the software for any purpose, they just need to follow the terms of the license. That generally means contributing back any code changes they make. Those who don't want to contribute back code changes can pay the maintainers some money or work out some other agreement. This is the dual licensing model I have chosen.
 
 This isn't the only choice I could have made. Let's look at the alternatives:
 
