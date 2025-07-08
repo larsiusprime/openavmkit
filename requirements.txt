@@ -55,7 +55,6 @@ geopandas~=1.0.1
 matplotlib~=3.10.1
 pyproj~=3.7.1
 shapely~=2.1.0
-setuptools~=63.2.0
 azure-core~=1.32.0
 requests~=2.32.3
 joblib~=1.4.2
