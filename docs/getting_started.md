@@ -33,7 +33,12 @@ python --version
 
 If you have Python installed, you should see the version number printed to the console.
 
-If you have the wrong version of Python installed, you can download the correct version from the link above, and then install it. Be very careful to make sure that the new version of Python is available in your `PATH`. (If you don't know what the means, here is a [handy tutorial on the subject](https://realpython.com/add-python-to-path/)).
+If you don't have Python installed, you can get the supported versions here:
+
+- [Download Python 3.10.11](https://www.python.org/downloads/release/python-31011/)  
+- [Download Python 3.11.9](https://www.python.org/downloads/release/python-3119/)  
+
+If you have the wrong version of Python installed, you can download the correct version from one of the links above, and then install it. Be very careful to make sure that the new version of Python is available in your `PATH`. (If you don't know what the means, here is a [handy tutorial on the subject](https://realpython.com/add-python-to-path/)).
 
 
 ### 3. Set up a Virtual Environment
