@@ -1,6 +1,6 @@
 # Getting Started
 
-## Installation
+## Setting up Python Environment
 
 Follow these steps to install and set up `OpenAVMKit` on your local environment.
 
@@ -105,7 +105,7 @@ Install all third-party dependencies in one shot:
 pip install -r requirements.txt
 ```
 
-## Quick Start
+## Setting up OpenAVMKit
 
 Once you've set up your python environment and dependencies, here's the basic guide to get you started:
 
@@ -156,3 +156,104 @@ pytest
 ```
 
 This will run all the unit tests and provide feedback on any errors or failed tests.
+
+## Running your first locality
+
+Okay, you've got the library installed, and you have notebooks running. Let's get you started running a test locality.
+
+First, you need to download an example dataset to work with. The Center for Land Economics has provided one based off of public domain data posted freely on local government websites. Let's download it.
+
+
+`openavmkit` includes a module for working with remote storage services. For full details, see [Configuration](config.md#configuring-cloud-storage). The details provided here are a trimmed down version just to get you going as quickly as possible.
+
+Here's a quick high level explanation:
+
+- The example data is stored on a service called [HuggingFace](https://huggingface.co/)
+- You'll create an account there and generate a "token"
+- You'll create a special file that lets you download files from there
+- Once it's set up, you can forget about it from then on
+
+Let's go through it one by one.
+
+### 1. Create your `.env` file
+
+Create a plain text file in which to store your connection credentials. This file should be named `.env` and should be placed inside the `notebooks/` directory. 
+
+We've already set up a `.gitignore` rule to exclude this from being accidentally uploaded anywhere. Make sure you don't commit this file to your repository or share it with anyone else, as it will contain your sensitive login information!
+
+Your file should look exactly like this, just a plain text file:
+```
+HF_ACCESS=read_only
+HF_REPO_ID=landeconomics/localities-public
+```
+
+Save the file and make sure it's in your `notebooks/` directory. 
+
+Next, we'll need to add a line storing your HuggingFace token. But in order to do that, first we have to go get a HuggingFace token. Let's do that next.
+
+### 2. Get your HuggingFace token
+
+Create a free account on [HuggingFace](https://huggingface.co/), or login to your existing account if you have one already.
+
+Here's how to generate a token. Click on your profile:
+
+![](docs/assets/images/hf_0.png)
+
+Next, click on "settings":
+
+![](docs/assets/images/hf_1.png)
+
+Then, click on "access tokens", and on the right hand side, "Create new token":
+
+![](docs/assets/images/hf_2.png)
+
+Select "Read" for a read-only token (You select "read-only" because you won't have write permissions for repositories you don't own, but you can still use these to download from public repositories).
+
+Add a name for your token and click "Create token":
+
+![](docs/assets/images/hf_3.png)
+
+This creates a popup with your token (I've redacted mine, but it will show text here). 
+
+![](docs/assets/images/hf_4.png)
+
+Copy this token and add it to your `notebooks/.env` file:
+
+```
+HF_ACCESS=read_only
+HF_REPO_ID=landeconomics/localities-public
+HF_TOKEN=<YOUR_TOKEN_GOES_HERE>
+```
+
+`<YOUR_TOKEN_GOES_HERE>` should be replaced with the contents of your actual token. Save the file.
+
+Assuming you did it correctly, you should have all the configuration you need for OpenAVMKit to be able to download data from HuggingFace, including the example dataset.
+
+### 3. Downloading the data
+
+Now that we have your credentials set up, we are ready to download the locality. We will do this in the jupyter environment.
+
+Go ahead and launch the jupyter environment, and navigate to the first notebook.
+
+In the second cell, edit it so that it reads `locality = "us-nc-guilford"`, and the line below that to read `bootstrap_cloud = "huggingface"`:
+
+![](docs/assets/images/jupyter_04.png)
+
+This tells the notebook two things: what locality we're using, and what service should we try to find it in, if we don't already have information for it. The second line is ignored once you've already downloaded data for this locality to your local disk.
+
+With that all properly configured, run all the cells from the top, up to and including the one that reads `init_notebook(locality)`:
+
+![](docs/assets/images/jupyter_05.png)
+
+Note that the system has created a folder for your locality on your local disk. The exact location will depend on where you installed openavmkit.
+
+Next, run the cloud synchronization cell:
+
+![](docs/assets/images/jupyter_06.png)
+
+If you set everything up correctly, you should see a log of all the files being downloaded, and your `notebooks/pipeline/data/nc-us-guilford/` folder should now have two folders inside it:
+
+- `in/` --> contains all your input files, including `settings.json`
+- `out/` --> will contain all the output the notebook files generate
+
+Now you have everything you need to run the basic notebooks on the test data!

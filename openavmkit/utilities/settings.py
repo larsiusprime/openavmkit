@@ -9,7 +9,7 @@ from datetime import datetime
 
 
 def load_settings(
-    settings_file: str = "in/settings.json", settings_object: dict = None, error=True
+    settings_file: str = "in/settings.json", settings_object: dict = None, error:bool=True, warning:bool=True
 ):
     """
     Load settings file from disk
@@ -22,12 +22,16 @@ def load_settings(
         Already loaded settings object
     error : bool, optional
         Whether to raise errors or simply emit warnings if something is wrong
+    warning : bool, optional
+        Whether to emit warnings if something is wrong
 
     Returns
     -------
     dict
         The settings object
     """
+    settings : dict | None = None
+
     if settings_object is None:
         try:
             with open(settings_file, "r") as f:
@@ -40,10 +44,14 @@ def load_settings(
             if error:
                 raise FileNotFoundError(msg)
             else:
-                warnings.warn(msg)
+                if warning:
+                    warnings.warn(msg)
 
     else:
         settings = settings_object
+
+    if settings is None:
+        return None
 
     template = _load_settings_template()
     # merge settings with template; settings will overwrite template values
