@@ -123,7 +123,7 @@ def init_notebook(locality: str):
 
 
 def load_settings(
-    settings_file: str = "in/settings.json", settings_object: dict = None
+    settings_file: str = "in/settings.json", settings_object: dict = None, error : bool = True, warning : bool = True
 ) -> dict:
     """
     Load and return the settings dictionary for the locality.
@@ -138,6 +138,10 @@ def load_settings(
         Path to the settings file. Defaults to "in/settings.json".
     settings_object : dict, optional
         Optional settings object to use instead of loading from a file.
+    error : bool, optional
+        If True, raises an error if the settings file cannot be loaded. Defaults to True.
+    warning : bool, optional
+        If True, raises a warning if the settings file cannot be loaded. Defaults to True.
 
     Returns
     -------
@@ -145,7 +149,7 @@ def load_settings(
         The fully resolved settings dictionary.
     """
 
-    return openavmkit.utilities.settings.load_settings(settings_file, settings_object)
+    return openavmkit.utilities.settings.load_settings(settings_file, settings_object, error, warning)
 
 
 def examine_sup_in_ridiculous_detail(sup: SalesUniversePair, s: dict):
@@ -1152,7 +1156,7 @@ def cloud_sync(
     locality: str,
     verbose: bool = False,
     env_path: str = "",
-    settings: dict = None,
+    bootstrap: str = "",
     dry_run: bool = False,
     ignore_paths: list = None,
 ) -> None:
@@ -1169,13 +1173,26 @@ def cloud_sync(
         If True, prints detailed log messages. Defaults to False.
     env_path : str, optional
         Path to the environment configuration file. Defaults to an empty string.
-    settings : dict, optional
-        Settings dictionary for sync configuration. Defaults to None.
+    bootstrap: str, optional
+        Which cloud service to bootstrap from on an initial run. Defaults to an empty string.
     dry_run : bool, optional
         If True, simulates the sync without performing any changes. Defaults to False.
     ignore_paths : list, optional
         List of file paths or patterns to ignore during sync. Defaults to None.
     """
+
+    settings = load_settings(error = False, warning = False)
+    if settings is None:
+        if bootstrap == "":
+            raise ValueError("No settings file found, please specify a cloud service to bootstrap from, or create a settings file from scratch.")
+        else:
+            print(f"No settings.json file found, bootstrapping from cloud service ({bootstrap})...")
+            settings = {
+                "cloud": {
+                    "type": bootstrap
+                }
+            }
+
     cloud_service = cloud.init(verbose, env_path=env_path, settings=settings)
     if cloud_service is None:
         print("Cloud service not initialized, skipping...")
