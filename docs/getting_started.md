@@ -190,7 +190,7 @@ HF_REPO_ID=landeconomics/localities-public
 
 Save the file and make sure it's located at `notebooks/.env` in your openavmkit repository. 
 
-Now, the file is not done yet. It will need one more line, which will be unique for every user. That line will contain your HuggingFace token, a kind of password. But before you can do that, you have to go and get a HuggingFace token. Let's do that next.
+Now, the file is not done yet. It will need one more line, which will be unique to you. That line will contain your HuggingFace token, a kind of password. But before you can do that, you have to go and get a HuggingFace token. Let's do that next.
 
 ### 2. Get your HuggingFace token
 
