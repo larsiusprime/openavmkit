@@ -182,7 +182,7 @@ Create a plain text file in which to store your connection credentials. This fil
 1. The file goes in `notebooks/.env`, *not* inside any individual folder inside `notebooks/`! 
 2. Make sure you **don't commit your `.env` file** to your repository or share it with anyone else, as it will contain your sensitive login information! (We've already set up a `.gitignore` rule to exclude this file from being accidentally uploaded anywhere, but make sure you don't override that).
 
-As for the content of your `.env` file, it should look exactly like this, just a plain text file:
+As for the content of your `.env` file, it should look exactly like this; copy and paste the following into a plain text editor:
 ```
 HF_ACCESS=read_only
 HF_REPO_ID=landeconomics/localities-public
