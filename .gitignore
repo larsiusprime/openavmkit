@@ -27,3 +27,5 @@ tests/*.csv
 notebooks/examples/debug_local_sqft_univ.csv
 
 tests/cache/
+
+cache/

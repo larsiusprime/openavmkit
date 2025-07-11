@@ -23,7 +23,6 @@ That's just an example of the format; here are the actual variables that it reco
 
 | Variable Name                     | Description                                                                                                                                                             |
 |-----------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `CLOUD_TYPE`                      | The type of cloud storage to use.<br>Legal values are: `azure`, `huggingface`, `sftp`. You can also set this value per-project in your `settings.json` as `cloud.type`. |
 | `AZURE_ACCESS`                    | The type of access your azure account has.<br>Legal values are: `read_only`, `read_write`.                                                                              |
 | `AZURE_STORAGE_CONTAINER_NAME`    | The name of the Azure storage container                                                                                                                                 |
 | `AZURE_STORAGE_CONNECTION_STRING` | The connection string for the Azure storage account                                                                                                                     |
@@ -39,7 +38,6 @@ That's just an example of the format; here are the actual variables that it reco
 You only need to provide values for the service that you're actually using. For instance, here's what the file might look like if you are using Hugging Face:
 
 ```
-CLOUD_TYPE=huggingface
 HF_ACCESS=read_write
 HF_REPO_ID=landeconomics/localities-public
 HF_TOKEN=<YOUR_HUGGING_FACE_API_TOKEN>
@@ -48,7 +46,6 @@ HF_TOKEN=<YOUR_HUGGING_FACE_API_TOKEN>
 If you're just getting started, you can just use read-only access to an existing public repository. Here's an example of how to access the public datasets provided by the [The Center for Land Economics](https://landeconomics.org):
 
 ```
-CLOUD_TYPE=huggingface
 HF_ACCESS=read_only
 HF_REPO_ID=landeconomics/localities
 ```
@@ -57,7 +54,7 @@ This will let you download the inputs for any of the Center for Land Economics' 
 
 If you want to sync with your own cloud storage, you will need to set up your own hosting account and then provide the appropriate credentials in the `.env` file.
 
-If you have multiple projects stored on different cloud services, you can set the `CLOUD_TYPE` and `CLOUD_ACCESS` variables in your settings.json. This will allow you to switch between cloud services on a per-project basis. **Do not ever store credentials in your settings.json, however, as these are uploaded to the cloud!**
+If you have multiple projects stored on different cloud services, you can set the `CLOUD_TYPE` and `CLOUD_ACCESS` variables in your settings.json. This will allow you to switch between cloud services on a per-project basis. **Do not ever store credentials in your settings.json, however, as this file is uploaded to the cloud!**
 
 ## Configuring PDF report generation
 

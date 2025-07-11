@@ -1,6 +1,6 @@
 # Getting Started
 
-## Installation
+## Setting up Python Environment
 
 Follow these steps to install and set up `OpenAVMKit` on your local environment.
 
@@ -105,7 +105,7 @@ Install all third-party dependencies in one shot:
 pip install -r requirements.txt
 ```
 
-## Quick Start
+## Setting up OpenAVMKit
 
 Once you've set up your python environment and dependencies, here's the basic guide to get you started:
 
@@ -156,3 +156,112 @@ pytest
 ```
 
 This will run all the unit tests and provide feedback on any errors or failed tests.
+
+## Running your first locality
+
+Okay, you've got the library installed, and you have notebooks running. Let's get you started running a test locality.
+
+First, you need to download an example dataset to work with. The Center for Land Economics has provided one based off of public domain data posted freely on local government websites. Let's download it.
+
+Here's a quick high level explanation:
+
+- The example data is stored on a service called [HuggingFace](https://huggingface.co/)
+- You'll create an account there and generate a "token"
+- You'll store your token in a special file that OpenAVMKit will use to login to HuggingFace
+- OpenAVMKit can then download the public example dataset for you
+- Once you set it up once, you can mostly forget about it
+
+Let's go through it one by one.
+
+### 1. Create your `.env` file
+
+Create a plain text file in which to store your connection credentials. This file should be named `.env` and should be placed inside the `notebooks/` directory within the openavmkit directory.
+
+**Notes**: 
+
+1. The file goes in `notebooks/.env`, *not* inside any individual folder inside `notebooks/`! 
+2. Make sure you **don't commit your `.env` file** to your repository or share it with anyone else, as it will contain your sensitive login information! (We've already set up a `.gitignore` rule to exclude this file from being accidentally uploaded anywhere, but make sure you don't override that).
+
+As for the content of your `.env` file, it should look exactly like this; copy and paste the following into a plain text editor:
+```
+HF_ACCESS=read_only
+HF_REPO_ID=landeconomics/localities-public
+```
+
+Save the file and make sure it's located at `notebooks/.env` in your openavmkit repository. 
+
+Now, the file is not done yet. It will need one more line, which will be unique to you. That line will contain your HuggingFace token, a kind of password. But before you can do that, you have to go and get a HuggingFace token. Let's do that next.
+
+### 2. Get your HuggingFace token
+
+Create a free account on [HuggingFace](https://huggingface.co/), or login to your existing account if you have one already. (HuggingFace is basically Github for Machine Learning models, and is a great place to store big datasets).
+
+Now that you have an account, let's generate a token. Click on your profile:
+
+![](assets/images/hf_0.png)
+
+Next, click on "settings":
+
+![](assets/images/hf_1.png)
+
+Then, click on "access tokens", and on the right hand side, "Create new token":
+
+![](assets/images/hf_2.png)
+
+Select "Read" for a read-only token. 
+
+**Note:** 
+*When you use this token, you will be able to download from other people's repositories (such as the one we set up for you). A "read-write" token will allow you to also upload a dataset you created yourself to your own HuggingFace account. For the sake of this example where you're just going to download something public, either kind of token should work.*
+
+Add a name for your token and click "Create token":
+
+![](assets/images/hf_3.png)
+
+This creates a popup with your token (I've redacted mine, but you should see text here). 
+
+![](assets/images/hf_4.png)
+
+Copy this token and add it to your `notebooks/.env` file:
+
+```
+HF_ACCESS=read_only
+HF_REPO_ID=landeconomics/localities-public
+HF_TOKEN=<YOUR_TOKEN_GOES_HERE>
+```
+
+`<YOUR_TOKEN_GOES_HERE>` should be replaced with the contents of your actual token, which should look like a big string of random characters. Save the file.
+
+Assuming you did it correctly, you should have all the configuration you need for OpenAVMKit to be able to download data from HuggingFace, including the example dataset.
+
+### 3. Downloading the data
+
+Now that we have your credentials set up, we are ready to download the locality dataset. We will do this in the jupyter environment.
+
+Go ahead and launch the jupyter environment, and navigate to the first notebook.
+
+In the second cell, edit it so that it reads `locality = "us-nc-guilford"`, and the line below that to read `bootstrap_cloud = "huggingface"`:
+
+![](assets/images/jupyter_04.png)
+
+This tells the notebook two things: what locality we're using, and what cloud service (huggingface) we should connect to in order to look for its data if we've never downloaded it before. The second line is only used if you have never downloaded that particularl locality before, if you already have one on disk, it will use the local settings file instead (more on that later).
+
+With that all properly configured, run all the cells from the top, up to and including the one that reads `init_notebook(locality)`:
+
+![](assets/images/jupyter_05.png)
+
+Note that the system has created a folder for your locality on your local disk. The exact location will depend on where you installed openavmkit.
+
+Next, run the cloud synchronization cell:
+
+![](assets/images/jupyter_06.png)
+
+If you set everything up correctly, you should see a log of all the files being downloaded, and your `notebooks/pipeline/data/nc-us-guilford/` folder should now have two folders inside it:
+
+- `in/` --> contains all your input files, including `settings.json`
+- `out/` --> will contain all the output the notebook files generate
+
+Now you have everything you need to run the basic notebooks on the test data! From here you should be able to just run the notebooks themselves. 
+
+You can create your own locality datasets by creating a unique folder for them with a settings file and input data. This is regardless of whether you are syncing that data to a cloud service or not.
+
+You can switch between localities by editing the name of the locality variable at the top of each notebook. If you do this, be sure to reset and clear the notebook after changing the locality.
