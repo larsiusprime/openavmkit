@@ -177,25 +177,28 @@ Let's go through it one by one.
 
 ### 1. Create your `.env` file
 
-Create a plain text file in which to store your connection credentials. This file should be named `.env` and should be placed inside the `notebooks/` directory. 
+Create a plain text file in which to store your connection credentials. This file should be named `.env` and should be placed inside the `notebooks/` directory within the openavmkit directory.
 
-We've already set up a `.gitignore` rule to exclude this from being accidentally uploaded anywhere. Make sure you don't commit this file to your repository or share it with anyone else, as it will contain your sensitive login information!
+**Notes**: 
 
-Your file should look exactly like this, just a plain text file:
+1. The file goes in `notebooks/.env`, *not* inside any individual folder inside `notebooks/`! 
+2. Make sure you **don't commit your `.env` file** to your repository or share it with anyone else, as it will contain your sensitive login information! (We've already set up a `.gitignore` rule to exclude this file from being accidentally uploaded anywhere, but make sure you don't override that).
+
+As for the content of your `.env` file, it should look exactly like this, just a plain text file:
 ```
 HF_ACCESS=read_only
 HF_REPO_ID=landeconomics/localities-public
 ```
 
-Save the file and make sure it's in your `notebooks/` directory. 
+Save the file and make sure it's located at `notebooks/.env` in your openavmkit repository. 
 
-Next, we'll need to add a line storing your HuggingFace token. But in order to do that, first we have to go get a HuggingFace token. Let's do that next.
+Now, the file is not done yet. It will need one more line, which will be unique for every user. That line will contain your HuggingFace token, a kind of password. But before you can do that, you have to go and get a HuggingFace token. Let's do that next.
 
 ### 2. Get your HuggingFace token
 
-Create a free account on [HuggingFace](https://huggingface.co/), or login to your existing account if you have one already.
+Create a free account on [HuggingFace](https://huggingface.co/), or login to your existing account if you have one already. (HuggingFace is basically Github for Machine Learning models, and is a great place to store big datasets).
 
-Here's how to generate a token. Click on your profile:
+Now that you have an account, let's generate a token. Click on your profile:
 
 ![](docs/assets/images/hf_0.png)
 
