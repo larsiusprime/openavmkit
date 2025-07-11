@@ -163,9 +163,6 @@ Okay, you've got the library installed, and you have notebooks running. Let's ge
 
 First, you need to download an example dataset to work with. The Center for Land Economics has provided one based off of public domain data posted freely on local government websites. Let's download it.
 
-
-`openavmkit` includes a module for working with remote storage services. For full details, see [Configuration](config.md#configuring-cloud-storage). The details provided here are a trimmed down version just to get you going as quickly as possible.
-
 Here's a quick high level explanation:
 
 - The example data is stored on a service called [HuggingFace](https://huggingface.co/)
