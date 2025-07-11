@@ -2,10 +2,10 @@
 
 ## Creating a new locality
 
-OpenAVMKit operates on the concept of a "locality", which is a geographic area that contains a set of properties. This can represent a city, a county, a neighborhood, or any other region or jurisdiction you want to analyze. To set one up, create a folder like this within openavmkit's `notebooks/` directory:
+OpenAVMKit operates on the concept of a "locality", which is a geographic area that contains a set of properties. This can represent a city, a county, a neighborhood, or any other region or jurisdiction you want to analyze. To set one up, create a folder like this within openavmkit's `notebooks/pipeline/` directory:
 
 ```
-notebooks/data/<locality_slug>/
+notebooks/pipeline/data/<locality_slug>/
 ```
 
 Where `<locality_slug>` is a unique identifying name for your locality in a particularly opinionated format. That format is:
@@ -37,16 +37,24 @@ no-50-orkdal      # Orkdal kommune (county), Norway
 Once you have your locality set up, you will want to set it up like this (using `us-nc-guilford` as an example):
 
 ```
-data/
-├──us-nc-guilford/
-    ├── in/
-    ├── out/
-    ├── settings.json
+notebooks/
+├──pipeline/
+   ├──data/
+      ├──us-nc-guilford/
+         ├── in/
+             ├── settings.json
+         ├── out/
 ```
 
 The `in/` directory is where you will put your raw data files.   
 The `out/` directory is where the output files will be saved.  
-The `settings.json` file will drive all your modeling and analysis decisions for the library. For now you can just put a blank `{}` in there so that it will load, but you will want to consult the documentation / tutorials for how to construct this file.
+The `settings.json` file will drive all your modeling and analysis decisions for the library. For now you can just start with a "blank" file that contains a single pair of open and close curly braces like this:
+
+```json
+{}
+```
+
+That will be sufficient to load things, but you will want to consult the documentation / tutorials for how to construct this file.
 
 
 ## Code modules
