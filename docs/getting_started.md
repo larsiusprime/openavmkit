@@ -211,13 +211,13 @@ Then, click on "access tokens", and on the right hand side, "Create new token":
 Select "Read" for a read-only token. 
 
 **Note:** 
-*When you use this token, you will be able to download from other people's repositories (such as the one we set up for you). A "Read-write" token will allow you to also upload a dataset you created yourself to your own HuggingFace account. For the sake of this example where you're just going to download something public, either kind of token should work.*
+*When you use this token, you will be able to download from other people's repositories (such as the one we set up for you). A "read-write" token will allow you to also upload a dataset you created yourself to your own HuggingFace account. For the sake of this example where you're just going to download something public, either kind of token should work.*
 
 Add a name for your token and click "Create token":
 
 ![](assets/images/hf_3.png)
 
-This creates a popup with your token (I've redacted mine, but it will show text here). 
+This creates a popup with your token (I've redacted mine, but you should see text here). 
 
 ![](assets/images/hf_4.png)
 
@@ -229,13 +229,13 @@ HF_REPO_ID=landeconomics/localities-public
 HF_TOKEN=<YOUR_TOKEN_GOES_HERE>
 ```
 
-`<YOUR_TOKEN_GOES_HERE>` should be replaced with the contents of your actual token. Save the file.
+`<YOUR_TOKEN_GOES_HERE>` should be replaced with the contents of your actual token, which should look like a big string of random characters. Save the file.
 
 Assuming you did it correctly, you should have all the configuration you need for OpenAVMKit to be able to download data from HuggingFace, including the example dataset.
 
 ### 3. Downloading the data
 
-Now that we have your credentials set up, we are ready to download the locality. We will do this in the jupyter environment.
+Now that we have your credentials set up, we are ready to download the locality dataset. We will do this in the jupyter environment.
 
 Go ahead and launch the jupyter environment, and navigate to the first notebook.
 
@@ -243,7 +243,7 @@ In the second cell, edit it so that it reads `locality = "us-nc-guilford"`, and 
 
 ![](assets/images/jupyter_04.png)
 
-This tells the notebook two things: what locality we're using, and what service should we try to find it in, if we don't already have information for it. The second line is ignored once you've already downloaded data for this locality to your local disk.
+This tells the notebook two things: what locality we're using, and what cloud service (huggingface) we should connect to in order to look for its data if we've never downloaded it before. The second line is only used if you have never downloaded that particularl locality before, if you already have one on disk, it will use the local settings file instead (more on that later).
 
 With that all properly configured, run all the cells from the top, up to and including the one that reads `init_notebook(locality)`:
 
@@ -260,4 +260,8 @@ If you set everything up correctly, you should see a log of all the files being 
 - `in/` --> contains all your input files, including `settings.json`
 - `out/` --> will contain all the output the notebook files generate
 
-Now you have everything you need to run the basic notebooks on the test data!
+Now you have everything you need to run the basic notebooks on the test data! From here you should be able to just run the notebooks themselves. 
+
+You can create your own locality datasets by creating a unique folder for them with a settings file and input data. This is regardless of whether you are syncing that data to a cloud service or not.
+
+You can switch between localities by editing the name of the locality variable at the top of each notebook. If you do this, be sure to reset and clear the notebook after changing the locality.
