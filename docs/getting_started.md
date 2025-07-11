@@ -208,7 +208,10 @@ Then, click on "access tokens", and on the right hand side, "Create new token":
 
 ![](assets/images/hf_2.png)
 
-Select "Read" for a read-only token (You select "read-only" because you won't have write permissions for repositories you don't own, but you can still use these to download from public repositories).
+Select "Read" for a read-only token. 
+
+**Note:** 
+*When you use this token, you will be able to download from other people's repositories (such as the one we set up for you). A "Read-write" token will allow you to also upload a dataset you created yourself to your own HuggingFace account. For the sake of this example where you're just going to download something public, either kind of token should work.*
 
 Add a name for your token and click "Create token":
 
