@@ -5,7 +5,7 @@
 OpenAVMKit operates on the concept of a "locality", which is a geographic area that contains a set of properties. This can represent a city, a county, a neighborhood, or any other region or jurisdiction you want to analyze. To set one up, create a folder like this within openavmkit's `notebooks/` directory:
 
 ```
-data/<locality_slug>/
+notebooks/data/<locality_slug>/
 ```
 
 Where `<locality_slug>` is a unique identifying name for your locality in a particularly opinionated format. That format is:
@@ -19,6 +19,9 @@ Where `<locality_slug>` is a unique identifying name for your locality in a part
 - **State/province code**: The 2-letter state or province code according to the [ISO 3166-2 standard](https://en.wikipedia.org/wiki/ISO_3166-2). For example, the state code for Texas is `tx`, and the state code for California is `ca`.
 
 - **Locality name**: A human-readable name for the locality itself. This follows no particular standard and is entirely up to you.
+
+- **No dashes except between the above**: The dashes are used for separation, so please don't include any WITHIN e.g. your locality name. So `us-ny-new-york-city` is not a good idea, but `us-ny-new_york_city` or `us-ny-nyc` or `us-ny-newyorkcity` is fine.
+
 
 The slug itself should be all lowercase and contain no spaces or special characters other than underscores.
 
