@@ -167,8 +167,9 @@ Here's a quick high level explanation:
 
 - The example data is stored on a service called [HuggingFace](https://huggingface.co/)
 - You'll create an account there and generate a "token"
-- You'll create a special file that lets you download files from there
-- Once it's set up, you can forget about it from then on
+- You'll store your token in a special file that OpenAVMKit will use to login to HuggingFace
+- OpenAVMKit can then download the public example dataset for you
+- Once you set it up once, you can mostly forget about it
 
 Let's go through it one by one.
 
