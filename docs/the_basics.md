@@ -34,13 +34,13 @@ no-03-oslo        # City of Oslo, Norway
 no-50-orkdal      # Orkdal kommune (county), Norway
 ```
 
-Once you have your locality set up, you will want to set it up like this (using `us-nc-guilford` as an example):
+Once you have your locality set up, you will want to set it up like this (using the non-existant `us-tx-imaginarycounty` as an example):
 
 ```
 notebooks/
 ├──pipeline/
    ├──data/
-      ├──us-nc-guilford/
+      ├──us-tx-imaginarycounty/
          ├── in/
              ├── settings.json
          ├── out/
@@ -54,7 +54,7 @@ The `settings.json` file will drive all your modeling and analysis decisions for
 {}
 ```
 
-That will be sufficient to load things, but you will want to consult the documentation / tutorials for how to construct this file.
+That will be sufficient to get the file to load, but you will want to consult the documentation / tutorials for how to construct this file.
 
 
 ## Code modules
