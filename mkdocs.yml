@@ -35,9 +35,10 @@ plugins:
 
   - gen-files:
       scripts:
-        - docs/reference/gen.py
+        - docs/api/gen.py
   - literate-nav
 
 nav:
-  - Home: index.md
-  - API: reference/
+  - About: index.md
+  - Docs: docs/
+  - API: api/

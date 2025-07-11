@@ -102,15 +102,15 @@ jupyter notebook
 
 This should open a new tab in your web browser with the Jupyter interface.
 
-![Jupyter interface](assets/images/jupyter_01.png)
+![Jupyter interface](../assets/images/jupyter_01.png)
 
 2. Navigate to the `notebooks/` directory in the Jupyter interface and open the notebook you want to run.
 
-![Open notebook](assets/images/jupyter_02.png)
+![Open notebook](../assets/images/jupyter_02.png)
 
 3. Double-click on your chosen notebook to open it.
 
-![Running notebook](assets/images/jupyter_03.png)
+![Running notebook](../assets/images/jupyter_03.png)
 
 For information on how to use Jupyter notebooks in general, refer to the [official Jupyter notebook documentation](https://jupyter-notebook.readthedocs.io/en/stable/).
 
