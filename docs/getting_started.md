@@ -198,25 +198,25 @@ Create a free account on [HuggingFace](https://huggingface.co/), or login to you
 
 Now that you have an account, let's generate a token. Click on your profile:
 
-![](docs/assets/images/hf_0.png)
+![](assets/images/hf_0.png)
 
 Next, click on "settings":
 
-![](docs/assets/images/hf_1.png)
+![](assets/images/hf_1.png)
 
 Then, click on "access tokens", and on the right hand side, "Create new token":
 
-![](docs/assets/images/hf_2.png)
+![](assets/images/hf_2.png)
 
 Select "Read" for a read-only token (You select "read-only" because you won't have write permissions for repositories you don't own, but you can still use these to download from public repositories).
 
 Add a name for your token and click "Create token":
 
-![](docs/assets/images/hf_3.png)
+![](assets/images/hf_3.png)
 
 This creates a popup with your token (I've redacted mine, but it will show text here). 
 
-![](docs/assets/images/hf_4.png)
+![](assets/images/hf_4.png)
 
 Copy this token and add it to your `notebooks/.env` file:
 
@@ -238,19 +238,19 @@ Go ahead and launch the jupyter environment, and navigate to the first notebook.
 
 In the second cell, edit it so that it reads `locality = "us-nc-guilford"`, and the line below that to read `bootstrap_cloud = "huggingface"`:
 
-![](docs/assets/images/jupyter_04.png)
+![](assets/images/jupyter_04.png)
 
 This tells the notebook two things: what locality we're using, and what service should we try to find it in, if we don't already have information for it. The second line is ignored once you've already downloaded data for this locality to your local disk.
 
 With that all properly configured, run all the cells from the top, up to and including the one that reads `init_notebook(locality)`:
 
-![](docs/assets/images/jupyter_05.png)
+![](assets/images/jupyter_05.png)
 
 Note that the system has created a folder for your locality on your local disk. The exact location will depend on where you installed openavmkit.
 
 Next, run the cloud synchronization cell:
 
-![](docs/assets/images/jupyter_06.png)
+![](assets/images/jupyter_06.png)
 
 If you set everything up correctly, you should see a log of all the files being downloaded, and your `notebooks/pipeline/data/nc-us-guilford/` folder should now have two folders inside it:
 
