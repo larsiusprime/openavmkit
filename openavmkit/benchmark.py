@@ -118,6 +118,12 @@ class BenchmarkResults:
         DataFrame with statistics for the test set (post-valuation-date only).
     df_stats_full: pd.DataFrame
         DataFrame with statistics for the full universe.
+    test_empty : bool
+        Whether df_stats_test contains no records
+    full_empty: bool
+        Whether df_stats_full contains no records
+    test_post_val_empty: bool
+        Whether df_stats_test_post_val contains no records
     """
 
     def __init__(
@@ -146,6 +152,18 @@ class BenchmarkResults:
         self.df_stats_test_post_val = df_stats_test_post_val
         self.df_stats_full = df_stats_full
 
+        test_empty = False == (df_stats_test["count_sales"].sum() > 0)
+        full_empty = False == (df_stats_full["count_sales"].sum() > 0)
+
+        if df_stats_test_post_val is not None:
+            test_post_val_empty = False == (df_stats_test_post_val["count_sales"].sum() > 0)
+        else:
+            test_post_val_empty = True
+
+        self.test_empty = test_empty
+        self.full_empty = full_empty
+        self.test_post_val_empty = test_post_val_empty
+
     def print(self) -> str:
         """
         Return a formatted string summarizing the benchmark results.
@@ -160,7 +178,7 @@ class BenchmarkResults:
         result += "\n\n"
         if (
             self.df_stats_test_post_val is not None
-            and len(self.df_stats_test_post_val) > 0
+            and not self.test_post_val_empty
         ):
             result += "Test set (post-valuation-date only):\n"
             result += _format_benchmark_df(self.df_stats_test_post_val)
@@ -3535,14 +3553,14 @@ def _run_models(
     print("")
 
     # Post-valuation metrics
-    title = f"{title} (POST-VALUATION DATE)"
-    post_val_results = _get_post_valuation_mmr(all_results)
-    perf_metrics = _model_performance_metrics(model_group, post_val_results, title)
-    if perf_metrics is not None:
-        print(perf_metrics)
-        print("")
+    if not all_results.benchmark.test_post_val_empty:
+        post_val_results = _get_post_valuation_mmr(all_results)
+        title = f"{title} (Post-valuation date)"
+        perf_metrics = _model_performance_metrics(model_group, post_val_results, title)
+        if perf_metrics is not None:
+            print(perf_metrics)
+            print("")
 
-        # _model_performance_plots(model_group, all_results, title)
         print("")
 
     if not vacant_only and run_hedonic:
