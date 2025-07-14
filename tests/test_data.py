@@ -4,7 +4,7 @@ from IPython.display import display
 
 from openavmkit.data import _perform_canonical_split, _handle_duplicated_rows, _perform_ref_tables, _merge_dict_of_dfs, \
 	_do_enrich_year_built, enrich_time, SalesUniversePair, get_hydrated_sales_from_sup, _enrich_permits
-from openavmkit.modeling import DataSplit, _greedy_nn_limited
+from openavmkit.modeling import DataSplit
 from openavmkit.utilities.assertions import dfs_are_equal, series_are_equal
 from openavmkit.utilities.data import div_df_z_safe, merge_and_stomp_dfs, combine_dfs
 from openavmkit.utilities.settings import get_valuation_date
