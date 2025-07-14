@@ -233,6 +233,7 @@ def do_per_model_group(
     key: str = "key",
     verbose: bool = False,
     instructions=None,
+    skip:list|None=None
 ) -> pd.DataFrame:
     """Apply a function to each subset of the DataFrame grouped by ``model_group``, updating
     rows based on matching indices.
@@ -253,6 +254,8 @@ def do_per_model_group(
         Whether to print verbose output. Default is False.
     instructions : Any, optional
         Special instructions for the function
+    skip : list, optional
+        List of model group names to skip
 
     Returns
     -------
@@ -269,6 +272,10 @@ def do_per_model_group(
 
     for model_group in model_groups:
         if pd.isna(model_group):
+            continue
+        if skip is not None and model_group in skip:
+            if verbose:
+                print(f"Skipping model group: {model_group}")
             continue
 
         if verbose:
@@ -367,15 +374,9 @@ def merge_and_stomp_dfs(
                 df_merge[col] = df1_col
         else:
             # prefer df1's column value everywhere df1 has a non-null value
-            # Filter out empty entries before combining
-            df1_col = df_merge[col + "_1"].dropna()
-            df2_col = df_merge[col + "_2"].dropna()
-            if df1_col.size > 0 and df2_col.size > 0:
-                df_merge[col] = df1_col.combine_first(df2_col)
-            elif df1_col.size > 0:
-                df_merge[col] = df1_col
-            else:
-                df_merge[col] = df2_col
+            s1 = df_merge[f"{col}_1"]
+            s2 = df_merge[f"{col}_2"]
+            df_merge[col] = _left_wins(s1, s2)
 
     df_merge.drop(columns=suffixed_columns, inplace=True)
     return df_merge
@@ -830,8 +831,22 @@ def load_model_results(
     return None
 
 
-# TODO: WIP
+def _left_wins(s1, s2):
+    """
+    Return a Series that keeps s1’s values wherever they’re non-NA,
+    otherwise falls back to s2 – even when both are Categoricals.
+    """
+    if isinstance(s1.dtype, pd.CategoricalDtype) and isinstance(s2.dtype, pd.CategoricalDtype):
+        # make both columns share the **union** of their categories
+        cats = s1.cat.categories.union(s2.cat.categories)
+        s1 = s1.cat.set_categories(cats)
+        s2 = s2.cat.set_categories(cats)
 
+    # element-wise choose left over right
+    return s1.where(s1.notna(), s2)
+
+
+# TODO: WIP
 
 def _encode_city_blocks(place: str):
 
