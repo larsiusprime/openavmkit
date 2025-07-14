@@ -100,9 +100,6 @@ def _compute_shap(
       • any sklearn‐style wrapper (XGBRegressor, LGBMRegressor, CatBoostRegressor, etc.)
     """
 
-    print(f"model name = {model.__class__.__name__}")
-    print(f"model type = {type(model)}")
-
     # 1) Raw XGBoost Booster or XGBRegressor --> force legacy TreeExplainer + numpy arrays
     if isinstance(model, (xgb.core.Booster, xgb.XGBRegressor)):
         # a) sample & convert to float64 array
@@ -112,7 +109,9 @@ def _compute_shap(
         # b) build the TreeExplainer on the Booster itself
         booster = model.get_booster() if isinstance(model, xgb.XGBRegressor) else model
         te = shap.TreeExplainer(
-            booster, data=bg_arr, feature_perturbation="interventional"
+            booster,
+            data=bg_arr,
+            feature_perturbation="interventional"
         )
 
         # c) explain your rows, again as a float64 array
@@ -129,7 +128,13 @@ def _compute_shap(
 
     # 2) Raw LightGBM Booster --> *no* data arg, default interventional
     if isinstance(model, lgb.basic.Booster):
-        te = shap.TreeExplainer(model, feature_perturbation="interventional")
+        bg_df  = X_train.sample(min(background_size, len(X_train)), random_state=0)
+        bg_arr = bg_df.to_numpy(dtype=np.float64)
+        te = shap.TreeExplainer(
+            model,
+            data=bg_arr,
+            feature_perturbation="interventional"
+        )
         vals = te.shap_values(X_to_explain)
 
         return shap.Explanation(
