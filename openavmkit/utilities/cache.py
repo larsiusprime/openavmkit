@@ -427,12 +427,23 @@ def get_cached_df(
 #######################################
 
 
+def _get_model_group_signature(df: pd.DataFrame)->dict:
+    if "model_group" in df:
+        vcs = df["model_group"].value_counts()
+        sig = {}
+        for key in vcs.index:
+            sig[key] = vcs[key]
+        return sig
+    return {}
+
+
 def _get_df_signature(df: pd.DataFrame, extra: dict | str = None):
     sorted_columns = sorted(df.columns)
     signature = {
         "num_rows": len(df),
         "num_columns": len(df.columns),
         "columns": sorted_columns,
+        "model_groups": _get_model_group_signature(df)
     }
     if extra is not None:
         signature["extra"] = extra
