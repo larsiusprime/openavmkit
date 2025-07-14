@@ -79,6 +79,7 @@ from openavmkit.utilities.stats import (
 from openavmkit.tuning import _tune_lightgbm, _tune_xgboost, _tune_catboost
 from openavmkit.utilities.timing import TimingData
 
+pd.set_option("future.no_silent_downcasting", True)
 
 PredictionModel = Union[
     MRAModel,
@@ -778,15 +779,8 @@ class DataSplit:
         for col in cat_vars:
             if col in union_df.columns:
                 # If the column is of categorical type, ensure "missing" is a known category
-                if pd.api.types.is_categorical_dtype(union_df[col].dtype):
+                if isinstance(union_df[col].dtype, pd.CategoricalDtype):
                     if "missing" not in union_df[col].cat.categories:
-                        # Make a copy to avoid SettingWithCopyWarning if union_df[col] is a slice
-                        # and then add the new category
-                        # It's generally safer to operate on copies when modifying dtypes or categories
-                        # of columns that might be views.
-                        # However, given union_df is constructed by pd.concat, its columns should be copies.
-                        # For safety and to ensure modification, we explicitly assign back if add_categories
-                        # doesn't always modify inplace or if it returns a new Series for certain versions/cases.
                         current_col_series = union_df[col]
                         try:
                             current_col_series = current_col_series.cat.add_categories(

@@ -810,10 +810,6 @@ def enrich_sup_spatial_lag(
         n_na_coords = universe_coords.shape[0] - np.count_nonzero(
             pd.isna(universe_coords).any(axis=1)
         )
-        if verbose:
-            print(
-                f"Number of parcels in universe with coordinates: {n_na_coords} / {universe_coords.shape[0]}"
-            )
 
         # Query the tree: for each parcel in df_universe, find the k nearest sales
         # distances: shape (n_universe, k); indices: corresponding indices in df_sales
