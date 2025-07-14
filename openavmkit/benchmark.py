@@ -270,6 +270,9 @@ def try_variables(
 
     all_best_variables = {}
 
+    try_vars = settings.get("modeling", {}).get("try_variables", {})
+    model_groups_to_skip = try_vars.get("skip", [])
+
     def _try_variables(
         df_in: pd.DataFrame,
         model_group: str,
@@ -294,12 +297,14 @@ def try_variables(
                         print("No valid sales found, skipping...")
                     continue
 
+            try_vars = settings.get("modeling", {}).get("try_variables", {})
             variables_to_use = (
-                settings.get("modeling", {}).get("experiment", {}).get("variables", [])
+                try_vars.get("variables", [])
             )
+
             if len(variables_to_use) == 0:
                 raise ValueError(
-                    "No variables defined. Please check settings `modeling.experiment.variables`"
+                    "No variables defined. Please check settings `modeling.try_variables.variables`"
                 )
 
             df_univ = df_univ[df_univ["model_group"].eq(model_group)].copy()
@@ -338,6 +343,7 @@ def try_variables(
             "results": all_best_variables,
         },
         key="key_sale",
+        skip=model_groups_to_skip
     )
 
     sale_field = get_sale_field(settings)
@@ -352,7 +358,19 @@ def try_variables(
             results = entry[vacant_status]
             pd.set_option("display.max_rows", None)
             results = results[~results["corr_strength"].isna()]
-            display(results)
+
+            styled = results.style.format(
+                {
+                    "corr_strength": "{:,.2f}",
+                    "corr_clarity": "{:,.2f}",
+                    "corr_score": "{:,.2f}",
+                    "r2": "{:,.2f}",
+                    "adj_r2": "{:,.2f}",
+                    "coef_sign": "{:,.0f}"
+                }
+            )
+
+            display(styled)
             file_out = f"out/try/{model_group}/{vacant_status}.csv"
             if not os.path.exists(os.path.dirname(file_out)):
                 os.makedirs(os.path.dirname(file_out))
@@ -585,10 +603,6 @@ def get_variable_recommendations(
                 bool_cols.append(col)
 
         if bool_cols:
-            if verbose:
-                print(
-                    f"Excluding {len(bool_cols)} boolean columns from VIF calculation: {', '.join(bool_cols[:5])}{'...' if len(bool_cols) > 5 else ''}"
-                )
             vif_X = vif_X.drop(columns=bool_cols)
 
         # Don't run VIF if we have no columns left or too few rows
@@ -819,19 +833,31 @@ def run_models(
     t.start("run model groups")
     for model_group in model_groups:
         t.start(f"model group: {model_group}")
-        if verbose:
-            print("")
-            print("")
-            print("******************************************************")
-            print(f"Running models for model_group: {model_group}")
-            print("******************************************************")
-            print("")
-            print("")
         for vacant_only in [False, True]:
             if vacant_only and not run_vacant:
                 continue
             if not vacant_only and not run_main:
                 continue
+
+            vacant_status = "vacant" if vacant_only else "main"
+            models_to_skip = s_inst.get(vacant_status, {}).get("skip", {}).get(model_group, [])
+
+            if "all" in models_to_skip:
+                if verbose:
+                    print(
+                        f"Skipping all models for model_group: {model_group}/{vacant_status}"
+                    )
+                continue
+
+            if verbose:
+                print("")
+                print("")
+                print("******************************************************")
+                print(f"Running models for model_group: {model_group}")
+                print("******************************************************")
+                print("")
+                print("")
+
             mg_results = _run_models(
                 sup,
                 model_group,
@@ -1158,7 +1184,8 @@ def run_one_model(
         sales_chase = False
 
     if verbose:
-        print(f" running model {model} on {len(df_sales)} rows...")
+        print(f"------------------------------------------------")
+        print(f"Running model {model} on {len(df_sales)} rows...")
 
     are_ind_vars_default = entry.get("ind_vars", None) is None
     ind_vars: list | None = entry.get("ind_vars", default_entry.get("ind_vars", None))
@@ -2089,7 +2116,8 @@ def _optimize_ensemble_allocation(
         )
 
     if verbose:
-        print(f"Best score = {best_score:8.0f}, ensemble = {best_list}")
+        if not np.isinf(best_score):
+            print(f"Best score = {best_score:8.0f}, ensemble = {best_list}")
     return best_list
 
 
@@ -2259,7 +2287,8 @@ def _optimize_ensemble(
         )
 
     if verbose:
-        print(f"Best score = {best_score:8.0f}, ensemble = {best_list}")
+        if not np.isinf(best_score):
+            print(f"Best score = {best_score:8.0f}, ensemble = {best_list}")
     return best_list
 
 
@@ -2595,17 +2624,6 @@ def _calc_variable_recommendations(
     report: MarkdownReport = None,
 ):
     """Calculate variable recommendations based on various statistical metrics.
-
-    :param ds: DataSplit object containing the data. :type ds: DataSplit :param settings:
-    Settings dictionary. :type settings: dict :param correlation_results: Correlation
-    analysis results. :type correlation_results: dict :param enr_results: Elastic net
-    regularization results. :type enr_results: dict :param r2_values_results: R² values
-    DataFrame. :type r2_values_results: pandas.DataFrame :param p_values_results: P-value
-    analysis results. :type p_values_results: dict :param t_values_results: T-value
-    analysis results. :type t_values_results: dict :param vif_results: VIF analysis
-    results. :type vif_results: dict :param report: Optional MarkdownReport object. :type
-    report: MarkdownReport or None :returns: DataFrame with variable recommendations.
-    :rtype: pandas.DataFrame
     """
     feature_selection = (
         settings.get("modeling", {})
@@ -2642,7 +2660,14 @@ def _calc_variable_recommendations(
     df = df[df["variable"].ne("const")]
 
     adj_r2_thresh = thresh.get("adj_r2", 0.1)
+    adj_r2_thresh_bonus = thresh.get("adj_r2_bonus", 0.25)
+
+    # 1 point for being over the minimum amount
     df.loc[df["adj_r2"].gt(adj_r2_thresh), "weighted_score"] += 1
+
+    if adj_r2_thresh_bonus > adj_r2_thresh:
+        # 1 point for reaching a higher threshold
+        df.loc[df["adj_r2"].gt(adj_r2_thresh_bonus), "weighted_score"] += 1
 
     weight_corr_score = weights.get("corr_score", 1)
     weight_enr_coef = weights.get("enr_coef", 1)
@@ -3086,7 +3111,9 @@ def _run_hedonic_models(
     )
     # --- END BLOCK ---
 
-    print(f"HEDONIC BENCHMARK ({model_group})")
+    print(f"\n************************************************************")
+    print(f"HEDONIC BENCHMARK ({model_group}) -- Assessor Metrics")
+    print(f"************************************************************\n")
     print(all_hedonic_results.benchmark.print())
 
     title = "HEDONIC"
@@ -3100,13 +3127,13 @@ def _run_hedonic_models(
 
     # Post-valuation metrics
     title = f"{title} (POST-VALUATION DATE)"
-    post_val_results = _get_post_valuation_mmr(all_hedonic_results)
-    perf_metrics = _model_performance_metrics(model_group, post_val_results, title)
-    print(perf_metrics)
-    print("")
+    if not all_hedonic_results.benchmark.test_post_val_empty:
+        post_val_results = _get_post_valuation_mmr(all_hedonic_results)
+        perf_metrics = _model_performance_metrics(model_group, post_val_results, title)
+        print(perf_metrics)
+        print("")
 
-    # _model_performance_plots(model_group, post_val_results, title)
-    print("")
+        print("")
 
 
 def _model_performance_plots(
@@ -3125,6 +3152,15 @@ def _model_performance_plots(
     elif sale_date.dtype == "datetime64[ns]":
         earliest_date = sale_date.min()
         latest_date = sale_date.max()
+        if not pd.isna(earliest_date):
+            earliest_date = earliest_date.strftime("%Y-%m-%d")
+        else:
+            earliest_date = "???"
+
+        if not pd.isna(latest_date):
+            latest_date = latest_date.strftime("%Y-%m-%d")
+        else:
+            latest_date = "???"
     else:
         # Convert to datetime if not already
         first_results.df_test["sale_date"] = pd.to_datetime(
@@ -3140,8 +3176,8 @@ def _model_performance_plots(
     for model_name, model_result in all_results.model_results.items():
 
         dfs = {
-            "test": model_result.df_test.copy(),
-            "sales": model_result.df_sales.copy(),
+            "test": model_result.df_test.copy()
+            #"sales": model_result.df_sales.copy(),
         }
 
         for key in dfs:
@@ -3157,23 +3193,23 @@ def _model_performance_plots(
                 df["y_true"] = model_result.pred_sales.y
 
             # Note any NA predictions:
-            if df["y_pred"].isna().any():
-                mask_na = df["y_pred"].isna()
-                count_na = mask_na.count()
-                print(f"WARNING: y_pred has {count_na} NaN values!")
-                df = df[~mask_na]
+            for field in ["y_pred", "y_true"]:
+                if df[field].isna().any():
+                    mask_na = df[field].isna()
+                    count_na = mask_na.count()
+                    print(f"WARNING: {field} has {count_na} NaN values!")
+                    df = df[~mask_na]
 
-            df["metadata"] = df["key_sale"] + "\n" + df["address"]
             plot_scatterplot(
                 df,
                 "y_true",
                 "y_pred",
                 "Sale price",
                 "Prediction",
-                title=f"{label}/{title}/{model_group}: {model_name}\n{test_count}/{sales_count} sales from {earliest_date} to {latest_date}",
+                title=f"{label}/{title}/{model_group}/{model_name}\n{test_count}/{sales_count} sales from {earliest_date} to {latest_date}",
                 best_fit_line=True,
-                perfect_fit_line=True,
-                metadata_field="metadata",
+                perfect_fit_line=True
+                #metadata_field="metadata",
             )
 
 
@@ -3213,22 +3249,37 @@ def _model_performance_metrics(
         earliest_date = first_results.df_test["sale_date"].min()
         latest_date = first_results.df_test["sale_date"].max()
 
+        if not pd.isna(earliest_date):
+            earliest_date = earliest_date.strftime("%Y-%m-%d")
+        else:
+            earliest_date = "N/A"
+
+        if not pd.isna(latest_date):
+            latest_date = latest_date.strftime("%Y-%m-%d")
+        else:
+            latest_date = "N/A"
+
     # Add performance metrics table
-    text = f"\n{title} Model Performance Metrics for {model_group}: (* = trimmed)\n"
+    text = f"\n************************************************************\n"
+    text += f"{title} Benchmark ({model_group}) -- Academic Metrics\n"
+    text += f"************************************************************\n"
     text += f"Testing {test_count}/{sales_count} sales from ({earliest_date} to {latest_date})\n"
     text += ("=" * 80) + "\n"
     metrics_data = {
         "Model": [],
-        "R²": [],
-        "R²_raw": [],  # Added raw R²
+        "R² ols": [],
+        "R² y=x": [],
         "m.ratio": [],
-        "mean.ratio": [],
+        "avg.ratio": [],
+        "Slope": []
+    }
+    trimmed_data = {
+        "Model": [],
+        "R² ols": [],
+        "R² y=x": [],
         "Slope": [],
-        "R²*": [],
-        "R²_raw*": [],  # Added trimmed raw R²
-        "Slope*": [],
-        "m.ratio*": [],
-        "mean.ratio*": [],
+        "m.ratio": [],
+        "avg.ratio": [],
     }
 
     for model_name, model_result in all_results.model_results.items():
@@ -3268,8 +3319,6 @@ def _model_performance_metrics(
             reg = LinearRegression()
             reg.fit(y_true.reshape(-1, 1), y_pred)
             slope = reg.coef_[0]
-            intercept = reg.intercept_
-            r2 = reg.score(y_true.reshape(-1, 1), y_pred)
 
             # Raw R² calculation
             ss_res = np.sum((y_true - y_pred) ** 2)
@@ -3277,8 +3326,6 @@ def _model_performance_metrics(
             r2_raw = 1 - (ss_res / ss_tot)
         else:
             slope = np.nan
-            intercept = np.nan
-            r2 = np.nan
             r2_raw = np.nan
 
         # Calculate raw R² for trimmed
@@ -3287,7 +3334,6 @@ def _model_performance_metrics(
             reg_trim = LinearRegression()
             reg_trim.fit(y_true_trim.reshape(-1, 1), y_pred_trim)
             slope_trim = reg_trim.coef_[0]
-            intercept_trim = reg_trim.intercept_
             r2_trim = reg_trim.score(y_true_trim.reshape(-1, 1), y_pred_trim)
 
             # Raw R² calculation for trimmed data
@@ -3296,7 +3342,6 @@ def _model_performance_metrics(
             r2_raw_trim = 1 - (ss_res_trim / ss_tot_trim)
         else:
             slope_trim = np.nan
-            intercept_trim = np.nan
             r2_trim = np.nan
             r2_raw_trim = np.nan
 
@@ -3304,42 +3349,45 @@ def _model_performance_metrics(
             r2_0 = model_result.pred_test.r2
         else:
             r2_0 = np.nan
-        if model_result.pred_test.r2_trim is not None:
-            r2_trim_0 = model_result.pred_test.r2_trim
-        else:
-            r2_trim_0 = np.nan
 
         metrics_data["Model"].append(model_name)
-        metrics_data["R²"].append(r2_0)
-        metrics_data["R²_raw"].append(r2_raw)
+        metrics_data["R² ols"].append(r2_0)
+        metrics_data["R² y=x"].append(r2_raw)
         metrics_data["m.ratio"].append(model_result.pred_test.ratio_study.median_ratio)
-        metrics_data["mean.ratio"].append(model_result.pred_test.ratio_study.mean_ratio)
-        metrics_data["m.ratio*"].append(
-            model_result.pred_test.ratio_study.median_ratio_trim
-        )
-        metrics_data["mean.ratio*"].append(
-            model_result.pred_test.ratio_study.mean_ratio_trim
-        )
-        metrics_data["R²*"].append(r2_trim)
-        metrics_data["R²_raw*"].append(r2_raw_trim)
+        metrics_data["avg.ratio"].append(model_result.pred_test.ratio_study.mean_ratio)
         metrics_data["Slope"].append(slope)
-        metrics_data["Slope*"].append(slope_trim)
+
+        trimmed_data["Model"].append(model_name)
+        trimmed_data["R² ols"].append(r2_trim)
+        trimmed_data["R² y=x"].append(r2_raw_trim)
+        trimmed_data["m.ratio"].append(model_result.pred_test.ratio_study.median_ratio_trim)
+        trimmed_data["avg.ratio"].append(model_result.pred_test.ratio_study.mean_ratio_trim)
+        trimmed_data["Slope"].append(slope_trim)
 
     # Create and display metrics DataFrame
     metrics_df = pd.DataFrame(metrics_data)
     metrics_df.set_index("Model", inplace=True)
-    metrics_df["R²"] = metrics_df["R²"].apply(lambda x: f"{x:.2f}")
-    metrics_df["R²_raw"] = metrics_df["R²_raw"].apply(lambda x: f"{x:.2f}")
-    metrics_df["Slope"] = metrics_df["Slope"].apply(lambda x: f"{x:.2f}")
-    metrics_df["m.ratio"] = metrics_df["m.ratio"].apply(lambda x: f"{x:.2f}")
-    metrics_df["mean.ratio"] = metrics_df["mean.ratio"].apply(lambda x: f"{x:.2f}")
-    metrics_df["m.ratio*"] = metrics_df["m.ratio*"].apply(lambda x: f"{x:.2f}")
-    metrics_df["mean.ratio*"] = metrics_df["mean.ratio*"].apply(lambda x: f"{x:.2f}")
-    metrics_df["R²*"] = metrics_df["R²*"].apply(lambda x: f"{x:.2f}")
-    metrics_df["R²_raw*"] = metrics_df["R²_raw*"].apply(lambda x: f"{x:.2f}")
-    metrics_df["Slope*"] = metrics_df["Slope*"].apply(lambda x: f"{x:.2f}")
+    metrics_df["R² ols"] = metrics_df["R² ols"].apply(lambda x: f"{x:.2f}").astype(str)
+    metrics_df["R² y=x"] = metrics_df["R² y=x"].apply(lambda x: f"{x:.2f}").astype(str)
+    metrics_df["Slope"] = metrics_df["Slope"].apply(lambda x: f"{x:.2f}").astype(str)
+    metrics_df["m.ratio"] = metrics_df["m.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
+    metrics_df["avg.ratio"] = metrics_df["avg.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
 
-    text += metrics_df.to_string() + "\n"
+    trimmed_df = pd.DataFrame(trimmed_data)
+    trimmed_df.set_index("Model", inplace=True)
+    trimmed_df["R² ols"] = trimmed_df["R² ols"].apply(lambda x: f"{x:.2f}").astype(str)
+    trimmed_df["R² y=x"] = trimmed_df["R² y=x"].apply(lambda x: f"{x:.2f}").astype(str)
+    trimmed_df["Slope"] = trimmed_df["Slope"].apply(lambda x: f"{x:.2f}").astype(str)
+    trimmed_df["m.ratio"] = trimmed_df["m.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
+    trimmed_df["avg.ratio"] = trimmed_df["avg.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
+
+    metrics_df = metrics_df[["R² ols","R² y=x","m.ratio","avg.ratio","Slope"]]
+    trimmed_df = trimmed_df[["R² ols","R² y=x","m.ratio","avg.ratio","Slope"]]
+
+    text += "\nUNTRIMMED\n"
+    text += metrics_df.to_markdown() + "\n"
+    text += f"\nTRIMMED\n"
+    text += trimmed_df.to_markdown() + "\n"
     text += ("=" * 80) + "\n"
     return text
 
@@ -3382,13 +3430,6 @@ def _run_models(
     dep_var_test = s_inst.get("dep_var_test", default_value)
     fields_cat = get_fields_categorical(s, df_univ, include_boolean=True)
     models_to_run = s_inst.get(vacant_status, {}).get("run", None)
-    models_to_skip = s_inst.get(vacant_status, {}).get("skip", {}).get(model_group, [])
-
-    if "all" in models_to_skip:
-        print(
-            f"Skipping all models for model_group: {model_group}, vacant_only: {vacant_only}"
-        )
-        return None
 
     model_entries = s_model.get("models").get(vacant_status, {})
 
@@ -3435,12 +3476,6 @@ def _run_models(
     # Run the models one by one and stash the results
     t.start("run_models")
     for model in models_to_run:
-
-        if model in models_to_skip:
-            print(
-                f"Skipping model: {model} for model_group: {model_group}, vacant_only: {vacant_only}"
-            )
-            continue
 
         model_variables = best_variables
         # For tree-based models, we don't perform variable reduction
@@ -3540,10 +3575,12 @@ def _run_models(
         verbose=verbose,
     )
 
+    print(f"\n************************************************************")
     if vacant_only:
-        print(f"VACANT BENCHMARK ({model_group})")
+        print(f"VACANT Benchmark ({model_group}) -- Assessor Metrics")
     else:
-        print(f"MAIN BENCHMARK ({model_group})")
+        print(f"MAIN Benchmark ({model_group}) -- Assessor Metrics")
+    print(f"************************************************************\n")
     print(all_results.benchmark.print())
 
     title = "VACANT" if vacant_only else "MAIN"
@@ -3560,6 +3597,7 @@ def _run_models(
         _model_performance_plots(model_group, all_results, title)
     print("")
 
+
     # Post-valuation metrics
     if not all_results.benchmark.test_post_val_empty:
         post_val_results = _get_post_valuation_mmr(all_results)
@@ -3569,7 +3607,7 @@ def _run_models(
             print(perf_metrics)
             print("")
 
-        print("")
+            print("")
 
     if not vacant_only and run_hedonic:
         t.start("run hedonic models")
