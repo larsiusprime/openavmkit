@@ -208,9 +208,6 @@ class SalesScrutinyStudy:
         # ensure unique:
         keys_flagged = list(dict.fromkeys(keys_flagged))
 
-        if verbose:
-            print(f"--> Flagged {len(keys_flagged)} total sales")
-
         if len(df) > 0:
 
             num_valid_sales_before = len(df[df["valid_sale"].eq(True)])
@@ -220,8 +217,8 @@ class SalesScrutinyStudy:
             num_valid_sales_after = len(df[df["valid_sale"].eq(True)])
 
             if verbose:
-                print(f"--> Valid sales before: {num_valid_sales_before}")
-                print(f"--> Valid sales after: {num_valid_sales_after}")
+                print(f"--> Unmarked sales before: {num_valid_sales_before}")
+                print(f"--> Unmarked sales after: {num_valid_sales_after}")
                 diff = num_valid_sales_before - num_valid_sales_after
                 print(f"--> Marked {diff} new invalid sales")
 
