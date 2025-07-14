@@ -1274,6 +1274,7 @@ def try_models(
     run_hedonic: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
+    do_plots: bool = False
 ) -> None:
     """
     Tries out predictive models on the given SalesUniversePair. Optimized for speed
@@ -1315,6 +1316,8 @@ def try_models(
         Flag to run ensemble models. Defaults to True.
     do_shaps : bool, optional
         Flag to run SHAP analysis. Defaults to False.
+    do_plots : bool, optional
+        Flag to plot scatterplots. Defaults to False.
     """
 
     openavmkit.benchmark.run_models(
@@ -1329,6 +1332,7 @@ def try_models(
         run_hedonic=run_hedonic,
         run_ensemble=run_ensemble,
         do_shaps=do_shaps,
+        do_plots=do_plots
     )
 
 
@@ -1381,6 +1385,7 @@ def finalize_models(
         run_hedonic=True,
         run_ensemble=True,
         do_shaps=False,
+        do_plots=False
     )
 
 
@@ -1396,6 +1401,7 @@ def run_models(
     run_hedonic: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
+    do_plots: bool = False
 ):
     """
     Runs predictive models on the given SalesUniversePair.
@@ -1435,6 +1441,8 @@ def run_models(
         Whether to run ensemble models.
     do_shaps : bool, optional
         Whether to compute SHAP values.
+    do_plots : bool, optional
+        Whether to plot scatterplots
 
     Returns
     -------
@@ -1453,6 +1461,7 @@ def run_models(
         run_hedonic,
         run_ensemble,
         do_shaps,
+        do_plots
     )
 
 

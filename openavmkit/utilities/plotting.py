@@ -6,6 +6,7 @@ import numpy as np
 import colorsys
 import mpld3
 import statsmodels.api as sm
+from matplotlib.ticker import FuncFormatter
 from mpld3 import plugins
 
 from IPython.display import display, HTML
@@ -107,27 +108,40 @@ def plot_scatterplot(
     # 2) New figure & axis
     fig, ax = plt.subplots()
 
+    ax.ticklabel_format(axis='x', style='plain')
+    ax.xaxis.set_major_formatter(_human_fmt(digits=3))
+    ax.ticklabel_format(axis='y', style='plain')
+    ax.yaxis.set_major_formatter(_human_fmt(digits=3))
+
     # 3) Color/style helper (your existing function)
     color = _get_color_by(df, style)
 
     # 4) Scatter
     sc = ax.scatter(df[x], df[y], s=4, c=color)
 
+    legend_arr = [None]
+
     # 5) Optional best‐fit line
     if best_fit_line:
         results = _simple_ols(df, x, y, intercept=False)
         slope, intercept, r2 = results["slope"], results["intercept"], results["r2"]
+        best_fit_label = f"Best fit line (r²={r2:.2f})"
         ax.plot(
             df[x],
             slope * df[x],
             color="red",
             alpha=0.5,
-            label=f"Best fit line (r²={r2:.2f})",
+            label=best_fit_label,
         )
+        legend_arr.append(best_fit_label)
 
     if perfect_fit_line:
+        perfect_fit_label = "Perfect fit line (y=x)"
         # Add a perfect line (y=x)
-        ax.plot(df[x], df[x], color="blue", alpha=0.5, label="Perfect Line (y=x)")
+        ax.plot(df[x], df[x], color="blue", alpha=0.5, label=perfect_fit_label)
+        legend_arr.append(perfect_fit_label)
+
+    ax.legend(legend_arr)
 
     # 6) Labels & title
     ax.set_xlabel(xlabel)
@@ -144,9 +158,11 @@ def plot_scatterplot(
         tooltip = plugins.PointLabelTooltip(sc, labels=labels)
         plugins.connect(fig, tooltip)
 
-    # 9) Display the interactive HTML
-    html = mpld3.fig_to_html(fig)
-    display(HTML(html))
+        # 9) Display the interactive HTML
+        html = mpld3.fig_to_html(fig)
+        display(HTML(html))
+    else:
+        plt.show()
 
     # Close the plot without showing it:
     plt.close(fig)
@@ -249,6 +265,27 @@ def plot_histogram_df(
 #######################################
 
 
+def _human_fmt(digits=0):
+    """Return a FuncFormatter that appends K, M, B … suffixes."""
+    units = [(1e12, 'T'), (1e9, 'B'), (1e6, 'M'), (1e3, 'K')]
+
+    def _fmt(x, pos):
+        abs_x = abs(x)
+        # pick the largest suffix whose value fits the data point
+        for value, suffix in units:
+            if abs_x >= value:
+                scaled, end = x / value, suffix
+                break
+        else:                                   # no suffix (< 1 000)
+            scaled, end = x, ''
+
+        # format with the requested significant-digit budget
+        s = f'{scaled:.{digits}g}'             # general format → trims zeros
+        return f'{s}{end}'
+
+    return FuncFormatter(_fmt)
+
+
 def _plot_histogram_mult(
     entries: list[dict],
     xlabel: str = "",
@@ -274,6 +311,9 @@ def _plot_histogram_mult(
         alpha = entry.get("alpha", 0.25)
         data = data[~data.isna()]
         counts, _, _ = plt.hist(data, bins=_bins, label=label, alpha=alpha)
+        ax = plt.gca()
+        plt.ticklabel_format(axis='x', style='plain')
+        ax.xaxis.set_major_formatter(_human_fmt(digits=3))
         _ylim_max = np.percentile(counts, 95)
         if _ylim_max > ylim_max:
             ylim_max = _ylim_max
@@ -314,6 +354,8 @@ def _simple_ols(
     if intercept:
         X = sm.add_constant(X)
     X = X.astype(np.float64)
+    y = y.astype(np.float64)
+
     model = sm.OLS(y, X).fit()
 
     return {
