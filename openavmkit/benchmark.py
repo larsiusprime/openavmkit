@@ -751,6 +751,7 @@ def run_models(
     run_hedonic: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
+    do_plots: bool = False
 ):
     """
     Runs predictive models on the given SalesUniversePair.
@@ -790,6 +791,8 @@ def run_models(
         Whether to run ensemble models.
     do_shaps : bool, optional
         Whether to compute SHAP values.
+    do_plots : bool, optional
+        Whether to plot scatterplots
 
     Returns
     -------
@@ -841,6 +844,7 @@ def run_models(
                 run_hedonic,
                 run_ensemble,
                 do_shaps=do_shaps,
+                do_plots=do_plots
             )
             if mg_results is not None:
                 dict_all_results[model_group] = mg_results
@@ -2964,6 +2968,7 @@ def _run_hedonic_models(
     verbose: bool = False,
     save_results: bool = False,
     run_ensemble: bool = True,
+    do_plots: bool = False
 ):
     """
     Run hedonic models and ensemble them, then update the benchmark.
@@ -3089,8 +3094,9 @@ def _run_hedonic_models(
     print(perf_metrics)
     print("")
 
-    # _model_performance_plots(model_group, all_hedonic_results, title)
-    print("")
+    if do_plots:
+        _model_performance_plots(model_group, all_hedonic_results, title)
+        print("")
 
     # Post-valuation metrics
     title = f"{title} (POST-VALUATION DATE)"
@@ -3350,6 +3356,7 @@ def _run_models(
     run_hedonic: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
+    do_plots: bool = False
 ):
     """
     Run models for a given model group and process ensemble results.
@@ -3549,7 +3556,8 @@ def _run_models(
     if do_shaps:
         _model_shaps(model_group, all_results, title)
 
-    # _model_performance_plots(model_group, all_results, title)
+    if do_plots:
+        _model_performance_plots(model_group, all_results, title)
     print("")
 
     # Post-valuation metrics
@@ -3578,6 +3586,7 @@ def _run_models(
             verbose=verbose,
             save_results=save_results,
             run_ensemble=run_ensemble,
+            do_plots=do_plots
         )
         t.stop("run hedonic models")
 
