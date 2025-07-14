@@ -485,7 +485,7 @@ def calc_correlations(
 
         naive_corr_sans_target = naive_corr.iloc[1:, 1:]
 
-        # Calculate the strength of the correlation with the target variable
+        # Get the (absolute) strength of the correlation with the target variable
         strength = naive_corr.iloc[:, 0].abs()
 
         # drop the target variable from strength:
@@ -644,9 +644,15 @@ def calc_r2(
     """
     results = {"variable": [], "r2": [], "adj_r2": [], "coef_sign": []}
     for var in variables:
-        X = df[var].copy()
-        X = sm.add_constant(X)
-        X = X.astype(np.float64)
+        data = pd.concat([df[var], y], axis=1).dropna()
+        if len(data) < 3 or data[var].nunique() < 2:
+            results["variable"].append(var)
+            results["r2"].append(float("nan"))
+            results["adj_r2"].append(float("nan"))
+            results["coef_sign"].append(float("nan"))
+            continue                          # skip ill-posed models
+
+        X = sm.add_constant(data[var].astype(float))
         try:
             model = sm.OLS(y, X).fit()
         except MissingDataError as e:
