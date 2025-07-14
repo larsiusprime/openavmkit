@@ -3414,6 +3414,13 @@ def predict_local_sqft(
             how="left",
         )
 
+        df_impr.loc[df_impr["per_impr_sqft"].eq(0), "per_impr_sqft"] = df_impr[
+            f"{location_field}_per_impr_sqft"
+        ]
+        df_land.loc[df_land["per_land_sqft"].eq(0), "per_land_sqft"] = df_land[
+            f"{location_field}_per_land_sqft"
+        ]
+
         after_count_zero_impr = df_impr["per_impr_sqft"].eq(0).sum()
         after_count_zero_land = df_land["per_land_sqft"].eq(0).sum()
 
@@ -3429,13 +3436,6 @@ def predict_local_sqft(
             print(
                 f"--> painted {delta_land} land values, {after_count_zero_land} remaining zeroes"
             )
-
-        df_impr.loc[df_impr["per_impr_sqft"].eq(0), "per_impr_sqft"] = df_impr[
-            f"{location_field}_per_impr_sqft"
-        ]
-        df_land.loc[df_land["per_land_sqft"].eq(0), "per_land_sqft"] = df_land[
-            f"{location_field}_per_land_sqft"
-        ]
 
         # do_debug = True
         #
