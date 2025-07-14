@@ -266,7 +266,7 @@ def try_variables(
     df_vacant = _simulate_removed_buildings(df_vacant, settings, idx_vacant)
 
     # update df_hydrated with *all* the characteristics of df_vacant where their keys match:
-    df_hydrated.update(df_vacant)
+    df_hydrated.loc[idx_vacant, df_vacant.columns] = df_vacant.values
 
     all_best_variables = {}
 
