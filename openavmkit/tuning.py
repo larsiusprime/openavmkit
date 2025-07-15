@@ -6,7 +6,7 @@ import pandas as pd
 from catboost import Pool, CatBoostRegressor
 
 from sklearn.model_selection import KFold
-from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 from optuna.integration import CatBoostPruningCallback
 
 #######################################
@@ -201,53 +201,44 @@ def _tune_catboost(
     def objective(trial):
         # 2) Only valid constructor params here:
         params = {
-            "loss_function": "RMSE",
-            "eval_metric": "RMSE",
-            "iterations": trial.suggest_int("iterations", 300, 1000),
-            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-            "depth": trial.suggest_int("depth", 4, 10),
-            "border_count": trial.suggest_int("border_count", 32, 64),
-            "random_strength": trial.suggest_float("random_strength", 0, 10),
-            "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 10, log=True),
-            "bootstrap_type": "Bayesian",
-            "bagging_temperature": trial.suggest_float("bagging_temperature", 0, 10),
-            "boosting_type": "Plain",
-            "task_type": "CPU",  # CPU so we can use pruning callbacks
-            "thread_count": -1,  # all cores
-            "random_seed": random_state,
-            "verbose": False,
-        }
-        if (
-            trial.suggest_categorical(
+            "loss_function": "RMSE", "eval_metric": "RMSE",
+              "iterations": trial.suggest_int("iterations", 300, 1000),
+              "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+              "depth": trial.suggest_int("depth", 4, 10), "border_count": trial.suggest_int("border_count", 32, 64),
+              "random_strength": trial.suggest_float("random_strength", 0, 10),
+              "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 10, log=True), "bootstrap_type": "Bayesian",
+              "bagging_temperature": trial.suggest_float("bagging_temperature", 0, 10), "boosting_type": "Plain",
+              "task_type": "CPU", "thread_count": -1, "random_seed": random_state, "verbose": False,
+              "grow_policy": trial.suggest_categorical(
                 "grow_policy", ["SymmetricTree", "Depthwise", "Lossguide"]
-            )
-            == "Lossguide"
-        ):
-            params["grow_policy"] = "Lossguide"
-            params["max_leaves"] = trial.suggest_int("max_leaves", 31, 128)
-        else:
-            params["grow_policy"] = trial.params["grow_policy"]
+              )
+        }
+        if params["grow_policy"] == "Lossguide":
+            params["max_leaves"] = trial.suggest_int("max_leaves", 31, 256)
 
+        pruning_cb = CatBoostPruningCallback(trial, "RMSE")
+        rmses = []
         # 3) Loop folds, pass early_stopping & pruning into fit()
-        maes = []
         for train_pool, val_pool in cv_pools:
             model = CatBoostRegressor(**params)
             model.fit(
                 train_pool,
                 eval_set=val_pool,
-                early_stopping_rounds=50,
-                use_best_model=True,
-                callbacks=[CatBoostPruningCallback(trial, "RMSE")],
+                early_stopping_rounds=100,
+                callbacks=[pruning_cb],
                 verbose=False,
             )
-            y_pred = model.predict(val_pool)
-            maes.append(mean_absolute_error(val_pool.get_label(), y_pred))
+            pruning_cb.check_pruned()
+            rmses.append(mean_squared_error(val_pool.get_label(), model.predict(val_pool)))
 
-        return sum(maes) / len(maes)
+        return sum(rmses) / len(rmses)
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = optuna.create_study(
-        direction="minimize", pruner=optuna.pruners.MedianPruner()
+        direction="minimize",
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=15,
+            n_warmup_steps=100,
+            interval_steps=10)
     )
     study.optimize(objective, n_trials=n_trials, n_jobs=1)
 
