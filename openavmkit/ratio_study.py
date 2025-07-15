@@ -93,7 +93,10 @@ class RatioStudy:
         self.ground_truth = ground_truth
 
         ratios = div_series_z_safe(predictions, ground_truth).astype(float)
-        median_ratio = float(np.median(ratios))
+        if len(ratios) > 0:
+            median_ratio = float(np.median(ratios))
+        else:
+            median_ratio = float("nan")
 
         # trim the ratios to remove outliers -- trim to the interquartile range
         trim_mask = stats.trim_outliers_mask(ratios)
@@ -110,20 +113,20 @@ class RatioStudy:
 
         prb, _, _ = stats.calc_prb(predictions, ground_truth)
         prb_trim, _, _ = stats.calc_prb(trim_predictions, trim_ground_truth)
-
+        
         self.median_ratio = median_ratio
 
-        self.mean_ratio = float(np.mean(ratios))
+        if len(ratios) == 0:
+            self.mean_ratio = float("nan")
+        else:
+            self.mean_ratio = float(np.mean(ratios))
 
-        try:
-            self.median_ratio_trim = float(np.median(trim_ratios))
-        except TypeError:
-            self.median_ratio_trim = float("nan")
-
-        try:
-            self.mean_ratio_trim = float(np.mean(trim_ratios))
-        except TypeError:
+        if len(trim_ratios) == 0:
             self.mean_ratio_trim = float("nan")
+            self.median_ratio_trim = float("nan")
+        else:
+            self.mean_ratio_trim = float(np.mean(trim_ratios))
+            self.median_ratio_trim = float(np.median(trim_ratios))
 
         self.cod = cod
         self.cod_trim = cod_trim

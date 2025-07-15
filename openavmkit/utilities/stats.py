@@ -202,7 +202,9 @@ def calc_prd(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
     float
         The PRD value.
     """
-    ratios = predictions / ground_truth
+    ratios = div_series_z_safe(predictions, ground_truth)
+    if len(ratios) == 0:
+        return float("nan")
     mean_ratio = np.mean(ratios)
     sum_ground_truth = np.sum(ground_truth)
     if sum_ground_truth == 0:
@@ -352,48 +354,49 @@ def calc_prb(
     ValueError
         If `predictions` and `ground_truth` have different lengths.
     """
-    if len(predictions) != len(ground_truth):
-        raise ValueError("predictions and ground_truth must have the same length")
+    # 1. Basic shape checks --------------------------------------------------
+    predictions = np.asarray(predictions, dtype=float)
+    ground_truth = np.asarray(ground_truth, dtype=float)
+    if predictions.shape != ground_truth.shape:
+        raise ValueError("predictions and ground_truth must have the same length/shape")
 
-    if predictions.size == 0 or ground_truth.size == 0:
-        return float("nan"), float("nan"), float("nan")
+    # 2. Clean rows that cannot be used --------------------------------------
+    mask = (
+        ~np.isnan(predictions)
+        & ~np.isnan(ground_truth)
+        & (predictions > 0)          # cannot take log2 of non‑positive numbers
+        & (ground_truth > 0)
+    )
+    n_ok = int(mask.sum())
+    if n_ok < 3:                     # OLS needs at least 3 rows
+        warnings.warn(
+            f"Only {n_ok} valid observation(s) after cleaning – PRB not computed."
+        )
+        return np.nan, np.nan, np.nan
 
-    # TODO: this block is necessary because predictions is not guaranteed to have non-zero values
-    predictions = predictions.copy()
-    ground_truth = ground_truth.copy()
+    preds = predictions[mask]
+    truth = ground_truth[mask]
 
-    na_indices = np.where(pd.isna(predictions))
-    predictions = np.delete(predictions, na_indices)
-    ground_truth = np.delete(ground_truth, na_indices)
-
-    zero_indices = np.where(predictions <= 0)
-    predictions = np.delete(predictions, zero_indices)
-    ground_truth = np.delete(ground_truth, zero_indices)
-
-    predictions = predictions.astype(float)
-    ground_truth = ground_truth.astype(float)
-
-    ratios = div_series_z_safe(predictions, ground_truth)
+    # 3. Build transformed variables -----------------------------------------
+    ratios = preds / truth
     median_ratio = np.median(ratios)
 
-    try:
-        left_hand = div_series_z_safe((ratios - median_ratio), median_ratio)
-        right_hand = np.log2(((div_series_z_safe(predictions, median_ratio)) + ground_truth))
-        right_hand = sm.tools.tools.add_constant(right_hand)
-    except ValueError:
-        return float("nan"), float("nan"), float("nan")
+    left = (ratios - median_ratio) / median_ratio
+    right = np.log2(preds / median_ratio + truth)
+    right = sm.add_constant(right)   # adds intercept term
 
-    mra_model = sm.OLS(endog=left_hand, exog=right_hand).fit()
-    prb = mra_model.params[0]
+    # 4. Fit model + CI -------------------------------------------------------
+    with np.errstate(all="ignore"):  # silence harmless internal numpy warnings
+        model = sm.OLS(left, right).fit()
 
-    # get confidence interval from MRA model:
-    conf_int = mra_model.conf_int(alpha=1.0 - confidence_interval, cols=None)
-    try:
-        prb_lower = conf_int[0, 0]  # Lower bound for the first parameter
-        prb_upper = conf_int[0, 1]  # Upper bound for the first parameter
-    except IndexError:
-        prb_lower = float("nan")
-        prb_upper = float("nan")
+    # Guard against degenerate fit (rare but better to be explicit)
+    if model.df_resid <= 0 or not np.isfinite(model.params[0]):
+        return np.nan, np.nan, np.nan
+
+    prb = float(model.params[0])
+    prb_lower, prb_upper = (
+        model.conf_int(alpha=1.0 - confidence_interval)[0].tolist()
+    )
 
     return prb, prb_lower, prb_upper
 
