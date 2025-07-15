@@ -2285,10 +2285,11 @@ def _optimize_ensemble(
             ensemble_list,
             verbose,
         )
+        if verbose:
+            print(f"-->Ensembling... so far: best score = {best_score:8.0f}, best list = {best_list}")
 
     if verbose:
-        if not np.isinf(best_score):
-            print(f"Best score = {best_score:8.0f}, ensemble = {best_list}")
+        print(f"-->Ensemble finished. Best score = {best_score:8.0f}, ensemble = {best_list}")
     return best_list
 
 
