@@ -1096,6 +1096,8 @@ class SingleModelResults:
         The model used for prediction.
     pred_test : PredictionResults
         Results for the test set.
+    pred_train : PredictionResults
+        Results for the training set
     pred_sales : PredictionResults, optional
         Results for the sales set.
     pred_univ : Any
@@ -1201,6 +1203,10 @@ class SingleModelResults:
         timing.stop("stats_test")
 
         timing.start("stats_sales")
+
+        self.pred_train = None
+        self.pred_sales = None
+
         if y_pred_sales is not None:
             self.pred_sales = PredictionResults(
                 self.dep_var_test, self.ind_vars, field_prediction, df_sales
@@ -1221,6 +1227,7 @@ class SingleModelResults:
             self.pred_train = PredictionResults(
                 self.dep_var_test, self.ind_vars, field_prediction, df_train
             )
+
         timing.stop("stats_sales")
 
         self.pred_univ = y_pred_univ
