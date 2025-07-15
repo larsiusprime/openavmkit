@@ -13,6 +13,7 @@ from sklearn.linear_model import ElasticNet, LinearRegression
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from statsmodels.tools.sm_exceptions import MissingDataError
 
+from openavmkit.utilities.data import div_series_z_safe
 from openavmkit.utilities.settings import get_fields_boolean, get_fields_categorical
 
 
@@ -369,14 +370,15 @@ def calc_prb(
     predictions = np.delete(predictions, zero_indices)
     ground_truth = np.delete(ground_truth, zero_indices)
 
-    predictions = predictions.astype(np.float64)
+    predictions = predictions.astype(float)
+    ground_truth = ground_truth.astype(float)
 
-    ratios = predictions / ground_truth
+    ratios = div_series_z_safe(predictions, ground_truth)
     median_ratio = np.median(ratios)
 
     try:
-        left_hand = (ratios - median_ratio) / median_ratio
-        right_hand = np.log2(((predictions / median_ratio) + ground_truth))
+        left_hand = div_series_z_safe((ratios - median_ratio), median_ratio)
+        right_hand = np.log2(((div_series_z_safe(predictions, median_ratio)) + ground_truth))
         right_hand = sm.tools.tools.add_constant(right_hand)
     except ValueError:
         return float("nan"), float("nan"), float("nan")

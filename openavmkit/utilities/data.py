@@ -127,21 +127,26 @@ def div_series_z_safe(
     pd.Series | np.ndarray
         The result of the division with divide-by-zero cases replaced by ``None``
     """
-    # Get the index of all rows where the denominator is zero.
-    idx_denominator_zero = denominator == 0
+    # fast path for ndarray
+    if isinstance(numerator, np.ndarray) or isinstance(denominator, np.ndarray):
+        num = np.asarray(numerator, dtype=np.float64, order='K')
+        den = np.asarray(denominator, dtype=np.float64, order='K')
 
-    # Get the numerator and denominator for rows where the denominator is not zero.
-    series_numerator = numerator[~idx_denominator_zero]
-    series_denominator = denominator[~idx_denominator_zero]
+        # pre‑allocate the output filled with NaN
+        out = np.full_like(num, np.nan, dtype=np.float64)
 
-    # Make a copy of the denominator and convert to a float type.
-    result = denominator.copy().astype("Float64")
+        # element‑wise division only where the denominator is non‑zero
+        # np.divide writes directly into `out`
+        np.divide(num, den, out=out, where=den != 0)
 
-    # Replace all values where denominator is zero with None.
-    result[idx_denominator_zero] = None
+        return out
+    # ---------- pandas path -------------------------------------------------
+    num = pd.Series(numerator, copy=False)
+    den = pd.Series(denominator, copy=False)
 
-    # Replace other values with the result of the division.
-    result[~idx_denominator_zero] = series_numerator / series_denominator
+    idx_zero = den == 0
+    result = num.div(den).astype("Float64")
+    result[idx_zero] = pd.NA
     return result
 
 

@@ -8,7 +8,7 @@ from pandas import read_pickle
 import openavmkit.utilities.stats as stats
 from openavmkit.data import get_vacant_sales, get_important_field
 from openavmkit.reports import start_report, finish_report
-from openavmkit.utilities.data import df_to_markdown
+from openavmkit.utilities.data import df_to_markdown, div_series_z_safe
 from openavmkit.utilities.settings import (
     get_fields_categorical,
     get_data_dictionary,
@@ -92,7 +92,7 @@ class RatioStudy:
         self.predictions = predictions
         self.ground_truth = ground_truth
 
-        ratios = predictions / ground_truth
+        ratios = div_series_z_safe(predictions, ground_truth).astype(float)
         median_ratio = float(np.median(ratios))
 
         # trim the ratios to remove outliers -- trim to the interquartile range
@@ -112,15 +112,19 @@ class RatioStudy:
         prb_trim, _, _ = stats.calc_prb(trim_predictions, trim_ground_truth)
 
         self.median_ratio = median_ratio
+
         self.mean_ratio = float(np.mean(ratios))
+
         try:
             self.median_ratio_trim = float(np.median(trim_ratios))
         except TypeError:
             self.median_ratio_trim = float("nan")
+
         try:
             self.mean_ratio_trim = float(np.mean(trim_ratios))
         except TypeError:
             self.mean_ratio_trim = float("nan")
+
         self.cod = cod
         self.cod_trim = cod_trim
 
@@ -201,18 +205,21 @@ class RatioStudyBootstrapped(RatioStudy):
             self.prb_ci_high = float("nan")
 
         self.iterations = iterations
+        ratios = div_series_z_safe(predictions, ground_truth)
         med, low, high = stats.calc_cod_bootstrap(
-            predictions / ground_truth, confidence_interval, iterations
+            ratios, confidence_interval, iterations
         )
+
         self.cod = med
         self.cod_ci_low = low
         self.cod_ci_high = high
 
         med, low, high = stats.calc_cod_bootstrap(
-            stats.trim_outliers(predictions / ground_truth),
+            stats.trim_outliers(ratios),
             confidence_interval,
             iterations,
         )
+
         self.cod_trim = med
         self.cod_trim_ci_low = low
         self.cod_trim_ci_high = high
@@ -278,7 +285,6 @@ def _add_ratio_study(
     iterations,
     min_sales,
 ):
-
     # ignore na values in both predictions & ground truth
     idx_na = pd.isna(predictions) | pd.isna(ground_truth)
     if np.any(idx_na):
