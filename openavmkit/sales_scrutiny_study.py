@@ -220,7 +220,7 @@ class SalesScrutinyStudy:
                 print(f"--> Unmarked sales before: {num_valid_sales_before}")
                 print(f"--> Unmarked sales after: {num_valid_sales_after}")
                 diff = num_valid_sales_before - num_valid_sales_after
-                print(f"--> Marked {diff} new invalid sales")
+                print(f"--> Marked {diff} new potentially invalid sales")
 
             # merge ss_id into df:
             df = combine_dfs(df, df_v[["key_sale", "ss_id"]], index="key_sale")
@@ -569,21 +569,27 @@ def run_heuristics(
 
     #### Multi-parcel sales detection heuristics
 
-    # 1 -- Flag sales with identical deed ids
-    vcs = df_sales[deed_id].value_counts()
-    idx_dupe_deeds = vcs[vcs > 1].index.values
-    df_sales.loc[df_sales[deed_id].isin(idx_dupe_deeds), "flag_dupe_deed"] = True
+    # 1 -- Flag sales with identical deed IDs AND identical sale dates
+    df_sales["deed_date"] = df_sales[deed_id].astype(str)+"---"+df_sales["sale_date"].astype(str)
+    vcs_deed_date = df_sales["deed_date"].value_counts()
+    idx_dupe_deed_dates = vcs_deed_date[vcs_deed_date > 1].index.values
+    df_sales.loc[
+        df_sales["deed_date"].isin(idx_dupe_deed_dates),
+        "flag_dupe_deed_date"
+    ] = True
+    # drop extraneous column
+    df_sales = df_sales.drop(columns="deed_date")
 
     # 2 -- Flag sales made on the same date for the same price
-    vcs = df_sales["sale_date"].value_counts()
-    idx_dupe_dates = vcs[vcs > 1].index.values
-    vcs = df_sales["sale_price"].value_counts()
-    idx_dupe_prices = vcs[vcs > 1].index.values
+    df_sales["date_price"] = df_sales["sale_date"].astype(str) + "---" + df_sales["sale_price"].astype(str)
+    vcs_date_price = df_sales["date_price"].value_counts()
+    idx_dupe_date_price = vcs_date_price[vcs_date_price > 1].index.values
     df_sales.loc[
-        df_sales["sale_date"].isin(idx_dupe_dates)
-        & df_sales["sale_price"].isin(idx_dupe_prices),
+        df_sales["date_price"].isin(idx_dupe_date_price),
         "flag_dupe_date_price",
     ] = True
+    # drop extraneous column
+    df_sales = df_sales.drop(columns="date_price")
 
     #### Misclassified vacant sales detection heuristics
 
@@ -596,7 +602,7 @@ def run_heuristics(
     df_sales.loc[idx_false_vacant, "flag_false_vacant"] = True
 
     files = {
-        "flag_dupe_deed": "duplicated_deeds",
+        "flag_dupe_deed_date": "duplicated_deeds_and_dates",
         "flag_dupe_date_price": "duplicated_dates_and_prices",
         "flag_false_vacant": "classified_vacant_but_bldg_older_than_sale_year",
     }
@@ -660,7 +666,7 @@ def run_heuristics(
                         "land_area_sqft": "Land sqft",
                         "valid_sale": "Valid sale",
                         "vacant_sale": "Vacant sale",
-                        "flag_dupe_deed": "Repeated\ndeed ID",
+                        "flag_dupe_deed_date": "Repeated\ndeed & sale date",
                         "flag_dupe_date_price": "Repeated\nsale date & price",
                         "flag_false_vacant": "Bldg older\nthan sale year",
                     }
@@ -706,7 +712,7 @@ def run_heuristics(
         print(f"Dropped {len(bad_keys)} invalid sales keys identified by heuristic")
         df_sales = sup.sales.copy()
         df_sales = df_sales[~df_sales["key_sale"].isin(bad_keys)]
-        sup.df_sales = df_sales
+        sup.set("sales", df_sales)
     else:
         print(
             f"Identified {len(bad_keys)} invalid sales keys identified by heuristic, but not dropping them"
