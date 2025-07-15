@@ -2255,6 +2255,7 @@ def _optimize_ensemble(
 
     vacant_status = "vacant" if vacant_only else "main"
     df_test = ds.df_test
+    df_sales = ds.df_sales
     df_univ = ds.df_universe
     instructions = settings.get("modeling", {}).get("instructions", {})
 
@@ -2274,8 +2275,11 @@ def _optimize_ensemble(
     best_score = float("inf")
 
     while len(ensemble_list) > 1:
+        if verbose:
+            print(f"Ensembling with : {ensemble_list}")
         best_score, best_list = _optimize_ensemble_iteration(
             df_test,
+            df_sales,
             df_univ,
             timing,
             all_results,
@@ -2285,8 +2289,6 @@ def _optimize_ensemble(
             ensemble_list,
             verbose,
         )
-        if verbose:
-            print(f"-->Ensembling... so far: best score = {best_score:8.0f}, best list = {best_list}")
 
     if verbose:
         print(f"-->Ensemble finished. Best score = {best_score:8.0f}, ensemble = {best_list}")
@@ -2295,6 +2297,7 @@ def _optimize_ensemble(
 
 def _optimize_ensemble_iteration(
     df_test: pd.DataFrame,
+    df_sales: pd.DataFrame,
     df_univ: pd.DataFrame,
     timing: TimingData,
     all_results: MultiModelResults,
@@ -2305,6 +2308,7 @@ def _optimize_ensemble_iteration(
     verbose: bool = False,
 ):
     df_test_ensemble = df_test[["key_sale", "key"]].copy()
+    df_sales_ensemble = df_sales[["key_sale", "key"]].copy()
     df_univ_ensemble = df_univ[["key"]].copy()
     if len(ensemble_list) == 0:
         ensemble_list = [key for key in all_results.model_results.keys()]
@@ -2320,11 +2324,18 @@ def _optimize_ensemble_iteration(
         df_pred_test = m_results.df_test[["key_sale", field_prediction]].copy()
         df_pred_test = df_pred_test.rename(columns={field_prediction: m_key})
 
+        df_pred_sales = m_results.df_sales[["key_sale", field_prediction]].copy()
+        df_pred_sales = df_pred_sales.rename(columns={field_prediction: m_key})
+
         df_pred_univ = m_results.df_universe[["key", field_prediction]].copy()
         df_pred_univ = df_pred_univ.rename(columns={field_prediction: m_key})
 
         df_test_ensemble = df_test_ensemble.merge(
             df_pred_test, on="key_sale", how="left"
+        )
+
+        df_sales_ensemble = df_sales_ensemble.merge(
+            df_pred_sales, on="key_sale", how="left"
         )
         df_univ_ensemble = df_univ_ensemble.merge(df_pred_univ, on="key", how="left")
     timing.stop("train")
@@ -2334,26 +2345,28 @@ def _optimize_ensemble_iteration(
     timing.stop("predict_test")
 
     timing.start("predict_sales")
+    y_pred_sales_ensemble = df_sales_ensemble[ensemble_list].median(axis=1)
     timing.stop("predict_sales")
 
     timing.start("predict_univ")
     y_pred_univ_ensemble = df_univ_ensemble[ensemble_list].median(axis=1)
     timing.stop("predict_univ")
 
-    results = SingleModelResults(
+    results : SingleModelResults = SingleModelResults(
         ds,
         "prediction",
         "he_id",
         "ensemble",
         model="ensemble",
         y_pred_test=y_pred_test_ensemble.to_numpy(),
-        y_pred_sales=None,
+        y_pred_sales=y_pred_sales_ensemble.to_numpy(),
         y_pred_univ=y_pred_univ_ensemble.to_numpy(),
         timing=timing,
         verbose=verbose,
     )
     timing.stop("total")
 
+    print(f"Results: score = {results.utility_train}, r2 = {results.pred_train.r2}, mse = {results.pred_train.mse}")
     score = results.utility_train
 
     # Add early exit if score is nan
@@ -3177,8 +3190,8 @@ def _model_performance_plots(
     for model_name, model_result in all_results.model_results.items():
 
         dfs = {
-            "test": model_result.df_test.copy()
-            #"sales": model_result.df_sales.copy(),
+            "test": model_result.df_test.copy(),
+            "sales": model_result.df_sales.copy(),
         }
 
         for key in dfs:
