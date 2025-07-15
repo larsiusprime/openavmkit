@@ -432,7 +432,7 @@ def _get_model_group_signature(df: pd.DataFrame)->dict:
         vcs = df["model_group"].value_counts()
         sig = {}
         for key in vcs.index:
-            sig[key] = vcs[key]
+            sig[key] = vcs[key].astype("str")
         return sig
     return {}
 
