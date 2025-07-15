@@ -6,7 +6,7 @@ import numpy as np
 import colorsys
 import mpld3
 import statsmodels.api as sm
-from matplotlib.ticker import FuncFormatter
+from matplotlib.ticker import FuncFormatter, ScalarFormatter
 from mpld3 import plugins
 
 from IPython.display import display, HTML
@@ -291,41 +291,44 @@ def _plot_histogram_mult(
     xlabel: str = "",
     ylabel: str = "",
     title: str = "",
-    bins=500,
+    bins: int | None = 500,
     x_lim=None,
-    out_file: str = None,
+    out_file: str | None = None,
 ):
     plt.close("all")
-    ylim_min = 0
-    ylim_max = 0
+
+    plt.ticklabel_format(axis="x", style="plain")          # no sci‑notation
+    plt.gca().xaxis.set_major_formatter(ScalarFormatter()) # (optional) turn off offset
+
+    ylim_min, ylim_max = 0, 0
+
     for entry in entries:
         data = entry["data"].copy()
         if x_lim is not None:
-            data[data.lt(x_lim[0])] = x_lim[0]
-            data[data.gt(x_lim[1])] = x_lim[1]
-        if bins is not None:
-            _bins = bins
-        else:
-            _bins = data.get("bins", None)
+            data = data.clip(*x_lim)
+        _bins = bins if bins is not None else entry.get("bins")
         label = entry["label"]
         alpha = entry.get("alpha", 0.25)
-        data = data[~data.isna()]
+
+        data = data.dropna()
         counts, _, _ = plt.hist(data, bins=_bins, label=label, alpha=alpha)
-        ax = plt.gca()
-        plt.ticklabel_format(axis='x', style='plain')
-        ax.xaxis.set_major_formatter(_human_fmt(digits=3))
-        _ylim_max = np.percentile(counts, 95)
-        if _ylim_max > ylim_max:
-            ylim_max = _ylim_max
+
+    plt.gca().xaxis.set_major_formatter(_human_fmt(digits=3))
+
+    # capture y‑limits
+    _ylim_max = np.percentile(counts, 95)
+    ylim_max = max(ylim_max, _ylim_max)
+
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
     plt.title(title)
     plt.legend()
     if x_lim is not None:
-        plt.xlim(x_lim[0], x_lim[1])
+        plt.xlim(*x_lim)
     plt.ylim(ylim_min, ylim_max)
-    if out_file is not None:
-        plt.savefig(out_file)
+
+    if out_file:
+        plt.savefig(out_file, bbox_inches="tight")
     plt.show()
 
 
