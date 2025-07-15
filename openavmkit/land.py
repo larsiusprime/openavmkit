@@ -5,6 +5,9 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 from geopandas import GeoDataFrame
+from pygam import LinearGAM, s, te
+from scipy.optimize import curve_fit
+from pygam.callbacks import CallBack
 
 from IPython.display import display
 from openavmkit.data import (
@@ -759,3 +762,143 @@ def _convolve_land_analysis(
         print("=" * 80)
         print(df_results_test.to_string())
         print("")
+
+
+
+class LandSLICEModel:
+
+    """
+    SLICE stands for "Smooth Location w/ Increasing-Concavity Equation."
+    """
+
+    def __init__(
+        self,
+        alpha: float,
+        beta: float,
+        gam_L: LinearGAM,
+        med_size: float,
+        size_field: str
+    ):
+        self.alpha = alpha
+        self.beta = beta
+        self.gam_L = gam_L
+        self.med_size = med_size
+        self.size_field = size_field
+
+    def predict(
+        self,
+        df: pd.DataFrame,
+        location_factor: str = "location_factor",
+        size_factor: str = "size_factor",
+        prediction: str = "land_value"
+    ):
+        for field in ["latitude", "longitude", self.size_field]:
+            if field not in df:
+                raise ValueError(f"Required field {field} is missing from dataframe!")
+
+        # Get location factor from Lat & Lon
+        df[location_factor] = np.exp(
+            self.gam_L.predict(df[["latitude", "longitude"]])
+        )
+
+        # Get size factor from power curve
+        df[size_factor] = self.alpha * (np.asarray(df[self.size_field]) / self.med_size)**self.beta
+
+        df[prediction] = df[location_factor] * df[size_factor]
+        return df
+
+
+def fit_land_SLICE_model(
+    df_in : pd.DataFrame,
+    size_field: str = "land_area_sqft",
+    value_field: str = "land_value",
+    verbose: bool = False
+)->LandSLICEModel:
+    class Progress(CallBack):
+        def on_loop_end(self, diff):
+            # self.iter is automatically tracked inside Callback
+            print(f"iter {self.iter:>3d}   dev.change={diff:9.3e}")
+
+    if verbose:
+        print("Fitting land SLICE model...")
+
+    df = df_in[[value_field, size_field, "latitude", "longitude"]].copy()
+
+    med_land_size = float(np.median(df[size_field]))
+
+    # Y = Size-detrended location factor
+    df["Y"] = div_series_z_safe(
+        df[value_field],
+        np.sqrt(
+            df[size_field] / med_land_size
+        )
+    )
+
+    if verbose:
+        print("-->fitting thin-plate spline for location factor...")
+    # Fit a thin-plate spline for location factor L(lat, lon)
+    basis = te(0, 1, n_splines=40, spline_order=3)
+    gam_L : LinearGAM = LinearGAM(
+        basis,
+        max_iter=40,
+        callbacks=[Progress()],
+        verbose=True
+    )
+    gam_L.fit(
+        df[['latitude', 'longitude']].values,
+        np.log(df['Y']).values
+    )
+
+    if verbose:
+        print("-->estimating initial location factor...")
+    # L_hat = Initial estimated location factor (mostly depends on latitude/longitude)
+    df['L_hat'] = np.exp(gam_L.predict(df[['latitude', 'longitude']].values))
+
+    # Z = Location-detrended land values (mostly depends on size)
+    df["Z"] = df[value_field] / df["L_hat"]
+
+    # Define a power law curve function
+    def power_curve(s, alpha, beta):
+        return alpha * (s / med_land_size)**beta
+
+    # Solve for location-detrended-land-value and observed size to fit the power law curve
+    # - with bounds: alpha>0 (always positive), 0<beta<1 (monotonic-up & concave)
+    # - this enforces that land increases in value with size, but with diminishing returns to marginal size
+    if verbose:
+        print("-->fitting power law curve for size factor...")
+    popt, _ = curve_fit(
+        f=power_curve,
+        p0=[np.median(df["Z"]),0.5],
+        xdata=df[size_field].values,
+        ydata=df["Z"].values,
+        bounds=([0, 1e-6], [np.inf, 0.999])
+    )
+
+    # Coefficients for the power law curve:
+    alpha_hat, beta_hat = popt
+
+    # Function to call the power law curve with memorized coefficients and a given size
+    def F_hat(s):
+        return power_curve(np.asarray(s), alpha_hat, beta_hat)
+
+    if verbose:
+        print("-->tightening up values with one more iteration...")
+
+    # Tighten up our values with an extra iteration
+    df["Y2"] = df[value_field] / F_hat(df[size_field])
+    gam_L2 : LinearGAM = gam_L.fit(df[["latitude", "longitude"]], np.log(df["Y2"]))   # refit L
+
+    if verbose:
+        print("-->estimating final location factor...")
+
+    # L_hat = Final estimated location factor
+    df["L_hat"] = np.exp( gam_L2.predict(df[["latitude", "longitude"]]))
+
+    # could refit F_hat once more here if desired
+    return LandSLICEModel(
+        alpha_hat,
+        beta_hat,
+        gam_L2,
+        med_land_size,
+        size_field
+    )

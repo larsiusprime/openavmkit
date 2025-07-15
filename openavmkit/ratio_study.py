@@ -113,7 +113,7 @@ class RatioStudy:
 
         prb, _, _ = stats.calc_prb(predictions, ground_truth)
         prb_trim, _, _ = stats.calc_prb(trim_predictions, trim_ground_truth)
-        
+
         self.median_ratio = median_ratio
 
         if len(ratios) == 0:
