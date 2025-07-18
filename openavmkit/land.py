@@ -22,12 +22,11 @@ from openavmkit.quality_control import check_land_values
 from openavmkit.utilities.data import (
     div_series_z_safe,
     add_sqft_fields,
-    calc_spatial_lag,
 )
 from openavmkit.utilities.plotting import plot_histogram_df
 from openavmkit.utilities.settings import get_model_group_ids
 
-from openavmkit.utilities.stats import calc_correlations, calc_cod
+from openavmkit.utilities.stats import calc_correlations, calc_cod, calc_r2, calc_mse_r2_adj_r2
 
 
 def run_land_analysis(sup: SalesUniversePair, settings: dict, verbose: bool = False):
@@ -215,10 +214,14 @@ def _run_land_analysis(
     instructions = settings.get("modeling", {}).get("instructions", {})
     allocation = instructions.get("allocation", {})
 
+    sale_field = get_sale_field(settings, df_sales)
+
     results_map = {"main": {}, "hedonic": {}, "vacant": {}}
+    sales_map = {"main": {}, "hedonic": {}, "vacant": {}}
 
     land_fields = []
     land_results: dict[str:SingleModelResults] = {}
+    land_sales: dict[str:SingleModelResults] = {}
 
     # STEP 1: Gather results from the main, hedonic, and vacant models
     for key in ["main", "hedonic", "vacant"]:
@@ -246,27 +249,41 @@ def _run_land_analysis(
                 filepath = f"{outpath}/{model}"
                 if os.path.exists(filepath):
                     fpred_univ = f"{filepath}/pred_universe.parquet"
+                    fpred_sales = f"{filepath}/pred_sales.parquet"
                     if not os.path.exists(fpred_univ):
                         fpred_univ = f"{filepath}/pred_{model}_universe.parquet"
+                        fpred_sales = f"{filepath}/pred_{model}_sales.parquet"
 
                     if os.path.exists(fpred_univ):
-                        df_univ = pd.read_parquet(fpred_univ)[["key", "prediction"]]
-                        results_map[key][model] = df_univ
+                        df_u = pd.read_parquet(fpred_univ)[["key", "prediction"]]
+                        results_map[key][model] = df_u
+                        df_s = pd.read_parquet(fpred_sales)[["key", "prediction"]]
+                        sales_map[key][model] = df_s
                         print(f"--------> stashing {model}")
 
                 fpred_results = f"{filepath}/pred_universe.pkl"
+                fpred_sales = f"{filepath}/pred_sales.pkl"
                 if os.path.exists(fpred_results):
                     if key != "main":
                         with open(fpred_results, "rb") as file:
                             results = pickle.load(file)
                             land_results[f"{short_key}_{model}"] = results
                             land_fields.append(f"{short_key}_{model}")
+                        with open(fpred_sales, "rb") as file:
+                            results = pickle.load(file)
+                            land_sales[f"{short_key}_{model}"] = results
 
     df_all_alloc = results_map["main"]["ensemble"].copy()
+    df_all_alloc_sales = sales_map["main"]["ensemble"].copy()
     df_all_land_values = df_all_alloc.copy()
     df_all_land_values = df_all_land_values[["key"]].merge(
         df_universe, on="key", how="left"
     )
+    df_all_land_sales = df_all_alloc_sales.copy()
+    df_all_land_sales = df_all_land_sales[["key_sale"]].merge(
+        df_sales, on="key_sale", how="left"
+    )
+
     all_alloc_names = []
 
     bins = 400
@@ -277,8 +294,7 @@ def _run_land_analysis(
         "type": [],
         "model": [],
         "count": [],
-        "pct_neg": [],
-        "pct_over": [],
+        "r2": [],
         "alloc_median": [],
     }
 
@@ -290,31 +306,48 @@ def _run_land_analysis(
 
         for model in entries:
 
-            pred_main = None  # results_map["main"].get(model)
+            pred_main = results_map["main"].get(model)
+            pred_sales = sales_map["main"].get(model)
 
             if pred_main is None:
                 warnings.warn(
                     f"No main model found for model: {model}, using ensemble instead"
                 )
                 pred_main = results_map["main"].get("ensemble")
+                pred_sales = sales_map["main"].get("ensemble")
 
             pred_land = (
                 results_map[key]
                 .get(model)
                 .rename(columns={"prediction": "prediction_land"})
             )
+            pred_sales = (
+                sales_map[key]
+                .get(model)
+                .rename(columns={"prediction": "prediction_land"})
+            )
             df = pred_main.merge(pred_land, on="key", how="left")
+            dfs = pred_sales.merge(pred_sales, on="key_sale", how="left")
             alloc_name = f"{short_key}_{model}"
             df.loc[:, alloc_name] = df["prediction_land"] / df["prediction"]
+            dfs.loc[:, alloc_name] = dfs["prediction_land"] / df["prediction"]
 
             df_alloc = df_alloc.merge(df[["key", alloc_name]], on="key", how="left")
             df_all_alloc = df_all_alloc.merge(
                 df[["key", alloc_name]], on="key", how="left"
             )
+            df_all_alloc_sales = df_all_alloc_sales.merge(
+                df[["key_sale", alloc_name]], on="key_sale", how="left"
+            )
 
             df2 = df.copy().rename(columns={"prediction_land": alloc_name})
+            df2s = dfs.copy().rename(columns={"prediction_land": alloc_name})
+
             df_all_land_values = df_all_land_values.merge(
                 df2[["key", alloc_name]], on="key", how="left"
+            )
+            df_all_land_sales = df_all_land_sales.merge(
+                df2s[["key_sale", alloc_name]], on="key_sale", how="left"
             )
 
             alloc_names.append(alloc_name)
@@ -324,12 +357,18 @@ def _run_land_analysis(
             data_compare["type"].append(key)
             data_compare["model"].append(model)
             data_compare["count"].append(total_count)
-            data_compare["pct_neg"].append(
-                np.round(100 * len(df[df["prediction_land"].lt(0)]) / total_count) / 100
-            )
-            data_compare["pct_over"].append(
-                np.round(100 * len(df[df[alloc_name].gt(1)]) / total_count) / 100
-            )
+
+            mse, r2, _ = calc_mse_r2_adj_r2(df2s[alloc_name], df2s[sale_field], 1)
+
+            # data_compare["pct_neg"].append(
+            #     np.round(100 * len(df[df["prediction_land"].lt(0)]) / total_count) / 100
+            # )
+            # data_compare["pct_over"].append(
+            #     np.round(100 * len(df[df[alloc_name].gt(1)]) / total_count) / 100
+            # )
+
+            data_compare["r2"].append(r2)
+            data_compare["mse"].append(mse)
             data_compare["alloc_median"].append(
                 np.round(100 * df[alloc_name].median()) / 100
             )
@@ -401,6 +440,9 @@ def _run_land_analysis(
     print(f"Scores =\n{scores}")
 
     best_ensemble = None
+
+    # Don't ensemble on assessor models:
+    curr_ensemble = [col for col in curr_ensemble if "assessor" not in col]
 
     while len(curr_ensemble) > 0:
         alloc_ensemble = df_all_alloc[curr_ensemble].median(axis=1)
@@ -573,7 +615,7 @@ def _convolve_land_analysis(
     data_results = {
         "model": [],
         "r2_ols": [],
-        "r2_raw": [],
+        "r2_y=x": [],
         "slope": [],
         "med_ratio": [],
         "cod": [],
@@ -582,7 +624,7 @@ def _convolve_land_analysis(
     data_results_test = {
         "model": [],
         "r2_ols": [],
-        "r2_raw": [],
+        "r2_y=x": [],
         "slope": [],
         "med_ratio": [],
         "cod": [],
@@ -590,144 +632,121 @@ def _convolve_land_analysis(
 
     # STEP 2: Calculate smoothed values for each surface
     for full_or_test in ["full", "test"]:
-        for exclude_self in [True, False]:
-            for neighbors in [0]:
-                for key in ["hedonic", "vacant"]:
-                    entries = results_map[key]
+        for key in ["hedonic", "vacant"]:
+            entries = results_map[key]
+            for model in entries:
 
-                    for model in entries:
+                dfv = df_vacant_sale.copy()
 
-                        dfv = df_vacant_sale.copy()
+                pred_main = None
 
-                        pred_main = None
+                if pred_main is None:
+                    pred_main = results_map["main"].get("ensemble")
 
-                        if pred_main is None:
-                            pred_main = results_map["main"].get("ensemble")
+                pred_land = (
+                    results_map[key]
+                    .get(model)
+                    .rename(columns={"prediction": "prediction_land"})
+                )
+                df = pred_main.merge(pred_land, on="key", how="left")
+                df = df.merge(
+                    df_universe[
+                        ["key", "latitude", "longitude", "land_area_sqft"]
+                    ],
+                    on="key",
+                    how="left",
+                )
 
-                        pred_land = (
-                            results_map[key]
-                            .get(model)
-                            .rename(columns={"prediction": "prediction_land"})
-                        )
-                        df = pred_main.merge(pred_land, on="key", how="left")
-                        df = df.merge(
-                            df_universe[
-                                ["key", "latitude", "longitude", "land_area_sqft"]
-                            ],
-                            on="key",
-                            how="left",
-                        )
+                # Clamp land predictions to be non-negative and not exceed the main prediction
+                df.loc[df["prediction_land"].lt(0), "prediction_land"] = 0.0
+                df["prediction_land"] = df["prediction_land"].astype("Float64")
+                df.loc[
+                    df["prediction_land"].gt(df["prediction"]),
+                    "prediction_land",
+                ] = df["prediction"].astype("Float64")
 
-                        # Clamp land predictions to be non-negative and not exceed the main prediction
-                        df.loc[df["prediction_land"].lt(0), "prediction_land"] = 0.0
-                        df["prediction_land"] = df["prediction_land"].astype("Float64")
-                        df.loc[
-                            df["prediction_land"].gt(df["prediction"]),
-                            "prediction_land",
-                        ] = df["prediction"].astype("Float64")
+                # Calculate land area per square foot of land
+                df["prediction_land_sqft"] = div_series_z_safe(
+                    df["prediction_land"], df["land_area_sqft"]
+                )
 
-                        # Calculate land area per square foot of land
-                        df["prediction_land_sqft"] = div_series_z_safe(
-                            df["prediction_land"], df["land_area_sqft"]
-                        )
+                # Calculate the sale price per square foot of land
+                sale_field_land_sqft = f"{sale_field}_land_sqft"
+                dfv[sale_field_land_sqft] = div_series_z_safe(
+                    dfv[sale_field], dfv["land_area_sqft"]
+                )
 
-                        # Calculate the sale price per square foot of land
-                        sale_field_land_sqft = f"{sale_field}_land_sqft"
-                        dfv[sale_field_land_sqft] = div_series_z_safe(
-                            dfv[sale_field], dfv["land_area_sqft"]
-                        )
+                df["prediction_land_smooth"] = df["prediction_land"]
 
-                        if neighbors > 0:
-                            # Smooth land prediction / area with weighted spatial average of 5 nearest neighbors excluding self
-                            df = calc_spatial_lag(
-                                df,
-                                df,
-                                ["prediction_land_sqft"],
-                                neighbors,
-                                exclude_self,
-                            )
-                            # Paint the smoothed value back as a surface
-                            df["prediction_land_smooth"] = (
-                                df[f"spatial_lag_prediction_land_sqft"]
-                                * df["land_area_sqft"]
-                            )
-                        else:
-                            df["prediction_land_smooth"] = df["prediction_land"]
-                            if exclude_self:
-                                continue
+                df["prediction_land_smooth_sqft"] = div_series_z_safe(
+                    df["prediction_land_smooth"], df["land_area_sqft"]
+                )
 
-                        df["prediction_land_smooth_sqft"] = div_series_z_safe(
-                            df["prediction_land_smooth"], df["land_area_sqft"]
-                        )
-
-                        dfv = dfv.merge(
-                            df[
-                                [
-                                    "key",
-                                    "prediction_land_smooth",
-                                    "prediction_land_smooth_sqft",
-                                ]
-                            ],
-                            on="key",
-                            how="left",
-                        )
-                        dfv = dfv[
-                            ~dfv["prediction_land_smooth"].isna()
-                            & ~dfv["prediction_land_smooth_sqft"].isna()
-                            & ~dfv[sale_field_land_sqft].isna()
+                dfv = dfv.merge(
+                    df[
+                        [
+                            "key",
+                            "prediction_land_smooth",
+                            "prediction_land_smooth_sqft",
                         ]
+                    ],
+                    on="key",
+                    how="left",
+                )
+                dfv = dfv[
+                    ~dfv["prediction_land_smooth"].isna()
+                    & ~dfv["prediction_land_smooth_sqft"].isna()
+                    & ~dfv[sale_field_land_sqft].isna()
+                ]
 
-                        if full_or_test == "test":
-                            dfv = dfv[dfv["key_sale"].isin(test_keys)]
-                        if len(dfv) == 0:
-                            continue
+                if full_or_test == "test":
+                    dfv = dfv[dfv["key_sale"].isin(test_keys)]
+                if len(dfv) == 0:
+                    continue
 
-                        dfv["sales_ratio"] = div_series_z_safe(
-                            dfv["prediction_land_smooth"], dfv[sale_field]
-                        )
-                        # dfv["sales_ratio"] = div_field_z_safe(dfv["prediction_land_smooth_sqft"], dfv[sale_field_land_sqft])
+                dfv["sales_ratio"] = div_series_z_safe(
+                    dfv["prediction_land_smooth"], dfv[sale_field]
+                )
 
-                        median_ratio = dfv["sales_ratio"].median()
-                        cod = calc_cod(dfv["sales_ratio"].values)
+                median_ratio = dfv["sales_ratio"].median()
+                cod = calc_cod(dfv["sales_ratio"].values)
 
-                        results = simple_ols(
-                            dfv, "prediction_land_smooth", "sale_price", intercept=True
-                        )
+                results = simple_ols(
+                    dfv, "prediction_land_smooth", "sale_price", intercept=True
+                )
 
-                        slope = results["slope"]
-                        r2 = results["r2"]
+                slope = results["slope"]
+                r2 = results["r2"]
 
-                        y_true = dfv["sale_price"].values
-                        y_pred = dfv["prediction_land_smooth"].values
+                y_true = dfv["sale_price"].values
+                y_pred = dfv["prediction_land_smooth"].values
 
-                        ss_res = np.sum((y_true - y_pred) ** 2)
-                        ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
-                        r2_raw = 1 - (ss_res / ss_tot)
+                ss_res = np.sum((y_true - y_pred) ** 2)
+                ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+                r2_yx = 1 - (ss_res / ss_tot)
 
-                        selfword = "exself" if exclude_self else "self"
-
-                        if full_or_test == "full":
-                            data_results["model"].append(
-                                f"{neighbors}_{key}_{model}_{selfword}"
-                            )
-                            data_results["slope"].append(f"{slope:.2f}")
-                            data_results["r2_ols"].append(f"{r2:.2f}")
-                            data_results["r2_raw"].append(f"{r2_raw:.2f}")
-                            data_results["med_ratio"].append(f"{median_ratio:.2f}")
-                            data_results["cod"].append(f"{cod:.1f}")
-                        else:
-                            data_results_test["model"].append(
-                                f"{neighbors}_{key}_{model}_{selfword}"
-                            )
-                            data_results_test["slope"].append(f"{slope:.2f}")
-                            data_results_test["r2_ols"].append(f"{r2:.2f}")
-                            data_results_test["r2_raw"].append(f"{r2_raw:.2f}")
-                            data_results_test["med_ratio"].append(f"{median_ratio:.2f}")
-                            data_results_test["cod"].append(f"{cod:.1f}")
+                if full_or_test == "full":
+                    data_results["model"].append(
+                        f"{key}_{model}"
+                    )
+                    data_results["slope"].append(f"{slope:.2f}")
+                    data_results["r2_ols"].append(f"{r2:.2f}")
+                    data_results["r2_y=x"].append(f"{r2_yx:.2f}")
+                    data_results["med_ratio"].append(f"{median_ratio:.2f}")
+                    data_results["cod"].append(f"{cod:.1f}")
+                else:
+                    data_results_test["model"].append(
+                        f"{key}_{model}"
+                    )
+                    data_results_test["slope"].append(f"{slope:.2f}")
+                    data_results_test["r2_ols"].append(f"{r2:.2f}")
+                    data_results_test["r2_y=x"].append(f"{r2_yx:.2f}")
+                    data_results_test["med_ratio"].append(f"{median_ratio:.2f}")
+                    data_results_test["cod"].append(f"{cod:.1f}")
 
     df_results = pd.DataFrame(data_results)
 
-    df_results["r2_"] = np.floor(df_results["r2_raw"].astype("float").fillna(0.0) * 10)
+    df_results["r2_"] = np.floor(df_results["r2_y=x"].astype("float").fillna(0.0) * 10)
     df_results["slope_"] = np.abs(1.0 - df_results["slope"].astype("float").fillna(0.0))
 
     df_results = df_results.sort_values(by=["r2_", "slope_"], ascending=False)
@@ -744,7 +763,7 @@ def _convolve_land_analysis(
     df_results_test = pd.DataFrame(data_results_test)
     if len(df_results_test) > 0:
         df_results_test["r2_"] = np.floor(
-            df_results_test["r2_raw"].astype("float").fillna(0.0) * 10
+            df_results_test["r2_y=x"].astype("float").fillna(0.0) * 10
         )
         df_results_test["slope_"] = np.abs(
             1.0 - df_results_test["slope"].astype("float").fillna(0.0)
