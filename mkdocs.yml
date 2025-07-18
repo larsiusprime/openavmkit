@@ -39,6 +39,6 @@ plugins:
   - literate-nav
 
 nav:
-  - About: index.md
+  - Home: index.html
   - Docs: docs/
   - API: api/

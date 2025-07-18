@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset='UTF-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+  <title>OpenAVMKit – Landing Page</title>
+  <link rel='preconnect' href='https://fonts.gstatic.com'>
+  <link href='https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap' rel='stylesheet'>
+  <style>
+    /* ============================================================
+       Updated palette (banner-inspired, cooler variant)
+       ------------------------------------------------------------
+       Deep Indigo       #201C26  (background)
+       Slate Indigo      #2C2C45  (body text)
+       Lavender Steel    #5C6896  (muted accents)
+       Royal Indigo      #475289  (primary accent / links / CTA)
+       Royal Indigo Dark #323963  (hover / darken)
+       Warm Amber        #D2A262  (primary button)
+       Bronze            #9B6A47  (primary hover/darken)
+    ============================================================ */
+
+    :root {
+      --color-bg-dark: #201C26;
+      --color-bg-light: #F8F9FB;
+      --color-text: #2C2C45;
+      --color-text-invert: #FFFFFF;
+      --color-primary: #475289;          /* swapped from warm amber -> royal indigo */
+      --color-primary-dark: #323963;     /* darker shade for hover */
+      --color-accent-muted: #414a6a;     /* softer copy & accents */
+      --color-button: #D2A262;
+      --color-button-hover: #9B6A47;
+      --radius-lg: 12px;
+      --shadow-card: 0 8px 20px rgba(0,0,0,0.08);
+    }
+
+    /* --- Global Reset & Typography --- */
+    *,*::before,*::after{margin:0;padding:0;box-sizing:border-box;}
+    body{font-family:'Inter',sans-serif;line-height:1.6;color:var(--color-text);background:#f7f6ff;}
+    a{color:inherit;text-decoration:none;transition:color .2s ease;}
+    a:hover{color:var(--color-primary);} /* link hover uses new primary */
+
+    /* --- Header / Navigation --- */
+    header{background:#fff;position:fixed;width:100%;top:0;left:0;z-index:999;border-bottom:1px solid #e2e8f0;backdrop-filter:saturate(180%) blur(6px);} 
+    .nav-container{max-width:1200px;margin:0 auto;padding:1rem 2rem;display:flex;align-items:center;justify-content:space-between;}
+    .logo{font-weight:700;font-size:1.25rem;color:var(--color-primary);}    
+    nav ul{list-style:none;display:flex;gap:1.5rem;}
+    nav li a{font-weight:500;color:var(--color-text);}
+    nav li a:hover{color:var(--color-primary);} /* hover now indigo */
+
+    /* --- Hero Section --- */
+    .hero{
+      position:relative;padding:10rem 1rem 8rem;text-align:center;margin-top:64px;color:var(--color-text-invert);
+    }
+    .hero::before{content:"";position:absolute;inset:0;background:url('images/banner-texture.jpg') center/cover no-repeat fixed;z-index:-2;}
+    .hero::after{content:"";position:absolute;inset:0;background:rgba(32,28,38,0.65);z-index:-1;} /* readability overlay */
+    .hero h1{font-size:3rem;font-weight:700;margin-bottom:1rem;}
+    .hero p{font-size:1.25rem;margin:0 auto 2.5rem;max-width:640px;}
+    .btn-primary{display:inline-block;background:var(--color-button);color:var(--color-text-invert);padding:0.75rem 1.75rem;border-radius:var(--radius-lg);font-weight:600;transition:background .2s ease;}
+    .btn-primary:hover{background:var(--color-button-hover);}    
+
+    /* --- Sections (Image + Text) --- */
+    .section{max-width:1200px;margin:0 auto;padding:4rem 1rem;display:flex;flex-wrap:wrap;gap:2rem;align-items:center;}
+    .section:nth-of-type(even){flex-direction:row-reverse;}
+    .section img{flex:1 1 400px;width:100%;max-width:100%;border-radius:var(--radius-lg);box-shadow:var(--shadow-card);background:#e2e8f0;aspect-ratio:16/9;object-fit:cover;}
+    .section-content{flex:1 1 360px;}
+    .section-content h2{font-size:2rem;margin-bottom:1rem;color:var(--color-text);}
+    .section-content p{margin-bottom:1rem;color:var(--color-accent-muted);}    
+
+    /* --- Feature Grid --- */
+    .features-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:2rem;padding:2rem 0;}
+    .feature-card{background:#fff;border:1px solid rgba(71,82,137,0.15);border-radius:var(--radius-lg);padding:2rem;text-align:center;box-shadow:0 4px 10px rgba(0,0,0,0.04);transition:transform .15s ease;}
+    .feature-card:hover{transform:translateY(-4px);}    
+    .feature-card h3{font-size:1.25rem;font-weight:600;margin-bottom:.75rem;color:var(--color-text);}
+    .feature-card p{font-size:.95rem;color:var(--color-accent-muted);}    
+
+    /* --- Call-to-Action --- */
+    .cta{background:var(--color-primary);color:var(--color-text-invert);text-align:center;padding:4rem 1rem;}
+    .cta h2{font-size:2.5rem;font-weight:700;margin-bottom:1rem;}
+    .cta p{font-size:1.2rem;margin-bottom:2rem;}
+
+    /* --- Footer --- */
+    footer{background:var(--color-bg-dark);color:#B2B5C9;padding:3rem 1rem;}
+    .footer-container{max-width:1200px;margin:0 auto;display:flex;flex-wrap:wrap;gap:2rem;}
+    .footer-column{flex:1 1 200px;min-width:150px;}
+    .footer-column h4{font-size:1rem;font-weight:600;margin-bottom:.75rem;color:#fff;}
+    .footer-column ul{list-style:none;}
+    .footer-column li{margin-bottom:.5rem;}
+    .footer-bottom{text-align:center;margin-top:2rem;font-size:.875rem;color:#8A8DA3;}
+
+    /* --- Responsive Tweaks --- */
+    @media (max-width:768px){
+      .hero h1{font-size:2.25rem;}
+      .section{flex-direction:column;}
+      header .nav-container{flex-direction:column;gap:1rem;}
+      nav ul{flex-wrap:wrap;justify-content:center;}
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class='nav-container'>
+      <div class='logo'>OpenAVMKit</div>
+      <nav>
+        <ul>
+          <li><a href='#'>Home</a></li>
+          <li><a href='docs/'>Docs</a></li>
+          <li><a href='https://discord.gg/k3U8z2PT'>Discord</a></li>
+          <li><a href='https://www.github.com/larsiusprime/openavmkit'>Source</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <section class='hero'>
+    <h1>Mass Appraisal for the Masses</h1>
+    <p>Modern, cutting-edge, free and open source mass appraisal toolkit for researchers, analysts, governments, and everybody else.</p>
+    <a href="docs/#getting-started" class="btn-primary">Get Started</a>
+  </section>
+
+  <!-- ======== Core Sections ======== -->
+  
+
+  <section id='analyze' class='section'>
+    <img src='images/enrichment.jpg' alt='Analysis toolbox screenshot'>
+    <div class='section-content'>
+      <h2>Enrich Data</h2>
+      <p>Download spatial variables from public sources and automatically tag parcels with them.</p>
+      <p>Get street adjacency from OpenStreetMap, building footprints from Overture, statistics from the US Census, topography from USGS, and more.</p>
+      <p>Automatically calculate distances between parcels and landmarks you care about—CBDs, universities, golf courses, and beyond.</p>
+    </div>
+  </section>
+  
+  <section id='create' class='section'>
+    <img src='images/algorithms.jpg' alt='Map creation screenshot'>
+    <div class='section-content'>
+      <h2>Deploy AVM Algorithms</h2>
+      <p>Build automated valuation models using MRA, GWR, LightGBM, XGBoost, CatBoost, and more—all through one unified interface.</p>
+      <p>Ensemble multiple model results together for maximum performance.</p>
+    </div>
+  </section>
+
+  <section id='report' class='section'>
+    <img src='images/stats_compare.jpg' alt='Reporting screenshot'>
+    <div class='section-content'>
+      <h2>Automate Reporting</h2>
+      <p>Generate <a href='https://www.iaao.org'>IAAO</a>-compatible ratio studies and other statistical reports in PDF and HTML formats.</p>
+      <p>Break down reporting by location, property type, price decile, or any other criteria you define.</p>
+      <p>Identify variables and characteristics that have the greatest impact on price.</p>
+    </div>
+  </section>
+
+  <section id='edit' class='section'>
+    <img src='images/sales_scrutiny.jpg' alt='Editing layers screenshot'>
+    <div class='section-content'>
+      <h2>Clean Data</h2>
+      <p>Detect anomalous sales that undermine your predictive models.</p>
+      <p>Exclude invalid sales with legible and defensible rules.</p>
+    </div>
+  </section>
+
+  <section id='audit' class='section'>
+    <img src='images/jupyter_load.jpg' alt='Pipeline screenshot'>
+    <div class='section-content'>
+      <h2>Stay Organized & Auditable</h2>
+      <p>Set up a clean pipeline that loads, transforms, and merges data without relying on one-off spreadsheet operations.</p>
+      <p>Define a reproducible set of steps once, then re-run the whole workflow end-to-end as often as you like.</p>
+    </div>
+  </section>
+
+  <section id='export' class='section'>
+    <img src='images/heatmap.jpg' alt='Export screenshot'>
+    <div class='section-content'>
+      <h2>Export for GIS & CAMA</h2>
+      <p>Output parcel data in GIS-ready formats for seamless import into <a href='https://www.arcgis.com'>ArcGIS</a>, <a href='https://www.qgis.org'>QGIS</a>, and <a href='https://www.felt.com'>Felt</a>.</p>
+      <p>Export tabular data to Database and CAMA-friendly formats like CSV, Excel, Parquet, and more.</p>
+    </div>
+  </section>
+
+  <!-- ======== Feature Grid ======== -->
+  <section class='section'>
+    <div class='section-content' style='flex:1 1 100%;'>
+      <h2 style='text-align:center;'>Why Open Source?</h2>
+      <div class='features-grid'>
+        <div class='feature-card'>
+          <h3>Fully Transparent</h3>
+          <p>All the code is out in the open. No hidden algorithms or procedures.</p>
+        </div>
+        <div class='feature-card'>
+          <h3>Reproducible Builds</h3>
+          <p>Anyone else can re-run your results with just your settings file and inputs.</p>
+        </div>
+        <div class='feature-card'>
+          <h3>Free forever</h3>
+          <p>Full-featured professional GIS capabilities with no software licensing costs.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class='cta'>
+    <h2>Ready to get started?</h2>
+    <p>Download the latest release and join a growing user community.</p>
+    <a href='/docs/getting_started' class='btn-primary'>Get Started</a>
+  </section>
+
+  <footer>
+    <div class='footer-container'>
+      <!--
+			<div class='footer-column'>
+        <h4>Resources</h4>
+        <ul>
+          <li><a href='/docs'>Documentation</a></li>
+          <li><a href='/docs/api'>API</a></li>
+          <li><a href='https://www.github.com/larsiusprime/openavmkit'>Source</a></li>
+        </ul>
+      </div>
+      <div class='footer-column'>
+        <h4>Partners</h4>
+        <ul>
+          <li><a href='https://landeconomics.org'>Center for Land Economics</a></li>
+          <li><a href='https://urbantoolsconsult.org'>Center for the Study of Economics</a></li>
+        </ul>
+      </div>
+      -->
+    </div>
+    <div class='footer-bottom'>
+      &copy; <span id='year'></span> Lars A. Doucet. All rights reserved.
+    </div>
+  </footer>
+
+  <script>
+    document.getElementById('year').textContent = new Date().getFullYear();
+  </script>
+</body>
+</html>
