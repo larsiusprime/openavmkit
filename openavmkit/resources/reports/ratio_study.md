@@ -2,10 +2,10 @@
 
 || |
 |-|--|
-| Locality | {{{locality}}} |
-| Valuation date | {{{val_date}}} |
-| Model group | {{{model_group}}} |  
-| Study period | {{{sales_back_to_date}}} - {{{val_date}}} |
+| Locality | {{locality}} |
+| Valuation date | {{val_date}} |
+| Model group | {{model_group}} |  
+| Study period | {{sales_back_to_date}} - {{val_date}} |
 
 ## Executive Summary
 
@@ -15,20 +15,20 @@ We perform IAAO-standard ratio studies for all model groups, but we  go beyond t
 
 ### Overall results
 
-The following table provides overall results for the entire locality for the {{{model_group}}} model group.
+The following table provides overall results for the entire locality for the {{model_group}} model group.
 
-{{{overall_results}}}
+{{overall_results}}
 
 ## Breakdowns
 
-The following tables provide detailed breakdowns of the results by various factors, comparing results for {{{locality}}} with our own.
+The following tables provide detailed breakdowns of the results by various factors, comparing results for {{locality}} with our own.
 
-### {{{locality}}} results
+### {{locality}} results
 
-{{{locality_results}}}
+{{locality_results}}
 
 ### Our results
 
-{{{modeler_results}}}
+{{modeler_results}}
 
 
