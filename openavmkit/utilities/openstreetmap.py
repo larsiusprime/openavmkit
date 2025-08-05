@@ -62,193 +62,112 @@ class OpenStreetMapService:
             f"+proj=utm +zone={utm_zone} +{hemisphere} +datum=WGS84 +units=m +no_defs"
         )
 
-    def get_water_bodies(
+    def _get_tags(self, thing: str):
+        if thing == "water_bodies":
+            return {
+                "natural": ["water", "bay", "strait"],
+                "water": ["river", "lake", "reservoir", "canal", "stream"],
+            }
+        elif thing == "transportation":
+            return {"railway": ["rail", "subway", "light_rail", "monorail", "tram"]}
+        elif thing == "educational":
+            return {"amenity": ["university"]}
+        elif thing == "parks":
+            return {
+                "leisure": ["park", "garden", "playground"],
+                "landuse": ["recreation_ground"],
+            }
+        elif thing == "golf_courses":
+            return {"leisure": ["golf_course"]}
+        else:
+            raise ValueError(f"Can't get tags for undefined value, \"{thing}\"!")
+
+    def get_features(
         self,
+        thing: str,
         bbox: Tuple[float, float, float, float],
         settings: dict,
         use_cache: bool = True,
+        gdf: gpd.GeoDataFrame = None
     ) -> gpd.GeoDataFrame:
-        """Get water bodies (rivers, lakes, etc.) from OpenStreetMap. Stores both all
-        water bodies and top N largest ones for distance calculations.
 
-        Parameters
-        ----------
-        bbox : Tuple[float, float, float, float]):
-            Bounding box (min_lon, min_lat, max_lon, max_lat)
-        settings : dict
-            Settings for water bodies including min_area and top_n
-        use_cache : bool
-            Whether to use cached data. Defaults to True
-
-        Returns
-        -------
-        gpd.GeoDataFrame
-            GeoDataFrame containing all water bodies
-        """
         if not settings.get("enabled", False):
             return gpd.GeoDataFrame()
 
         # check if we have already cached this data, AND the settings are the same
         if use_cache and check_cache(
-            "osm/water_bodies", signature=settings, filetype="df"
+            f"osm/{thing}", signature=settings, filetype="df"
         ):
-            print("----> using cached water bodies")
+            print(f"----> using cached {thing}")
             # if so return the cached version
-            return read_cache("osm/water_bodies", "df")
+            return read_cache(f"osm/{thing}", "df")
 
         min_area = settings.get("min_area", 10000)
         top_n = settings.get("top_n", 5)
-
-        # Define tags for water bodies
-        tags = {
-            "natural": ["water", "bay", "strait"],
-            "water": ["river", "lake", "reservoir", "canal", "stream"],
-        }
 
         # Create polygon from bbox
         polygon = box(bbox[0], bbox[1], bbox[2], bbox[3])
 
         try:
-            # Get water bodies from OSM
-            print("Getting water bodies from OSM...")
-            water_bodies = ox.features.features_from_polygon(polygon, tags=tags)
 
-            if water_bodies.empty:
-                return gpd.GeoDataFrame()
+            if gdf is None:
+                # Get from OSM
+                print(f"Getting {thing} from OSM...")
+                tags = self._get_tags(thing)
+                osm_features = ox.features.features_from_polygon(polygon, tags=tags)
+
+                if osm_features.empty:
+                    return gpd.GeoDataFrame()
+            else:
+                print(f"Getting {thing} from source file...")
+                osm_features = gdf
+                if "name" not in osm_features:
+                    raise ValueError(f"Geodataframe source for \"{thing}\" distances is missing required field \"name\"!")
 
             # Project to UTM for accurate area calculation
             utm_crs = self._get_utm_crs(bbox)
-            water_bodies_proj = water_bodies.to_crs(utm_crs)
+            osm_features_proj = osm_features.to_crs(utm_crs)
 
             # Calculate areas and filter by minimum area
-            water_bodies_proj["area"] = water_bodies_proj.geometry.area
-            water_bodies_filtered = water_bodies_proj[
-                water_bodies_proj["area"] >= min_area
+            osm_features_proj["area"] = osm_features_proj.geometry.area
+            osm_features_filtered = osm_features_proj[
+                osm_features_proj["area"] >= min_area
             ]
 
-            if water_bodies_filtered.empty:
+            if osm_features_filtered.empty:
                 return gpd.GeoDataFrame()
 
             # Project back to WGS84
-            water_bodies_filtered = water_bodies_filtered.to_crs("EPSG:4326")
+            osm_features_filtered = osm_features_filtered.to_crs("EPSG:4326")
 
             # Clean up names
-            water_bodies_filtered["name"] = water_bodies_filtered["name"].fillna(
-                "unnamed_water_body"
+            osm_features_filtered["name"] = osm_features_filtered["name"].fillna(
+                f"unnamed_{thing}"
             )
-            water_bodies_filtered["name"] = (
-                water_bodies_filtered["name"].str.lower().str.replace(" ", "_")
+            osm_features_filtered["name"] = (
+                osm_features_filtered["name"].astype(str).str.lower().str.replace(" ", "_")
             )
-            water_bodies_filtered["name"] = clean_series(water_bodies_filtered["name"])
+            osm_features_filtered["name"] = clean_series(osm_features_filtered["name"])
 
             # Create a copy for top N features
-            water_bodies_top = water_bodies_filtered.nlargest(top_n, "area").copy()
+            osm_features_top = osm_features_filtered.nlargest(top_n, "area").copy()
 
             # Store both dataframes
-            self.features["water_bodies"] = water_bodies_filtered
-            self.features["water_bodies_top"] = water_bodies_top
+            self.features[f"{thing}"] = osm_features_filtered
+            self.features[f"{thing}_top"] = osm_features_top
 
             # write to cache so we can skip on next run
-            write_cache("osm/water_bodies", water_bodies_filtered, settings, "df")
+            write_cache(f"osm/{thing}", osm_features_filtered, settings, "df")
 
-            return water_bodies_filtered
+            return osm_features_filtered
 
         except Exception as e:
-            print(f"ERROR in get_water_bodies: {str(e)}")
+            print(f"ERROR in _get_thing: {str(e)}")
             import traceback
 
             print(f"Traceback: {traceback.format_exc()}")
             return gpd.GeoDataFrame()
 
-    def get_transportation(
-        self,
-        bbox: Tuple[float, float, float, float],
-        settings: dict,
-        use_cache: bool = True,
-    ) -> gpd.GeoDataFrame:
-        """Get major transportation networks (roads, railways) from OpenStreetMap.
-        Stores both all routes and top N longest ones for distance calculations.
-
-        Parameters
-        ----------
-        bbox : Tuple[float, float, float, float]
-            Bounding box (min_lon, min_lat, max_lon, max_lat)
-        settings : dict
-            Settings for transportation including min_length and top_n
-        use_cache : bool
-            Whether to use cached data (default: True)
-
-        Returns
-        -------
-        gpd.GeoDataFrame
-            GeoDataFrame containing all transportation routes
-        """
-        if not settings.get("enabled", False):
-            return gpd.GeoDataFrame()
-
-        # check if we have already cached this data, AND the settings are the same
-        if use_cache and check_cache(
-            "osm/transportation", signature=settings, filetype="df"
-        ):
-            print("----> using cached transportation")
-            # if so return the cached version
-            return read_cache("osm/transportation", "df")
-
-        min_length = settings.get("min_length", 1000)
-        top_n = settings.get("top_n", 5)
-
-        # Define tags for major transportation routes
-        tags = {"railway": ["rail", "subway", "light_rail", "monorail", "tram"]}
-
-        # Create polygon from bbox
-        polygon = box(bbox[0], bbox[1], bbox[2], bbox[3])
-
-        # Get transportation from OSM
-        transportation = ox.features.features_from_polygon(polygon, tags=tags)
-
-        if transportation.empty:
-            print("No transportation networks found in the area")
-            return gpd.GeoDataFrame()
-
-        # Project to UTM for accurate length calculation
-        utm_crs = self._get_utm_crs(bbox)
-        transportation_proj = transportation.to_crs(utm_crs)
-
-        # Calculate lengths and filter by minimum length
-        transportation_proj["length"] = transportation_proj.geometry.length
-        transportation_filtered = transportation_proj[
-            transportation_proj["length"] >= min_length
-        ]
-
-        if transportation_filtered.empty:
-            print(
-                "No transportation networks found meeting minimum length requirement of {min_length} meters"
-            )
-            return gpd.GeoDataFrame()
-
-        # Project back to WGS84
-        transportation_filtered = transportation_filtered.to_crs("EPSG:4326")
-
-        # Clean up names
-        transportation_filtered["name"] = transportation_filtered["name"].fillna(
-            "unnamed_route"
-        )
-        transportation_filtered["name"] = (
-            transportation_filtered["name"].str.lower().str.replace(" ", "_")
-        )
-        transportation_filtered["name"] = clean_series(transportation_filtered["name"])
-
-        # Create a copy for top N features
-        transportation_top = transportation_filtered.nlargest(top_n, "length").copy()
-
-        # Store both dataframes
-        self.features["transportation"] = transportation_filtered
-        self.features["transportation_top"] = transportation_top
-
-        # write to cache so we can skip on next run
-        write_cache("osm/transportation", transportation_filtered, settings, "df")
-
-        return transportation_filtered
 
     def get_elevation_data(
         self, bbox: Tuple[float, float, float, float], resolution: int = 30
@@ -282,290 +201,6 @@ class OpenStreetMapService:
         elevation = 100 + 50 * np.sin(lon_grid * 10) + 50 * np.cos(lat_grid * 10)
 
         return elevation, (lon_range, lat_range)
-
-    def get_educational_institutions(
-        self,
-        bbox: Tuple[float, float, float, float],
-        settings: dict,
-        use_cache: bool = True,
-    ) -> gpd.GeoDataFrame:
-        """Get educational institutions from OpenStreetMap. Stores both all institutions
-        and top N largest ones for distance calculations.
-
-        Parameters
-        ----------
-        bbox : Tuple[float, float, float, float])
-            Bounding box (min_lon, min_lat, max_lon, max_lat)
-        settings : dict
-            Settings for educational institutions including min_area and top_n
-        use_cache : bool
-            Whether to use cached data (default: True)
-
-        Returns
-        -------
-        gpd.GeoDataFrame
-            GeoDataFrame containing all educational institutions
-        """
-        if not settings.get("enabled", False):
-            return gpd.GeoDataFrame()
-
-        # check if we have already cached this data, AND the settings are the same
-        if use_cache and check_cache(
-            "osm/educational_institutions", signature=settings, filetype="df"
-        ):
-            print("----> using cached educational institutions")
-            # if so return the cached version
-            return read_cache("osm/educational_institutions", "df")
-
-        min_area = settings.get("min_area", 1000)
-        top_n = settings.get("top_n", 5)
-
-        # Define tags for educational institutions
-        tags = {"amenity": ["university"]}
-
-        # Create polygon from bbox
-        polygon = box(bbox[0], bbox[1], bbox[2], bbox[3])
-
-        try:
-            # Get educational institutions from OSM
-            institutions = ox.features.features_from_polygon(polygon, tags=tags)
-
-            if institutions.empty:
-                print(f"No educational institutions found in the area")
-                return gpd.GeoDataFrame()
-
-            print(f"Found {len(institutions)} raw educational features")
-
-            # Project to UTM for accurate area calculation
-            utm_crs = self._get_utm_crs(bbox)
-            institutions_proj = institutions.to_crs(utm_crs)
-
-            # Fill NaN names before dissolving
-            if "name" not in institutions_proj.columns:
-                print("Warning: 'name' column not found, using 'amenity' as identifier")
-                institutions_proj["name"] = institutions_proj["amenity"].fillna(
-                    "unnamed_institution"
-                )
-            else:
-                institutions_proj["name"] = institutions_proj["name"].fillna(
-                    "unnamed_institution"
-                )
-
-            # Dissolve by name to combine multiple buildings/features of same institution
-            institutions_dissolved = institutions_proj.dissolve(
-                by="name", as_index=False
-            )
-            print(
-                f"After dissolving by name: {len(institutions_dissolved)} unique institutions"
-            )
-
-            # Calculate areas after dissolving
-            institutions_dissolved["area"] = institutions_dissolved.geometry.area
-            institutions_filtered = institutions_dissolved[
-                institutions_dissolved["area"] >= min_area
-            ]
-
-            if institutions_filtered.empty:
-                print(
-                    f"No educational institutions found meeting minimum area requirement of {min_area} sq meters"
-                )
-                return gpd.GeoDataFrame()
-
-            # Project back to WGS84
-            institutions_filtered = institutions_filtered.to_crs("EPSG:4326")
-
-            # Clean up names
-            institutions_filtered["name"] = (
-                institutions_filtered["name"].str.lower().str.replace(" ", "_")
-            )
-            institutions_filtered["name"] = clean_series(institutions_filtered["name"])
-
-            # Create a copy for top N features
-            institutions_top = institutions_filtered.nlargest(top_n, "area").copy()
-
-            # Store both dataframes
-            self.features["educational"] = institutions_filtered
-            self.features["educational_top"] = institutions_top
-
-            # write to cache so we can skip on next run
-            write_cache(
-                "osm/educational_institutions", institutions_filtered, settings, "df"
-            )
-
-            return institutions_filtered
-
-        except Exception as e:
-            print(f"Error processing educational institutions: {str(e)}")
-            print(f"Error type: {type(e)}")
-            import traceback
-
-            print(f"Traceback: {traceback.format_exc()}")
-            return gpd.GeoDataFrame()
-
-    def get_parks(
-        self,
-        bbox: Tuple[float, float, float, float],
-        settings: dict,
-        use_cache: bool = True,
-    ) -> gpd.GeoDataFrame:
-        """Get parks from OpenStreetMap. Stores both all parks and top N largest ones
-        for distance calculations.
-
-        Parameters
-        ----------
-        bbox : Tuple[float, float, float, float])
-            Bounding box (min_lon, min_lat, max_lon, max_lat)
-        settings : dict
-            Settings for parks including min_area and top_n
-        use_cache : bool
-            Whether to use cached data (default: True)
-
-        Returns
-        -------
-        gpd.GeoDataFrame: GeoDataFrame containing all parks
-        """
-        if not settings.get("enabled", False):
-            return gpd.GeoDataFrame()
-
-        # check if we have already cached this data, AND the settings are the same
-        if use_cache and check_cache("osm/parks", signature=settings, filetype="df"):
-            print("----> using cached parks")
-            # if so return the cached version
-            return read_cache("osm/parks", "df")
-
-        min_area = settings.get("min_area", 1000)
-        top_n = settings.get("top_n", 5)
-
-        # Define tags for parks
-        tags = {
-            "leisure": ["park", "garden", "playground"],
-            "landuse": ["recreation_ground"],
-        }
-
-        # Create polygon from bbox
-        polygon = box(bbox[0], bbox[1], bbox[2], bbox[3])
-
-        # Get parks from OSM
-        parks = ox.features.features_from_polygon(polygon, tags=tags)
-
-        if parks.empty:
-            return gpd.GeoDataFrame()
-
-        # Project to UTM for accurate area calculation
-        utm_crs = self._get_utm_crs(bbox)
-        parks_proj = parks.to_crs(utm_crs)
-
-        # Calculate areas and filter by minimum area
-        parks_proj["area"] = parks_proj.geometry.area
-        parks_filtered = parks_proj[parks_proj["area"] >= min_area]
-
-        if parks_filtered.empty:
-            return gpd.GeoDataFrame()
-
-        # Project back to WGS84
-        parks_filtered = parks_filtered.to_crs("EPSG:4326")
-
-        # Clean up names
-        parks_filtered["name"] = parks_filtered["name"].fillna("unnamed_park")
-        parks_filtered["name"] = (
-            parks_filtered["name"].str.lower().str.replace(" ", "_")
-        )
-        parks_filtered["name"] = clean_series(parks_filtered["name"])
-
-        # Create a copy for top N features
-        parks_top = parks_filtered.nlargest(top_n, "area").copy()
-
-        # Store both dataframes
-        self.features["parks"] = parks_filtered
-        self.features["parks_top"] = parks_top
-
-        # write to cache so we can skip on next run
-        write_cache("osm/parks", parks_filtered, settings, "df")
-
-        return parks_filtered
-
-
-    def get_golf_courses(
-        self,
-        bbox: Tuple[float, float, float, float],
-        settings: dict,
-        use_cache: bool = True,
-    ) -> gpd.GeoDataFrame:
-        """Get golf courses from OpenStreetMap. Stores both all golf courses and top N
-        largest ones for distance calculations.
-
-        Parameters
-        ----------
-        bbox : Tuple[float, float, float, float]
-            Bounding box (min_lon, min_lat, max_lon, max_lat)
-        settings : dict
-            Settings for golf courses including min_area and top_n
-
-        Returns
-        -------
-        gpd.GeoDataFrame
-            GeoDataFrame containing all golf courses
-        """
-        if not settings.get("enabled", False):
-            return gpd.GeoDataFrame()
-
-        # check if we have already cached this data, AND the settings are the same
-        if use_cache and check_cache(
-            "osm/golf_courses", signature=settings, filetype="df"
-        ):
-            print("----> using cached golf courses")
-            # if so return the cached version
-            return read_cache("osm/golf_courses", "df")
-
-        min_area = settings.get("min_area", 10000)
-        top_n = settings.get("top_n", 3)
-
-        # Define tags for golf courses
-        tags = {"leisure": ["golf_course"]}
-
-        # Create polygon from bbox
-        polygon = box(bbox[0], bbox[1], bbox[2], bbox[3])
-
-        # Get golf courses from OSM
-        golf_courses = ox.features.features_from_polygon(polygon, tags=tags)
-
-        if golf_courses.empty:
-            return gpd.GeoDataFrame()
-
-        # Project to UTM for accurate area calculation
-        utm_crs = self._get_utm_crs(bbox)
-        golf_courses_proj = golf_courses.to_crs(utm_crs)
-
-        # Calculate areas and filter by minimum area
-        golf_courses_proj["area"] = golf_courses_proj.geometry.area
-        golf_courses_filtered = golf_courses_proj[golf_courses_proj["area"] >= min_area]
-
-        if golf_courses_filtered.empty:
-            return gpd.GeoDataFrame()
-
-        # Project back to WGS84
-        golf_courses_filtered = golf_courses_filtered.to_crs("EPSG:4326")
-
-        # Clean up names
-        golf_courses_filtered["name"] = golf_courses_filtered["name"].fillna(
-            "unnamed_golf_course"
-        )
-        golf_courses_filtered["name"] = (
-            golf_courses_filtered["name"].str.lower().str.replace(" ", "_")
-        )
-        golf_courses_filtered["name"] = clean_series(golf_courses_filtered["name"])
-
-        # Create a copy for top N features
-        golf_courses_top = golf_courses_filtered.nlargest(top_n, "area").copy()
-
-        # Store both dataframes
-        self.features["golf_courses"] = golf_courses_filtered
-        self.features["golf_courses_top"] = golf_courses_top
-
-        # write to cache so we can skip on next run
-        write_cache("osm/golf_courses", golf_courses_filtered, settings, "df")
-
-        return golf_courses_filtered
 
 
     def calculate_elevation_stats(
@@ -699,7 +334,9 @@ class OpenStreetMapService:
 
 
     def enrich_parcels(
-        self, gdf: gpd.GeoDataFrame, settings: Dict
+        self,
+        gdf: gpd.GeoDataFrame,
+        settings: Dict
     ) -> Dict[str, gpd.GeoDataFrame]:
         """Get OpenStreetMap features and prepare them for spatial joins. Returns a
         dictionary of feature dataframes for use by data.py's spatial join logic.
@@ -724,34 +361,32 @@ class OpenStreetMapService:
 
         # Process each feature type based on settings
         if settings.get("water_bodies", {}).get("enabled", False):
-            water_bodies = self.get_water_bodies(bbox, settings["water_bodies"])
+            water_bodies = self.get_features(bbox, "water_bodies", settings["water_bodies"])
             if not water_bodies.empty:
                 # Store both the main and top features in dataframes
                 dataframes["water_bodies"] = self.features["water_bodies"]
                 dataframes["water_bodies_top"] = self.features["water_bodies_top"]
 
         if settings.get("transportation", {}).get("enabled", False):
-            transportation = self.get_transportation(bbox, settings["transportation"])
+            transportation = self.get_features(bbox, "transportation", settings["transportation"])
             if not transportation.empty:
                 dataframes["transportation"] = self.features["transportation"]
                 dataframes["transportation_top"] = self.features["transportation_top"]
 
         if settings.get("educational", {}).get("enabled", False):
-            institutions = self.get_educational_institutions(
-                bbox, settings["educational"]
-            )
+            institutions = self.get_features(bbox, "educational", settings["educational"])
             if not institutions.empty:
                 dataframes["educational"] = self.features["educational"]
                 dataframes["educational_top"] = self.features["educational_top"]
 
         if settings.get("parks", {}).get("enabled", False):
-            parks = self.get_parks(bbox, settings["parks"])
+            parks = self.get_features(bbox, "parks", settings["parks"])
             if not parks.empty:
                 dataframes["parks"] = self.features["parks"]
                 dataframes["parks_top"] = self.features["parks_top"]
 
         if settings.get("golf_courses", {}).get("enabled", False):
-            golf_courses = self.get_golf_courses(bbox, settings["golf_courses"])
+            golf_courses = self.get_features(bbox, "golf_courses", settings["golf_courses"])
             if not golf_courses.empty:
                 dataframes["golf_courses"] = self.features["golf_courses"]
                 dataframes["golf_courses_top"] = self.features["golf_courses_top"]

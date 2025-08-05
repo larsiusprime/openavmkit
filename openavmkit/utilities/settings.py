@@ -166,7 +166,7 @@ def get_fields_land(s: dict, df: pd.DataFrame = None):
     fields_unclassified = _get_unclassified_fields(s, df)
 
     for field in fields_unclassified:
-        if field.startswith("dist_to_") or field.startswith("within_"):
+        if field.startswith("dist_to_") or field.startswith("within_") or field.startswith("proximity_to_") or field.startswith("spatial_lag_"):
             fields_land["numeric"].append(field)
 
     for key in fields_land:

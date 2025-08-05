@@ -4,7 +4,7 @@ import os
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Tuple
 
 import shapely
 
@@ -1053,19 +1053,20 @@ def _enrich_data(
                     df = _enrich_df_census(
                         df, s_enrich_local.get("census", {}), verbose=verbose
                     )
-                if "openstreetmap" in s_enrich_local:
-                    df = _enrich_df_openstreetmap(
+
+                if "distances" in s_enrich_local:
+                    df = _enrich_df_distances(
                         df,
-                        s_enrich_local.get("openstreetmap", {}),
-                        s_enrich_local,
+                        s_enrich_local.get("distances", {}),
+                        dataframes,
                         verbose=verbose,
                         use_cache=True,
                     )
 
                 # add distances to user-defined locations
-                df = _enrich_df_user_distances(
-                    df, s_enrich_local, dataframes, settings, verbose=verbose
-                )
+                # df = _enrich_df_user_distances(
+                #     df, s_enrich_local, dataframes, settings, verbose=verbose
+                # )
 
                 # fill in missing data based on geospatial patterns (should happen after all other enrichments have been done)
                 df = _enrich_spatial_inference(
@@ -1183,10 +1184,10 @@ def _enrich_df_census(
         return df
 
 
-def _enrich_df_openstreetmap(
+def _enrich_df_distances(
     df_in: pd.DataFrame | gpd.GeoDataFrame,
-    osm_settings: dict,
-    s_enrich_this: dict,
+    dist_settings: dict,
+    dataframes: dict[str, pd.DataFrame],
     verbose: bool = False,
     use_cache: bool = False,
 ) -> pd.DataFrame | gpd.GeoDataFrame:
@@ -1198,7 +1199,7 @@ def _enrich_df_openstreetmap(
         print("Enriching with OpenStreetMap data...")
 
     if use_cache:
-        df_out = get_cached_df(df_in, "osm/all", "key", osm_settings)
+        df_out = get_cached_df(df_in, "osm/all", "key", dist_settings)
         if df_out is not None:
             if verbose:
                 print("--> found cached data")
@@ -1207,13 +1208,13 @@ def _enrich_df_openstreetmap(
     df = df_in.copy()
 
     try:
-        if not osm_settings.get("enabled", False):
+        if not dist_settings.get("enabled", False):
             if verbose:
                 print("OpenStreetMap enrichment disabled, skipping all OSM features")
             return df
 
         # Initialize OpenStreetMap service
-        osm_service = init_service_openstreetmap(osm_settings)
+        osm_service = init_service_openstreetmap(dist_settings)
 
         # Convert DataFrame to GeoDataFrame if it isn't already
         if not isinstance(df, gpd.GeoDataFrame):
@@ -1246,17 +1247,26 @@ def _enrich_df_openstreetmap(
 
         bbox = [west, south, east, north]
 
-        # Get distances configuration from settings
-        distances_config = {
-            dist["id"]: dist
-            for dist in s_enrich_this.get("distances", [])
-            if isinstance(dist, dict)
-        }
+        def get_feature(thing: str, _bbox: Tuple[float, float, float, float], s: dict, _use_cache: bool = True):
+            use_osm = s.get("osm", False)
+            source = s.get("source", None)
+            if use_osm:
+                return osm_service.get_features(thing, _bbox, s, _use_cache)
+            elif source:
+                df = None
+                if source in dataframes:
+                    df = dataframes[source]
+                    if df is not None:
+                        if "geometry" not in df.columns:
+                            raise ValueError(f"Distance entry ({thing}) source dataframe with id \"{source}\" has no geometry!")
+                if df is None:
+                    raise ValueError(f"Could not find dataframe with id \"{source}\" matching distance entry ({thing}.source={source})")
+                return osm_service.get_features(thing, _bbox, s, _use_cache, df)
+            else:
+                raise ValueError(f"Distance entry ({thing}) must have either \"osm\" or \"source\" field!")
 
-        # Define a dictionary to hold feature configurations
-        features_config = {
+        default_configs = {
             "water_bodies": {
-                "getter": osm_service.get_water_bodies,
                 "verbose_label": "water bodies",
                 "store_top": True,
                 "error_method": "print",  # print error message with traceback
@@ -1264,7 +1274,6 @@ def _enrich_df_openstreetmap(
                 "type_field": "water",  # field containing feature type for unnamed features
             },
             "transportation": {
-                "getter": osm_service.get_transportation,
                 "verbose_label": "transportation networks",
                 "store_top": False,  # no top features for transportation
                 "error_method": "warn",  # use warnings.warn
@@ -1272,7 +1281,6 @@ def _enrich_df_openstreetmap(
                 "type_field": "highway",
             },
             "educational": {
-                "getter": osm_service.get_educational_institutions,
                 "verbose_label": "educational institutions",
                 "store_top": True,
                 "error_method": "warn",
@@ -1280,7 +1288,6 @@ def _enrich_df_openstreetmap(
                 "type_field": "amenity",
             },
             "parks": {
-                "getter": osm_service.get_parks,
                 "verbose_label": "parks",
                 "store_top": True,
                 "error_method": "warn",
@@ -1288,7 +1295,6 @@ def _enrich_df_openstreetmap(
                 "type_field": "leisure",
             },
             "golf_courses": {
-                "getter": osm_service.get_golf_courses,
                 "verbose_label": "golf courses",
                 "store_top": True,
                 "error_method": "warn",
@@ -1297,23 +1303,39 @@ def _enrich_df_openstreetmap(
             },
         }
 
+        features_config = {}
+
+        for key in dist_settings:
+            if key == "enabled":
+                continue
+            features_config[key] = dist_settings[key]
+
         # Loop through each feature configuration:
         for feature, config in features_config.items():
             # Check if feature is enabled in the osm_settings
-            feature_settings = osm_settings.get(feature, {})
-            if feature_settings.get("enabled", False):
+            print(f"feature={feature}, config={config}")
+            if config.get("enabled", True):
+
+                default_config = default_configs.get(feature, {})
+                for key in default_config:
+                    if key not in config:
+                        config[key] = default_config[key]
+
                 if verbose:
-                    print(f"--> Getting {config['verbose_label']}...")
+                    print(f"--> Getting {feature}...")
                 try:
                     # Call the designated getter function
-                    result = config["getter"](
-                        bbox=bbox, settings=feature_settings, use_cache=use_cache
+                    result = get_feature(
+                        thing=feature,
+                        _bbox=bbox,
+                        s=config,
+                        _use_cache=use_cache
                     )
                     if verbose:
                         if result.empty:
-                            print(f"    No {config['verbose_label']} found")
+                            print(f"    No {config.get('verbose_label', feature)} found")
                         else:
-                            print(f"--> Found {len(result)} {config['verbose_label']}")
+                            print(f"--> Found {len(result)} {config.get('verbose_label',feature)}")
                             pd.set_option("display.max_columns", None)
                             pd.set_option("display.max_rows", None)
                             pd.set_option("display.width", 1000)
@@ -1321,19 +1343,8 @@ def _enrich_df_openstreetmap(
                     if not result.empty:
                         # Get distance settings from distances configuration
                         feature_id = f"osm_{feature}"
-                        distance_settings = distances_config.get(feature_id, {})
-
-                        # If no settings found, try with _top suffix as fallback
-                        if (
-                            not distance_settings
-                            and f"{feature_id}_top" in distances_config
-                        ):
-                            distance_settings = distances_config.get(
-                                f"{feature_id}_top", {}
-                            )
-
-                        max_distance = distance_settings.get("max_distance", None)
-                        unit = distance_settings.get("unit", "km")
+                        max_distance = config.get("max_distance", None)
+                        unit = config.get("unit", "km")
 
                         if verbose:
                             print(f"\nDistance settings for {feature_id}:")
@@ -1347,12 +1358,12 @@ def _enrich_df_openstreetmap(
                         )
 
                         # If store_top is enabled, calculate distances to top features
-                        if config["store_top"] and feature_settings.get("top_n", 0) > 0:
+                        if config.get("store_top", False) and config.get("top_n", 0) > 0:
                             # Get top features based on configured sort field
-                            sort_field = config["sort_field"]
+                            sort_field = config.get("sort_field")
                             if sort_field in result.columns:
                                 top_features = result.nlargest(
-                                    feature_settings["top_n"], sort_field
+                                    config["top_n"], sort_field
                                 )
                             else:
                                 # Fallback to first numeric column or just take first N
@@ -1361,11 +1372,11 @@ def _enrich_df_openstreetmap(
                                 ).columns
                                 if len(numeric_cols) > 0:
                                     top_features = result.nlargest(
-                                        feature_settings["top_n"], numeric_cols[0]
+                                        config.get("top_n", 1), numeric_cols[0]
                                     )
                                 else:
                                     top_features = result.head(
-                                        feature_settings["top_n"]
+                                        config.get("top_n", 1)
                                     )
 
                             # Calculate distances to each top feature
@@ -1378,7 +1389,7 @@ def _enrich_df_openstreetmap(
                                     feature_name = str(top_feature["name"])
                                 else:
                                     # Use type field if available
-                                    type_field = config["type_field"]
+                                    type_field = config.get("type_field")
                                     if type_field in top_feature and pd.notna(
                                         top_feature[type_field]
                                     ):
@@ -1407,14 +1418,14 @@ def _enrich_df_openstreetmap(
                                 )
 
                 except Exception as e:
-                    err_msg = f"Failed to get {config['verbose_label']}: {str(e)}"
-                    if config["error_method"] == "warn":
+                    err_msg = f"Failed to get {config.get('verbose_label', feature)}: {str(e)}"
+                    if config.get("error_method", None) == "warn":
                         warnings.warn(err_msg)
                     else:
                         print("ERROR " + err_msg)
                         print("Traceback: " + traceback.format_exc())
 
-        write_cached_df(df_in, df, "osm/all", "key", osm_settings)
+        write_cached_df(df_in, df, "osm/all", "key", dist_settings)
 
         return df
 
@@ -3073,19 +3084,11 @@ def _do_perform_distance_calculations(
     # Combine original DataFrame with new columns using concat
     df_out = pd.concat([df_in, new_df], axis=1)
 
-    # Figure out what the net change was and cache that
-    new_columns = [col for col in new_df.columns if col not in df_in.columns]
-    if len(new_columns) > 0:
-        df_net_change = df_out[["key"] + new_columns].copy()
-
-        # check for duplicate keys:
-        if df_net_change.duplicated(subset="key").sum() > 0:
-            raise ValueError(
-                f"Duplicate keys found after distance calculation for '{_id}.' This should not happen."
-            )
-
-        # # save to cache:
-        # write_cache(f"osm/distance_{_id}", df_net_change, signature, "df")
+    # Calculate log versions of all columns
+    for col in new_columns:
+        if col in df_out and "dist_to_" in col:
+            log_dist_to = col.replace("dist_to_", "log_dist_to_", 1)
+            df_out[log_dist_to] = np.log(df_out[col])
 
     write_cached_df(df_in, df_out, f"osm/do_distance_{_id}", "key", signature)
 
@@ -3108,13 +3111,22 @@ def _do_perform_distance_calculations_osm(
 
     # Get appropriate CRS for distance calculations
     crs = get_crs(df_in, "equal_distance")
-    print(f"Calculation CRS: {crs}")
+
+    print(f"CRS = {crs} axis_info = {crs.axis_info}")
 
     # Check for duplicate keys
     if df_in.duplicated(subset="key").sum() > 0:
         raise ValueError(
             f"Duplicate keys found before distance calculation for '{_id}.' This should not happen."
         )
+
+    if max_distance is not None:
+        # Convert max_distance to meters (since our distances are in meters)
+        max_distance_m = max_distance / unit_factors[unit]
+    else:
+        max_distance_m = None
+
+    print(f"Calculating distance, id={_id}, max_distance={max_distance}, unit={unit}, max_distance (in meters)={max_distance_m}")
 
     # Construct cache signature
     signature = {
@@ -3140,7 +3152,7 @@ def _do_perform_distance_calculations_osm(
 
     # Calculate distances for all parcels first
     nearest = gpd.sjoin_nearest(
-        df_projected, gdf_projected, how="left", distance_col="distance"
+        df_projected, gdf_projected, how="left", distance_col="distance", max_distance=max_distance_m
     )
 
     # Handle duplicates by keeping shortest distance
@@ -3154,9 +3166,6 @@ def _do_perform_distance_calculations_osm(
     within_series = pd.Series(False, index=df_projected.index)
 
     if max_distance is not None:
-        # Convert max_distance to meters (since our distances are in meters)
-        max_distance_m = max_distance / unit_factors[unit]
-
         # Mark parcels within max_distance
         within_series[distance_series <= max_distance_m] = True
 
@@ -3173,11 +3182,20 @@ def _do_perform_distance_calculations_osm(
         # Convert distances to target unit
         distance_series = distance_series * unit_factors[unit]
 
+    proximity_series = np.max(distance_series) - distance_series
+
     # Create output DataFrame with new columns
     new_df = pd.DataFrame(
-        {f"dist_to_{_id}": distance_series, f"within_{_id}": within_series},
+        {
+            f"dist_to_{_id}": distance_series,
+            f"within_{_id}": within_series,
+            f"proximity_to_{_id}": proximity_series
+        },
         index=df_projected.index,
     )
+
+    # Fill null proximity with 0.0 (maximum distance)
+    new_df[f"proximity_to_{_id}"] = new_df[f"proximity_to_{_id}"].fillna(0.0)
 
     # Combine with original DataFrame
     df_out = pd.concat([df_in, new_df], axis=1)
