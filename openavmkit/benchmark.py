@@ -76,7 +76,7 @@ from openavmkit.utilities.modeling import (
     GroundTruthModel,
     SpatialLagModel,
 )
-from openavmkit.utilities.plotting import plot_scatterplot
+from openavmkit.utilities.plotting import plot_scatterplot, _simple_ols
 from openavmkit.utilities.settings import (
     get_fields_categorical,
     get_variable_interactions,
@@ -3204,9 +3204,12 @@ def _model_performance_plots(
             if key == "test":
                 df["y_pred"] = model_result.pred_test.y_pred
                 df["y_true"] = model_result.pred_test.y
+                the_count = test_count
+
             else:
                 df["y_pred"] = model_result.pred_sales.y_pred
                 df["y_true"] = model_result.pred_sales.y
+                the_count = sales_count
 
             # Note any NA predictions:
             for field in ["y_pred", "y_true"]:
@@ -3216,13 +3219,15 @@ def _model_performance_plots(
                     print(f"WARNING: {field} has {count_na} NaN values!")
                     df = df[~mask_na]
 
+            plot_title = f"{label}/{title}/{model_group}/{model_name}\n{the_count}/{sales_count} sales from {earliest_date} to {latest_date}"
+
             plot_scatterplot(
                 df,
                 "y_true",
                 "y_pred",
                 "Sale price",
                 "Prediction",
-                title=f"{label}/{title}/{model_group}/{model_name}\n{test_count}/{sales_count} sales from {earliest_date} to {latest_date}",
+                title=plot_title,
                 best_fit_line=True,
                 perfect_fit_line=True
                 #metadata_field="metadata",
