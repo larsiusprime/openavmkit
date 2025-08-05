@@ -116,7 +116,7 @@ def _compute_shap(
 
         # c) explain your rows, again as a float64 array
         X_arr = X_to_explain.to_numpy(dtype=np.float64)
-        vals = te.shap_values(X_arr)  # shape (n_samples, n_features)
+        vals = te.shap_values(X_to_explain, approximate=True, check_additivity=False)  # shape (n_samples, n_features)
 
         # d) wrap into an Explanation for downstream plotting
         return shap.Explanation(
@@ -135,7 +135,7 @@ def _compute_shap(
             data=bg_arr,
             feature_perturbation="interventional"
         )
-        vals = te.shap_values(X_to_explain)
+        vals = te.shap_values(X_to_explain, approximate=True, check_additivity=False)
 
         return shap.Explanation(
             values=vals,
@@ -148,7 +148,7 @@ def _compute_shap(
     if isinstance(model, cb.CatBoostRegressor):
         te = shap.TreeExplainer(model, feature_perturbation="tree_path_dependent")
         # CatBoost will accept the DataFrame directly here
-        vals = te.shap_values(X_to_explain)
+        vals = te.shap_values(X_to_explain, check_additivity=False)
         return shap.Explanation(
             values=np.array(vals),  # ensure ndarray
             base_values=te.expected_value,
