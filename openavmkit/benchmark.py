@@ -7,6 +7,7 @@ import pandas as pd
 from catboost import CatBoostRegressor
 from lightgbm import Booster
 from sklearn.linear_model import Ridge
+from sklearn.metrics import mean_absolute_percentage_error
 from statsmodels.nonparametric.kernel_regression import KernelReg
 from xgboost import XGBRegressor
 from IPython.display import display
@@ -1592,6 +1593,7 @@ def _format_benchmark_df(df: pd.DataFrame, transpose: bool = True):
         "count_univ": "{:,.0f}",
         "mse": fancy_format,
         "rmse": fancy_format,
+        "mape": fancy_format,
         "r2": dig2_fancy_format,
         "adj_r2": dig2_fancy_format,
         "median_ratio": dig2_fancy_format,
@@ -2366,7 +2368,7 @@ def _optimize_ensemble_iteration(
     )
     timing.stop("total")
 
-    print(f"Results: score = {results.utility_train}, r2 = {results.pred_train.r2}, mse = {results.pred_train.mse}")
+    print(f"Results: score = {results.utility_train}, r2 = {results.pred_train.r2}, mape = {results.pred_train.mape}, mse = {results.pred_train.mse}")
     score = results.utility_train
 
     # Add early exit if score is nan
@@ -3283,6 +3285,7 @@ def _model_performance_metrics(
         "Model": [],
         "R² ols": [],
         "R² y=x": [],
+        "MAPE": [],
         "m.ratio": [],
         "avg.ratio": [],
         "Slope": []
@@ -3291,6 +3294,7 @@ def _model_performance_metrics(
         "Model": [],
         "R² ols": [],
         "R² y=x": [],
+        "MAPE": [],
         "Slope": [],
         "m.ratio": [],
         "avg.ratio": [],
@@ -3327,12 +3331,13 @@ def _model_performance_metrics(
             y_true_trim = y_true[mask]
             y_pred_trim = y_pred[mask]
 
-        # Calculate raw R² for untrimmed
         if len(y_true) > 1 and len(y_pred) > 1:
-            # OLS regression
-            reg = LinearRegression()
-            reg.fit(y_true.reshape(-1, 1), y_pred)
-            slope = reg.coef_[0]
+            # MAPE calculation
+            mape = mean_absolute_percentage_error(y_true, y_pred)
+
+            # OLS R² calculation
+            reg = _simple_ols(df_test, "y_true", "y_pred", intercept=False)
+            slope, r2_0 = reg["slope"], reg["r2"]
 
             # Raw R² calculation
             ss_res = np.sum((y_true - y_pred) ** 2)
@@ -3340,15 +3345,18 @@ def _model_performance_metrics(
             r2_raw = 1 - (ss_res / ss_tot)
         else:
             slope = np.nan
+            r2_0 = np.nan
             r2_raw = np.nan
+            mape = np.nan
 
-        # Calculate raw R² for trimmed
         if len(y_true_trim) > 1 and len(y_pred_trim) > 1:
-            # OLS regression
-            reg_trim = LinearRegression()
-            reg_trim.fit(y_true_trim.reshape(-1, 1), y_pred_trim)
-            slope_trim = reg_trim.coef_[0]
-            r2_trim = reg_trim.score(y_true_trim.reshape(-1, 1), y_pred_trim)
+            # MAPE calculation
+            mape_trim = mean_absolute_percentage_error(y_true_trim, y_pred_trim)
+
+            # OLS R² calculation
+            df_trim = pd.DataFrame(data={"y_true":y_true_trim,"y_pred":y_pred_trim})
+            reg = _simple_ols(df_trim, "y_true", "y_pred", intercept=False)
+            slope_trim, r2_trim = reg["slope"], reg["r2"]
 
             # Raw R² calculation for trimmed data
             ss_res_trim = np.sum((y_true_trim - y_pred_trim) ** 2)
@@ -3358,15 +3366,12 @@ def _model_performance_metrics(
             slope_trim = np.nan
             r2_trim = np.nan
             r2_raw_trim = np.nan
-
-        if model_result.pred_test.r2 is not None:
-            r2_0 = model_result.pred_test.r2
-        else:
-            r2_0 = np.nan
+            mape_trim = np.nan
 
         metrics_data["Model"].append(model_name)
         metrics_data["R² ols"].append(r2_0)
         metrics_data["R² y=x"].append(r2_raw)
+        metrics_data["MAPE"].append(mape)
         metrics_data["m.ratio"].append(model_result.pred_test.ratio_study.median_ratio)
         metrics_data["avg.ratio"].append(model_result.pred_test.ratio_study.mean_ratio)
         metrics_data["Slope"].append(slope)
@@ -3374,6 +3379,7 @@ def _model_performance_metrics(
         trimmed_data["Model"].append(model_name)
         trimmed_data["R² ols"].append(r2_trim)
         trimmed_data["R² y=x"].append(r2_raw_trim)
+        trimmed_data["MAPE"].append(mape_trim)
         trimmed_data["m.ratio"].append(model_result.pred_test.ratio_study.median_ratio_trim)
         trimmed_data["avg.ratio"].append(model_result.pred_test.ratio_study.mean_ratio_trim)
         trimmed_data["Slope"].append(slope_trim)
@@ -3383,6 +3389,7 @@ def _model_performance_metrics(
     metrics_df.set_index("Model", inplace=True)
     metrics_df["R² ols"] = metrics_df["R² ols"].apply(lambda x: f"{x:.2f}").astype(str)
     metrics_df["R² y=x"] = metrics_df["R² y=x"].apply(lambda x: f"{x:.2f}").astype(str)
+    metrics_df["MAPE"] = metrics_df["MAPE"].apply(lambda x: f"{x:.2f}").astype(str)
     metrics_df["Slope"] = metrics_df["Slope"].apply(lambda x: f"{x:.2f}").astype(str)
     metrics_df["m.ratio"] = metrics_df["m.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
     metrics_df["avg.ratio"] = metrics_df["avg.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
@@ -3391,12 +3398,13 @@ def _model_performance_metrics(
     trimmed_df.set_index("Model", inplace=True)
     trimmed_df["R² ols"] = trimmed_df["R² ols"].apply(lambda x: f"{x:.2f}").astype(str)
     trimmed_df["R² y=x"] = trimmed_df["R² y=x"].apply(lambda x: f"{x:.2f}").astype(str)
+    trimmed_df["MAPE"] = trimmed_df["MAPE"].apply(lambda x: f"{x:.2f}").astype(str)
     trimmed_df["Slope"] = trimmed_df["Slope"].apply(lambda x: f"{x:.2f}").astype(str)
     trimmed_df["m.ratio"] = trimmed_df["m.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
     trimmed_df["avg.ratio"] = trimmed_df["avg.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
 
-    metrics_df = metrics_df[["R² ols","R² y=x","m.ratio","avg.ratio","Slope"]]
-    trimmed_df = trimmed_df[["R² ols","R² y=x","m.ratio","avg.ratio","Slope"]]
+    metrics_df = metrics_df[["R² ols","R² y=x","MAPE","m.ratio","avg.ratio","Slope"]]
+    trimmed_df = trimmed_df[["R² ols","R² y=x","MAPE","m.ratio","avg.ratio","Slope"]]
 
     text += "\nUNTRIMMED\n"
     text += metrics_df.to_markdown() + "\n"

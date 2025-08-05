@@ -26,7 +26,7 @@ from mgwr.gwr import GWR
 from mgwr.gwr import _compute_betas_gwr, Kernel
 
 from mgwr.sel_bw import Sel_BW
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 from statsmodels.nonparametric._kernel_base import EstimatorSettings
 from statsmodels.nonparametric.kernel_regression import KernelReg
 from statsmodels.regression.linear_model import RegressionResults
@@ -284,6 +284,8 @@ class PredictionResults:
         Mean squared error.
     rmse : float
         Root mean squared error.
+    mape : float
+        Mean absolute percent error.
     r2 : float
         R-squared.
     adj_r2 : float
@@ -341,6 +343,7 @@ class PredictionResults:
         if len(y_clean) > 0 and len(y_pred_clean) > 0:
             self.mse = mean_squared_error(y_clean, y_pred_clean)
             self.rmse = np.sqrt(self.mse)
+            self.mape = mean_absolute_percentage_error(y_clean, y_pred_clean)
             var_y = np.var(y_clean)
 
             if var_y == 0:
@@ -361,6 +364,7 @@ class PredictionResults:
             if len(y_clean_trim) > 0 and len(y_pred_trim) > 0:
                 self.mse_trim = mean_squared_error(y_clean_trim, y_pred_trim)
                 self.rmse_trim = np.sqrt(self.mse_trim)
+                self.mape_trim = mean_absolute_percentage_error(y_clean_trim, y_pred_trim)
                 var_y_trim = np.var(y_clean_trim)
                 if var_y_trim == 0:
                     self.r2_trim = float("nan")
@@ -373,6 +377,7 @@ class PredictionResults:
             else:
                 self.mse_trim = float("nan")
                 self.rmse_trim = float("nan")
+                self.mape_trim = float("nan")
                 self.r2_trim = float("nan")
                 self.slope_trim = float("nan")
 
@@ -388,6 +393,7 @@ class PredictionResults:
         else:
             self.mse = float("nan")
             self.rmse = float("nan")
+            self.mape = float("nan")
             self.r2 = float("nan")
             self.adj_r2 = float("nan")
             self.slope = float("nan")
@@ -1253,9 +1259,9 @@ class SingleModelResults:
         timing.stop("chd")
 
         timing.start("utility")
-        self.utility_test = (1.0 - self.pred_test.adj_r2) * 1000
+        self.utility_test = self.pred_test.mape * 1000
         if y_pred_sales is not None:
-            self.utility_train = (1.0 - self.pred_train.adj_r2) * 1000
+            self.utility_train = self.pred_train.mape * 1000
         else:
             self.utility_train = float("nan")
         timing.stop("utility")
