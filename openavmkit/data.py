@@ -879,7 +879,7 @@ def enrich_sup_spatial_lag(
         # ------------------------------------------------
 
     df_test = df_sales.loc[df_sales["key_sale"].isin(test_keys)].copy()
-    df_universe = _enrich_universe_spatial_lag(df_universe, df_test)
+    df_universe = _enrich_universe_spatial_lag(df_universe, df_test, settings)
 
     sup.set("sales", df_sales)
     sup.set("universe", df_universe)
@@ -986,7 +986,7 @@ def _enrich_data(
     Parameters
     ----------
     sup : SalesUniversePair
-        SalesUniversePair containing sales and universe data.
+        The SalesUniversePair containing sales and universe data.
     s_enrich : dict
         Enrichment instructions.
     dataframes : dict[str, pd.DataFrame]
@@ -2265,10 +2265,14 @@ def _boolify_column_in_df(df: pd.DataFrame, field: str, na_handling: str = None)
 
 
 def _enrich_universe_spatial_lag(
-    df_univ_in: pd.DataFrame, df_test: pd.DataFrame
+    df_univ_in: pd.DataFrame,
+    df_test: pd.DataFrame,
+    settings: dict
 ) -> pd.DataFrame:
 
     df = df_univ_in.copy()
+
+    s_sl = settings.get("data", {}).get("process", {}).get("enrich", {}).get("universe", {}).get("spatial_lag", {})
 
     if "floor_area_ratio" not in df:
         df["floor_area_ratio"] = div_series_z_safe(
@@ -2282,16 +2286,21 @@ def _enrich_universe_spatial_lag(
     df_train_univ = df[~df["key"].isin(df_test["key"].values)].copy()
 
     # FAR, bedroom density, and big five:
-    value_fields = [
-        "floor_area_ratio",
-        "bedroom_density",
-        "bldg_age_years",
-        "bldg_effective_age_years",
-        "bldg_area_finished_sqft",
-        "land_area_sqft",
-        "bldg_quality_num",
-        "bldg_condition_num",
-    ]
+    value_fields = {
+        "floor_area_ratio": 5,
+        "bedroom_density": 5,
+        "bldg_age_years": 5,
+        "bldg_effective_age_years": 5,
+        "bldg_area_finished_sqft": 5,
+        "land_area_sqft": 5,
+        "bldg_quality_num": 5,
+        "bldg_condition_num": 5,
+    }
+
+    extra_fields = s_sl.get("fields", {})
+    for key in extra_fields:
+        value_fields[key] = extra_fields[key]
+
 
     # Build a cKDTree from df_sales coordinates
 
@@ -2307,7 +2316,7 @@ def _enrich_universe_spatial_lag(
             continue
 
         # Choose the number of nearest neighbors to use
-        k = 5  # You can adjust this number as needed
+        k = value_fields[value_field]
 
         # Query the tree: for each parcel in df_universe, find the k nearest parcels
         # distances: shape (n_universe, k); indices: corresponding indices in df_sales
