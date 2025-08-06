@@ -1216,6 +1216,39 @@ def cloud_sync(
     )
 
 
+def load_cleaned_data_for_modeling(settings: dict):
+    """
+    Read and return the cleaned data from notebook 2 so notebook 3 can use it.
+    Additionally, check the sales scrutiny settings for the invalid key file, and
+    if it's defined, use that to exclude any recently marked invalid sales.
+    
+    (This saves having to do a full round trip through notebook 1&2 just to exclude a newly
+    identified invalid sale)
+    
+    Parameters
+    ----------
+    settings : dict
+        Configuration settings
+        
+    Returns
+    -------
+    SalesUniversePair
+        The cleaned and ready SalesUniversePair
+    
+    """
+    sales_univ_pair = read_pickle("out/2-clean-sup")
+    s_sales_scrutiny = settings.get("analysis", {}).get("sales_scrutiny", {})
+    invalid_key_file = s_sales_scrutiny.get("invalid_key_file")
+    if invalid_key_file is not None:
+        if os.path.exists(invalid_key_file):
+            df_invalid_keys = pd.read_csv(invalid_key_file, dtype={"key_sale": str})
+            bad_keys = df_invalid_keys["key_sale"].values
+            df_sales = sales_univ_pair.sales
+            df_sales = df_sales[~df_sales["key_sale"].isin(bad_keys)].copy()
+            sales_univ_pair.sales = df_sales
+    return sales_univ_pair
+
+
 def read_pickle(path: str) -> Any:
     """
     Read and return data from a pickle file.
