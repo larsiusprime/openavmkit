@@ -146,16 +146,60 @@ def _compute_shap(
 
     # 3) CatBoostRegressor — path_dependent explainer, NO background
     if isinstance(model, cb.CatBoostRegressor):
-        te = shap.TreeExplainer(model, feature_perturbation="tree_path_dependent")
-        # CatBoost will accept the DataFrame directly here
-        vals = te.shap_values(X_to_explain, check_additivity=False)
-        return shap.Explanation(
-            values=np.array(vals),  # ensure ndarray
-            base_values=te.expected_value,
-            data=X_to_explain.to_numpy(),
-            feature_names=list(X_to_explain.columns),
+        return _fast_catboost_shap(
+            model,
+            X_to_explain,
+            shap_type="Approximate"
         )
+    
+    # if isinstance(model, cb.CatBoostRegressor):
+    #     te = shap.TreeExplainer(model, feature_perturbation="tree_path_dependent")
+    #     # CatBoost will accept the DataFrame directly here
+    #     vals = te.shap_values(X_to_explain, check_additivity=False)
+    #     return shap.Explanation(
+    #         values=np.array(vals),  # ensure ndarray
+    #         base_values=te.expected_value,
+    #         data=X_to_explain.to_numpy(),
+    #         feature_names=list(X_to_explain.columns),
+    #     )
 
-    # 3) Everything else (sklearn wrappers, CatBoostRegressor, etc.) — unified API ———
+    # 4) Everything else (sklearn wrappers, CatBoostRegressor, etc.) — unified API ———
     explainer = shap.Explainer(model, X_train)
     return explainer(X_to_explain)
+
+
+def _fast_catboost_shap(
+    model: cb.CatBoost,
+    X: pd.DataFrame,
+    shap_type: str = "Approximate",
+    n_threads: int | None = None
+) -> shap.Explanation:
+    # 1. Ask the model for categorical columns (fallback = None)
+    try:
+        cat_idx = model.get_cat_feature_indices()
+    except AttributeError:
+        cat_idx = None                 # very old CatBoost versions
+
+    # 2. Wrap the data in a Pool; only pass cat_features if we actually have them
+    pool = cb.Pool(
+        X,
+        cat_features=cat_idx if cat_idx else None
+    )
+
+    # 3. Fast SHAP via CatBoost’s native call
+    shap_vals = model.get_feature_importance(
+        data=pool,
+        type="ShapValues",
+        shap_calc_type=shap_type,       # "Approximate" → 10-100 × faster
+        thread_count=n_threads or -1,
+    )                                   # (n_samples, n_features+1)
+
+    base_values = shap_vals[:, -1]
+    values = shap_vals[:, :-1]
+
+    return shap.Explanation(
+        values=values,
+        base_values=base_values,
+        data=X.to_numpy(),
+        feature_names=X.columns.tolist()
+    )
