@@ -19,7 +19,7 @@ def _tune_xgboost(
     y,
     sizes,
     he_ids,
-    n_trials=100,
+    n_trials=50,
     n_splits=5,
     random_state=42,
     cat_vars=None,
@@ -76,7 +76,7 @@ def _tune_xgboost(
         )
         if verbose:
             print(
-                f"-->trial # {trial.number}/{n_trials}, MAPE: {mape:0.2f}"
+                f"-->trial # {trial.number}/{n_trials}, MAPE: {mape:0.4f}"
             )  # , params: {params}")
         return mape  # Optuna minimizes, so return the MAPE directly
 
@@ -87,7 +87,7 @@ def _tune_xgboost(
     )
     if verbose:
         print(
-            f"Best trial: {study.best_trial.number} with MAPE: {study.best_trial.value:0.2f} and params: {study.best_trial.params}"
+            f"Best trial: {study.best_trial.number} with MAPE: {study.best_trial.value:0.4f} and params: {study.best_trial.params}"
         )
     return study.best_params
 
@@ -97,7 +97,7 @@ def _tune_lightgbm(
     y,
     sizes,
     he_ids,
-    n_trials=100,
+    n_trials=50,
     n_splits=5,
     random_state=42,
     cat_vars=None,
@@ -153,7 +153,7 @@ def _tune_lightgbm(
         )
         if verbose:
             print(
-                f"-->trial # {trial.number}/{n_trials}, MAPE: {mape:0.2f}"
+                f"-->trial # {trial.number}/{n_trials}, MAPE: {mape:0.4f}"
             )  # , params: {params}")
         return mape  # Optuna minimizes, so return the MAPE directly
 
@@ -168,7 +168,7 @@ def _tune_lightgbm(
 
     if verbose:
         print(
-            f"Best trial: {study.best_trial.number} with MAPE: {study.best_trial.value:0.2f} and params: {study.best_trial.params}"
+            f"Best trial: {study.best_trial.number} with MAPE: {study.best_trial.value:0.4f} and params: {study.best_trial.params}"
         )
     return study.best_params
 
@@ -180,7 +180,7 @@ def _tune_catboost(
     he_ids,
     verbose=False,
     cat_vars=None,
-    n_trials=100,
+    n_trials=50,
     n_splits=5,
     random_state=42,
 ):
@@ -253,8 +253,8 @@ def _tune_catboost(
 
 def _plateau_callback(study, trial):
     """Stops the study if no significant improvement (>= 1% over the current best value)
-    is observed over the last 20 trials."""
-    plateau_trials = 20
+    is observed over the last 10 trials."""
+    plateau_trials = 10
     improvement_threshold = 0.01  # require at least 1% improvement
 
     # Only check if we've completed enough trials.
