@@ -40,6 +40,7 @@ from openavmkit.utilities.data import (
     combine_dfs,
     div_series_z_safe,
     merge_and_stomp_dfs,
+    fill_from_df
 )
 from openavmkit.utilities.geometry import (
     get_crs,
@@ -683,7 +684,9 @@ def enrich_df_streets(
 
 
 def enrich_sup_spatial_lag(
-    sup: SalesUniversePair, settings: dict, verbose: bool = False
+    sup: SalesUniversePair, 
+    settings: dict, 
+    verbose: bool = False
 ) -> SalesUniversePair:
     """Enrich the sales and universe DataFrames with spatial lag features.
 
@@ -708,29 +711,79 @@ def enrich_sup_spatial_lag(
     SalesUniversePair
         Enriched SalesUniversePair with spatial lag features.
     """
+    
+    mg_ids = get_model_group_ids(settings)
+    
+    df_sales = sup.sales
+    df_universe = sup.universe
+    
+    # For each model group, calculate its spatial lag surface(s)
+    for mg in mg_ids:
+        sup_mg = _enrich_sup_spatial_lag_for_model_group(
+            sup,
+            settings,
+            mg,
+            verbose
+        )
+        if sup_mg is None:
+            continue
+        # For each spatial lag surface, copy it back to the master SalesUniversePair
+        sl_cols = [field for field in sup_mg.universe.columns if field.startswith("spatial_lag_")]
+        for col in sl_cols:
+            # Only fill in values that haven't been set already
+            if col in sup_mg.sales:
+                df_sales = fill_from_df(df_sales, sup_mg.sales, "key_sale", col)
+            if col in sup_mg.universe:
+                df_universe = fill_from_df(df_universe, sup_mg.universe, "key", col)
+    
+    sup.sales = df_sales
+    sup.universe = df_universe
+    
+    return sup
 
-    BANDWIDTH_MILES = 0.5  # distance at which confidence → 0
+
+def _enrich_sup_spatial_lag_for_model_group(
+    sup: SalesUniversePair, 
+    settings: dict, 
+    model_group: str,
+    verbose: bool = False
+) -> SalesUniversePair:
+
+    s_sl = (
+        settings.get("data", {})
+        .get("process", {})
+        .get("enrich", {})
+        .get("spatial_lag", {})
+    )
+    
+    s_mgs = s_sl.get("model_groups", {})
+    if model_group not in s_mgs:
+        warnings.warn(f"Could not find model entry \"{model_group}\" in process.enrich.spatial_lag.model_groups, skipping...")
+        return None
+    
+    entry = s_mgs.get(model_group)
+    sample_from_mgs = entry.get("sample_from", [])
+    if len(sample_from_mgs) == 0:
+        raise ValueError(f"'process.enrich.spatial_lag.model_groups.{model_group}' does not specify \"sample_from\"! Provide an explicit list of model groups you are sampling from. A safe default is just the same model group.")
+    
+    BANDWIDTH_MILES = 0.5  # distance at which confidence --> 0
     METRES_PER_MILE = 1609.344
     D_SCALE = BANDWIDTH_MILES * METRES_PER_MILE
 
     df_sales = sup.sales.copy()
     df_universe = sup.universe.copy()
 
-    s_sl = (
-        settings.get("data", {})
-        .get("process", {})
-        .get("enrich", {})
-        .get("universe", {})
-        .get("spatial_lag", {})
-    )
-    ex_model_groups = s_sl.get("exclude_model_groups", [])
-
     df_hydrated = get_hydrated_sales_from_sup(sup)
     train_keys, test_keys = get_train_test_keys(df_hydrated, settings)
-
-    for mg in ex_model_groups:
-        df_hydrated = df_hydrated[df_hydrated["model_group"].ne(mg)]
-
+    
+    # only WRITE TO the given model group
+    df_hydrated_mg = df_hydrated[df_hydrated["model_group"].eq(model_group)]
+    df_sales = df_sales[df_sales["key_sale"].isin(df_hydrated_mg["key_sale"].values)]
+    df_universe = df_universe[df_universe["model_group"].eq(model_group)]
+    
+    # only SAMPLE FROM the designated source model groups
+    df_hydrated = df_hydrated[df_hydrated["model_group"].isin(sample_from_mgs)]
+    
     sale_field = get_sale_field(settings)
     sale_field_vacant = f"{sale_field}_vacant"
 
@@ -879,10 +932,23 @@ def enrich_sup_spatial_lag(
         # ------------------------------------------------
 
     df_test = df_sales.loc[df_sales["key_sale"].isin(test_keys)].copy()
-    df_universe = _enrich_universe_spatial_lag(df_universe, df_test, settings)
-
-    sup.set("sales", df_sales)
-    sup.set("universe", df_universe)
+    
+    # we pass in the original sup.universe so we can re-select model groups properly within this function
+    df_universe_enriched = _enrich_universe_spatial_lag(
+        sup.universe,
+        df_test,
+        model_group=model_group,
+        sample_from_mgs=sample_from_mgs,
+        settings=settings
+    )
+    
+    # we merge back all new spatial lag fields back into the universe
+    sl_fields = [field for field in df_universe_enriched.columns if field.startswith("spatial_lag_")]
+    for field in sl_fields:
+        df_universe = fill_from_df(df_universe, df_universe_enriched, "key", field)
+    
+    # we return a new sup containing our modified sales & universe
+    sup = SalesUniversePair(df_sales, df_universe)
     return sup
 
 
@@ -1002,102 +1068,74 @@ def _enrich_data(
         Enriched SalesUniversePair.
     """
 
-    supkeys: list[SUPKey] = ["universe", "sales"]
+    if verbose:
+        print(f"Enriching data...")
 
-    # Add the "both" entries to both "universe" and "sales" and delete the "both" entry afterward.
-    if "both" in s_enrich:
-        s_enrich2 = s_enrich.copy()
-        s_both = s_enrich.get("both")
-        for key in s_both:
-            for supkey in supkeys:
-                sup_entry = s_enrich.get(supkey, {})
-                if key in sup_entry:
-                    # Check if the key already exists on "sales" or "universe"
-                    raise ValueError(
-                        f'Cannot enrich \'{key}\' twice -- found in both "both" and "{supkey}". Please remove one.'
-                    )
-                entry = s_both[key]
-                # add the entry from "both" to both the "sales" & "universe" entry
-                sup_entry2 = s_enrich2.get(supkey, {})
-                sup_entry2[key] = entry
-                s_enrich2[supkey] = sup_entry2
-        del s_enrich2["both"]  # remove the now-redundant "both" key
-        s_enrich = s_enrich2
+    df_sales = sup.sales
+    df_univ = sup.universe
 
-    for supkey in supkeys:
-        if verbose:
-            print(f"Enriching {supkey}...")
+    if s_enrich is not None:
 
-        df = sup.sales if supkey == "sales" else sup.universe
+        # do spatial joins on user data
+        df_univ = _enrich_df_spatial_joins(
+            df_univ, s_enrich, dataframes, settings, verbose=verbose
+        )
 
-        s_enrich_local: dict | None = s_enrich.get(supkey, None)
+        # add building footprints
+        df_univ = _enrich_df_overture(
+            df_univ, s_enrich, dataframes, settings, verbose=verbose
+        )
 
-        if s_enrich_local is not None:
-            # Handle Census enrichment for universe if enabled
-            if supkey == "universe":
+        # add lat/lon/rectangularity etc.
+        df_univ = _basic_geo_enrichment(df_univ, settings, verbose=verbose)
 
-                # do spatial joins on user data
-                df = _enrich_df_spatial_joins(
-                    df, s_enrich_local, dataframes, settings, verbose=verbose
-                )
-
-                # add building footprints
-                df = _enrich_df_overture(
-                    df, s_enrich_local, dataframes, settings, verbose=verbose
-                )
-
-                # add lat/lon/rectangularity etc.
-                df = _basic_geo_enrichment(df, settings, verbose=verbose)
-
-                if "census" in s_enrich_local:
-                    df = _enrich_df_census(
-                        df, s_enrich_local.get("census", {}), verbose=verbose
-                    )
-
-                if "distances" in s_enrich_local:
-                    df = _enrich_df_distances(
-                        df,
-                        s_enrich_local.get("distances", {}),
-                        dataframes,
-                        verbose=verbose,
-                        use_cache=True,
-                    )
-
-                # add distances to user-defined locations
-                # df = _enrich_df_user_distances(
-                #     df, s_enrich_local, dataframes, settings, verbose=verbose
-                # )
-
-                # fill in missing data based on geospatial patterns (should happen after all other enrichments have been done)
-                df = _enrich_spatial_inference(
-                    df, s_enrich_local, dataframes, settings, verbose=verbose
-                )
-
-                # TODO: Universe Permit enrichment
-                # if "permits" in s_enrich_local:
-                # df = _enrich_permits(df, s_enrich_local, dataframes, settings, False, verbose=verbose)
-
-            elif supkey == "sales":
-                if "permits" in s_enrich_local:
-                    df = _enrich_permits(
-                        df, s_enrich_local, dataframes, settings, True, verbose=verbose
-                    )
-
-        # User calcs apply at the VERY end of enrichment, after all automatic enrichments have been applied
-        if s_enrich_local is not None:
-            df = _enrich_df_basic(
-                df,
-                s_enrich_local,
-                dataframes,
-                settings,
-                supkey == "sales",
-                verbose=verbose,
+        # handle Census enrichment for universe if enabled
+        if "census" in s_enrich:
+            df_univ = _enrich_df_census(
+                df_univ, s_enrich.get("census", {}), verbose=verbose
             )
 
-        # Enforce vacant status
-        df = _enrich_vacant(df, settings)
+        # handle distance enrichment for universe if enabled
+        if "distances" in s_enrich:
+            df_univ = _enrich_df_distances(
+                df_univ,
+                s_enrich.get("distances", {}),
+                dataframes,
+                verbose=verbose,
+                use_cache=True,
+            )
 
-        sup.set(supkey, df)
+        if "permits" in s_enrich:
+            # df_univ = _enrich_permits(
+            #     df_univ, s_enrich, dataframes, settings, is_sales=False, verbose=verbose
+            # )
+            df_sales = _enrich_permits(
+                df_sales, s_enrich, dataframes, settings, is_sales=True, verbose=verbose
+            )
+
+        # fill in missing data based on geospatial patterns (should happen after all other enrichments have been done)
+        if "infer" in s_enrich:
+            df_univ = _enrich_spatial_inference(
+                df_univ, s_enrich, dataframes, settings, verbose=verbose
+            )
+
+    # User calcs apply at the VERY end of enrichment, after all automatic enrichments have been applied
+    if s_enrich is not None:
+        df_univ = _enrich_df_basic(
+            df_univ,
+            s_enrich,
+            dataframes,
+            settings,
+            is_sales=False,
+            verbose=verbose,
+        )
+
+    # Enforce vacant status
+    df_univ = _enrich_vacant(df_univ, settings)
+    df_sales = _enrich_vacant(df_sales, settings)
+
+    sup.set("universe", df_univ)
+    sup.set("sales", df_sales)
 
     return sup
 
@@ -2267,12 +2305,14 @@ def _boolify_column_in_df(df: pd.DataFrame, field: str, na_handling: str = None)
 def _enrich_universe_spatial_lag(
     df_univ_in: pd.DataFrame,
     df_test: pd.DataFrame,
+    model_group : str,
+    sample_from_mgs : list[str],
     settings: dict
 ) -> pd.DataFrame:
 
     df = df_univ_in.copy()
 
-    s_sl = settings.get("data", {}).get("process", {}).get("enrich", {}).get("universe", {}).get("spatial_lag", {})
+    s_sl = settings.get("data", {}).get("process", {}).get("enrich", {}).get("spatial_lag", {})
 
     if "floor_area_ratio" not in df:
         df["floor_area_ratio"] = div_series_z_safe(
@@ -2282,8 +2322,14 @@ def _enrich_universe_spatial_lag(
         df["bedroom_density"] = div_series_z_safe(
             df["bldg_rooms_bed"], df["land_area_sqft"]
         )
-
+    
+    # only include samples not in the test set
     df_train_univ = df[~df["key"].isin(df_test["key"].values)].copy()
+    # only sample from model groups explicitly listed
+    df_train_univ = df_train_univ[df_train_univ["model_group"].isin(sample_from_mgs)]
+
+    # only write to records in the model group:
+    df = df[df["model_group"].eq(model_group)]
 
     # FAR, bedroom density, and big five:
     value_fields = {
@@ -2371,9 +2417,12 @@ def _enrich_df_basic(
     calculations, year built enrichment, and vacant status enrichment.
     """
     df = df_in.copy()
-    s_ref = s_enrich_this.get("ref_tables", [])
-    s_calc = s_enrich_this.get("calc", {})
-    s_tweak = s_enrich_this.get("tweak", {})
+
+    supkey = "sales" if is_sales else "universe"
+
+    s_ref = s_enrich_this.get("ref_tables", {}).get(supkey, [])
+    s_calc = s_enrich_this.get("calc", {}).get(supkey, {})
+    s_tweak = s_enrich_this.get("tweak", {}).get(supkey, {})
 
     # reference tables:
     df = _perform_ref_tables(df, s_ref, dataframes, verbose=verbose)
