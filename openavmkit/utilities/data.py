@@ -315,6 +315,43 @@ def do_per_model_group(
     return df
 
 
+def fill_from_df(
+    df_a: pd.DataFrame, 
+    df_b: pd.DataFrame,
+    key: str,
+    field: str
+) -> pd.DataFrame:
+    """
+    Copies values from field `field` in `df_b`, to the corresponding field in `df_a`, but only
+    where the values in `df_a` are empty. Aligns on `key` as the index.
+    
+    Parameters
+    ----------
+    df_a : pd.DataFrame
+        Base DataFrame you want to copy values TO
+    df_b : pd.DataFrame
+        Other DataFrame you want copy values FROM
+    key : str
+        Key field that you want to use to align the two Dataframes
+    field : str
+        Name of the field you want to copy from one DataFrame to the other
+    
+    Returns
+    -------
+    The modified DataFrame with copied values
+    """
+    df_a = df_a.merge(
+        df_b[[key, field]],
+        on=key,
+        how="left",
+        suffixes=("","___b___")
+    )
+    if f"{field}___b___" in df_a:
+        df_a[field] = df_a[field].fillna(df_a[f"{field}___b___"])
+        df_a = df_a.drop(columns=f"{field}___b___")
+    return df_a
+
+
 def merge_and_stomp_dfs(
     df1: pd.DataFrame,
     df2: pd.DataFrame,
