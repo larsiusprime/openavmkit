@@ -804,6 +804,10 @@ class LandSLICEModel:
         self.med_size = med_size
         self.size_field = size_field
 
+
+    def predict_size_factor(size_value: float):
+        return self.alpha * (size_value / self.med_size)**self.beta
+
     def predict(
         self,
         df: pd.DataFrame,
@@ -823,6 +827,7 @@ class LandSLICEModel:
         # Get size factor from power curve
         df[size_factor] = self.alpha * (np.asarray(df[self.size_field]) / self.med_size)**self.beta
 
+        # Prediction is simply location premium times size factor
         df[prediction] = df[location_factor] * df[size_factor]
         return df
 
@@ -833,16 +838,41 @@ def fit_land_SLICE_model(
     value_field: str = "land_value",
     verbose: bool = False
 )->LandSLICEModel:
+    """
+    Fits land values using SLICE: "Smooth Location with Increasing-Concavity Equation"
+    
+    This model takes already-existing raw per-parcel land values and separates the contribution of land size and locational premium.
+    It also enforces three constraints: 
+    1. Locational premium must change smoothly over space
+    2. Land value in any fixed location must increase monotonically with land size
+    3. The marginal value of each additional unit of land size must decrease monotonically
+    
+    The output is an object that encodes the final fitted land values, the locational premiums, and the local land factors. Fitted land
+    values are derived by simply multiplying locational premium times local land factor.
+    
+    Parameters
+    ----------
+    df_in : pd.DataFrame
+        Input data
+    size_field : str
+        The name of your land size field
+    value_field : str
+        The name of your land value field
+    verbose : bool
+        Whether to print verbose output
+    """
+    
+    
     class Progress(CallBack):
         def on_loop_end(self, diff):
             # self.iter is automatically tracked inside Callback
             print(f"iter {self.iter:>3d}   dev.change={diff:9.3e}")
-
+    
     if verbose:
         print("Fitting land SLICE model...")
 
-    df = df_in[[value_field, size_field, "latitude", "longitude"]].copy()
 
+    df = df_in[[value_field, size_field, "latitude", "longitude"]].copy()
     med_land_size = float(np.median(df[size_field]))
 
     # Y = Size-detrended location factor
@@ -855,13 +885,14 @@ def fit_land_SLICE_model(
 
     if verbose:
         print("-->fitting thin-plate spline for location factor...")
+        
     # Fit a thin-plate spline for location factor L(lat, lon)
     basis = te(0, 1, n_splines=40, spline_order=3)
     gam_L : LinearGAM = LinearGAM(
         basis,
         max_iter=40,
         callbacks=[Progress()],
-        verbose=True
+        verbose=verbose
     )
     gam_L.fit(
         df[['latitude', 'longitude']].values,
@@ -913,7 +944,7 @@ def fit_land_SLICE_model(
     # L_hat = Final estimated location factor
     df["L_hat"] = np.exp( gam_L2.predict(df[["latitude", "longitude"]]))
 
-    # could refit F_hat once more here if desired
+    # could refit L_hat once more here if desired
     return LandSLICEModel(
         alpha_hat,
         beta_hat,
