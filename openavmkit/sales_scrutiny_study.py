@@ -453,6 +453,8 @@ def _run_land_percentiles(sup: SalesUniversePair, settings: dict):
         df_sales["sale_price_time_adj"], df_sales["land_area_sqft"]
     )
     locations = get_locations(settings, df_sales)
+    ss = settings.get("analysis", {}).get("sales_scrutiny", {})
+    deed_id = ss.get("deed_id", "deed_id")
 
     def _do_run_land_percentiles(df: pd.DataFrame, model_group: str):
         df.sort_values(
@@ -470,7 +472,7 @@ def _run_land_percentiles(sup: SalesUniversePair, settings: dict):
             "sale_price_time_adj_land_sqft_percentile",
             "deed_book",
             "deed_page",
-            "deed_id",
+            deed_id,
             "sale_year",
             "bldg_year_built",
             "bldg_area_finished_sqft",
@@ -570,15 +572,18 @@ def run_heuristics(
     #### Multi-parcel sales detection heuristics
 
     # 1 -- Flag sales with identical deed IDs AND identical sale dates
-    df_sales["deed_date"] = df_sales[deed_id].astype(str)+"---"+df_sales["sale_date"].astype(str)
-    vcs_deed_date = df_sales["deed_date"].value_counts()
-    idx_dupe_deed_dates = vcs_deed_date[vcs_deed_date > 1].index.values
-    df_sales.loc[
-        df_sales["deed_date"].isin(idx_dupe_deed_dates),
-        "flag_dupe_deed_date"
-    ] = True
-    # drop extraneous column
-    df_sales = df_sales.drop(columns="deed_date")
+    if "deed_id" in df_sales:
+        df_sales["deed_date"] = df_sales[deed_id].astype(str)+"---"+df_sales["sale_date"].astype(str)
+        vcs_deed_date = df_sales["deed_date"].value_counts()
+        idx_dupe_deed_dates = vcs_deed_date[vcs_deed_date > 1].index.values
+        df_sales.loc[
+            df_sales["deed_date"].isin(idx_dupe_deed_dates),
+            "flag_dupe_deed_date"
+        ] = True
+        # drop extraneous column
+        df_sales = df_sales.drop(columns="deed_date")
+    else:
+        warnings.warn("You didn't provide a `deed_id` in `analysis.sales_scrutiny.deed_id`, so no deed-based sales validation heuristic can be run")
 
     # 2 -- Flag sales made on the same date for the same price
     df_sales["date_price"] = df_sales["sale_date"].astype(str) + "---" + df_sales["sale_price"].astype(str)
@@ -628,7 +633,7 @@ def run_heuristics(
                         "sale_price_time_adj",
                         "deed_book",
                         "deed_page",
-                        "deed_id",
+                        deed_id
                         "sale_year",
                         "bldg_year_built",
                         "bldg_area_finished_sqft",
@@ -659,7 +664,7 @@ def run_heuristics(
                         "sale_price_time_adj": "Sale price\n(Time adj.)",
                         "deed_book": "Deed book",
                         "deed_page": "Deed page",
-                        "deed_id": "Deed ID",
+                        deed_id: "Deed ID",
                         "sale_year": "Year sold",
                         "bldg_year_built": "Year built",
                         "bldg_area_finished_sqft": "Impr sqft",
