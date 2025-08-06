@@ -633,7 +633,7 @@ def run_heuristics(
                         "sale_price_time_adj",
                         "deed_book",
                         "deed_page",
-                        deed_id
+                        deed_id,
                         "sale_year",
                         "bldg_year_built",
                         "bldg_area_finished_sqft",
