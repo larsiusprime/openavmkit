@@ -1498,7 +1498,7 @@ def run_models(
     )
 
 
-def write_canonical_splits(sup: SalesUniversePair, settings: dict) -> None:
+def write_canonical_splits(sup: SalesUniversePair, settings: dict, verbose: bool = False) -> None:
     """
     Write canonical splits for the sales DataFrame.
 
@@ -1512,9 +1512,11 @@ def write_canonical_splits(sup: SalesUniversePair, settings: dict) -> None:
         Sales and universe data.
     settings : dict
         Configuration settings.
+    verbose : bool
+        Whether to print verbose output.
     """
 
-    openavmkit.data._write_canonical_splits(sup, settings)
+    openavmkit.data._write_canonical_splits(sup, settings, verbose)
 
 
 def run_and_write_ratio_study_breakdowns(settings: dict) -> None:

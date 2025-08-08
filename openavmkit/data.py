@@ -4030,18 +4030,27 @@ def _merge_dict_of_dfs(
     return df_merged
 
 
-def _write_canonical_splits(sup: SalesUniversePair, settings: dict):
+def _write_canonical_splits(sup: SalesUniversePair, settings: dict, verbose: bool=False):
     """Write canonical split keys for sales data to disk."""
     df_sales_in = sup.sales
     df_univ = sup.universe
+
+    if verbose:
+        print(f"Write canonical splits...")
+        print(f"Sales in = {len(df_sales_in)}")
+    
     df_sales = _get_sales(df_sales_in, settings, df_univ=df_univ)
     model_groups = get_model_group_ids(settings, df_sales)
+    
+    if verbose:
+        print(f"Get sales= {len(df_sales)}")
+    
     instructions = settings.get("modeling", {}).get("instructions", {})
     test_train_frac = instructions.get("test_train_frac", 0.8)
     random_seed = instructions.get("random_seed", 1337)
     for model_group in model_groups:
         _do_write_canonical_split(
-            model_group, df_sales, settings, test_train_frac, random_seed
+            model_group, df_sales, settings, test_train_frac, random_seed, verbose
         )
 
 
@@ -4051,6 +4060,7 @@ def _perform_canonical_split(
     settings: dict,
     test_train_fraction: float = 0.8,
     random_seed: int = 1337,
+    verbose : bool = False
 ):
     """Perform a canonical split of the sales DataFrame for a given model group into test
     and training sets.
@@ -4070,7 +4080,11 @@ def _perform_canonical_split(
     #   - whatever is not in the TEST set
     #   - never use post-valuation-date sales, even if there's some left over
     #   - aim to be 80% of total sales
-
+    
+    if verbose:
+        print("")
+        print(f"Making canonical test/train split for model group {model_group}...")
+    
     rs = settings.get("analysis", {}).get("ratio_study", {})
     look_back_years = rs.get("look_back_years", 1)
     val_date = get_valuation_date(settings)
@@ -4085,12 +4099,14 @@ def _perform_canonical_split(
     df = df_sales_in[df_sales_in["model_group"].eq(model_group)].copy()
     df_v = get_vacant_sales(df, settings)
     df_i = df.drop(df_v.index)
+    
+    df_check = df[df["vacant_sale"].eq(True)]
 
     df_v_pre_val = df_v[
         df_v["sale_age_days"].ge(0)
     ]  # Positive sale_age_days indicates days BEFORE the valuation date
     df_i_pre_val = df_i[df_i["sale_age_days"].ge(0)]
-
+    
     # Find sales that occurred on or after the look_back_date (i.e., within 1 year of the valuation date, but not after it)
     df_v_look_back = df_v[
         df_v["sale_age_days"].le(look_back_days) & (df_v["sale_age_days"].ge(0))
@@ -4105,21 +4121,28 @@ def _perform_canonical_split(
         df_v["sale_age_days"].lt(0)
     ]  # Negative sale_age_days indicates days AFTER the valuation date
     df_i_post_val = df_i[df_i["sale_age_days"].lt(0)]
-
+    
     test_share = 1.0 - test_train_fraction
 
     # This is how many test sales we need
     test_set_count = np.floor(len(df) * test_share).astype(int)
-
+    if len(df) <= 30:
+        test_set_count_v = np.ceil(len(df_v) * test_share).astype(int)
+    else:
+        test_set_count_v = max(15, np.ceil(len(df_v) * test_share).astype(int))
+    test_set_count_i = test_set_count - test_set_count_v
+    
     # Sales in general
     count_sales_all = len(df)
+    count_sales_all_v = len(df_v)
+    count_sales_all_i = len(df_i)
 
     # Sales after the val date
     count_post_val = len(df_v_post_val) + len(df_i_post_val)
 
     # Sales within the look back period
     count_look_back = len(df_v_look_back) + len(df_i_look_back)
-
+    
     np.random.seed(random_seed)
 
     df_v_test: pd.DataFrame | None = None
@@ -4157,19 +4180,29 @@ def _perform_canonical_split(
 
         if count_look_back > 0 and remaining_test_frac <= 1.0:
             # We can sample the lookback sales alone to fill the test set
+            n_v = max(test_set_count_v, np.floor(len(df_v_look_back) * remaining_test_frac).astype(int))
+            n_i = max(test_set_count_i, np.floor(len(df_i_look_back) * remaining_test_frac).astype(int))
+            
+            remaining_test_count_v = test_set_count_v - len(df_v_test)
+            remaining_test_count_i = test_set_count_i - len(df_i_test)
 
-            n_v = np.floor(len(df_v_look_back) * remaining_test_frac).astype(int)
-            n_i = np.floor(len(df_i_look_back) * remaining_test_frac).astype(int)
-            diff = remaining_test_count - (n_v + n_i)
-            while diff > 0:
-                old_diff = diff
+            diff_v = remaining_test_count_v - n_v
+            diff_i = remaining_test_count_i - n_i
+
+            while diff_v > 0:
+                old_diff = diff_v
                 if len(df_v_look_back) > n_v:
                     n_v += 1
-                    diff -= 1
+                    diff_v -= 1
+                if diff_v == old_diff:
+                    break
+    
+            while diff_i > 0:
+                old_diff = diff_i
                 if len(df_i_look_back) > n_i:
                     n_i += 1
-                    diff -= 1
-                if diff == old_diff:
+                    diff_i -= 1
+                if diff_i == old_dif:
                     break
 
             _df_v_test = df_v_look_back.sample(n=n_v, random_state=random_seed)
@@ -4181,46 +4214,76 @@ def _perform_canonical_split(
             # We need to sample ALL the lookback sales to start with...
             df_v_test = pd.concat([df_v_test, df_v_look_back])
             df_i_test = pd.concat([df_i_test, df_i_look_back])
-
+            
+            if len(df_v_test) > test_set_count_v:
+                # in case we already have enough vacant sales in the test set
+                df_v_test = df_v_test.sample(n=test_set_count_v, random_state=random_seed)
+           
             # ...and then we need to sample the pre-valuation sales to fill the remainder of the test set
-            remaining_test_count = test_set_count - (count_post_val + count_look_back)
+            remaining_test_count_v = test_set_count_v - len(df_v_test)
+            remaining_test_count_i = test_set_count_i - len(df_i_test)
 
             # Figure out how many sales we haven't touched yet
-            untouched_sales_count = count_sales_all - (count_post_val + count_look_back)
+            untouched_sales_count_v = count_sales_all_v - len(df_v_test)
+            untouched_sales_count_i = count_sales_all_i - len(df_i_test)
+
             df_v_untouched = df_v[~df_v["key_sale"].isin(df_v_test["key_sale"])]
             df_i_untouched = df_i[~df_i["key_sale"].isin(df_i_test["key_sale"])]
 
             # Express how many more we need as a fraction of the untouched sales
-            remaining_test_frac = remaining_test_count / untouched_sales_count
+            remaining_test_frac_i = 0 if untouched_sales_count_i == 0 else remaining_test_count_i / untouched_sales_count_i
+            remaining_test_frac_v = 0 if untouched_sales_count_v == 0 else remaining_test_count_v / untouched_sales_count_v
 
-            n_v = np.floor(len(df_v_untouched) * remaining_test_frac).astype(int)
-            n_i = np.floor(len(df_i_untouched) * remaining_test_frac).astype(int)
-            diff = remaining_test_count - (n_v + n_i)
-            while diff > 0:
-                old_diff = diff
+            n_v = np.floor(len(df_v_untouched) * remaining_test_frac_v).astype(int)
+            n_i = np.floor(len(df_i_untouched) * remaining_test_frac_i).astype(int)
+            
+            diff_v = remaining_test_count_v - n_v
+            diff_i = remaining_test_count_i - n_i
+            
+            while diff_v > 0:
+                old_diff = diff_v
                 if len(df_v_look_back) > n_v:
                     n_v += 1
-                    diff -= 1
+                    diff_v -= 1
+                if diff_v == old_diff:
+                    break
+    
+            while diff_i > 0:
+                old_diff = diff_i
                 if len(df_i_look_back) > n_i:
                     n_i += 1
-                    diff -= 1
-                if diff == old_diff:
+                    diff_i -= 1
+                if diff_i == old_dif:
                     break
 
+            n_v = min(n_v, len(df_v_untouched))
+            n_i = min(n_i, len(df_i_untouched))
+
             # Sample the untouched sales to fill the test set
-            _df_v_test = df_v_untouched.sample(n=n_v, random_state=random_seed)
-            _df_i_test = df_i_untouched.sample(n=n_i, random_state=random_seed)
-
-            # Add the untouched sales to the test set -- we're finally done
-            df_v_test = pd.concat([df_v_test, _df_v_test])
-            df_i_test = pd.concat([df_i_test, _df_i_test])
-
+            # Then, add the untouched sales to the test set -- we're finally done
+            if n_v > 0:
+                _df_v_test = df_v_untouched.sample(n=n_v, random_state=random_seed)
+                df_v_test = pd.concat([df_v_test, _df_v_test])
+            
+            if n_i > 0:
+                _df_i_test = df_i_untouched.sample(n=n_i, random_state=random_seed)
+                df_i_test = pd.concat([df_i_test, _df_i_test])
+            
         # Training set is whatever is not in the test set
         df_v_train = df_v_pre_val[~df_v_pre_val["key_sale"].isin(df_v_test["key_sale"])]
         df_i_train = df_i_pre_val[~df_i_pre_val["key_sale"].isin(df_i_test["key_sale"])]
 
     df_test = pd.concat([df_v_test, df_i_test]).reset_index(drop=True)
     df_train = pd.concat([df_v_train, df_i_train]).reset_index(drop=True)
+    
+    if verbose:
+        print(f"--> Test set  : {len(df_test)}")
+        print(f"----> Vacant  : {len(df_v_test)}")
+        print(f"----> Improved: {len(df_i_test)}")
+        print(f"--> Train set : {len(df_train)}")
+        print(f"----> Vacant  : {len(df_v_train)}")
+        print(f"----> Improved: {len(df_i_train)}")
+    
     return df_test, df_train
 
 
@@ -4230,13 +4293,14 @@ def _do_write_canonical_split(
     settings: dict,
     test_train_fraction: float = 0.8,
     random_seed: int = 1337,
+    verbose: bool = False
 ):
     """Write the canonical split keys (train and test) for a given model group to disk.
     Also performs outlier detection on training data if enabled in settings.
     """
     # Get initial split
     df_test, df_train = _perform_canonical_split(
-        model_group, df_sales_in, settings, test_train_fraction, random_seed
+        model_group, df_sales_in, settings, test_train_fraction, random_seed, verbose
     )
 
     # Get initial keys
