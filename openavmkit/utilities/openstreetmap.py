@@ -62,16 +62,25 @@ class OpenStreetMapService:
             f"+proj=utm +zone={utm_zone} +{hemisphere} +datum=WGS84 +units=m +no_defs"
         )
 
-    def _get_tags(self, thing: str):
+    def _get_tags(self, thing: str, config: dict = None):
         if thing == "water_bodies":
             return {
                 "natural": ["water", "bay", "strait"],
                 "water": ["river", "lake", "reservoir", "canal", "stream"],
             }
+        elif thing == "rivers":
+            return {
+                "water": ["river", "stream"]
+            }
+        elif thing == "water":
+            return {
+                "natural": ["water", "bay", "strait"],
+                "water": ["lake", "reservoir", "canal"]
+            }
         elif thing == "transportation":
             return {"railway": ["rail", "subway", "light_rail", "monorail", "tram"]}
         elif thing == "educational":
-            return {"amenity": ["university"]}
+            return {"amenity": ["university", "college"]}
         elif thing == "parks":
             return {
                 "leisure": ["park", "garden", "playground"],
@@ -80,7 +89,13 @@ class OpenStreetMapService:
         elif thing == "golf_courses":
             return {"leisure": ["golf_course"]}
         else:
-            raise ValueError(f"Can't get tags for undefined value, \"{thing}\"!")
+            if config is not None:
+                osm_tags = config.get("osm_tags", None)
+                if osm_tags is not None:
+                    return osm_tags
+                if config.get("osm", False) == True:
+                    raise ValueError(f"'{thing}' isn't a built-in type, and you didn't provide an 'osm_tags' entry, so I don't know how to load that from OSM. Please provide custom tags.")
+            raise ValueError(f"'{thing}' isn't a built-in type and I wasn't able to load it.")
 
     def get_features(
         self,
@@ -93,15 +108,19 @@ class OpenStreetMapService:
 
         if not settings.get("enabled", False):
             return gpd.GeoDataFrame()
+        
+        is_osm = settings.get("osm", False)
+        osm_dir = "geom/osm" if is_osm else "geom/source"
 
-        # check if we have already cached this data, AND the settings are the same
+        # if it's from OSM, check if we have already cached this data, AND the settings are the same
         if use_cache and check_cache(
-            f"osm/{thing}", signature=settings, filetype="df"
+            f"{osm_dir}/{thing}", signature=settings, filetype="df"
         ):
             print(f"----> using cached {thing}")
             # if so return the cached version
-            return read_cache(f"osm/{thing}", "df")
-
+            return read_cache(f"{osm_dir}/{thing}", "df")
+        
+            
         min_area = settings.get("min_area", 10000)
         top_n = settings.get("top_n", 5)
 
@@ -113,7 +132,7 @@ class OpenStreetMapService:
             if gdf is None:
                 # Get from OSM
                 print(f"Getting {thing} from OSM...")
-                tags = self._get_tags(thing)
+                tags = self._get_tags(thing, settings)
                 osm_features = ox.features.features_from_polygon(polygon, tags=tags)
 
                 if osm_features.empty:
