@@ -4088,7 +4088,7 @@ def _perform_canonical_split(
     test_share = 1.0 - test_train_fraction
 
     # This is how many test sales we need
-    test_set_count = np.floor(len(df) * test_share).astype(int)
+    test_set_count = np.ceil(len(df) * test_share).astype(int)
     if len(df) <= 30:
         test_set_count_v = np.ceil(len(df_v) * test_share).astype(int)
     else:
