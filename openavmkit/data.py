@@ -1363,6 +1363,7 @@ def _enrich_df_distances(
                     print(f"--> Getting {feature}...")
                 try:
                     # Call the designated getter function
+                    is_osm = config.get("osm", False)
                     result = get_feature(
                         thing=feature,
                         _bbox=bbox,
@@ -1380,7 +1381,7 @@ def _enrich_df_distances(
 
                     if not result.empty:
                         # Get distance settings from distances configuration
-                        feature_id = f"osm_{feature}"
+                        feature_id = f"osm_{feature}" if is_osm else feature
                         max_distance = config.get("max_distance", None)
                         unit = config.get("unit", "km")
 
@@ -2680,44 +2681,6 @@ def _enrich_permits(
             df, df_all_permits, s_permits, settings, verbose=verbose
         )
     return df
-
-
-def _enrich_df_user_distances(
-    gdf_in: gpd.GeoDataFrame,
-    s_enrich_this: dict,
-    dataframes: dict[str, pd.DataFrame],
-    settings: dict,
-    verbose: bool = False,
-) -> gpd.GeoDataFrame:
-    print("Enrich df user distances")
-    s_dist = s_enrich_this.get("distances", [])
-    # Filter out OSM distances
-    # These are handled directly within the open street map enrichment call
-
-    entries = []
-    for d in s_dist:
-        if isinstance(d, str):
-            entry = {"id": d}
-        elif isinstance(d, dict):
-            entry = d
-        else:
-            raise ValueError(f"Invalid entry in distances: {d}")
-        if entry.get("id").startswith("osm_"):
-            # Skip OSM distances
-            warnings.warn(
-                f"Skipping OSM distance entry: {entry['id']}, handle that via data.process.enrich.universe.openstreetmap instead"
-            )
-            continue
-        entries.append(entry)
-
-    return _perform_distance_calculations(
-        gdf_in,
-        entries,
-        dataframes,
-        get_long_distance_unit(settings),
-        verbose=verbose,
-        cache_key="geom/distance",
-    )
 
 
 def _enrich_polar_coordinates(
