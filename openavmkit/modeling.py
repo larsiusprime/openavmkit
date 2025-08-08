@@ -1259,9 +1259,9 @@ class SingleModelResults:
         timing.stop("chd")
 
         timing.start("utility")
-        self.utility_test = self.pred_test.mape * 1000
+        self.utility_test = self.pred_test.mape * 100
         if y_pred_sales is not None:
-            self.utility_train = self.pred_train.mape * 1000
+            self.utility_train = self.pred_train.mape * 100
         else:
             self.utility_train = float("nan")
         timing.stop("utility")
@@ -2507,6 +2507,7 @@ def run_xgboost(
     save_params: bool = False,
     use_saved_params: bool = False,
     verbose: bool = False,
+    n_trials: int = 50
 ) -> SingleModelResults:
     """
     Run an XGBoost model by tuning parameters, training, and predicting.
@@ -2521,6 +2522,8 @@ def run_xgboost(
         Whether to save tuned parameters. Defaults to False.
     use_saved_params : bool, optional
         Whether to load saved parameters. Defaults to False.
+    n_trials : int, optional
+        How many trials do run during parameter search. Defaults to 50.
     verbose : bool, optional
         If True, print verbose output. Defaults to False.
 
@@ -2562,6 +2565,7 @@ def run_xgboost(
         save_params,
         use_saved_params,
         verbose,
+        n_trials=n_trials
     )
 
     parameters["verbosity"] = 0
@@ -2641,6 +2645,7 @@ def run_lightgbm(
     outpath: str,
     save_params: bool = False,
     use_saved_params: bool = False,
+    n_trials: int = 50,
     verbose: bool = False,
 ) -> SingleModelResults:
     """
@@ -2656,6 +2661,8 @@ def run_lightgbm(
         Whether to save tuned parameters. Defaults to False.
     use_saved_params : bool, optional
         Whether to load saved parameters. Defaults to False.
+    n_trials : int, optional
+        How many trials do run during parameter search. Defaults to 50.
     verbose : bool, optional
         If True, print verbose output. Defaults to False.
 
@@ -2701,6 +2708,7 @@ def run_lightgbm(
         save_params,
         use_saved_params,
         verbose,
+        n_trials=n_trials
     )
 
     # Remove any problematic parameters that might cause errors with forced splits
@@ -2829,6 +2837,7 @@ def run_catboost(
     outpath: str,
     save_params: bool = False,
     use_saved_params: bool = False,
+    n_trials: int = 50,
     verbose: bool = False,
 ) -> SingleModelResults:
     """
@@ -2844,6 +2853,8 @@ def run_catboost(
         Whether to save tuned parameters. Defaults to False.
     use_saved_params : bool, optional
         Whether to load saved parameters. Defaults to False.
+    n_trials : int, optional
+        How many trials do run during parameter search. Defaults to 50.
     verbose : bool, optional
         If True, print verbose output. Defaults to False.
 
@@ -2872,6 +2883,7 @@ def run_catboost(
         save_params,
         use_saved_params,
         verbose,
+        n_trials=n_trials
     )
     timing.stop("parameter_search")
 
