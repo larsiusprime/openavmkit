@@ -1,6 +1,7 @@
 import os
 import pickle
 import warnings
+import math
 
 from matplotlib import pyplot as plt
 import pandas as pd
@@ -834,19 +835,20 @@ def run_models(
     t.start("run model groups")
     for model_group in model_groups:
         t.start(f"model group: {model_group}")
-        for vacant_only in [False, True]:
-            if vacant_only and not run_vacant:
+        for main_vacant_hedonic in ["main", "vacant", "hedonic"]:
+            if main_vacant_hedonic == "main" and not run_main:
                 continue
-            if not vacant_only and not run_main:
+            if main_vacant_hedonic == "vacant" and not run_vacant:
+                continue
+            if main_vacant_hedonic == "hedonic" and not run_hedonic:
                 continue
 
-            vacant_status = "vacant" if vacant_only else "main"
-            models_to_skip = s_inst.get(vacant_status, {}).get("skip", {}).get(model_group, [])
+            models_to_skip = s_inst.get(main_vacant_hedonic, {}).get("skip", {}).get(model_group, [])
 
             if "all" in models_to_skip:
                 if verbose:
                     print(
-                        f"Skipping all models for model_group: {model_group}/{vacant_status}"
+                        f"Skipping all models for model_group: {model_group}/{main_vacant_hedonic}"
                     )
                 continue
 
@@ -863,12 +865,11 @@ def run_models(
                 sup,
                 model_group,
                 settings,
-                vacant_only,
+                main_vacant_hedonic,
                 save_params,
                 use_saved_params,
                 save_results,
                 verbose,
-                run_hedonic,
                 run_ensemble,
                 do_shaps=do_shaps,
                 do_plots=do_plots
@@ -1238,6 +1239,8 @@ def run_one_model(
         return None
 
     intercept = entry.get("intercept", True)
+    n_trials = entry.get("n_trials", 50)
+    print(f"n_trials = {n_trials} for model: {model_name}")
     t.stop("setup")
 
     t.start("run")
@@ -1289,15 +1292,15 @@ def run_one_model(
         results = run_gwr(ds, outpath, save_params, use_saved_params, verbose=verbose)
     elif model_name == "xgboost":
         results = run_xgboost(
-            ds, outpath, save_params, use_saved_params, verbose=verbose
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
     elif model_name == "lightgbm":
         results = run_lightgbm(
-            ds, outpath, save_params, use_saved_params, verbose=verbose
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
     elif model_name == "catboost":
         results = run_catboost(
-            ds, outpath, save_params, use_saved_params, verbose=verbose
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
     else:
         raise ValueError(f"Model {model_name} not found!")
@@ -1305,7 +1308,7 @@ def run_one_model(
 
     if ds.vacant_only or ds.hedonic:
         # If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
-        results = _clamp_land_predictions(results, results.ds.model_group, model_name)
+        results = _clamp_land_predictions(results, results.ds.model_group, model_name, outpath)
 
     if save_results:
         t.start("write")
@@ -1714,7 +1717,7 @@ def _predict_one_model(
 
     if ds.vacant_only or ds.hedonic:
         # If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
-        results = _clamp_land_predictions(results, smr.ds.model_group, model_name)
+        results = _clamp_land_predictions(results, smr.ds.model_group, model_name, outpath)
 
     if save_results:
         _write_model_results(results, outpath, settings)
@@ -1723,25 +1726,31 @@ def _predict_one_model(
 
 
 def _clamp_land_predictions(
-    results: SingleModelResults, model_group: str, model_name: str
+    results: SingleModelResults, model_group: str, model_name: str, outpath: str
 ):
     """
     Clamp land value predictions based on the full market value predictions.
     This function ensures that land value predictions are non-negative and do not exceed the full market value predictions.
     """
 
+    lookpath = "main"
+    if "vacant" in outpath:
+        lookpath = "main"
+    if "hedonic" in outpath:
+        lookpath = "hedonic_full"
+
     # Look for the corresponding universe, sales, and test predictions for the land value model.
-    df_univ = load_model_results(model_group, model_name, "universe", "main")
+    df_univ = load_model_results(model_group, model_name, "universe", lookpath)
     if df_univ is not None:
         # There's a match for this model name (ex: "xgboost" or "lightgbm") in the set of main models
-        df_sales = load_model_results(model_group, model_name, "sales", "main")
-        df_test = load_model_results(model_group, model_name, "test", "main")
+        df_sales = load_model_results(model_group, model_name, "sales", lookpath)
+        df_test = load_model_results(model_group, model_name, "test", lookpath)
     else:
         # There's not a match for this model name, so we look for the ensemble as the baseline
-        df_univ = load_model_results(model_group, "ensemble", "universe", "main")
+        df_univ = load_model_results(model_group, "ensemble", "universe", lookpath)
         if df_univ is not None:
-            df_sales = load_model_results(model_group, "ensemble", "sales", "main")
-            df_test = load_model_results(model_group, "ensemble", "test", "main")
+            df_sales = load_model_results(model_group, "ensemble", "sales", lookpath)
+            df_test = load_model_results(model_group, "ensemble", "test", lookpath)
         else:
             warnings.warn(
                 f"Couldn't find main baseline for {model_group}/{model_name} land value predictions, skipping clamping. Run finalize and try again!"
@@ -1781,8 +1790,8 @@ def _clamp_land_predictions(
     # Clamp land value to the range of (0.0, prediction)
     # - No negative land values are allowed
     # - Land value cannot exceed the full market value prediction
-    # - NOTE: this does *not* look at any sales data, so it's not cheating, just another step in the prediction algorithm
-    #         we're just looking at another prediction we made earlier in the pipeline and using that to judge land value
+    # - NOTE: this does *not* look at any sales data, so it's not cheating, it's just another step in the prediction algorithm
+    #   we're just looking at another prediction we made earlier in the pipeline and using that to judge land value
 
     count_univ_clipped = df_land_univ[
         df_land_univ["land_value"].lt(0)
@@ -2293,7 +2302,7 @@ def _optimize_ensemble(
         )
 
     if verbose:
-        print(f"-->Ensemble finished. Best score = {best_score:8.0f}, ensemble = {best_list}")
+        print(f"-->Ensemble finished. Best score = {best_score:8.2f}, ensemble = {best_list}")
     return best_list
 
 
@@ -2379,7 +2388,7 @@ def _optimize_ensemble_iteration(
 
     if verbose:
         print(
-            f"score = {score:5.0f}, best = {best_score:5.0f}, ensemble = {ensemble_list}..."
+            f"score = {score:5.2f}, best = {best_score:5.2f}, ensemble = {ensemble_list}..."
         )
 
     if score < best_score:  # and len(ensemble_list) >= 3:
@@ -3015,8 +3024,9 @@ def _run_hedonic_models(
     Run hedonic models and ensemble them, then update the benchmark.
     """
     hedonic_results = {}
+
     # Run hedonic models
-    outpath = f"out/models/{model_group}/hedonic"
+    outpath = f"out/models/{model_group}/hedonic_land"
     if not os.path.exists(outpath):
         os.makedirs(outpath)
 
@@ -3114,7 +3124,7 @@ def _run_hedonic_models(
         # Calculate final results, including ensemble
         all_hedonic_results.add_model("ensemble", ensemble_results)
 
-    # --- ADD THIS BLOCK: Run stacked ensemble for hedonic ---
+    # --- Run stacked ensemble for hedonic ---
     _run_stacked_ensemble_for_model_group(
         t=TimingData(),
         model_group=model_group,
@@ -3125,14 +3135,13 @@ def _run_hedonic_models(
         save_results=save_results,
         verbose=verbose,
     )
-    # --- END BLOCK ---
-
+    
     print(f"\n************************************************************")
-    print(f"HEDONIC BENCHMARK ({model_group}) -- Assessor Metrics")
+    print(f"HEDONIC LAND BENCHMARK ({model_group}) -- Assessor Metrics")
     print(f"************************************************************\n")
     print(all_hedonic_results.benchmark.print())
 
-    title = "HEDONIC"
+    title = "HEDONIC LAND"
     perf_metrics = _model_performance_metrics(model_group, all_hedonic_results, title)
     print(perf_metrics)
     print("")
@@ -3419,16 +3428,67 @@ def _model_performance_metrics(
     return text
 
 
+def _trim_hedonic_sales(
+    df_sales: pd.DataFrame,
+    model_group: str,
+    impr_to_vac_ratio: float,
+    random_seed: int,
+    verbose: bool = False
+):
+    test_keys, train_keys = _read_split_keys(model_group)
+    rng = np.random.default_rng(random_seed)
+
+    all_vac_keys = df_sales.loc[df_sales["vacant_sale"], "key_sale"]
+
+    selected_keys: set[str] = set(all_vac_keys)
+
+    if verbose:
+        print(f"-->Trimming hedonic sales for model group '{model_group}'...")
+        print(f"---->all sales   : {len(df_sales)}")
+        print(f"---->vacant sales: {len(all_vac_keys)}")
+    
+    for is_test in [True, False]:
+        subset_keys = test_keys if is_test else train_keys
+        mask = df_sales["key_sale"].isin(subset_keys)
+
+        vac_mask   = mask & df_sales["vacant_sale"].eq(True)
+        impr_mask  = mask & df_sales["vacant_sale"].eq(False)
+        
+        n_vac   = vac_mask.sum()
+        n_impr  = impr_mask.sum()
+
+        target = min(n_impr, math.ceil(n_vac * impr_to_vac_ratio))
+        if target == 0:
+            continue
+        
+        improvs = df_sales.index[impr_mask]
+        sampled_idx = rng.choice(improvs, size=target, replace=False)
+        
+        n_samples = len(df_sales.loc[sampled_idx, "key_sale"])
+        
+        if verbose:
+            word = "test" if is_test else "train"
+            print(f"------>{word} sales  : {mask.sum()}")
+            print(f"------>vacant sales: {n_vac}")
+            print(f"------>num sampled : {n_samples}")
+        
+        selected_keys.update(df_sales.loc[sampled_idx, "key_sale"])
+    
+    if verbose:
+        print(f"-------->Final selection: {len(selected_keys)} keys")
+    
+    return df_sales[df_sales["key_sale"].isin(selected_keys)]
+
+
 def _run_models(
     sup: SalesUniversePair,
     model_group: str,
     settings: dict,
-    vacant_only: bool = False,
+    main_vacant_hedonic: str = "main",
     save_params: bool = True,
     use_saved_params: bool = True,
     save_results: bool = False,
     verbose: bool = False,
-    run_hedonic: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
     do_plots: bool = False
@@ -3436,7 +3496,26 @@ def _run_models(
     """
     Run models for a given model group and process ensemble results.
     """
-
+    
+    outdir = ""
+    if main_vacant_hedonic == "main":
+        is_hedonic = False
+        vacant_only = False
+        outdir = "main"
+        titleword = "MAIN"
+    elif main_vacant_hedonic == "vacant":
+        is_hedonic = False
+        vacant_only = True
+        outdir = "vacant"
+        titleword = "VACANT"
+    elif main_vacant_hedonic == "hedonic":
+        is_hedonic = True
+        vacant_only = False
+        outdir = "hedonic_full"
+        titleword = "HEDONIC FULL"
+    else:
+        raise ValueError(f"The only supported values are 'main', 'vacant', and 'hedonic', got '{main_vacant_hedonic}' instead!")
+    
     t = TimingData()
     t.start("total")
 
@@ -3450,15 +3529,24 @@ def _run_models(
     s = settings
     s_model = s.get("modeling", {})
     s_inst = s_model.get("instructions", {})
-    vacant_status = "vacant" if vacant_only else "main"
+    s_mvh = s_inst.get(main_vacant_hedonic, {})
 
+    if is_hedonic:
+        # For a hedonic model, we don't want to overload the vacant signal
+        # so we grab only a modest amount of improved sales to supplement the vacants
+        s_sel = s_mvh.get("select", {})
+        impr_to_vac_ratio = s_sel.get("improved_to_vacant_ratio", 4.0)
+        random_seed = s_inst.get("random_seed", 1337)
+        
+        df_sales = _trim_hedonic_sales(df_sales, model_group, impr_to_vac_ratio, random_seed, verbose)
+        
     default_value = get_sale_field(settings, df_sales)
     dep_var = s_inst.get("dep_var", default_value)
     dep_var_test = s_inst.get("dep_var_test", default_value)
     fields_cat = get_fields_categorical(s, df_univ, include_boolean=True)
-    models_to_run = s_inst.get(vacant_status, {}).get("run", None)
+    models_to_run = s_inst.get(main_vacant_hedonic, {}).get("run", None)
 
-    model_entries = s_model.get("models").get(vacant_status, {})
+    model_entries = s_model.get("models").get(main_vacant_hedonic, {})
 
     if models_to_run is None:
         models_to_run = list(model_entries.keys())
@@ -3468,7 +3556,7 @@ def _run_models(
         raise ValueError("Could not find equity cluster ID's in the dataframe (he_id)")
 
     model_results = {}
-    outpath = f"out/models/{model_group}/{vacant_status}"
+    outpath = f"out/models/{model_group}/{outdir}"
     if not os.path.exists(outpath):
         os.makedirs(outpath)
 
@@ -3603,14 +3691,11 @@ def _run_models(
     )
 
     print(f"\n************************************************************")
-    if vacant_only:
-        print(f"VACANT Benchmark ({model_group}) -- Assessor Metrics")
-    else:
-        print(f"MAIN Benchmark ({model_group}) -- Assessor Metrics")
+    print(f"{titleword} Benchmark ({model_group}) -- Assessor Metrics")
     print(f"************************************************************\n")
     print(all_results.benchmark.print())
 
-    title = "VACANT" if vacant_only else "MAIN"
+    title = titleword
 
     # Add performance metrics table
     perf_metrics = _model_performance_metrics(model_group, all_results, title)
@@ -3624,7 +3709,6 @@ def _run_models(
         _model_performance_plots(model_group, all_results, title)
     print("")
 
-
     # Post-valuation metrics
     if not all_results.benchmark.test_post_val_empty:
         post_val_results = _get_post_valuation_mmr(all_results)
@@ -3636,7 +3720,7 @@ def _run_models(
 
             print("")
 
-    if not vacant_only and run_hedonic:
+    if not vacant_only and is_hedonic:
         t.start("run hedonic models")
         _run_hedonic_models(
             settings=settings,
