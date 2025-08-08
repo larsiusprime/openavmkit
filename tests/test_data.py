@@ -336,7 +336,7 @@ def test_split_keys_time():
 	df_look_back = df_sales[df_sales["sale_date"].gt(look_back_date)]
 	df_post_val = df_sales[df_sales["sale_date"].gt(val_date)]
 	df_pre_val = df_sales[df_sales["sale_date"].le(val_date)]
-
+	
 	expected_train = len(df_sales) * 0.8
 	expected_test = len(df_sales) * 0.2
 
