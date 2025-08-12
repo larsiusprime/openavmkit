@@ -264,60 +264,128 @@ def calc_prd_bootstrap(
 
 def trim_outliers(
     values: np.ndarray,
-    lower_quantile: float = 0.25,
-    upper_quantile: float = 0.75
+    max_percent: float = 0.10,
+    iqr_factor: float = 1.5
 ) -> np.ndarray:
     """
-    Trim outliers from an array of values based on quantile thresholds.
+    Trim outliers using IQR fences per IAAO guidance, with a max trim cap.
+    Fails immediately if NaNs are detected.
+
+    1) Compute Q1, Q3, IQR = Q3 - Q1.
+    2) Trim values outside [Q1 - iqr_factor*IQR, Q3 + iqr_factor*IQR].
+    3) If more than max_percent would be removed, instead trim by symmetric
+       quantile cut so total trimmed <= max_percent.
 
     Parameters
     ----------
     values : np.ndarray
-        Input array of numeric values.
-    lower_quantile : float, optional
-        Lower quantile bound. Values below this quantile will be removed. Defaults to 0.25.
-    upper_quantile : float, optional
-        Upper quantile bound. Values above this quantile will be removed. Defaults to 0.75.
+        1D numeric array with no NaNs allowed.
+    max_percent : float, optional
+        Maximum fraction to remove (e.g., 0.10 = 10%).
+    iqr_factor : float, optional
+        1.5 for standard outliers, 3.0 for extreme outliers.
 
     Returns
     -------
     np.ndarray
-        Array with values outside the specified quantile bounds removed.
-    """
-    if len(values) == 0:
-        return values
-    lower_bound = np.quantile(values, lower_quantile)
-    upper_bound = np.quantile(values, upper_quantile)
-    return values[(values >= lower_bound) & (values <= upper_bound)]
+        Trimmed array according to the above rules.
 
+    Raises
+    ------
+    ValueError
+        If any NaN is detected in `values`.
+    """
+    if np.isnan(values).any():
+        raise ValueError("NaN values detected — remove or impute them before trimming.")
+
+    if values.size == 0:
+        return values
+
+    # IQR fences
+    q1, q3 = np.quantile(values, [0.25, 0.75])
+    iqr = q3 - q1
+    lower_fence = q1 - iqr_factor * iqr
+    upper_fence = q3 + iqr_factor * iqr
+
+    within_fences = (values >= lower_fence) & (values <= upper_fence)
+    trimmed_iqr = values[within_fences]
+
+    n = values.size
+    max_trim = int(np.floor(n * max_percent))
+
+    # If IQR-based trimming exceeds cap, fall back to symmetric quantile trim
+    trimmed_count = n - trimmed_iqr.size
+    if trimmed_count > max_trim:
+        tail_fraction = max_percent / 2.0
+        low_q, high_q = tail_fraction, 1.0 - tail_fraction
+        lo, hi = np.quantile(values, [low_q, high_q])
+        keep = (values >= lo) & (values <= hi)
+        trimmed = values[keep]
+    else:
+        trimmed = trimmed_iqr
+
+    return trimmed
 
 def trim_outliers_mask(
     values: np.ndarray,
-    lower_quantile: float = 0.25,
-    upper_quantile: float = 0.75
+    max_percent: float = 0.10,
+    iqr_factor: float = 1.5,
 ) -> np.ndarray:
     """
-    Generate a boolean mask for values within specified quantile bounds.
+    Trim outliers using IQR fences per IAAO guidance, with a max trim cap.
+    Fails immediately if NaNs are detected.
+
+    1) Compute Q1, Q3, IQR = Q3 - Q1.
+    2) Trim values outside [Q1 - iqr_factor*IQR, Q3 + iqr_factor*IQR].
+    3) If more than max_percent would be removed, instead trim by symmetric
+       quantile cut so total trimmed <= max_percent.
 
     Parameters
     ----------
     values : np.ndarray
-        Input array of numeric values.
-    lower_quantile : float, optional
-        Lower quantile bound. Values below this quantile are masked out. Defaults to 0.25.
-    upper_quantile : float, optional
-        Upper quantile bound. Values above this quantile are masked out. Defaults to 0.75.
-
+        1D numeric array with no NaNs allowed.
+    max_percent : float, optional
+        Maximum fraction to remove (e.g., 0.10 = 10%).
+    iqr_factor : float, optional
+        1.5 for standard outliers, 3.0 for extreme outliers.
+    
     Returns
     -------
     np.ndarray
         Boolean array where `True` indicates values within the quantile bounds.
+
+    Raises
+    ------
+    ValueError
+        If any NaN is detected in `values`.
     """
-    if len(values) == 0:
+    if np.isnan(values).any():
+        raise ValueError("NaN values detected — remove or impute them before trimming.")
+
+    if values.size == 0:
         return values
-    lower_bound = np.quantile(values, lower_quantile)
-    upper_bound = np.quantile(values, upper_quantile)
-    return (values >= lower_bound) & (values <= upper_bound)
+
+    # IQR fences
+    q1, q3 = np.quantile(values, [0.25, 0.75])
+    iqr = q3 - q1
+    lower_fence = q1 - iqr_factor * iqr
+    upper_fence = q3 + iqr_factor * iqr
+
+    within_fences = (values >= lower_fence) & (values <= upper_fence)
+    trimmed_iqr = values[within_fences]
+
+    n = values.size
+    max_trim = int(np.floor(n * max_percent))
+
+    # If IQR-based trimming exceeds cap, fall back to symmetric quantile trim
+    trimmed_count = n - trimmed_iqr.size
+    if trimmed_count > max_trim:
+        tail_fraction = max_percent / 2.0
+        low_q, high_q = tail_fraction, 1.0 - tail_fraction
+        lo, hi = np.quantile(values, [low_q, high_q])
+        return (values >= lo) & (values <= hi)
+    else:
+        return within_fences
 
 
 def calc_prb(

@@ -1351,7 +1351,6 @@ def _enrich_df_distances(
         # Loop through each feature configuration:
         for feature, config in features_config.items():
             # Check if feature is enabled in the osm_settings
-            print(f"feature={feature}, config={config}")
             if config.get("enabled", True):
 
                 default_config = default_configs.get(feature, {})
@@ -3132,8 +3131,6 @@ def _do_perform_distance_calculations_osm(
 
     # Get appropriate CRS for distance calculations
     crs = get_crs(df_in, "equal_distance")
-
-    print(f"CRS = {crs} axis_info = {crs.axis_info}")
 
     # Check for duplicate keys
     if df_in.duplicated(subset="key").sum() > 0:

@@ -88,6 +88,7 @@ from openavmkit.utilities.settings import (
     get_fields_boolean,
     _get_sales,
     _simulate_removed_buildings,
+    _get_max_ratio_study_trim
 )
 from openavmkit.utilities.stats import (
     calc_vif_recursive_drop,
@@ -1308,7 +1309,8 @@ def run_one_model(
 
     if ds.vacant_only or ds.hedonic:
         # If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
-        results = _clamp_land_predictions(results, results.ds.model_group, model_name, outpath)
+        max_trim = _get_max_ratio_study_trim(settings, results.ds.model_group)
+        results = _clamp_land_predictions(results, results.ds.model_group, model_name, outpath, max_trim)
 
     if save_results:
         t.start("write")
@@ -1717,7 +1719,8 @@ def _predict_one_model(
 
     if ds.vacant_only or ds.hedonic:
         # If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
-        results = _clamp_land_predictions(results, smr.ds.model_group, model_name, outpath)
+        max_trim = _get_max_ratio_study_trim(settings, smr.ds.model_group)
+        results = _clamp_land_predictions(results, smr.ds.model_group, model_name, outpath, max_trim)
 
     if save_results:
         _write_model_results(results, outpath, settings)
@@ -1726,7 +1729,7 @@ def _predict_one_model(
 
 
 def _clamp_land_predictions(
-    results: SingleModelResults, model_group: str, model_name: str, outpath: str
+    results: SingleModelResults, model_group: str, model_name: str, outpath: str, max_trim: float
 ):
     """
     Clamp land value predictions based on the full market value predictions.
@@ -1838,7 +1841,7 @@ def _clamp_land_predictions(
         y_pred_univ,
         results.timing,
         results.verbose,
-        results.sale_filter,
+        results.sale_filter
     )
 
     count_univ = len(results.df_universe)
@@ -2187,7 +2190,7 @@ def _optimize_ensemble_allocation_iteration(
         y_pred_sales=y_pred_sales_ensemble.to_numpy(),
         y_pred_univ=y_pred_univ_ensemble.to_numpy(),
         timing=timing,
-        verbose=verbose,
+        verbose=verbose
     )
     score = results.utility_train
 
@@ -2373,7 +2376,7 @@ def _optimize_ensemble_iteration(
         y_pred_sales=y_pred_sales_ensemble.to_numpy(),
         y_pred_univ=y_pred_univ_ensemble.to_numpy(),
         timing=timing,
-        verbose=verbose,
+        verbose=verbose
     )
     timing.stop("total")
 
@@ -2524,7 +2527,7 @@ def _run_ensemble(
     timing.start("predict_univ")
     y_pred_univ_ensemble = df_univ_ensemble[ensemble_list].median(axis=1)
     timing.stop("predict_univ")
-
+    
     results = SingleModelResults(
         ds,
         "prediction",
@@ -3140,9 +3143,11 @@ def _run_hedonic_models(
     print(f"HEDONIC LAND BENCHMARK ({model_group}) -- Assessor Metrics")
     print(f"************************************************************\n")
     print(all_hedonic_results.benchmark.print())
+    
+    max_trim = _get_max_ratio_study_trim(settings, model_group)
 
     title = "HEDONIC LAND"
-    perf_metrics = _model_performance_metrics(model_group, all_hedonic_results, title)
+    perf_metrics = _model_performance_metrics(model_group, all_hedonic_results, title, max_trim)
     print(perf_metrics)
     print("")
 
@@ -3154,7 +3159,7 @@ def _run_hedonic_models(
     title = f"{title} (POST-VALUATION DATE)"
     if not all_hedonic_results.benchmark.test_post_val_empty:
         post_val_results = _get_post_valuation_mmr(all_hedonic_results)
-        perf_metrics = _model_performance_metrics(model_group, post_val_results, title)
+        perf_metrics = _model_performance_metrics(model_group, post_val_results, title, max_trim)
         print(perf_metrics)
         print("")
 
@@ -3252,7 +3257,10 @@ def _model_shaps(model_group: str, all_results: MultiModelResults, title: str):
 
 
 def _model_performance_metrics(
-    model_group: str, all_results: MultiModelResults, title: str
+    model_group: str, 
+    all_results: MultiModelResults, 
+    title: str,
+    max_trim: float
 ):
     # Get first model_results from all_results:
     first_results: SingleModelResults = list(all_results.model_results.values())[0]
@@ -3336,7 +3344,7 @@ def _model_performance_metrics(
         y_pred = y_pred.astype(np.float64)
 
         y_ratio = y_pred / y_true
-        mask = trim_outliers_mask(y_ratio)
+        mask = trim_outliers_mask(y_ratio, max_trim)
 
         if len(mask) == 0:
             y_true_trim = y_true
@@ -3420,6 +3428,12 @@ def _model_performance_metrics(
     metrics_df = metrics_df[["R² ols","R² y=x","MAPE","m.ratio","avg.ratio","Slope"]]
     trimmed_df = trimmed_df[["R² ols","R² y=x","MAPE","m.ratio","avg.ratio","Slope"]]
 
+    float_cols = metrics_df.select_dtypes(include=['float']).columns
+    metrics_df[float_cols] = metrics_df[float_cols].map(lambda x: f"{x:.2f}")
+    
+    float_cols = trimmed_df.select_dtypes(include=['float']).columns
+    trimmed_df[float_cols] = trimmed_df[float_cols].map(lambda x: f"{x:.2f}")
+    
     text += "\nUNTRIMMED\n"
     text += metrics_df.to_markdown() + "\n"
     text += f"\nTRIMMED\n"
@@ -3697,8 +3711,10 @@ def _run_models(
 
     title = titleword
 
+    max_trim = _get_max_ratio_study_trim(settings, model_group)
+    
     # Add performance metrics table
-    perf_metrics = _model_performance_metrics(model_group, all_results, title)
+    perf_metrics = _model_performance_metrics(model_group, all_results, title, max_trim)
     print(perf_metrics)
     print("")
 
@@ -3713,7 +3729,7 @@ def _run_models(
     if not all_results.benchmark.test_post_val_empty:
         post_val_results = _get_post_valuation_mmr(all_results)
         title = f"{title} (Post-valuation date)"
-        perf_metrics = _model_performance_metrics(model_group, post_val_results, title)
+        perf_metrics = _model_performance_metrics(model_group, post_val_results, title, max_trim)
         if perf_metrics is not None:
             print(perf_metrics)
             print("")

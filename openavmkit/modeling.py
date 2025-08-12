@@ -112,6 +112,7 @@ class LandPredictionResults:
         dep_var: str,
         ind_vars: list[str],
         sup: SalesUniversePair,
+        max_trim: float
     ):
 
         necessary_fields = [
@@ -175,7 +176,7 @@ class LandPredictionResults:
                 f"Unsupported dep_var '{dep_var}' for land prediction results."
             )
 
-        self.land_ratio_study = RatioStudy(land_predictions, sale_prices)
+        self.land_ratio_study = RatioStudy(land_predictions, sale_prices, max_trim)
         mse, r2, adj_r2 = calc_mse_r2_adj_r2(
             land_predictions, sale_prices, len(ind_vars)
         )
@@ -295,7 +296,12 @@ class PredictionResults:
     """
 
     def __init__(
-        self, dep_var: str, ind_vars: list[str], prediction_field: str, df: pd.DataFrame
+        self, 
+        dep_var: str, 
+        ind_vars: list[str], 
+        prediction_field: str, 
+        df: pd.DataFrame,
+        max_trim: float
     ):
         """
         Initialize a PredictionResults instance.
@@ -314,6 +320,8 @@ class PredictionResults:
             Name of the field containing model predictions.
         df : pandas.DataFrame
             DataFrame on which predictions were computed.
+        max_trim : float
+            The maximum amount of records allowed to be trimmed in a ratio study
         """
 
         self.dep_var = dep_var
@@ -356,7 +364,7 @@ class PredictionResults:
                 self.slope = ols_results["slope"]
 
             y_ratio = y_pred_clean / y_clean
-            mask = trim_outliers_mask(y_ratio)
+            mask = trim_outliers_mask(y_ratio, max_trim)
 
             y_pred_trim = y_pred_clean[mask]
             y_clean_trim = y_clean[mask]
@@ -413,7 +421,7 @@ class PredictionResults:
         else:
             self.adj_r2 = 1 - ((1 - self.r2) * (n - 1) / divisor)
 
-        self.ratio_study = RatioStudy(y_pred_clean, y_clean)
+        self.ratio_study = RatioStudy(y_pred_clean, y_clean, max_trim)
 
 
 class DataSplit:
@@ -1130,7 +1138,7 @@ class SingleModelResults:
         y_pred_univ: np.ndarray,
         timing: TimingData | None = None,
         verbose: bool = False,
-        sale_filter: list = None,
+        sale_filter: list = None
     ):
         """
         Initialize SingleModelResults by attaching predictions and computing performance metrics.
@@ -1162,6 +1170,8 @@ class SingleModelResults:
         """
 
         self.ds = ds
+
+        max_trim = _get_max_ratio_study_trim(ds.settings, ds.model_group)
 
         df_univ = ds.df_universe.copy()
         df_sales = ds.df_sales.copy()
@@ -1204,7 +1214,7 @@ class SingleModelResults:
             timing = TimingData()
         timing.start("stats_test")
         self.pred_test = PredictionResults(
-            self.dep_var_test, self.ind_vars, field_prediction, df_test
+            self.dep_var_test, self.ind_vars, field_prediction, df_test, max_trim
         )
         timing.stop("stats_test")
 
@@ -1215,7 +1225,7 @@ class SingleModelResults:
 
         if y_pred_sales is not None:
             self.pred_sales = PredictionResults(
-                self.dep_var_test, self.ind_vars, field_prediction, df_sales
+                self.dep_var_test, self.ind_vars, field_prediction, df_sales, max_trim
             )
 
             # If we have predictions for sales, we also have predictions for the training subset
@@ -1231,7 +1241,7 @@ class SingleModelResults:
 
             df_train = df_train[df_train["key_sale"].isin(ds.train_keys)]
             self.pred_train = PredictionResults(
-                self.dep_var_test, self.ind_vars, field_prediction, df_train
+                self.dep_var_test, self.ind_vars, field_prediction, df_train, max_trim
             )
 
         timing.stop("stats_sales")

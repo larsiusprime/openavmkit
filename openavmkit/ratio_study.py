@@ -43,7 +43,6 @@ class RatioStudy:
         The price-related differential, a measure of vertical equity
     prb : float
         The price-related bias, a measure of vertical equity
-
     """
 
     predictions: np.ndarray
@@ -58,7 +57,7 @@ class RatioStudy:
     mean_ratio: float
     mean_ratio_trim: float
 
-    def __init__(self, predictions: np.ndarray, ground_truth: np.ndarray):
+    def __init__(self, predictions: np.ndarray, ground_truth: np.ndarray, max_trim: float):
         """
         Initialize a ratio study object
 
@@ -68,6 +67,8 @@ class RatioStudy:
             Series representing predicted values
         ground_truth : np.ndarray
             Series representing ground truth values (typically observed sale prices)
+        max_trim : float
+            The maximum amount of records allowed to be trimmed in a ratio study
         """
         if len(predictions) != len(ground_truth):
             raise ValueError("predictions and ground_truth must have the same length")
@@ -99,11 +100,13 @@ class RatioStudy:
             median_ratio = float("nan")
 
         # trim the ratios to remove outliers -- trim to the interquartile range
-        trim_mask = stats.trim_outliers_mask(ratios)
+        trim_mask = stats.trim_outliers_mask(ratios, max_trim)
 
         trim_ratios = ratios[trim_mask]
         trim_predictions = predictions[trim_mask]
         trim_ground_truth = ground_truth[trim_mask]
+        
+        self.count_trim = len(trim_ratios)
 
         cod = stats.calc_cod(ratios)
         cod_trim = stats.calc_cod(trim_ratios)
@@ -174,6 +177,7 @@ class RatioStudyBootstrapped(RatioStudy):
         self,
         predictions: np.ndarray,
         ground_truth: np.ndarray,
+        max_trim: float,
         confidence_interval: float = 0.95,
         iterations: int = 1000,
     ):
@@ -186,6 +190,8 @@ class RatioStudyBootstrapped(RatioStudy):
             Series representing predicted values
         ground_truth : np.ndarray
             Series representing ground truth values (typically observed sale prices)
+        max_trim : float
+            The maximum amount of records allowed to be trimmed in a ratio study
         confidence_interval : float
             Desired confidence interval (default is 0.95, indicating 95% confidence)
         iterations : int
@@ -218,7 +224,7 @@ class RatioStudyBootstrapped(RatioStudy):
         self.cod_ci_high = high
 
         med, low, high = stats.calc_cod_bootstrap(
-            stats.trim_outliers(ratios),
+            stats.trim_outliers(ratios, max_trim),
             confidence_interval,
             iterations,
         )
@@ -273,7 +279,7 @@ def _run_and_write_ratio_study_breakdowns(
     iterations=1000,
 ):
     breakdowns = _run_ratio_study_breakdowns(
-        settings, df_sales, confidence_interval, iterations
+        settings, model_group, df_sales, confidence_interval, iterations
     )
     _write_ratio_study_report(breakdowns, settings, model_group, path)
 
@@ -287,6 +293,7 @@ def _add_ratio_study(
     confidence_interval,
     iterations,
     min_sales,
+    max_trim
 ):
     # ignore na values in both predictions & ground truth
     idx_na = pd.isna(predictions) | pd.isna(ground_truth)
@@ -296,7 +303,7 @@ def _add_ratio_study(
 
     if len(predictions) > min_sales:
         rs = RatioStudyBootstrapped(
-            predictions, ground_truth, confidence_interval, iterations
+            predictions, ground_truth, confidence_interval, iterations, max_trim
         )
         cluster[value] = rs
     else:
@@ -316,7 +323,7 @@ def _clean_label(label: str) -> str:
 
 
 def _run_ratio_study_breakdowns(
-    settings: dict, df_sales: pd.DataFrame, confidence_interval=0.95, iterations=10000
+    settings: dict, model_group: str, df_sales: pd.DataFrame, confidence_interval=0.95, iterations=10000
 ) -> dict:
     if "prediction" not in df_sales:
         raise ValueError("df_sales must have a 'prediction' column")
@@ -363,9 +370,11 @@ def _run_ratio_study_breakdowns(
         idx_na = pd.isna(predictions) | pd.isna(ground_truth)
         predictions = predictions[~idx_na]
         ground_truth = ground_truth[~idx_na]
+        
+        max_trim = _get_max_ratio_study_trim(settings, model_group)
 
         results["overall"] = RatioStudyBootstrapped(
-            predictions, ground_truth, confidence_interval, iterations
+            predictions, ground_truth, confidence_interval, iterations, max_trim
         )
 
         for is_vacant in [False, True]:
@@ -414,6 +423,7 @@ def _run_ratio_study_breakdowns(
                             confidence_interval,
                             iterations,
                             min_sales,
+                            max_trim
                         )
                 else:
                     quantiles = breakdown.get("quantiles", 0)
@@ -457,6 +467,7 @@ def _run_ratio_study_breakdowns(
                                 confidence_interval,
                                 iterations,
                                 min_sales,
+                                max_trim
                             )
 
                     elif slice_size > 0:
@@ -486,6 +497,7 @@ def _run_ratio_study_breakdowns(
                                 confidence_interval,
                                 iterations,
                                 min_sales,
+                                max_trim
                             )
                     else:
                         if by not in df_sub:
@@ -504,6 +516,7 @@ def _run_ratio_study_breakdowns(
                                 confidence_interval,
                                 iterations,
                                 min_sales,
+                                max_trim
                             )
 
                 if catch_all["count"] > 0:
@@ -512,6 +525,7 @@ def _run_ratio_study_breakdowns(
                         np.array(catch_all["ground_truth"]),
                         confidence_interval,
                         iterations,
+                        max_trim
                     )
                     catch_all_count = catch_all["count"]
                     other_group = (
@@ -566,11 +580,12 @@ def _write_ratio_study_report(
     }
 
     impr_fields = get_fields_impr_as_list(settings)
-
+    
+    max_trim = _get_max_ratio_study_trim(settings, model_group)
     for modeler in all_results:
         modeler_entry = all_results[modeler]
         if modeler_entry == {}:
-            overall_entry = RatioStudyBootstrapped(np.array([]), np.array([]))
+            overall_entry = RatioStudyBootstrapped(np.array([]), np.array([]), max_trim)
         else:
             overall_entry: RatioStudyBootstrapped = modeler_entry.get("overall")
 
@@ -584,7 +599,7 @@ def _write_ratio_study_report(
             f"{overall_entry.cod_ci_low:6.1f} - {overall_entry.cod_ci_high:6.1f}"
         )
 
-        data_trim.append(f"{overall_entry.count:,.0f}")
+        data_trim.append(f"{overall_entry.count_trim:,.0f}")
         data_trim.append(f"{overall_entry.median_ratio:5.2f}")
         data_trim.append(f"{overall_entry.cod_trim:5.1f}")
         data_trim.append(
