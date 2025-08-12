@@ -127,27 +127,39 @@ def div_series_z_safe(
     pd.Series | np.ndarray
         The result of the division with divide-by-zero cases replaced by ``None``
     """
+
+    if isinstance(numerator, pd.core.arrays.floating.FloatingArray):
+        numerator = pd.Series(numerator)
+    if isinstance(denominator, pd.core.arrays.floating.FloatingArray):
+        denominator = pd.Series(denominator)
+
     # fast path for ndarray
     if isinstance(numerator, np.ndarray) or isinstance(denominator, np.ndarray):
         num = np.asarray(numerator, dtype=np.float64, order='K')
         den = np.asarray(denominator, dtype=np.float64, order='K')
 
-        # pre‑allocate the output filled with NaN
+        # pre-allocate the output filled with NaN
         out = np.full_like(num, np.nan, dtype=np.float64)
 
-        # element‑wise division only where the denominator is non‑zero
+        # element-wise division only where the denominator is non‑zero
         # np.divide writes directly into `out`
         np.divide(num, den, out=out, where=den != 0)
 
         return out
-    # ---------- pandas path -------------------------------------------------
-    num = pd.Series(numerator, copy=False)
-    den = pd.Series(denominator, copy=False)
+    # ---------- pandas path (preferred for DF math) ----------
+    if isinstance(numerator, pd.Series) and isinstance(denominator, pd.Series):
+        num = numerator
+        den = denominator.reindex(num.index)  # preserve num's order; no sorting
 
-    idx_zero = den == 0
-    result = num.div(den).astype("Float64")
-    result[idx_zero] = pd.NA
-    return result
+        a = num.to_numpy(dtype=np.float64, copy=False)
+        b = den.to_numpy(dtype=np.float64, copy=False)
+
+        out = np.full_like(a, np.nan, dtype=np.float64)
+        mask = (b != 0) & ~np.isnan(b)
+        
+        np.divide(a, b, out=out, where=mask)
+        return pd.Series(out, index=num.index, dtype="Float64")
+    raise ValueError(f"Can only operate on pd.Series of np.ndarray, found: {type(numerator), type(denominator)}")
 
 
 def div_df_z_safe(df: pd.DataFrame, numerator: str, denominator: str):
