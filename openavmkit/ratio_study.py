@@ -15,6 +15,7 @@ from openavmkit.utilities.settings import (
     get_fields_impr_as_list,
     get_valuation_date,
     get_model_group_ids,
+    _get_max_ratio_study_trim
 )
 
 
@@ -197,7 +198,7 @@ class RatioStudyBootstrapped(RatioStudy):
         iterations : int
             How many bootstrap iterations to perform
         """
-        super().__init__(predictions, ground_truth)
+        super().__init__(predictions, ground_truth, max_trim)
 
         if len(predictions) == 0:
             self.cod = float("nan")
@@ -253,7 +254,12 @@ def run_and_write_ratio_study_breakdowns(settings: dict):
         Settings dictionary
     """
     model_groups = get_model_group_ids(settings)
+    rs = settings.get("analysis", {}).get("ratio_study", {})
+    skip = rs.get("skip", [])
     for model_group in model_groups:
+        if model_group in skip:
+            print(f"Skipping {model_group}...")
+            continue
         print(f"Generating report for {model_group}")
         path = f"out/models/{model_group}/main/model_ensemble.pickle"
         if os.path.exists(path):
@@ -303,7 +309,7 @@ def _add_ratio_study(
 
     if len(predictions) > min_sales:
         rs = RatioStudyBootstrapped(
-            predictions, ground_truth, confidence_interval, iterations, max_trim
+            predictions, ground_truth, max_trim, confidence_interval, iterations
         )
         cluster[value] = rs
     else:
@@ -374,7 +380,7 @@ def _run_ratio_study_breakdowns(
         max_trim = _get_max_ratio_study_trim(settings, model_group)
 
         results["overall"] = RatioStudyBootstrapped(
-            predictions, ground_truth, confidence_interval, iterations, max_trim
+            predictions, ground_truth, max_trim, confidence_interval, iterations
         )
 
         for is_vacant in [False, True]:
@@ -523,9 +529,9 @@ def _run_ratio_study_breakdowns(
                     rs = RatioStudyBootstrapped(
                         np.array(catch_all["predictions"]),
                         np.array(catch_all["ground_truth"]),
+                        max_trim,
                         confidence_interval,
-                        iterations,
-                        max_trim
+                        iterations
                     )
                     catch_all_count = catch_all["count"]
                     other_group = (

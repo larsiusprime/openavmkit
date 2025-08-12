@@ -760,7 +760,7 @@ def process_sales(
 
     print(f"len before validate = {len(sup['sales'])}")
 
-    # validate arms length sales using outlier detection
+    # validate arms length sales using filters
     sup = validate_arms_length_sales(sup, settings, verbose)
 
     print(f"len after validate = {len(sup['sales'])}")
