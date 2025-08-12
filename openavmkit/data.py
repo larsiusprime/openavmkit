@@ -4082,6 +4082,30 @@ def _perform_canonical_split(
     ]  # Negative sale_age_days indicates days AFTER the valuation date
     df_i_post_val = df_i[df_i["sale_age_days"].lt(0)]
     
+    count_v = len(df_v)
+    count_i = len(df_i)
+    count_pre_val_v = len(df_v_pre_val)
+    count_pre_val_i = len(df_i_pre_val)
+    count_post_val_v = len(df_v_post_val)
+    count_post_val_i = len(df_i_post_val)
+    count_look_back_v = len(df_v_look_back)
+    count_look_back_i = len(df_i_look_back)
+
+    if verbose:
+        print("All:")
+        print(f"--> Vacant  : {count_v}")
+        print(f"--> Improved: {count_i}")
+        print("Pre-valuation: ")
+        print(f"--> Vacant  : {count_pre_val_v}")
+        print(f"--> Improved: {count_pre_val_i}") 
+        print(f"Post-valuation: ")
+        print(f"--> Vacant    : {count_post_val_v}")
+        print(f"--> Improved  : {count_post_val_v}")
+        print(f"In look back period: ")
+        print(f"--> Vacant    : {count_look_back_v}")
+        print(f"--> Improved  : {count_look_back_i}")
+
+
     test_share = 1.0 - test_train_fraction
 
     # This is how many test sales we need
@@ -4164,12 +4188,15 @@ def _perform_canonical_split(
                     diff_i -= 1
                 if diff_i == old_dif:
                     break
-
-            _df_v_test = df_v_look_back.sample(n=n_v, random_state=random_seed)
-            _df_i_test = df_i_look_back.sample(n=n_i, random_state=random_seed)
-
-            df_v_test = pd.concat([df_v_test, _df_v_test])
-            df_i_test = pd.concat([df_i_test, _df_i_test])
+            
+            if n_v > 0 and len(df_v_look_back) > 0:
+                n_v = min(n_v, len(df_v_look_back))
+                _df_v_test = df_v_look_back.sample(n=n_v, random_state=random_seed)
+                df_v_test = pd.concat([df_v_test, _df_v_test])
+            if n_i > 0 and len(df_i_look_back) > 0:
+                n_i = min(n_i, len(df_i_look_back))
+                _df_i_test = df_i_look_back.sample(n=n_i, random_state=random_seed)
+                df_i_test = pd.concat([df_i_test, _df_i_test])
         else:
             # We need to sample ALL the lookback sales to start with...
             df_v_test = pd.concat([df_v_test, df_v_look_back])
