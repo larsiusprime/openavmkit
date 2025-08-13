@@ -4,33 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openavmkit"
-version = "0.2.0"
 description = "Open-source automated valuation model (AVM) toolkit"
 readme = "README.md"
 requires-python = ">=3.10"
-
-# dual-licence (AGPLv3 OR commercial)
+# Dual license (AGPLv3 OR commercial).
 license = "AGPL-3.0-only OR LicenseRef-proprietary"
-license-files = ["LICENSE-AGPLv3", "LICENSE-COMMERCIAL"]
-
 authors = [{ name = "Lars A. Doucet", email = "lars.doucet+openavmkit@gmail.com" }]
-
-dependencies = [
-    "numpy>=1.23",
-    "pandas>=2.2",
-]
-
-classifiers = [
-  "Programming Language :: Python :: 3",
-  "License :: OSI Approved :: GNU Affero General Public License v3",
-  "Operating System :: OS Independent",
-]
+dynamic = ["version", "dependencies"]
 
 [project.optional-dependencies]
 docs = [
-    "mkdocs>=1.6",
-    "mkdocs-material>=9.5",
-    "mkdocstrings[python]>=0.25",
+  "mkdocs>=1.6",
+  "mkdocs-material>=9.5",
+  "mkdocstrings[python]>=0.25",
 ]
 dev = ["pytest", "ruff"]
 
@@ -38,3 +24,25 @@ dev = ["pytest", "ruff"]
 Homepage = "https://www.openavmkit.com/"
 Source = "https://github.com/larsiusprime/openavmkit"
 Issues = "https://github.com/larsiusprime/openavmkit/issues"
+
+[tool.setuptools.dynamic]
+version = { attr = "openavmkit.__version__" }
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["openavmkit*"]
+
+[tool.setuptools.package-data]
+# include JSON/YAML/text assets under openavmkit/resources/** in the wheel
+openavmkit = [
+  "resources/**/*.json",
+  "resources/**/*.yaml",
+  "resources/**/*.yml",
+  "resources/**/*.txt",
+]
+
+# Ensure both license files land in sdists
+[tool.setuptools]
+license-files = ["LICENSE-AGPLv3", "LICENSE-COMMERCIAL"]
+include-package-data = true

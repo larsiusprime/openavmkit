@@ -1,6 +1,5 @@
 azure-storage-blob==12.24.1
 catboost==1.2.8
-datetime==5.5
 numpy==1.26.4
 huggingface-hub==0.29.1
 lightgbm==4.6.0

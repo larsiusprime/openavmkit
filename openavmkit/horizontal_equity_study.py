@@ -25,13 +25,15 @@ class HorizontalEquitySummary:
         Maximum CHD value of any cluster.
     median_chd : float
         Median CHD value of all clusters.
+    p05_chd : float
+        5th percentile CHD value
+    p25_chd : float
+        25th percentile CHD value    
+    p75_chd : float
+        75th percentile CHD value
+    p95_chd : float
+        95th percentile CHD value
     """
-
-    rows: int
-    clusters: int
-    min_chd: float
-    max_chd: float
-    median_chd: float
 
     def __init__(
         self,
@@ -40,6 +42,10 @@ class HorizontalEquitySummary:
         min_chd: float,
         max_chd: float,
         median_chd: float,
+        p05_chd: float,
+        p25_chd: float,
+        p75_chd: float,
+        p95_chd: float
     ):
         """
         Initialize a HorizontalEquitySummary instance.
@@ -51,17 +57,52 @@ class HorizontalEquitySummary:
         clusters : int
             Total number of clusters.
         min_chd : float
-            Minimum COD value.
+            Minimum CHD value.
         max_chd : float
-            Maximum COD value.
+            Maximum CHD value.
         median_chd : float
-            Median COD value.
+            Median CHD value.
+        p05_chd : float
+            5th percentile CHD value
+        p25_chd : float
+            25th percentile CHD value
+        p50_chd : float
+            50th percentile CHD value
+        p75_chd : float
+            75th percentile CHD value
+        p95_chd : float
+            95th percentile CHD value
         """
         self.rows = rows
         self.clusters = clusters
         self.min_chd = min_chd
         self.max_chd = max_chd
         self.median_chd = median_chd
+        self.p05_chd = p05_chd
+        self.p25_chd = p25_chd
+        self.p75_chd = p75_chd
+        self.p95_chd = p95_chd
+    
+    def print(self):
+        data = {
+            "Rows": [self.rows],
+            "Clusters": [self.clusters],
+            "Min CHD": [self.min_chd],
+            "5th %ile CHD": [self.p05_chd],
+            "25th %ile CHD": [self.p25_chd],
+            "Median CHD": [self.median_chd],
+            "75th %ile CHD": [self.p75_chd],
+            "95th %ile CHD": [self.p95_chd],
+            "Max CHD": [self.max_chd],
+        }
+        df = pd.DataFrame(data=data)
+        chd_fields = [field for field in df.columns.values if "CHD" in field]
+        for field in chd_fields:
+            df[field] = df[field].astype(float).apply(lambda x: f"{x:0.2f}").astype("string")
+        for field in ["Rows","Clusters"]:
+            df[field] = df[field].astype(int).apply(lambda x: f"{x:,d}").astype("string")
+        df.index = ["Statistic"]
+        return df.transpose()
 
 
 class HorizontalEquityClusterSummary:
@@ -83,13 +124,6 @@ class HorizontalEquityClusterSummary:
     median : float
         Median value in the cluster.
     """
-
-    id: str
-    count: int
-    chd: float
-    min: float
-    max: float
-    median: float
 
     def __init__(
         self, id: str, count: int, chd: float, min: float, max: float, median: float
@@ -132,9 +166,6 @@ class HorizontalEquityStudy:
         Dictionary mapping cluster IDs to their summaries.
     """
 
-    summary: HorizontalEquitySummary
-    cluster_summaries: dict[str, HorizontalEquityClusterSummary]
-
     def __init__(self, df: pd.DataFrame, field_cluster: str, field_value: str):
         """
         Initialize a HorizontalEquityStudy instance by computing cluster summaries.
@@ -176,13 +207,19 @@ class HorizontalEquityStudy:
             min_chd = np.min(chds)
             max_chd = np.max(chds)
             med_chd = float(np.median(chds))
+            p05_chd = np.quantile(chds, 0.05)
+            p25_chd = np.quantile(chds, 0.25)
+            p75_chd = np.quantile(chds, 0.75)
+            p95_chd = np.quantile(chds, 0.95)
         else:
             min_chd = float("nan")
             max_chd = float("nan")
             med_chd = float("nan")
+            p05_chd = float("nan")
+            p95_chd = float("nan")
 
         self.summary = HorizontalEquitySummary(
-            len(df), len(clusters), min_chd, max_chd, med_chd
+            len(df), len(clusters), min_chd, max_chd, med_chd, p05_chd, p25_chd, p75_chd, p95_chd
         )
 
 

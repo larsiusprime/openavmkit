@@ -47,6 +47,7 @@ from openavmkit.utilities.geometry import (
     clean_geometry,
     identify_irregular_parcels,
     geolocate_point_to_polygon,
+    ensure_geometries,
     is_likely_epsg4326,
 )
 from openavmkit.utilities.settings import (
@@ -4810,3 +4811,32 @@ def _process_permits_sales(
             print(f"--> {len(renovations_1)} minor renovations.")
 
     return df_sales
+
+
+def read_sales_univ(path: str):
+    sales_path = f"{path}/sales.parquet"
+    univ_path = f"{path}/universe.parquet"
+    if not os.path.exists(sales_path):
+        raise ValueError(f"{sales_path} does not exist!")
+    if not os.path.exists(univ_path):
+        raise ValueError(f"{univ_path} does not exist!")
+    df_sales = pd.read_parquet(sales_path)
+    df_univ = _read_univ_parquet(univ_path)
+    return SalesUniversePair(df_sales, df_univ)
+
+
+def _read_univ_parquet(path: str):
+    df = gpd.read_parquet(path)
+    if "geometry" in df:
+        df = gpd.GeoDataFrame(df, geometry="geometry")
+        ensure_geometries(df, "geometry", df.crs)
+    return df
+
+def get_sup_model_group(sup: SalesUniversePair, model_group: str):
+    df = get_hydrated_sales_from_sup(sup)
+    df = df[df["model_group"].eq(model_group)]
+    keys = df["key_sale"].unique()
+    df_sales = sup.sales[sup.sales["key_sale"].isin(keys)]
+    df_univ = sup.universe[sup.universe["model_group"].eq(model_group)].copy()
+    return SalesUniversePair(df_sales, df_univ)
+    

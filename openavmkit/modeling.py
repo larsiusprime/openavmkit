@@ -69,7 +69,7 @@ from openavmkit.utilities.data import (
     div_series_z_safe,
     calc_spatial_lag,
 )
-from openavmkit.utilities.settings import get_valuation_date
+from openavmkit.utilities.settings import get_valuation_date, _get_max_ratio_study_trim
 from openavmkit.utilities.stats import (
     quick_median_chd_pl,
     calc_mse_r2_adj_r2,

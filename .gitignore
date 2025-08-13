@@ -18,6 +18,8 @@ notebooks/examples/land_value/out*
 .ipynb_checkpoints/
 .venv/*
 venv/*
+.venv*
+venv*
 .venvdocs/*
 site/*
 *catboost_info*
