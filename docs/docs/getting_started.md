@@ -1,7 +1,9 @@
 # Getting Started
 
 
-## Option 1 - Install from PyPI (recommended for most users)
+## Option 1 - Install from PyPI
+
+(recommended for most users)
 
 You can install the latest stable release directly from PyPI without cloning the repository:
 
