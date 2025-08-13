@@ -1,6 +1,17 @@
 # Getting Started
 
-## Setting up Python Environment
+
+## Option 1 - Install from PyPI (recommended for most users)
+
+You can install the latest stable release directly from PyPI without cloning the repository:
+
+```bash
+pip install openavmkit
+```
+
+## Option 2 - Install from Git
+
+### Setting up Python Environment
 
 Follow these steps to install and set up `OpenAVMKit` on your local environment.
 
@@ -105,11 +116,7 @@ Install all third-party dependencies in one shot:
 pip install -r requirements.txt
 ```
 
-## Setting up OpenAVMKit
-
-Once you've set up your python environment and dependencies, here's the basic guide to get you started:
-
-### 1. Install `openavmkit`
+### 5. Install `openavmkit`
 
 If you want to import and use the code modules directly, you must install the library.
 
@@ -124,8 +131,7 @@ pip install -e .
 
 The "." in that command is a special symbol that refers to the current directory. So when you run `pip install .`, you are telling `pip` to install the library contained in the current directory. That's why it's important to make sure you're in the right directory when you run this command!
 
-
-### 2. Running Jupyter notebooks
+## Running Jupyter notebooks
 
 Jupyter is a popular tool for running Python code interactively. We've included a few Jupyter notebooks in the `notebooks/` directory that demonstrate how to use `openavmkit` to perform common tasks.
 
