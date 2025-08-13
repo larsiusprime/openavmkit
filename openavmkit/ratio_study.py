@@ -46,18 +46,6 @@ class RatioStudy:
         The price-related bias, a measure of vertical equity
     """
 
-    predictions: np.ndarray
-    ground_truth: np.ndarray
-    count: int
-    median_ratio: float
-    median_ratio_trim: float
-    cod: float
-    cod_trim: float
-    prd: float
-    prb: float
-    mean_ratio: float
-    mean_ratio_trim: float
-
     def __init__(self, predictions: np.ndarray, ground_truth: np.ndarray, max_trim: float):
         """
         Initialize a ratio study object
@@ -140,6 +128,23 @@ class RatioStudy:
 
         self.prb = prb
         self.prb_trim = prb_trim
+    
+    def summary(self, stats:list[str]=None):
+        data = {
+            "Data": ["Untrimmed", "Trimmed"],
+            "Count": [self.count, self.count_trim],
+            "COD": [self.cod, self.cod_trim],
+            "Med.Ratio": [self.median_ratio, self.median_ratio_trim]
+        }
+        if stats is None:
+            stats = [key for key in data]
+        data = {key:data[key] for key in data if key in stats}
+        df = pd.DataFrame(data=data)
+        for field in ["COD","Med.Ratio"]:
+            df[field] = df[field].astype(float).apply(lambda x: f"{x:0.3f}").astype("string")
+        for field in ["Count"]:
+            df[field] = df[field].astype(int).apply(lambda x: f"{x:,d}").astype("string")
+        return df
 
 
 class RatioStudyBootstrapped(RatioStudy):
@@ -165,14 +170,6 @@ class RatioStudyBootstrapped(RatioStudy):
     prd_ci_high : float
         PRD, top of the confidence interval
     """
-
-    iterations: int
-    cod_ci_low: float
-    cod_ci_high: float
-    cod_trim_ci_low: float
-    cod_trim_ci_high: float
-    prd_ci_low: float
-    prd_ci_high: float
 
     def __init__(
         self,
@@ -243,6 +240,7 @@ class RatioStudyBootstrapped(RatioStudy):
         self.prb = med
         self.prb_ci_low = low
         self.prb_ci_high = high
+    
 
 
 def run_and_write_ratio_study_breakdowns(settings: dict):

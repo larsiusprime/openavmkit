@@ -1,7 +1,7 @@
 import os
 import warnings
 import pandas as pd
-from diptest import diptest
+from sklearn.mixture import GaussianMixture
 
 from openavmkit.data import (
   _get_sales,
@@ -1076,13 +1076,59 @@ def _get_base_sales_field(field: str):
 
 
 def _identify_bimodal_clusters(df, sales_field):
+    """
+    Identify clusters whose distribution of `sales_field` is likely bimodal
+    using Gaussian Mixture Models with information-criterion + separation checks.
+
+    Criteria:
+      - BIC(1) - BIC(2) >= 10  (2 components strongly preferred)
+      - Ashman's D > 2.0       (components well-separated)
+      - min component weight >= 0.15 (avoid tiny spurious modes)
+    """
     bimodal_clusters = []
 
     for cluster_id, group in df.groupby("ss_id"):
-        values = group[sales_field].values
-        if len(values) > 3:
-            dip, p_value = diptest(values)
-            if p_value < 0.05:  # Statistically significant deviation from unimodality
-                bimodal_clusters.append(cluster_id)
+        values = group[sales_field].to_numpy(dtype=float)
+        values = values[np.isfinite(values)]
+        # Need at least a few points to estimate two components sensibly
+        if values.size < 8:
+            continue
+
+        X = values.reshape(-1, 1)
+
+        # 1 vs 2 components BIC comparison
+        gm1 = GaussianMixture(n_components=1, covariance_type="full", random_state=0)
+        gm2 = GaussianMixture(n_components=2, covariance_type="full", random_state=0)
+
+        gm1.fit(X)
+        gm2.fit(X)
+
+        bic1 = gm1.bic(X)
+        bic2 = gm2.bic(X)
+        delta_bic = bic1 - bic2  # positive favors 2 components
+
+        if delta_bic < 10.0:
+            continue  # not enough evidence for 2 modes
+
+        # Separation: Ashman's D
+        means = np.sort(gm2.means_.ravel())
+        covars = gm2.covariances_.ravel()  # since full, but 1D -> shape (2,1,1) or (2,)
+        # Guard in case of extremely small variances
+        covars = np.maximum(covars, 1e-12)
+        mu1, mu2 = means
+        # Match covariances to sorted means: use argsort on original means
+        order = np.argsort(gm2.means_.ravel())
+        vars_sorted = covars[order]
+        D = (np.sqrt(2.0) * abs(mu2 - mu1)) / np.sqrt(vars_sorted[0] + vars_sorted[1])
+
+        if D <= 2.0:
+            continue  # components not well separated
+
+        # Component weights sanity check
+        weights = gm2.weights_[order]
+        if np.min(weights) < 0.15:
+            continue  # one component too small -> likely a tail, not a mode
+
+        bimodal_clusters.append(cluster_id)
 
     return bimodal_clusters

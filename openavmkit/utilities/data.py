@@ -3,6 +3,7 @@ import pickle
 
 import numpy as np
 import pandas as pd
+import geopandas as gpd
 import osmnx as ox
 from collections import defaultdict
 

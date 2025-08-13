@@ -33,6 +33,7 @@ from openavmkit.data import (
     _load_dataframe,
     process_data,
     SalesUniversePair,
+    get_sup_model_group,
     get_hydrated_sales_from_sup,
 )
 from openavmkit.sales_scrutiny_study import (
@@ -51,6 +52,13 @@ from openavmkit.utilities.settings import (
     get_fields_impr,
     get_fields_other,
     get_valuation_date,
+)
+from openavmkit.ratio_study import (
+    RatioStudy,
+    RatioStudyBootstrapped
+)
+from openavmkit.horizontal_equity_study import (
+    HorizontalEquityStudy
 )
 
 
@@ -1530,6 +1538,57 @@ def run_and_write_ratio_study_breakdowns(settings: dict) -> None:
     """
     openavmkit.ratio_study.run_and_write_ratio_study_breakdowns(settings)
 
+
+def read_sales_univ(path: str):
+    return openavmkit.data.read_sales_univ(path)
+
+
+def run_ratio_study(
+    sup: SalesUniversePair,
+    model_group: str,
+    field_prediction: str,
+    field_sales: str,
+    start_date: str,
+    end_date: str,
+    max_trim: float = 0.05,
+    bootstrapped: bool = False
+):
+    # Filter to just the designated model group
+    sup = get_sup_model_group(sup, model_group)
+    
+    # Merge universe characteristics onto sales to create one combined dataframe
+    df_sales = get_hydrated_sales_from_sup(sup)
+
+    # Select only sales between the start and end date
+    df_sales = df_sales[
+        df_sales["sale_date"].ge(start_date) &
+        df_sales["sale_date"].le(end_date)
+    ]
+
+    # Get predictions and sales
+    predictions = df_sales[field_prediction]
+    sales = df_sales[field_sales]
+
+    # Run the ratio study and print the results
+    if bootstrapped:
+        return RatioStudyBootstrapped(predictions, sales, max_trim)
+    else:
+        return RatioStudy(predictions, sales, max_trim)
+
+
+def run_horizontal_equity_study(
+    sup: SalesUniversePair,
+    model_group: str,
+    field: str,
+    cluster_id: str = "he_id",
+):
+    # Filter to just the designated model group
+    sup = get_sup_model_group(sup, model_group)
+
+    df = sup.universe
+
+    he_study = HorizontalEquityStudy(df, "he_id", field)
+    return he_study
 
 # PRIVATE:
 
