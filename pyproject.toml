@@ -1,3 +1,40 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "openavmkit"
+version = "0.2.0"
+description = "Open-source automated valuation model (AVM) toolkit"
+readme = "README.md"
+requires-python = ">=3.10"
+
+# dual-licence (AGPLv3 OR commercial)
+license = "AGPL-3.0-only OR LicenseRef-proprietary"
+license-files = ["LICENSE-AGPLv3", "LICENSE-COMMERCIAL"]
+
+authors = [{ name = "Lars A. Doucet", email = "lars.doucet+openavmkit@gmail.com" }]
+
+dependencies = [
+    "numpy>=1.23",
+    "pandas>=2.2",
+]
+
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: GNU Affero General Public License v3",
+  "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.25",
+]
+dev = ["pytest", "ruff"]
+
+[project.urls]
+Homepage = "https://www.openavmkit.com/"
+Source = "https://github.com/larsiusprime/openavmkit"
+Issues = "https://github.com/larsiusprime/openavmkit/issues"
