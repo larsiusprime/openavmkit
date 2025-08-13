@@ -1,8 +1,8 @@
 # Documentation
 
 ## [Getting started](getting_started.md)
-- [Install from PyPI](getting_started.md#option-1---install-from-pypi)
-- [Install from Git](getting_started.md#option-2---install-from-git)
+- [Install from PyPI](getting_started.md#option-1-install-from-pypi)
+- [Install from Git](getting_started.md#option-2-install-from-git)
 - [Running Tests](getting_started.md#running-tests)
 - [Running your first locality](getting_started.md#running-your-first-locality)
 ## [The basics](the_basics.md)
