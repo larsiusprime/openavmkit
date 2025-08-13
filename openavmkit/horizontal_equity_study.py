@@ -66,8 +66,6 @@ class HorizontalEquitySummary:
             5th percentile CHD value
         p25_chd : float
             25th percentile CHD value
-        p50_chd : float
-            50th percentile CHD value
         p75_chd : float
             75th percentile CHD value
         p95_chd : float
