@@ -49,6 +49,7 @@ from openavmkit.utilities.geometry import (
     geolocate_point_to_polygon,
     ensure_geometries,
     is_likely_epsg4326,
+    detect_crs_from_parquet
 )
 from openavmkit.utilities.settings import (
     get_fields_categorical,
@@ -4814,8 +4815,8 @@ def _process_permits_sales(
 
 
 def read_sales_univ(path: str):
-    sales_path = f"{path}/sales.parquet"
-    univ_path = f"{path}/universe.parquet"
+    sales_path = f"{path}sales.parquet"
+    univ_path = f"{path}universe.parquet"
     if not os.path.exists(sales_path):
         raise ValueError(f"{sales_path} does not exist!")
     if not os.path.exists(univ_path):
@@ -4826,10 +4827,13 @@ def read_sales_univ(path: str):
 
 
 def _read_univ_parquet(path: str):
-    df = gpd.read_parquet(path)
+    df = pd.read_parquet(path)
     if "geometry" in df:
-        df = gpd.GeoDataFrame(df, geometry="geometry")
-        ensure_geometries(df, "geometry", df.crs)
+        crs, geom_col = detect_crs_from_parquet(path, "geometry")
+        gdf = ensure_geometries(df, geom_col=geom_col, crs=crs)
+        if gdf.crs is None:
+            raise ValueError("No CRS found in parquet metadata")
+        return gdf
     return df
 
 def get_sup_model_group(sup: SalesUniversePair, model_group: str):

@@ -17,6 +17,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import geopandas as gpd
 
 import openavmkit
 import openavmkit.data
@@ -25,6 +26,7 @@ import openavmkit.land
 import openavmkit.checkpoint
 import openavmkit.ratio_study
 import openavmkit.horizontal_equity_study
+import openavmkit.vertical_equity_study
 import openavmkit.cleaning
 
 from openavmkit.cleaning import clean_valid_sales, validate_arms_length_sales
@@ -53,12 +55,18 @@ from openavmkit.utilities.settings import (
     get_fields_other,
     get_valuation_date,
 )
+from openavmkit.utilities.plotting import (
+    plot_scatterplot
+)
 from openavmkit.ratio_study import (
     RatioStudy,
     RatioStudyBootstrapped
 )
 from openavmkit.horizontal_equity_study import (
     HorizontalEquityStudy
+)
+from openavmkit.vertical_equity_study import (
+    VerticalEquityStudy
 )
 
 
@@ -1121,37 +1129,31 @@ def write_notebook_output_sup(
         pickle.dump(sup, file)
     os.makedirs("out/look", exist_ok=True)
 
-    # Handle geometry columns for both universe and sales
-    def prepare_df_for_parquet(df):
+    def write_parquet(df, path):
+        # If it has a geometry column, write as GeoParquet
         if "geometry" in df.columns:
-            # Convert geometry to WKB for storage
-            df = df.copy()
-            if hasattr(df, "to_wkb"):
-                # If it's a GeoDataFrame, use to_wkb() method
-                df["geometry"] = df.geometry.to_wkb()
-            else:
-                # If it's a regular DataFrame with geometry column
-                import shapely.wkb
+            # Ensure it's a GeoDataFrame
+            gdf = df if isinstance(df, gpd.GeoDataFrame) else gpd.GeoDataFrame(df, geometry="geometry", crs=getattr(df, "crs", None))
 
-                df["geometry"] = df["geometry"].apply(
-                    lambda geom: geom.wkb if geom is not None else None
-                )
-        return df
+            # You MUST have a CRS for it to be recorded in metadata
+            if gdf.crs is None:
+                raise ValueError(f"{path}: geometry has no CRS. Set it (e.g., gdf = gdf.set_crs('EPSG:4326')) before writing.")
 
-    # Prepare and write universe DataFrame
-    df_universe = prepare_df_for_parquet(sup["universe"])
-    df_universe.to_parquet(f"out/look/{prefix}-universe.parquet", engine="pyarrow")
+            # GeoPandas writes WKB + GeoParquet metadata (including CRS)
+            gdf.to_parquet(path, engine="pyarrow", index=False)
+        else:
+            # Regular table
+            df.to_parquet(path, engine="pyarrow", index=False)
 
-    # Prepare and write sales DataFrame
+    # universe
+    write_parquet(sup["universe"], f"out/look/{prefix}-universe.parquet")
 
-    df_sales = prepare_df_for_parquet(sup["sales"])
-    df_sales.to_parquet(f"out/look/{prefix}-sales.parquet")
+    # sales
+    write_parquet(sup["sales"], f"out/look/{prefix}-sales.parquet")
 
+    # sales (hydrated)
     df_hydrated = get_hydrated_sales_from_sup(sup)
-    df_hydrated = prepare_df_for_parquet(df_hydrated)
-    df_hydrated.to_parquet(
-        f"out/look/{prefix}-sales-hydrated.parquet", engine="pyarrow"
-    )
+    write_parquet(df_hydrated, f"out/look/{prefix}-sales-hydrated.parquet")
 
     print("Results written to:")
     print(f"...out/{prefix}-sup.pickle")
@@ -1550,8 +1552,7 @@ def run_ratio_study(
     field_sales: str,
     start_date: str,
     end_date: str,
-    max_trim: float = 0.05,
-    bootstrapped: bool = False
+    max_trim: float = 0.05
 ):
     # Filter to just the designated model group
     sup = get_sup_model_group(sup, model_group)
@@ -1569,11 +1570,8 @@ def run_ratio_study(
     predictions = df_sales[field_prediction]
     sales = df_sales[field_sales]
 
-    # Run the ratio study and print the results
-    if bootstrapped:
-        return RatioStudyBootstrapped(predictions, sales, max_trim)
-    else:
-        return RatioStudy(predictions, sales, max_trim)
+    # Run the ratio study and return it
+    return RatioStudyBootstrapped(predictions, sales, max_trim)
 
 
 def run_horizontal_equity_study(
@@ -1582,14 +1580,82 @@ def run_horizontal_equity_study(
     field: str,
     cluster_id: str = "he_id",
 ):
+    if cluster_id not in sup.universe:
+        return None
+    
     # Filter to just the designated model group
     sup = get_sup_model_group(sup, model_group)
 
     df = sup.universe
 
-    he_study = HorizontalEquityStudy(df, "he_id", field)
+    he_study = HorizontalEquityStudy(df, cluster_id, field)
     return he_study
 
+
+def run_vertical_equity_study(
+    sup: SalesUniversePair,
+    model_group: str,
+    field_prediction: str,
+    field_sales: str,
+    start_date: str,
+    end_date: str,
+    max_trim: float = 0.05
+):
+    # Filter to just the designated model group
+    sup = get_sup_model_group(sup, model_group)
+    
+    # Merge universe characteristics onto sales to create one combined dataframe
+    df_sales = get_hydrated_sales_from_sup(sup)
+
+    # Select only sales between the start and end date
+    df_sales = df_sales[
+        df_sales["sale_date"].ge(start_date) &
+        df_sales["sale_date"].le(end_date)
+    ]
+
+    # Get predictions and sales
+    predictions = df_sales[field_prediction]
+    sales = df_sales[field_sales]
+
+    # Run the vertical equity study and print the results
+    return VerticalEquityStudy(
+        df_sales,
+        field_sales,
+        field_prediction
+    )
+
+
+def plot_prediction_vs_sales(
+    sup: SalesUniversePair,
+    model_group: str,
+    field_prediction: str,
+    field_truth: str,
+    start_date: str,
+    end_date: str
+):
+    # Filter to just the designated model group
+    sup = get_sup_model_group(sup, model_group)
+    
+    # Merge universe characteristics onto sales to create one combined dataframe
+    df_sales = get_hydrated_sales_from_sup(sup)
+
+    # Select only sales between the start and end date
+    df_sales = df_sales[
+        df_sales["sale_date"].ge(start_date) &
+        df_sales["sale_date"].le(end_date)
+    ]
+    
+    plot_scatterplot(
+        df_sales, 
+        field_truth, 
+        field_prediction, 
+        field_truth, 
+        field_prediction, 
+        "Sale price vs. Prediction",
+        best_fit_line=True, 
+        perfect_fit_line=True
+    )
+    
 # PRIVATE:
 
 
