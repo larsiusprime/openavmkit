@@ -24,10 +24,13 @@ jobs:
         uses: contributor-assistant/github-action@v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}   # ← ADDED: PAT for the remote repo
         with:
           path-to-signatures: 'signatures/version1/cla.json'
           path-to-document: 'https://docuseal.com/d/4iF7pn89f5v914'
-          branch: 'master'
+          branch: 'master'                                             # keep as-is, or change to 'main' if your remote repo uses main
+          remote-organization-name: 'larsiusprime'                     # ← ADDED: where to store signatures
+          remote-repository-name: 'openavmkit-signatures'                     # ← ADDED: repo to store signatures
           # Custom messages for the new workflow
           custom-notsigned-prcomment: 'Thank you for your contribution.<br>Please sign our CLA at the following link:<br>[Click here to sign the CLA](https://docuseal.com/d/4iF7pn89f5v914).<br>A maintainer will verify your signature and confirm it here by commenting with the following sentence:'
           custom-pr-sign-comment: 'I affirm that this contributor has signed the CLA'
