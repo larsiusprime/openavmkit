@@ -6,11 +6,14 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import shapely
+import json
 
+from typing import Optional, Tuple
 from shapely import wkt, wkb
 from shapely.geometry.base import BaseGeometry
 from pyproj import CRS, Geod
 from shapely import Polygon, MultiPolygon, LineString
+import pyarrow.parquet as pq
 
 from openavmkit.utilities.timing import TimingData
 
@@ -919,3 +922,62 @@ def geolocate_point_to_polygon(
     # now df has the parcel_id_field for each lat/lon pair in gdf
 
     return df
+
+
+def detect_crs_from_parquet(path: str, geom_col: str = "geometry") -> Tuple[Optional[CRS], str]:
+    """
+    Return (crs, geometry_column_used). crs is a pyproj.CRS or None.
+    Looks only in GeoParquet metadata; does not try to infer from coordinates.
+    """
+    # Try schema (GeoParquet stores metadata here)
+    pf = pq.ParquetFile(path)
+    schema_md = getattr(pf.schema_arrow, "metadata", None) or {}
+
+    def _extract_crs(md: dict) -> Tuple[Optional[CRS], str]:
+        geo_raw = md.get(b"geo")
+        if not geo_raw:
+            return None, geom_col
+
+        info = json.loads(geo_raw.decode("utf-8"))
+        cols = info.get("columns", {})
+
+        # Find metadata for the requested geometry column, or the first geometry-ish column
+        colmeta = cols.get(geom_col)
+        if colmeta is None:
+            for name, cm in (cols.items() if isinstance(cols, dict) else []):
+                if isinstance(cm, dict) and cm.get("encoding", "").upper() in {"WKB", "WKT", "GEOARROW"}:
+                    geom_name = name
+                    colmeta = cm
+                    break
+            else:
+                return None, geom_col
+        else:
+            geom_name = geom_col
+
+        # Newer spec: "crs" (WKT or PROJJSON or "EPSG:xxxx")
+        # Older files: "crs_wkt"
+        crs_value = colmeta.get("crs") or colmeta.get("crs_wkt")
+        if not crs_value:
+            return None, geom_name
+
+        try:
+            return CRS.from_user_input(crs_value), geom_name
+        except Exception:
+            # Sometimes "crs" is a dict (PROJJSON)
+            if isinstance(crs_value, dict):
+                try:
+                    return CRS.from_user_input(crs_value), geom_name
+                except Exception:
+                    pass
+            return None, geom_name
+
+    crs, used_geom = _extract_crs(schema_md)
+    if crs:
+        return crs, used_geom
+
+    # Rarely, some writers stash metadata at the file-level (not per schema)
+    file_md = pf.metadata
+    if file_md is not None and file_md.metadata is not None:
+        return _extract_crs(file_md.metadata)
+
+    return None, geom_col

@@ -3374,7 +3374,7 @@ def _model_performance_metrics(
         if len(y_true_trim) > 1 and len(y_pred_trim) > 1:
             # MAPE calculation
             mape_trim = mean_absolute_percentage_error(y_true_trim, y_pred_trim)
-
+            
             # OLS R² calculation
             df_trim = pd.DataFrame(data={"y_true":y_true_trim,"y_pred":y_pred_trim})
             reg = _simple_ols(df_trim, "y_true", "y_pred", intercept=False)

@@ -135,6 +135,97 @@ def calc_cod(values: np.ndarray) -> float:
     return cod
 
 
+def calc_ratio_stats_bootstrap(
+    predictions: np.ndarray,
+    ground_truth: np.ndarray,
+    confidence_interval: float = 0.95,
+    iterations: int = 10000,
+    seed: int = 777
+) -> dict:
+    """
+    Calculate ratio study statistics (Median ratio, Mean ratio, COD, PRD) with
+    bootstrap percentile confidence intervals, following IAAO definitions.
+    
+    Parameters
+    ----------
+    predictions: np.ndarray
+        An array of predicted values
+    ground_truth: np.ndarray
+        An array of corresponding ground truth (e.g. sale price) values
+    confidence_interval: float
+        The size of the confidence interval (e.g. 0.95 = 95% confidence)
+    iterations: int, optional
+        The number of bootstrap iterations to perform. Defaults to 10,000.
+    seed: int, optional
+        Random seed, for reproducibility. Defaults to 777.
+    
+    Returns
+    -------
+    dict
+        {
+          "median_ratio": ConfidenceStat,
+          "mean_ratio": ConfidenceStat,
+          "cod": ConfidenceStat,   # COD = 100 * mean(|ri - median(r)|) / median(r)
+          "prd": ConfidenceStat    # PRD = mean(r) / weighted_mean(r)
+        }
+    """
+    # --- input hygiene ---
+    p = np.asarray(predictions, dtype=float).ravel()
+    s = np.asarray(ground_truth,  dtype=float).ravel()
+    if p.shape != s.shape:
+        raise ValueError("predictions and ground_truth must have the same shape")
+
+    mask = np.isfinite(p) & np.isfinite(s) & (s > 0)  # sales must be > 0
+    p, s = p[mask], s[mask]
+    n = p.size
+    if n == 0:
+        return None
+
+    r = p / s
+
+    # Point estimates from the original sample
+    med_ratio_point = np.median(r)
+    mean_ratio_point = np.mean(r)
+    cod_point = (np.mean(np.abs(r - med_ratio_point)) / med_ratio_point) * 100.0
+    weighted_mean_ratio_point = p.sum() / s.sum()
+    prd_point = mean_ratio_point / weighted_mean_ratio_point
+
+    # Bootstrap on indices of the (p, s) pairs
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, n, size=(iterations, n))
+
+    r_samp = (p[idx] / s[idx])                     # (B, n) ratios per replicate
+    med_samp = np.median(r_samp, axis=1)           # (B,)
+    mean_samp = np.mean(r_samp, axis=1)            # (B,)
+    
+    # per-replicate weighted mean ratio: sum(p)/sum(s) for the bootstrap sample
+    wmr_samp = (p[idx].sum(axis=1) / s[idx].sum(axis=1))
+    
+    # per-replicate COD uses the replicate's own median
+    cod_samp = (np.mean(np.abs(r_samp - med_samp[:, None]), axis=1) / med_samp) * 100.0
+    
+    # per-replicate PRD
+    prd_samp = mean_samp / wmr_samp
+
+    # percentile confidence intervals
+    alpha = (1.0 - confidence_interval) / 2.0
+    def ci(a):
+        lo, hi = np.quantile(a, [alpha, 1.0 - alpha])
+        return float(lo), float(hi)
+
+    med_lo, med_hi   = ci(med_samp)
+    mean_lo, mean_hi = ci(mean_samp)
+    cod_lo, cod_hi   = ci(cod_samp)
+    prd_lo, prd_hi   = ci(prd_samp)
+    
+    return {
+        "median_ratio": ConfidenceStat(med_ratio_point,  confidence_interval, med_lo,  med_hi),
+        "mean_ratio":   ConfidenceStat(mean_ratio_point, confidence_interval, mean_lo, mean_hi),
+        "cod":          ConfidenceStat(cod_point,        confidence_interval, cod_lo,  cod_hi),
+        "prd":          ConfidenceStat(prd_point,        confidence_interval, prd_lo,  prd_hi),
+    }
+
+
 def calc_cod_bootstrap(
     values: np.ndarray,
     confidence_interval: float = 0.95,
@@ -246,7 +337,7 @@ def calc_prd_bootstrap(
     Returns
     -------
     tuple[float, float, float]
-        A tuple containing the lower bound, median PRD, and upper bound of the confidence interval.
+        A tuple containing median PRD, the lower bound, and upper bound of the confidence interval.
     """
 
     np.random.seed(seed)
@@ -259,7 +350,22 @@ def calc_prd_bootstrap(
     alpha = (1.0 - confidence_interval) / 2
     lower_bound, upper_bound = np.quantile(prds, [alpha, 1.0 - alpha])
     median_prd = np.median(prds)
-    return lower_bound, median_prd, upper_bound
+    return median_prd, lower_bound, upper_bound
+
+
+def trim_outlier_ratios(
+    predictions: np.ndarray,
+    ground_truth: np.ndarray,
+    max_percent: float = 0.10,
+    iqr_factor: float = 1.5
+) -> (np.ndarray, np.ndarray):
+    
+    ratios = div_series_z_safe(predictions, ground_truth).astype(float)
+    trim_mask = trim_outliers_mask(ratios, max_percent, iqr_factor)
+    trim_ratios = ratios[trim_mask]
+    trim_predictions = predictions[trim_mask]
+    trim_ground_truth = ground_truth[trim_mask]
+    return trim_predictions, trim_ground_truth
 
 
 def trim_outliers(
@@ -1131,3 +1237,32 @@ def calc_cross_validation_score(
         return float("nan")
 
     return -scores.mean()  # Convert negative MSE to positive
+
+
+class ConfidenceStat:
+    """
+    Any statistic along with it's confidence interval upper and lower bounds, and whether it is statistically significant
+    
+    Attributes
+    ----------
+    value : float
+        The base value of the statistic
+    confidence_interval : float
+        The % value of the confidence interval (e.g. 0.95 for 95% confidence interval)
+    low : float
+        The lower bound of the confidence interval
+    high : float
+        The upper bound of the confidence interval
+    """
+    def __init__(
+        self,
+        value : float,
+        confidence_interval : float,
+        low : float,
+        high : float
+    ):
+        self.value = value
+        self.confidence_interval = confidence_interval
+        self.low = low
+        self.high = high
+    

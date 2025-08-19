@@ -89,11 +89,8 @@ class RatioStudy:
             median_ratio = float("nan")
 
         # trim the ratios to remove outliers -- trim to the interquartile range
-        trim_mask = stats.trim_outliers_mask(ratios, max_trim)
-
-        trim_ratios = ratios[trim_mask]
-        trim_predictions = predictions[trim_mask]
-        trim_ground_truth = ground_truth[trim_mask]
+        trim_predictions, trim_ground_truth = stats.trim_outlier_ratios(predictions, ground_truth, max_trim)
+        trim_ratios = div_series_z_safe(predictions, ground_truth).astype(float)
         
         self.count_trim = len(trim_ratios)
 
@@ -147,28 +144,33 @@ class RatioStudy:
         return df
 
 
-class RatioStudyBootstrapped(RatioStudy):
+class RatioStudyBootstrapped:
     """
     Performs an IAAO-standard Ratio Study, generating all the relevant statistics.
-    This extends the base RatioStudy class, adding confidence intervals.
-
+    This version adds confidence intervals.
 
     Attributes
     ----------
     iterations : float
         Number of bootstrap iterations
-    cod_ci_low : float
-        COD, bottom of the confidence interval
-    cod_ci_high : float
-        COD, top of the confidence interval
-    cod_trim_ci_low : float
-        Trimmed COD, bottom of the confidence interval
-    cod_trim_ci_high : float
-        Trimmed COD, top of the confidence interval
-    prd_ci_low : float
-        PRD, bottom of the confidence interval
-    prd_ci_high : float
-        PRD, top of the confidence interval
+    confidence_interval : float
+        The confidence interval (e.g. 0.95 for 95% confidence)
+    median_ratio : ConfidenceStat
+        The median value of all `prediction/ground_truth` ratios
+    mean_ratio : ConfidenceStat
+        The mean value of all `prediction/ground_truth` ratios
+    cod : ConfidenceStat
+        The coefficient of dispersion, a measure of variability (lower is better)
+    prd : ConfidenceStat
+        The price-related differential, a measure of vertical equity
+    median_ratio_trim : ConfidenceStat
+        The median value of trimmed `prediction/ground_truth` ratios
+    mean_ratio_trim : ConfidenceStat
+        The mean value of trimmed `prediction/ground_truth` ratios
+    cod_trim : ConfidenceStat
+        The coefficient of dispersion, a measure of variability (lower is better), of the trimmed set
+    prd_trim : ConfidenceStat
+        The price-related differential, a measure of vertical equity, of the trimmed set
     """
 
     def __init__(
@@ -195,51 +197,64 @@ class RatioStudyBootstrapped(RatioStudy):
         iterations : int
             How many bootstrap iterations to perform
         """
-        super().__init__(predictions, ground_truth, max_trim)
-
         if len(predictions) == 0:
-            self.cod = float("nan")
-            self.cod_ci_low = float("nan")
-            self.cod_ci_high = float("nan")
-            self.cod_trim = float("nan")
-            self.cod_trim_ci_low = float("nan")
-            self.cod_trim_ci_high = float("nan")
-            self.prd = float("nan")
-            self.prd_ci_low = float("nan")
-            self.prd_ci_high = float("nan")
-            self.prb = float("nan")
-            self.prb_ci_low = float("nan")
-            self.prb_ci_high = float("nan")
-
+            self.count = 0
+            self.iterations = 0
+            self.median_ratio = None
+            self.mean_ratio = None
+            self.cod = None
+            self.prd = None
+            self.median_ratio_trim = None
+            self.mean_ratio_trim = None
+            self.cod_trim = None
+            self.prd_trim = None
+        
+        self.count = len(ground_truth)
         self.iterations = iterations
-        ratios = div_series_z_safe(predictions, ground_truth)
-        med, low, high = stats.calc_cod_bootstrap(
-            ratios, confidence_interval, iterations
-        )
+        self.confidence_interval = confidence_interval
+        
+        results = stats.calc_ratio_stats_bootstrap(predictions, ground_truth)
+        
+        self.cod = results["cod"]
+        self.median_ratio = results["median_ratio"]
+        self.mean_ratio = results["mean_ratio"]
+        self.prd = results["prd"]
+        
+        trim_predictions, trim_ground_truth = stats.trim_outlier_ratios(predictions, ground_truth, max_trim)
+        
+        self.count_trim = len(trim_ground_truth)
+        
+        results = stats.calc_ratio_stats_bootstrap(trim_predictions, trim_ground_truth)
+        
+        self.cod_trim = results["cod"]
+        self.median_ratio_trim = results["median_ratio"]
+        self.mean_ratio_trim = results["mean_ratio"]
+        self.prd_trim = results["prd"]
+        
 
-        self.cod = med
-        self.cod_ci_low = low
-        self.cod_ci_high = high
-
-        med, low, high = stats.calc_cod_bootstrap(
-            stats.trim_outliers(ratios, max_trim),
-            confidence_interval,
-            iterations,
-        )
-
-        self.cod_trim = med
-        self.cod_trim_ci_low = low
-        self.cod_trim_ci_high = high
-
-        med, low, high = 0, 0, 0
-        self.prd = med
-        self.prd_ci_low = low
-        self.prd_ci_high = high
-
-        med, low, high = 0, 0, 0
-        self.prb = med
-        self.prb_ci_low = low
-        self.prb_ci_high = high
+    def summary(self):
+        conf = f"{self.confidence_interval*100:0.0f}"
+        upper = f"{conf}% CI, upper"
+        lower = f"{conf}% CI, lower"
+        data = {
+            "Data": ["Untrimmed", "Trimmed"],
+            "Count": [self.count, self.count_trim],
+            "COD": [self.cod.value, self.cod_trim.value],
+            f"COD {upper}": [self.cod.high, self.cod_trim.high],
+            f"COD {lower}": [self.cod.low, self.cod_trim.low],
+            "Med.Ratio": [self.median_ratio.value, self.median_ratio_trim.value],
+            f"Med.Ratio {upper}": [self.median_ratio.high, self.median_ratio.high],
+            f"Med.Ratio {lower}": [self.median_ratio.low, self.median_ratio.low]
+        }
+        df = pd.DataFrame(data=data)
+        for field in df.columns:
+            if field == "Data":
+                continue
+            if field == "Count":
+                df[field] = df[field].astype(int).apply(lambda x: f"{x:,d}").astype("string")
+            else:
+                df[field] = df[field].astype(float).apply(lambda x: f"{x:0.3f}").astype("string")
+        return df
     
 
 

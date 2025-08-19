@@ -315,7 +315,7 @@ def _plot_histogram_mult(
 
     plt.gca().xaxis.set_major_formatter(_human_fmt(digits=3))
 
-    # capture y‑limits
+    # capture y-limits
     _ylim_max = np.percentile(counts, 95)
     ylim_max = max(ylim_max, _ylim_max)
 
