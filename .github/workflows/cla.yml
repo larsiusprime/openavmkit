@@ -28,7 +28,7 @@ jobs:
         with:
           path-to-signatures: 'signatures/version1/cla.json'
           path-to-document: 'https://docuseal.com/d/4iF7pn89f5v914'
-          branch: 'master'                                             # keep as-is, or change to 'main' if your remote repo uses main
+          branch: 'main'                                             
           remote-organization-name: 'larsiusprime'                     # ← ADDED: where to store signatures
           remote-repository-name: 'openavmkit-signatures'                     # ← ADDED: repo to store signatures
           # Custom messages for the new workflow
