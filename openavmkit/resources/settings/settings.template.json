@@ -227,7 +227,9 @@
 				"dist_to_osm_educational",
 				"dist_to_osm_golf_courses",
 				"dist_to_osm_parks",
-				"dist_to_osm_water_bodies"
+				"dist_to_osm_water_bodies",
+				"median_c_rent",
+				"median_g_rent"
 			],
 			"+categorical": [
 				"land_class",
@@ -311,6 +313,7 @@
 				"bldg_rooms_bath",
 				"bldg_rooms_bath_full",
 				"bldg_rooms_bath_half",
+				"bldg_rooms_total",
 				"bldg_area_footprint_sqft",
 				"bldg_area_finished_sqft_inferred",
 				"assr_impr_value",
@@ -362,6 +365,7 @@
 			],
 			"+categorical": [
 				"he_id",
+				"address",
 				"model_group",
 				"warning_vacant_discrepancy",
 				"warning_vacant_positive_year_built",
@@ -374,6 +378,7 @@
 				"key",
 				"key2",
 				"key_sale",
+				"deed_book_and_page",
 				"deed_book",
 				"deed_page"
 			],

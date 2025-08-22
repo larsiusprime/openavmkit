@@ -680,14 +680,22 @@ def enrich_df_streets(
     gpd.GeoDataFrame
         Enriched GeoDataFrame with additional columns for street-related metrics.
     """
-    df_out = _enrich_df_streets(
-        df_in, settings, spacing, max_ray_length, network_buffer, verbose
-    )
+    e_streets = settings.get("data",{}).get("process", {}).get("enrich", {})
+    do_streets = e_streets.get("enabled", False)
+    
+    if do_streets:
+        df_out = _enrich_df_streets(
+            df_in, settings, spacing, max_ray_length, network_buffer, verbose
+        )
 
-    # add somers unit land size normalization using frontage & depth
-    df_out["land_area_somers_ft"] = get_size_in_somers_units_ft(
-        df_out["frontage_ft_1"], df_out["depth_ft_1"]
-    )
+        # add somers unit land size normalization using frontage & depth
+        df_out["land_area_somers_ft"] = get_size_in_somers_units_ft(
+            df_out["frontage_ft_1"], df_out["depth_ft_1"]
+        )
+    else:
+        df_out = df_in
+        if verbose:
+            print(f"Street enrichment disabled. To enable it, add `data.process.enrich.streets.enabled = true` to your settings file.")
 
     return df_out
 
@@ -1096,7 +1104,7 @@ def _enrich_data(
         )
 
         # add lat/lon/rectangularity etc.
-        df_univ = _basic_geo_enrichment(df_univ, settings, verbose=verbose)
+        df_univ = _basic_geo_enrichment(df_univ, s_enrich, settings, verbose=verbose)
 
         # handle Census enrichment for universe if enabled
         if "census" in s_enrich:
@@ -1115,9 +1123,6 @@ def _enrich_data(
             )
 
         if "permits" in s_enrich:
-            # df_univ = _enrich_permits(
-            #     df_univ, s_enrich, dataframes, settings, is_sales=False, verbose=verbose
-            # )
             df_sales = _enrich_permits(
                 df_sales, s_enrich, dataframes, settings, is_sales=True, verbose=verbose
             )
@@ -1137,6 +1142,15 @@ def _enrich_data(
             settings,
             is_sales=False,
             verbose=verbose,
+        )
+        
+        df_sales = _enrich_df_basic(
+            df_sales,
+            s_enrich,
+            dataframes,
+            settings,
+            is_sales=True,
+            verbose=verbose
         )
 
     # Enforce vacant status
@@ -1169,66 +1183,75 @@ def _enrich_df_census(
 
     df = df_in.copy()
 
-    try:
-        # Get Census credentials and initialize service
-        creds = get_creds_from_env_census()
-        census_service = init_service_census(creds)
+    # try:
+    # Get Census credentials and initialize service
+    creds = get_creds_from_env_census()
+    census_service = init_service_census(creds)
 
-        # Get FIPS code from settings
-        fips_code = census_settings.get("fips", "")
-        if not fips_code:
-            warnings.warn(
-                "Census enrichment enabled but no FIPS code provided in settings"
-            )
-            return df
-
-        year = census_settings.get("year", 2022)
-        if verbose:
-            print("Getting Census Data...")
-
-        # Get Census data with boundaries
-        census_data, census_boundaries = census_service.get_census_data_with_boundaries(
-            fips_code=fips_code, year=year
+    # Get FIPS code from settings
+    fips_code = census_settings.get("fips", "")
+    if not fips_code:
+        warnings.warn(
+            "Census enrichment enabled but no FIPS code provided in settings"
         )
+        return df
 
-        # Spatial join with universe data only
-        if not isinstance(df, gpd.GeoDataFrame):
-            warnings.warn("DataFrame is not a GeoDataFrame, skipping Census enrichment")
-            return df
+    year = census_settings.get("year", 2022)
+    if verbose:
+        print("Getting Census Data...")
+    
+    # Get Census data with boundaries
+    census_data, census_boundaries = census_service.get_census_data_with_boundaries(
+        fips_code=fips_code, year=year, census_settings=census_settings
+    )
 
-        # Get census columns to keep
-        census_cols_to_keep = ["std_geoid", "median_income", "total_pop"]
-
-        # Ensure all census columns exist in the census_boundaries
-        missing_cols = [
-            col for col in census_cols_to_keep if col not in census_boundaries.columns
+    # Spatial join with universe data only
+    if not isinstance(df, gpd.GeoDataFrame):
+        warnings.warn("DataFrame is not a GeoDataFrame, skipping Census enrichment")
+        return df
+    
+    # Get census columns to keep
+    field_map = census_service.get_census_map(census_settings)
+    census_cols_to_keep = ["std_geoid"] + [field_map[key] for key in field_map]
+    
+    # Ensure all census columns exist in the census_boundaries
+    missing_cols = [
+        col for col in census_cols_to_keep if col not in census_boundaries.columns
+    ]
+    if missing_cols:
+        # Filter to only include columns that exist
+        census_cols_to_keep = [
+            col for col in census_cols_to_keep if col in census_boundaries.columns
         ]
-        if missing_cols:
-            # Filter to only include columns that exist
-            census_cols_to_keep = [
-                col for col in census_cols_to_keep if col in census_boundaries.columns
-            ]
+    
+    # Create a copy of census_boundaries with only the columns we need
+    census_boundaries_subset = census_boundaries[
+        ["geometry"] + census_cols_to_keep
+    ].copy()
+    
+    # Replace all -666666666.0 sentinel values with None
+    for col in census_cols_to_keep:
+        if pd.api.types.is_numeric_dtype(census_boundaries_subset[col]):
+            census_boundaries_subset.loc[
+                abs(census_boundaries_subset[col] + 666666666.0).le(1e6), col
+            ] = None
+    
+    if verbose:
+        print("Performing spatial join with Census Data...")
 
-        # Create a copy of census_boundaries with only the columns we need
-        census_boundaries_subset = census_boundaries[
-            ["geometry"] + census_cols_to_keep
-        ].copy()
+    # Perform the spatial join
+    df = match_to_census_blockgroups(
+        gdf=df, census_gdf=census_boundaries_subset, join_type="left"
+    )
+    df = df.drop(columns="std_geoid")
 
-        if verbose:
-            print("Performing spatial join with Census Data...")
+    write_cached_df(df_in, df, "census", "key", census_settings)
+    
+    return df
 
-        # Perform the spatial join
-        df = match_to_census_blockgroups(
-            gdf=df, census_gdf=census_boundaries_subset, join_type="left"
-        )
-
-        write_cached_df(df_in, df, "census", "key", census_settings)
-
-        return df
-
-    except Exception as e:
-        warnings.warn(f"Failed to enrich with Census data: {str(e)}")
-        return df
+    # except Exception as e:
+        # warnings.warn(f"Failed to enrich with Census data: {str(e)}")
+    #return df
 
 
 def _enrich_df_distances(
@@ -2428,10 +2451,14 @@ def _enrich_df_basic(
     df = df_in.copy()
 
     supkey = "sales" if is_sales else "universe"
-
-    s_ref = s_enrich_this.get("ref_tables", {}).get(supkey, [])
-    s_calc = s_enrich_this.get("calc", {}).get(supkey, {})
-    s_tweak = s_enrich_this.get("tweak", {}).get(supkey, {})
+    
+    for word in ["ref_tables", "calc", "tweak"]:
+        if word in s_enrich_this:
+            warnings.warn(f"Found `word` @ `data.process.enrich.word`, but it should be under `data.process.enrich.sales` or `data.process.enrich.universe`! Nothing will happen!")
+    
+    s_ref = s_enrich_this.get(supkey, {}).get("ref_tables", [])
+    s_calc = s_enrich_this.get(supkey, {}).get("calc", {})
+    s_tweak = s_enrich_this.get(supkey, {}).get("tweak", {})
 
     # reference tables:
     df = _perform_ref_tables(df, s_ref, dataframes, verbose=verbose)
@@ -2723,11 +2750,24 @@ def _enrich_polar_coordinates(
 
 
 def _basic_geo_enrichment(
-    gdf_in: gpd.GeoDataFrame, settings: dict, verbose: bool = False
+    gdf_in: gpd.GeoDataFrame, s_enrich: dict, settings: dict, verbose: bool = False
 ) -> gpd.GeoDataFrame:
     """Perform basic geometric enrichment on a GeoDataFrame by adding spatial features."""
     t = TimingData()
-
+    
+    s_basic = s_enrich.get("basic", {})
+    
+    do_anything = s_basic.get("enabled", True)
+    if not do_anything:
+        if verbose:
+            print("Skipping basic geo enrichment...")
+        return
+    
+    do_latlon = s_basic.get("latlon", True)
+    do_area = s_basic.get("area", True)
+    do_shape = s_basic.get("shape", True)
+    do_polar = s_basic.get("polar", True)
+    
     if verbose:
         print(f"Performing basic geometric enrichment...")
     gdf_out = get_cached_df(gdf_in, "geom/basic", "key")
@@ -2745,61 +2785,87 @@ def _basic_geo_enrichment(
 
     gdf = gdf_in.copy()
 
-    t.start("latlon")
-    gdf_latlon = gdf.to_crs(get_crs(gdf, "latlon"))
-    gdf_area = gdf.to_crs(get_crs(gdf, "equal_area"))
-    gdf["latitude"] = gdf_latlon.geometry.centroid.y
-    gdf["longitude"] = gdf_latlon.geometry.centroid.x
-    gdf["latitude_norm"] = (gdf["latitude"] - gdf["latitude"].min()) / (
-        gdf["latitude"].max() - gdf["latitude"].min()
-    )
-    gdf["longitude_norm"] = (gdf["longitude"] - gdf["longitude"].min()) / (
-        gdf["longitude"].max() - gdf["longitude"].min()
-    )
-    t.stop("latlon")
-    if verbose:
-        _t = t.get("latlon")
-        print(f"--> added latitude/longitude...({_t:.2f}s)")
-    t.start("area")
+    
+    if do_latlon:
+        t.start("latlon")
+        gdf_latlon = gdf.to_crs(get_crs(gdf, "latlon"))
+        gdf["latitude"] = gdf_latlon.geometry.centroid.y
+        gdf["longitude"] = gdf_latlon.geometry.centroid.x
+        gdf["latitude_norm"] = (gdf["latitude"] - gdf["latitude"].min()) / (
+            gdf["latitude"].max() - gdf["latitude"].min()
+        )
+        gdf["longitude_norm"] = (gdf["longitude"] - gdf["longitude"].min()) / (
+            gdf["longitude"].max() - gdf["longitude"].min()
+        )
+        t.stop("latlon")
+        
+        if verbose:
+            _t = t.get("latlon")
+            print(f"--> added latitude/longitude...({_t:.2f}s)")
+    else:
+        if verbose:
+            print(f"--> skipping latitude/longitude...")
+    
+    if do_area:
+        t.start("area")
+        gdf_area = gdf.to_crs(get_crs(gdf, "equal_area"))
+        
+        # we converted to a metric CRS, so we are in meters right now
+        area_in_meters = gdf_area.geometry.area
 
-    # we converted to a metric CRS, so we are in meters right now
-    area_in_meters = gdf_area.geometry.area
+        gdf["land_area_gis_sqft"] = area_in_meters * 10.7639
 
-    gdf["land_area_gis_sqft"] = area_in_meters * 10.7639
+        if "land_area_sqft" not in gdf:
+            gdf["land_area_sqft"] = gdf["land_area_gis_sqft"]
+        else:
+            gdf["land_area_given_sqft"] = gdf["land_area_sqft"]
+        
+            # Anywhere given land area is 0, negative, or NULL, use GIS area
+            gdf["land_area_sqft"] = gdf["land_area_sqft"].combine_first(
+                gdf["land_area_gis_sqft"]
+            )
+            gdf["land_area_sqft"] = np.round(
+                gdf["land_area_sqft"].combine_first(gdf["land_area_gis_sqft"])
+            ).astype(int)
+            gdf.loc[
+                gdf["land_area_given_sqft"].le(0) | gdf["land_area_given_sqft"].isna(),
+                "land_area_sqft",
+            ] = gdf["land_area_gis_sqft"]
 
-    gdf["land_area_given_sqft"] = gdf["land_area_sqft"]
+            # Calculate difference
+            gdf["land_area_gis_delta_sqft"] = gdf["land_area_gis_sqft"] - gdf["land_area_sqft"]
+            gdf["land_area_gis_delta_percent"] = div_series_z_safe(
+                gdf["land_area_gis_delta_sqft"], gdf["land_area_sqft"]
+            )
 
-    # Anywhere given land area is 0, negative, or NULL, use GIS area
-    gdf["land_area_sqft"] = gdf["land_area_sqft"].combine_first(
-        gdf["land_area_gis_sqft"]
-    )
-    gdf["land_area_sqft"] = np.round(
-        gdf["land_area_sqft"].combine_first(gdf["land_area_gis_sqft"])
-    ).astype(int)
-    gdf.loc[
-        gdf["land_area_given_sqft"].le(0) | gdf["land_area_given_sqft"].isna(),
-        "land_area_sqft",
-    ] = gdf["land_area_gis_sqft"]
+        gdf["land_area_sqft_log"] = np.log(gdf["land_area_sqft"])
 
-    gdf["land_area_gis_delta_sqft"] = gdf["land_area_gis_sqft"] - gdf["land_area_sqft"]
-    gdf["land_area_gis_delta_percent"] = div_series_z_safe(
-        gdf["land_area_gis_delta_sqft"], gdf["land_area_sqft"]
-    )
-
-    gdf["land_area_sqft_log"] = np.log(gdf["land_area_sqft"])
-
-    t.stop("area")
-    if verbose:
-        _t = t.get("area")
-        print(f"--> calculated GIS area of each parcel...({_t:.2f}s)")
-    gdf = _calc_geom_stuff(gdf, verbose)
-    t.start("polar")
-    gdf = _enrich_polar_coordinates(gdf, settings, verbose)
-    t.stop("polar")
-    if verbose:
-        _t = t.get("polar")
-        print(f"--> calculated polar coordinates...({_t:.2f}s)")
-
+        t.stop("area")
+    
+        if verbose:
+            _t = t.get("area")
+            print(f"--> calculated GIS area of each parcel...({_t:.2f}s)")
+    else:
+        if verbose:
+            print(f"--> skipping calculated area...")
+    
+    if do_shape:
+        gdf = _calc_parcel_shape(gdf, verbose)
+    else:
+        if verbose:
+            print(f"--> skipping calculated parcel shapes...")
+    
+    if do_polar:
+        t.start("polar")
+        gdf = _enrich_polar_coordinates(gdf, settings, verbose)
+        t.stop("polar")
+        if verbose:
+            _t = t.get("polar")
+            print(f"--> calculated polar coordinates...({_t:.2f}s)")
+    else:
+        if verbose:
+            print(f"--> skipping polar coordinates...")
+    
     parcels_with_no_land = gdf["land_area_sqft"].isna().sum()
     if parcels_with_no_land > 0:
         raise ValueError(
@@ -2811,7 +2877,7 @@ def _basic_geo_enrichment(
     return gdf
 
 
-def _calc_geom_stuff(
+def _calc_parcel_shape(
     gdf_in: gpd.GeoDataFrame, verbose: bool = False
 ) -> gpd.GeoDataFrame:
     """Compute additional geometric properties for a GeoDataFrame, such as rectangularity"""
@@ -3164,8 +3230,7 @@ def _do_perform_distance_calculations_osm(
         "df_in_len": len(df_in),
         "gdf_in_len": len(gdf_in),
         "df_cols": sorted(df_in.columns.tolist()),
-        "gdf_cols": sorted(gdf_in.columns.tolist()),
-        "gdf_hash": hash(gdf_in.geometry.to_wkb().sum()),
+        "gdf_cols": sorted(gdf_in.columns.tolist())
     }
 
     # Check cache
@@ -3487,8 +3552,6 @@ def _load_dataframe(
                 rename_map[original_key] = rename_key
             if len(original) > 1:
                 dtype_map[original_key] = original[1]
-                if original[1] == "datetime":
-                    dtype_map[original_key] = "str"
             if len(original) > 2:
                 extra_map[rename_key] = original[2]
         elif isinstance(original, str):
@@ -3532,8 +3595,38 @@ def _load_dataframe(
                         )
                         df[col] = df[col].astype(target_dtype)
                         df = _boolify_column_in_df(df, col, "na_false")
+                elif target_dtype == "datetime":
+                    rename_key = rename_map.get(col, col)
+                    format_str = extra_map.get(rename_key)
+                    if rename_key in extra_map:
+                        format_str = extra_map[rename_key]
+                        try:
+                            result = pd.to_datetime(df[col].astype(str), format=format_str)
+                        except ValueError:
+                            s = df[col].astype(str).replace({None: pd.NA, "None": pd.NA, "": pd.NA})
+                            result = pd.to_datetime(s, format=format_str, errors="coerce", exact=True)
+                        df[col] = result
+                    else:
+                        warnings.warn(
+                            f"Column '{col}' is being converted to datetime, but you didn't specify the format. Will attempt to auto-cast and coerce, which could be wrong!"
+                        )
+                        df[col] = pd.to_datetime(df[col].astype(str), errors="coerce")
                 else:
-                    df[col] = df[col].astype(dtype_map[col])
+                    try:
+                        df[col] = df[col].astype(target_dtype)
+                    except ValueError as e:
+                        if target_dtype == "float":
+                            # force lowercase since we've converting to float anyways
+                            df[col] = df[col].astype(str).str.lower()
+                            
+                            # check for and clear various known problematic strings
+                            for badvalue in [' ', '<na>', 'none', 'null', 'na']:
+                                df.loc[df[col].eq(badvalue), col] = None
+                            
+                            warnings.warn(f"Column {col} had values that could not be cast to float, suppressed them to null")
+                            df[col] = df[col].astype(target_dtype, errors="ignore")
+                        else:
+                            raise ValueError(f"Error casting column {col} to dtype {dtype_map[col]}: {e}")
 
     elif ext == "csv":
         df = pd.read_csv(filename, usecols=cols_to_load, dtype=dtype_map)
@@ -3560,7 +3653,8 @@ def _load_dataframe(
 
     for col in df.columns:
         if col in fields_cat:
-            df[col] = df[col].astype("string")
+            if "date" not in col:
+                df[col] = df[col].astype("string")
         elif col in fields_bool or df[col].dtype == "boolean":
             na_handling = None
             if col in extra_map:
@@ -3581,9 +3675,23 @@ def _load_dataframe(
     for dkey in date_fields:
         if dkey not in time_format_map:
             example_value = df[~df[dkey].isna()][dkey].iloc[0]
-            raise ValueError(
-                f"Date field '{dkey}' does not have a time format specified. Example value from {dkey}: \"{example_value}\""
-            )
+            dtype = df[dkey].dtype
+            
+            if not (
+                pd.api.types.is_datetime64_any_dtype(df[dkey].dtype) or
+                pd.api.types.is_datetime64_dtype(df[dkey].dtype)
+            ):
+                raise ValueError(
+                    f"Date field '{dkey}' does not have a time format specified. Example value from {dkey}: \"{example_value}\""
+                )
+            
+            s = df[dkey]
+            if s.dt.tz is not None:
+                s = s.dt.tz_localize(None)  # strips tz, keeps wall time
+            # As strings 'YYYY-MM-DD'
+            ymd = s.dt.strftime('%Y-%m-%d')
+            df[dkey] = pd.to_datetime(ymd, format="%Y-%m-%d", errors="coerce")
+            
     df = enrich_time(df, time_format_map, settings)
 
     dupes = entry.get("dupes", None)
@@ -3965,7 +4073,7 @@ def _merge_dict_of_dfs(
     # Final checks
     if required_key is not None and required_key not in df_merged:
         raise ValueError(
-            f"No '{required_key}' field found in merged dataframe. This field is required."
+            f"No '{required_key}' field found in merged dataframe. This field is required. Keys found = {df_merged.columns.values}"
         )
     len_old = len(df_merged)
     df_merged = df_merged.dropna(subset=[required_key])
@@ -4056,6 +4164,10 @@ def _perform_canonical_split(
     
     rs = settings.get("analysis", {}).get("ratio_study", {})
     look_back_years = rs.get("look_back_years", 1)
+    
+    md = settings.get("modeling", {}).get("metadata", {})
+    use_sales_from = md.get("use_sales_from", None)
+    
     val_date = get_valuation_date(settings)
 
     # Look back N years BEFORE the valuation date
@@ -4066,6 +4178,11 @@ def _perform_canonical_split(
 
     # Get our sales dataframe for this model group and split it into vacant and improved sales
     df = df_sales_in[df_sales_in["model_group"].eq(model_group)].copy()
+    
+    # Only use sales on or after the use_sales_from year
+    if use_sales_from is not None:
+        df = df[df["sale_year"].ge(use_sales_from)]
+    
     df_v = get_vacant_sales(df, settings)
     df_i = df.drop(df_v.index)
     
@@ -4113,7 +4230,7 @@ def _perform_canonical_split(
         print(f"In look back period: ")
         print(f"--> Vacant    : {count_look_back_v}")
         print(f"--> Improved  : {count_look_back_i}")
-
+        print("")
 
     test_share = 1.0 - test_train_fraction
 
@@ -4249,7 +4366,7 @@ def _perform_canonical_split(
                 if len(df_i_look_back) > n_i:
                     n_i += 1
                     diff_i -= 1
-                if diff_i == old_dif:
+                if diff_i == old_diff:
                     break
 
             n_v = min(n_v, len(df_v_untouched))
@@ -4272,13 +4389,55 @@ def _perform_canonical_split(
     df_test = pd.concat([df_v_test, df_i_test]).reset_index(drop=True)
     df_train = pd.concat([df_v_train, df_i_train]).reset_index(drop=True)
     
+    df_v_test_look_back = df_v_test[
+        df_v_test["sale_age_days"].le(look_back_days) & 
+        df_v_test["sale_age_days"].ge(0)
+    ]
+    
+    df_i_test_look_back = df_i_test[
+        df_i_test["sale_age_days"].le(look_back_days) & 
+        df_i_test["sale_age_days"].ge(0)
+    ]
+    
+    df_v_train_look_back = df_v_train[
+        df_v_train["sale_age_days"].le(look_back_days) & 
+        df_v_train["sale_age_days"].ge(0)
+    ]
+    
+    df_i_train_look_back = df_i_train[
+        df_i_train["sale_age_days"].le(look_back_days) & 
+        df_i_train["sale_age_days"].ge(0)
+    ]     
+    
     if verbose:
-        print(f"--> Test set  : {len(df_test)}")
-        print(f"----> Vacant  : {len(df_v_test)}")
-        print(f"----> Improved: {len(df_i_test)}")
-        print(f"--> Train set : {len(df_train)}")
-        print(f"----> Vacant  : {len(df_v_train)}")
-        print(f"----> Improved: {len(df_i_train)}")
+        print(f"--> Test set       : {len(df_test)}")
+        print(f"------> Vacant     : {len(df_v_test)}")
+        print(f"------> Improved   : {len(df_i_test)}")
+        print(f"----> In lookback")
+        print(f"------> Vacant     : {len(df_v_test_look_back)}")
+        print(f"------> Improved   : {len(df_i_test_look_back)}")
+        
+        print(f"--> Train set      : {len(df_train)}")
+        print(f"------> Vacant     : {len(df_v_train)}")
+        print(f"------> Improved   : {len(df_i_train)}")
+        print(f"----> In lookback")
+        print(f"-------> Vacant    : {len(df_v_train_look_back)}")
+        print(f"-------> Improved  : {len(df_i_train_look_back)}")
+    
+        keys_v_test = len(df_v_test["key_sale"].unique())
+        keys_i_test = len(df_i_test["key_sale"].unique())
+        keys_v_train = len(df_v_train["key_sale"].unique())
+        keys_i_train = len(df_i_train["key_sale"].unique())
+        
+        print(f"")
+        print(f"Unique keys:")
+        print(f"Test set:")
+        print(f"--> Vacant  : {keys_v_test}")
+        print(f"--> Improved: {keys_i_test}")
+        print(f"Train set:")
+        print(f"--> Vacant  : {keys_v_train}")
+        print(f"--> Improved: {keys_i_train}")
+        
     
     return df_test, df_train
 
@@ -4831,6 +4990,22 @@ def read_sales_univ(path: str):
     df_sales = pd.read_parquet(sales_path)
     df_univ = _read_univ_parquet(univ_path)
     return SalesUniversePair(df_sales, df_univ)
+
+
+def read_predictions(model: str, model_group: str, pred_type: str):
+    df : pd.DataFrame = None
+    key = "key" if pred_type == "universe" else "key_sale"
+    for thing in ["main"]:
+        try:
+            _df = pd.read_parquet(f"out/models/{model_group}/{thing}/{model}/pred_{pred_type}.parquet")
+            _df = _df[[key, "prediction"]]
+            if df is None:
+                df = _df
+            else:
+                df = pd.concat([df,_df]).reset_index(drop=True)
+        except FileNotFoundError as e:
+            print(f"Error reading {model_group}/{model} : {e}")
+    return df
 
 
 def _read_univ_parquet(path: str):

@@ -4,6 +4,33 @@ import pandas as pd
 from openavmkit.filters import resolve_filter, validate_filter_list, validate_filter, select_filter
 from openavmkit.utilities.assertions import lists_are_equal
 from openavmkit.utilities.settings import _replace_variables
+from openavmkit.calculations import _do_calc
+
+def test_filter_calc():
+    data = {
+        "num": [0,1,2,3],
+        "str": ["a","b","c","d"]
+    }
+    df = pd.DataFrame(data=data)
+    
+    filter = ["isin", "str", ["a","b"]]
+    expected = [True, True, False, False]
+    results = resolve_filter(df, filter).tolist()
+    
+    assert lists_are_equal(expected, results)
+    
+    entry = [
+        "?",
+        [
+            "isin",
+            "str",
+            ["a","b"]
+        ]
+    ]
+    
+    results = _do_calc(df, entry).tolist()
+    
+    assert lists_are_equal(expected, results)
 
 
 def test_filter_logic():
@@ -23,7 +50,7 @@ def test_filter_logic():
     (["!=", "num", 1],[True, False, True, True]),
     (["isin", "str", ["a", "b"]], [True, True, False, False]),
     (["notin", "str", ["a", "b"]], [False, False, True, True]),
-    (["contains", "str", "a"], [True, False, False, True])
+    (["contains", "str", "str:a"], [True, False, False, True])
   ]
 
   list_filters = []
@@ -103,7 +130,7 @@ def test_filter_select():
     "and",
     [">", "num", 2],
     ["<=", "num", 8],
-    ["contains", "str", "a"],
+    ["contains", "str", "str:a"],
     ["!=", "bool", False]
   ]
 
@@ -279,7 +306,7 @@ def test_filter_complex():
   filter_th_neighborhood = ["contains", "neighborhood", ["TOWNHOMES", "TOWNHOUSES"]]
   filter_th_land_class = ["isin", "land_class", ["TOWNHOUSE"]]
 
-  filter_sf_building = ["==", "bldg_type", "SINGLEFAMILY"]
+  filter_sf_building = ["==", "bldg_type", "str:SINGLEFAMILY"]
   filter_sf_neighborhood = ["contains", "neighborhood", ["SINGLEFAMILY", "SF"]]
   filter_sf_land_class = ["isin", "land_class", ["SINGLEFAMILY"]]
 
@@ -490,7 +517,7 @@ def test_filter_debug():
                    "$$ref.filters.pud.zoning",
                    ["or",
                     ["isin", "land_class", ["VACANT", "DEVELOPMT RESTRICTED", "RESIDENTIAL", "COMMON AREA"]],
-                    ["isempty", "land_class", ""]
+                    ["isempty", "land_class", "str:"]
                     ]
                    ]
         }

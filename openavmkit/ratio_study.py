@@ -64,6 +64,7 @@ class RatioStudy:
 
         if len(predictions) == 0:
             self.count = 0
+            self.count_trim = 0
             self.predictions = np.array([])
             self.ground_truth = np.array([])
             self.median_ratio = float("nan")
@@ -77,7 +78,7 @@ class RatioStudy:
             self.mean_ratio = float("nan")
             self.mean_ratio_trim = float("nan")
             return
-
+        
         self.count = len(predictions)
         self.predictions = predictions
         self.ground_truth = ground_truth
@@ -90,7 +91,7 @@ class RatioStudy:
 
         # trim the ratios to remove outliers -- trim to the interquartile range
         trim_predictions, trim_ground_truth = stats.trim_outlier_ratios(predictions, ground_truth, max_trim)
-        trim_ratios = div_series_z_safe(predictions, ground_truth).astype(float)
+        trim_ratios = div_series_z_safe(trim_predictions, trim_ground_truth).astype(float)
         
         self.count_trim = len(trim_ratios)
 
@@ -199,6 +200,7 @@ class RatioStudyBootstrapped:
         """
         if len(predictions) == 0:
             self.count = 0
+            self.count_trim = 0
             self.iterations = 0
             self.median_ratio = None
             self.mean_ratio = None

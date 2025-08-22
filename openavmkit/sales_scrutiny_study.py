@@ -566,14 +566,14 @@ def run_heuristics(
         The original data with any modifications
     """
     ss = settings.get("analysis", {}).get("sales_scrutiny", {})
-    deed_id = ss.get("deed_id", "deed_id")
+    deed_id = ss.get("deed_id", None)
 
     df_sales = get_hydrated_sales_from_sup(sup)
 
     #### Multi-parcel sales detection heuristics
 
     # 1 -- Flag sales with identical deed IDs AND identical sale dates
-    if "deed_id" in df_sales:
+    if (deed_id is not None) and (deed_id in df_sales):
         df_sales["deed_date"] = df_sales[deed_id].astype(str)+"---"+df_sales["sale_date"].astype(str)
         vcs_deed_date = df_sales["deed_date"].value_counts()
         idx_dupe_deed_dates = vcs_deed_date[vcs_deed_date > 1].index.values
@@ -584,7 +584,10 @@ def run_heuristics(
         # drop extraneous column
         df_sales = df_sales.drop(columns="deed_date")
     else:
-        warnings.warn("You didn't provide a `deed_id` in `analysis.sales_scrutiny.deed_id`, so no deed-based sales validation heuristic can be run")
+        if deed_id is None:
+            warnings.warn("You didn't provide a `deed_id` in `analysis.sales_scrutiny.deed_id`, so no deed-based sales validation heuristic can be run")
+        else:
+            warnings.warn(f"You provided a `deed_id`: \"{deed_id}\", but it wasn't found in in the sales dataframe, so no deed-based sales validation heuristic can be run")
 
     # 2 -- Flag sales made on the same date for the same price
     df_sales["date_price"] = df_sales["sale_date"].astype(str) + "---" + df_sales["sale_price"].astype(str)
@@ -619,7 +622,9 @@ def run_heuristics(
 
     if verbose:
         print(f"Validating sales by heuristic, {len(df_sales)} total sales")
-
+    
+    os.makedirs("out/sales_scrutiny/", exist_ok=True)
+    
     for key in files:
         if key in df_sales.columns:
             df = df_sales[df_sales[key].eq(True)]

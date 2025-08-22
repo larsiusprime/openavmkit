@@ -48,7 +48,7 @@ from openavmkit.sales_scrutiny_study import (
     drop_manual_exclusions,
 )
 from openavmkit.time_adjustment import enrich_time_adjustment
-from openavmkit.utilities.data import combine_dfs
+from openavmkit.utilities.data import combine_dfs, div_df_z_safe
 from openavmkit.utilities.settings import (
     get_fields_categorical,
     get_fields_numeric,
@@ -57,6 +57,10 @@ from openavmkit.utilities.settings import (
     get_fields_impr,
     get_fields_other,
     get_valuation_date,
+    get_model_group_ids
+)
+from openavmkit.calculations import (
+    div_series_z_safe
 )
 from openavmkit.utilities.plotting import (
     plot_scatterplot
@@ -342,7 +346,10 @@ def examine_df_in_ridiculous_detail(df: pd.DataFrame, s: dict):
                 non_zero = len(df_non_null[np.abs(df_non_null[n]).gt(0)])
                 perc = non_zero / len(df)
                 non_null = len(df_non_null)
-                perc_non_null = non_null / len(df)
+                if len(df) != 0:
+                    perc_non_null = non_null / len(df)
+                else:
+                    perc_non_null = float('nan')
                 print(
                     get_line(
                         n, df[n].dtype, non_zero, perc, non_null, perc_non_null, ""
@@ -358,9 +365,15 @@ def examine_df_in_ridiculous_detail(df: pd.DataFrame, s: dict):
                 fields_noted.append(b)
                 df_non_null = df[~pd.isna(df[b])]
                 non_zero = len(df_non_null[np.abs(df_non_null[b]).gt(0)])
-                perc = non_zero / len(df)
+                if len(df) != 0:
+                    perc = non_zero / len(df)
+                else:
+                    perc = float("nan")
                 non_null = len(df_non_null)
-                perc_non_null = non_null / len(df)
+                if len(df) != 0:
+                    perc_non_null = non_null / len(df)
+                else:
+                    perc_non_null = float("nan")
                 print(
                     get_line(
                         b,
@@ -410,8 +423,14 @@ def examine_df_in_ridiculous_detail(df: pd.DataFrame, s: dict):
         print_horz_line("=")
         for u in fields_unclassified:
             non_zero = (~pd.isna(df[u])).sum()
-            perc = non_zero / len(df)
-            perc_non_null = non_zero / len(df)
+            if len(df) != 0:
+                perc = non_zero / len(df)
+            else:
+                perc = float("nan")
+            if len(df) != 0:
+                perc_non_null = non_zero / len(df)
+            else:
+                perc_non_null = float("nan")
             print(
                 get_line(
                     u, df[u].dtype, non_zero, perc, non_zero, perc, list(df[u].unique())
@@ -557,9 +576,15 @@ def examine_df(df: pd.DataFrame, s: dict):
                 fields_noted.append(n)
                 df_non_null = df[~pd.isna(df[n])]
                 non_zero = len(df_non_null[np.abs(df_non_null[n]).gt(0)])
-                perc = non_zero / len(df)
+                if len(df) != 0:
+                    perc = non_zero / len(df)
+                else:
+                    perc = float("nan")
                 non_null = len(df_non_null)
-                perc_non_null = non_null / len(df)
+                if len(df) != 0:
+                    perc_non_null = non_null / len(df)
+                else:
+                    perc_non_null = float("nan")
                 print_buffer(
                     get_line(
                         n, df[n].dtype, non_zero, perc, non_null, perc_non_null, ""
@@ -574,9 +599,16 @@ def examine_df(df: pd.DataFrame, s: dict):
                 fields_noted.append(b)
                 df_non_null = df[~pd.isna(df[b])]
                 non_zero = len(df_non_null[np.abs(df_non_null[b]).gt(0)])
-                perc = non_zero / len(df)
+                if len(df) != 0:
+                    perc = non_zero / len(df)
+                else:
+                    perc = float("nan")
+                
                 non_null = len(df_non_null)
-                perc_non_null = non_null / len(df)
+                if non_null != 0:
+                    perc_non_null = non_null / len(df)
+                else:
+                    perc_non_null = float("nan")
                 print_buffer(
                     get_line(
                         b,
@@ -596,7 +628,10 @@ def examine_df(df: pd.DataFrame, s: dict):
             for c in cats:
                 fields_noted.append(c)
                 non_zero = (~pd.isna(df[c])).sum()
-                perc = non_zero / len(df)
+                if len(df) != 0:
+                    perc = non_zero / len(df)
+                else:
+                    perc = float("nan")
                 print_buffer(
                     get_line(
                         c,
@@ -624,8 +659,12 @@ def examine_df(df: pd.DataFrame, s: dict):
         print_horz_line("=")
         for u in fields_unclassified:
             non_zero = (~pd.isna(df[u])).sum()
-            perc = non_zero / len(df)
-            perc_non_null = non_zero / len(df)
+            if len(df) != 0:
+                perc = non_zero / len(df)
+                perc_non_null = non_zero / len(df)
+            else:
+                perc = float("nan")
+                perc_non_null = float("nan")
             print_buffer(
                 get_line(
                     u, df[u].dtype, non_zero, perc, non_zero, perc, list(df[u].unique())
@@ -991,11 +1030,26 @@ def run_sales_scrutiny(
     SalesUniversePair
         Updated SalesUniversePair after sales scrutiny analysis.
     """
-    sup = run_heuristics(sup, settings, drop_heuristic_outliers, verbose)
+    
+    ss = settings.get("analysis", {}).get("sales_scrutiny", {})
+    clusters_enabled = ss.get("clusters_enabled", True)
+    heuristics_enabled = ss.get("heuristics_enabled", True)
+    
+    os.makedirs("out/sales_scrutiny/", exist_ok=True)
+    
+    if heuristics_enabled:
+        sup = run_heuristics(sup, settings, drop_heuristic_outliers, verbose)
+    elif verbose:
+        print(f"Skipping sales scrutiny heuristics...")
+    
     sup = drop_manual_exclusions(sup, settings, verbose)
-    sup = run_sales_scrutiny_per_model_group_sup(
-        sup, settings, drop_cluster_outliers, verbose
-    )
+    
+    if clusters_enabled:
+        sup = run_sales_scrutiny_per_model_group_sup(
+            sup, settings, drop_cluster_outliers, verbose
+        )
+    elif verbose:
+        print(f"Skipping clustered sales scrutiny analysis...")
     return sup
 
 
@@ -1393,6 +1447,144 @@ def try_models(
     )
 
 
+def identify_outliers(
+    sup: SalesUniversePair,
+    settings: dict
+):
+    outliers = settings.get("analysis", {}).get("outliers", {})
+    df_sales = get_hydrated_sales_from_sup(sup)    
+    ids = get_model_group_ids(settings, df_sales)
+    
+    ss = settings.get("analysis", {}).get("sales_scrutiny", {})
+    deed_id = ss.get("deed_id", None)
+    location = ss.get("location", None)
+    skip = outliers.get("skip", [])
+    
+    mgs = outliers.get("model_groups", {})
+    
+    default = outliers.get("default", {})
+    
+    for id in ids:
+        if id in skip:
+            continue
+        df_sub = df_sales[df_sales["model_group"].eq(id)]
+        entry = mgs.get(id, default)
+        print("====================")
+        print(f"MODEL GROUP = {id}")
+        for mtype in ["main","vacant","hedonic_land"]:
+            model = entry.get("mtype", "ensemble")
+            print(f"model type = {mtype}, model = {model}")
+            
+            path = f"out/models/{id}/{mtype}/{model}/pred_sales.csv"
+            outdir = f"out/models/{id}/{mtype}/{model}/"
+            outpath = f"out/models/{id}/{mtype}/{model}/outliers.csv"
+            
+            dfm : pd.DataFrame = None
+                
+            if os.path.exists(path):
+                usecols = ["key_sale", "sale_price", "sale_date", "prediction", "prediction_ratio"]
+                dtypes = {
+                    "key_sale": "str",
+                    "sale_price": "float",
+                    "sale_date": "str",
+                    "prediction": "float",
+                    "prediction_ratio": "float"
+                }
+                dfm = pd.read_csv(path, dtype=dtypes, usecols=usecols)
+                dfm["sale_date"] = pd.to_datetime(dfm["sale_date"])
+                dfm = dfm[
+                    dfm["prediction_ratio"].ge(0.75) |
+                    dfm["prediction_ratio"].le(1.25)
+                ]
+                key_fields = ["key_sale", "address", location, deed_id, "bldg_area_finished_sqft", "land_area_sqft", "assr_market_value", "assr_land_value", "assr_impr_value", "vacant_sale"]
+                key_fields = [field for field in key_fields if field is not None and field in df_sub]
+                dfm = dfm.merge(df_sub[key_fields], on="key_sale", how="left")
+            elif model == "assessor":
+                # We can use the assessor fields directly
+                the_field = "assr_market_value"
+                if mtype == "vacant" or "hedonic_land":
+                    the_field = "assr_land_value"
+                print(f"--> for assessor model, using \"{the_field}\" as prediction field...")
+                dfm = df_sub.copy()
+                dfm["prediction"] = dfm[the_field]
+                dfm["prediction_ratio"] = div_df_z_safe(dfm, "prediction", "sale_price")
+            
+            if mtype != "main":
+                # it's a land model, only look at vacant sales:
+                dfm = dfm[dfm["vacant_sale"].eq(True)]
+            
+            if dfm is not None and "prediction" in dfm:
+                print("")
+                print("----------------------")
+                value_fields = ["sale_price", "prediction", "assr_market_value", "assr_land_value", "assr_impr_value"]
+                for v in value_fields:
+                    if "impr" not in v:
+                        dfm[f"{v}_land_sqft"] = div_series_z_safe(dfm[v], dfm["land_area_sqft"])
+                    if "land" not in v:
+                        dfm[f"{v}_impr_sqft"] = div_series_z_safe(dfm[v], dfm["bldg_area_finished_sqft"])
+                
+                dfm_i = dfm[dfm["vacant_sale"].eq(False)]
+                dfm_v = dfm[dfm["vacant_sale"].eq(True)]
+
+                
+                df_loc_price_i = dfm_i.groupby(location)["sale_price"].agg(["count","median"]).reset_index().rename(columns={
+                    "count":"local_impr_sales",
+                    "median":"local_impr_price"
+                })
+                df_loc_price_is = dfm_i.groupby(location)["sale_price_impr_sqft"].agg(["median"]).reset_index().rename(columns={
+                    "median":"local_impr_price_sqft"
+                })
+                
+                df_loc_price_v = dfm_v.groupby(location)["sale_price"].agg(["count","median"]).reset_index().rename(columns={
+                    "count":"local_land_sales",
+                    "median":"local_land_price"
+                })
+                df_loc_price_vs = dfm_v.groupby(location)["sale_price_land_sqft"].agg(["median"]).reset_index().rename(columns={
+                    "median":"local_land_price_sqft"
+                })
+                
+                if mtype == "main":
+                    dfm = dfm.merge(df_loc_price_i, on=location, how="left")
+                    dfm = dfm.merge(df_loc_price_is, on=location, how="left")
+                
+                dfm = dfm.merge(df_loc_price_v, on=location, how="left")
+                dfm = dfm.merge(df_loc_price_vs, on=location, how="left")
+                
+                #Re-arrange columns in a massively opinionated way
+                cols = dfm.columns.tolist()
+                put_at_front = ["key_sale", deed_id, "address", "prediction_ratio", "prediction", "sale_price"]
+                if mtype == "main":
+                    put_at_front += ["prediction_impr_sqft", "sale_price_impr_sqft", "local_impr_price_sqft", "local_impr_sales"]
+                put_at_front += ["prediction_land_sqft", "sale_price_land_sqft", "local_land_price_sqft", "local_land_sales"]
+                put_at_end = ["address", location]
+                
+                cols = [col for col in cols if col not in put_at_front and col not in put_at_end]
+                cols = put_at_front + cols + put_at_end
+                
+                dfm = dfm[cols]
+                
+                os.makedirs(outdir, exist_ok=True)
+                
+                dfm.to_csv(outpath, index=False)
+                
+                print("")
+                print("Top 10 UNDER-predictions:")
+                print("")
+                dfm = dfm.sort_values(by="prediction_ratio", ascending=True)
+                display(dfm.head(n=10))
+                
+                print("")
+                print("Top 10 OVER-predictions:")
+                print("")
+                dfm = dfm.sort_values(by="prediction_ratio", ascending=False)
+                display(dfm.head(n=10))
+                
+                
+                
+                print("")
+        
+
+
 def finalize_models(
     sup: SalesUniversePair,
     settings: dict,
@@ -1564,8 +1756,8 @@ def run_ratio_study(
     model_group: str,
     field_prediction: str,
     field_sales: str,
-    start_date: str,
-    end_date: str,
+    start_date: str = None,
+    end_date: str = None,
     land_only: bool = False,
     max_trim: float = 0.05
 ):
@@ -1576,22 +1768,36 @@ def run_ratio_study(
     df_sales = get_hydrated_sales_from_sup(sup)
 
     # Select only sales between the start and end date
-    df_sales = df_sales[
-        df_sales["sale_date"].ge(start_date) &
-        df_sales["sale_date"].le(end_date)
+    if start_date is not None and end_date is not None:
+        df_sales = df_sales[
+            df_sales["sale_date"].ge(start_date) &
+            df_sales["sale_date"].le(end_date)
     ]
     
     valid_field = "valid_for_ratio_study"
+    if "valid_for_ratio_study" not in df_sales:
+        valid_field = "valid_sale"
+    
     if land_only:
         valid_field = "valid_for_land_ratio_study"
+        if "valid_for_land_ratio_study" not in df_sales:
+            valid_field = "vacant_sale"
         
     if valid_field in df_sales:
         df_sales = df_sales[df_sales[valid_field].eq(True)]
 
+    # Ensure only non-null values are selected
+    
+    df_sales_clean = df_sales[
+        ~df_sales[field_prediction].isna() &
+        ~df_sales[field_sales].isna() &
+        df_sales[field_sales].gt(0)
+    ]
+    
     # Get predictions and sales
-    predictions = df_sales[field_prediction]
-    sales = df_sales[field_sales]
-
+    predictions = df_sales_clean[field_prediction]
+    sales = df_sales_clean[field_sales]
+    
     # Run the ratio study and return it
     return RatioStudyBootstrapped(predictions, sales, max_trim)
 
@@ -1619,6 +1825,7 @@ def run_vertical_equity_study(
     model_group: str,
     field_prediction: str,
     field_sales: str,
+    field_location: str,
     start_date: str,
     end_date: str,
     max_trim: float = 0.05
@@ -1643,7 +1850,8 @@ def run_vertical_equity_study(
     return VerticalEquityStudy(
         df_sales,
         field_sales,
-        field_prediction
+        field_prediction,
+        field_location
     )
 
 
@@ -1654,7 +1862,9 @@ def plot_prediction_vs_sales(
     field_truth: str,
     start_date: str,
     end_date: str,
-    land_only: bool = False
+    land_only: bool = False,
+    max_prediction: float = None,
+    max_truth: float = None
 ):
     # Filter to just the designated model group
     sup = get_sup_model_group(sup, model_group)
@@ -1668,9 +1878,19 @@ def plot_prediction_vs_sales(
         df_sales["sale_date"].le(end_date)
     ]
     
+    if max_prediction is not None:
+        df_sales = df_sales[df_sales[field_prediction].le(max_prediction)]
+    
+    if max_truth is not None:
+        df_sales = df_sales[df_sales[field_truth].lt(max_truth)]
+    
     valid_field = "valid_for_ratio_study"
+    if "valid_for_ratio_study" not in df_sales:
+        valid_field = "valid_sale"
     if land_only == True:
         valid_field = "valid_for_land_ratio_study"
+        if "valid_for_land_ratio_study" not in df_sales:
+            valid_field = "vacant_sale"
     
     if valid_field in df_sales:
         df_sales = df_sales[df_sales[valid_field].eq(True)]

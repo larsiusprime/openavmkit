@@ -12,6 +12,35 @@ from scipy.spatial._ckdtree import cKDTree
 from openavmkit.utilities.settings import get_model_group_ids
 
 
+def is_column_of_type(df: pd.DataFrame, col: str, type_name: str):
+    series = df[col]
+    if type_name == "str" or type_name == "string":
+        return (
+            pd.api.types.is_string_dtype(series) |
+            pd.api.types.is_object_dtype(series)
+        )
+    if type_name == "num" or type_name == "number":
+        return pd.api.types.is_numeric_dtype(series)
+    if type_name == "int" or type_name == "integer":
+        return (
+            pd.api.types.is_integer_dtype(series) | 
+            pd.api.types.is_int64_dtype(series)
+        )
+    if type_name == "float":
+        return (
+            pd.api.types.is_float_dtype(series)
+        )
+    if type_name == "date" or type_name == "datetime":
+        return (
+            pd.api.types.is_datetime64_any_dtype(series) |
+            pd.api.types.is_datetime64_dtype(series) |
+            pd.api.types.is_datetime64_ns_dtype(series) |
+            pd.api.types.is_datetime64tz_dtype(series)
+        )
+    else:
+        raise ValueError("Unknown type name: {type_name}")
+
+
 def clean_column_names(df: pd.DataFrame):
     """Clean the column names in a DataFrame by replacing forbidden characters with legal
     representations. For one-hot encoded columns (containing '='), ensures clean formatting.
@@ -865,10 +894,11 @@ def load_model_results(
 
         if os.path.exists(fpred):
             df = pd.read_parquet(fpred)
-            if "key_x" in df:
-                # If the DataFrame has a 'key_x' column, rename it to 'key'
-                df.rename(columns={"key_x": "key"}, inplace=True)
-            df = df[["key", "prediction"]].copy()
+            # if "key_x" in df:
+                # # If the DataFrame has a 'key_x' column, rename it to 'key'
+                # df.rename(columns={"key_x": "key"}, inplace=True)
+            fields = [f for f in ["key", "key_sale", "prediction"] if f in df]
+            df = df[fields].copy()
             return df
 
     fpred_results = f"{filepath}/pred_{subset}.pkl"
@@ -879,9 +909,9 @@ def load_model_results(
                 if subset == "universe":
                     df = results.df_universe[["key", "prediction"]].copy()
                 elif subset == "sales":
-                    df = results.df_sales[["key", "prediction"]].copy()
+                    df = results.df_sales[["key", "key_sale", "prediction"]].copy()
                 elif subset == "test":
-                    df = results.df_test[["key", "prediction"]].copy()
+                    df = results.df_test[["key", "key_sale", "prediction"]].copy()
                 return df
 
     return None

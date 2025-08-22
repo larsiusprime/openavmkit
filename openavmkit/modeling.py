@@ -6,6 +6,9 @@ from numpy.linalg import LinAlgError
 import polars as pl
 from joblib import Parallel, delayed
 from typing import Union, Any, Dict
+from pygam import LinearGAM, s, te
+from scipy.optimize import curve_fit
+from pygam.callbacks import CallBack
 
 from scipy.spatial._ckdtree import cKDTree
 from sklearn.preprocessing import OneHotEncoder
@@ -64,6 +67,7 @@ from openavmkit.utilities.modeling import (
     MRAModel,
     GroundTruthModel,
     SpatialLagModel,
+    LandSLICEModel
 )
 from openavmkit.utilities.data import (
     clean_column_names,
@@ -98,6 +102,7 @@ PredictionModel = Union[
     SpatialLagModel,
     GroundTruthModel,
     GWRModel,
+    LandSLICEModel,
     str,
     None,
 ]
@@ -166,26 +171,26 @@ class LandPredictionResults:
         # Phase 1: Accuracy
         if "sale" in dep_var:
             df = df[df["valid_for_land_ratio_study"].eq(True)].copy()
-            is_land_predictions = df[land_prediction_field]
+            land_predictions = df[land_prediction_field]
             sale_prices = df[dep_var]
         elif dep_var == "true_land_value":
             df = df_univ.copy()
-            is_land_predictions = df[land_prediction_field]
+            land_predictions = df[land_prediction_field]
             sale_prices = df[dep_var]
         else:
             raise ValueError(
                 f"Unsupported dep_var '{dep_var}' for land prediction results."
             )
 
-        self.land_ratio_study = RatioStudy(is_land_predictions, sale_prices, max_trim)
+        self.land_ratio_study = RatioStudy(land_predictions, sale_prices, max_trim)
         mse, r2, adj_r2 = calc_mse_r2_adj_r2(
-            is_land_predictions, sale_prices, len(ind_vars)
+            land_predictions, sale_prices, len(ind_vars)
         )
         self.mse = mse
         self.rmse = np.sqrt(mse)
         self.r2 = r2
         self.adj_r2 = adj_r2
-        self.prb, _, _ = calc_prb(is_land_predictions, sale_prices)
+        self.prb, _, _ = calc_prb(land_predictions, sale_prices)
 
         df_univ_valid = df_univ.drop(columns="geometry", errors="ignore").copy()
 
@@ -294,6 +299,8 @@ class PredictionResults:
         Adjusted R-squared.
     ratio_study : RatioStudy
         RatioStudy object.
+    df : pd.DataFrame
+        DataFrame corresponding to y and y_pred
     """
 
     def __init__(
@@ -346,6 +353,7 @@ class PredictionResults:
             ~pd.isna(df[dep_var]) & 
             ~pd.isna(df[prediction_field])
         ]
+        self.df = df_clean
         
         y = df_clean[dep_var].to_numpy()
         y_pred = df_clean[prediction_field].to_numpy()
@@ -616,7 +624,7 @@ class DataSplit:
         self.split()
     
     def is_land_predictions(self)->bool:
-        return self.vacant_only or self.hedonic_test_against_vacant_sales
+        return self.vacant_only or self.hedonic
 
     def copy(self):
         """
@@ -1229,6 +1237,7 @@ class SingleModelResults:
         self.pred_test = PredictionResults(
             self.dep_var_test, self.ind_vars, field_prediction, df_test, max_trim, self.is_land_predictions
         )
+        self.df_test = self.pred_test.df.copy()
         timing.stop("stats_test")
 
         timing.start("stats_sales")
@@ -1241,6 +1250,7 @@ class SingleModelResults:
             self.pred_sales = PredictionResults(
                 self.dep_var_test, self.ind_vars, field_prediction, df_sales, max_trim, self.is_land_predictions
             )
+            self.df_sales = self.pred_sales.df.copy()
 
             # If we have predictions for sales, we also have predictions for the training subset
             df_train = df_sales.copy()
@@ -1257,15 +1267,16 @@ class SingleModelResults:
             self.pred_train = PredictionResults(
                 self.dep_var_test, self.ind_vars, field_prediction, df_train, max_trim, self.is_land_predictions
             )
+            self.df_train = self.pred_train.df
             
             # Get prediction results ONLY for the lookback period
             start_date, end_date = get_look_back_dates(ds.settings)
-            df_sales_lookback = filter_df_by_date_range(df_sales, start_date, end_date)
+            self.df_sales_lookback = filter_df_by_date_range(df_sales, start_date, end_date)
             
             self.pred_sales_lookback = PredictionResults(
-                self.dep_var_test, self.ind_vars, field_prediction, df_sales_lookback, max_trim, self.is_land_predictions
+                self.dep_var_test, self.ind_vars, field_prediction, self.df_sales_lookback, max_trim, self.is_land_predictions
             )
-            self.df_sales_lookback = df_sales_lookback
+            self.df_sales_lookback = self.pred_sales_lookback.df
             
 
         timing.stop("stats_sales")
@@ -1287,17 +1298,22 @@ class SingleModelResults:
         pl_df = pl.DataFrame(df_univ_valid)
 
         # TODO: This might need to be changed to be the $/sqft value rather than the total value
-        self.chd = quick_median_chd_pl(
-            pl_df, field_prediction, field_horizontal_equity_id
-        )
+        if field_horizontal_equity_id in df_univ_valid:
+            self.chd = quick_median_chd_pl(
+                pl_df, field_prediction, field_horizontal_equity_id
+            )
+        else:
+            self.chd = float("nan")
         timing.stop("chd")
 
         timing.start("utility")
         self.utility_test = self.pred_test.mape * 100
         if y_pred_sales is not None:
             self.utility_train = self.pred_train.mape * 100
+            self.utility_sales_lookback = self.pred_sales_lookback.mape * 100
         else:
             self.utility_train = float("nan")
+            self.utility_sales_lookback = float("nan")
         timing.stop("utility")
         self.timing = timing
 
@@ -2935,6 +2951,83 @@ def run_catboost(
     timing.stop("train")
 
     return predict_catboost(ds, catboost_model, timing, verbose)
+
+
+def predict_slice(
+    ds: DataSplit,
+    slice_model: LandSLICEModel, 
+    timing: TimingData,
+    verbose: bool = False
+) -> SingleModelResults:
+    
+    timing.start("predict_test")
+    if len(ds.y_test) == 0:
+        y_pred_test = np.array([])
+    else:
+        y_pred_test = slice_model.predict(ds.df_test)
+    timing.stop("predict_test")
+
+    timing.start("predict_sales")
+    if len(ds.y_sales) == 0:
+        y_pred_sales = np.array([])
+    else:
+        y_pred_sales = slice_model.predict(ds.df_sales)
+    timing.stop("predict_sales")
+
+    timing.start("predict_univ")
+    if len(ds.X_univ) == 0:
+        y_pred_univ = np.array([])
+    else:
+        y_pred_univ = slice_model.predict(ds.df_universe)
+    timing.stop("predict_univ")
+
+    timing.stop("total")
+
+    results = SingleModelResults(
+        ds,
+        "prediction",
+        "he_id",
+        "catboost",
+        slice_model,
+        y_pred_test,
+        y_pred_sales,
+        y_pred_univ,
+        timing,
+        verbose=verbose,
+    )
+
+    return results
+
+
+def run_slice(
+    ds: DataSplit,
+    verbose: bool = False
+) -> SingleModelResults:
+    
+    timing = TimingData()
+    
+    timing.start("total")
+    
+    timing.start("setup")
+    ds = ds.encode_categoricals_with_one_hot()
+    ds.split()
+    timing.stop("setup")
+
+    timing.start("parameter_search")
+    timing.stop("parameter_search")
+
+    timing.start("train")
+    
+    df_in = ds.df_train[["land_area_sqft",ds.dep_var,"latitude","longitude"]].copy()
+    slice_model = fit_land_SLICE_model(
+        df_in,
+        "land_area_sqft",
+        ds.dep_var,
+        verbose
+    )
+    timing.stop("train")
+
+    return predict_slice(ds, slice_model, timing, verbose)
 
 
 def predict_garbage(
@@ -5159,5 +5252,126 @@ def _derive_land_values(
 
     return results, df
 
+
+def fit_land_SLICE_model(
+    df_in : pd.DataFrame,
+    size_field: str = "land_area_sqft",
+    value_field: str = "land_value",
+    verbose: bool = False
+)->LandSLICEModel:
+    """
+    Fits land values using SLICE: "Smooth Location with Increasing-Concavity Equation"
+    
+    This model takes already-existing raw per-parcel land values and separates the contribution of land size and locational premium.
+    It also enforces three constraints: 
+    1. Locational premium must change smoothly over space
+    2. Land value in any fixed location must increase monotonically with land size
+    3. The marginal value of each additional unit of land size must decrease monotonically
+    
+    The output is an object that encodes the final fitted land values, the locational premiums, and the local land factors. Fitted land
+    values are derived by simply multiplying locational premium times local land factor.
+    
+    Parameters
+    ----------
+    df_in : pd.DataFrame
+        Input data
+    size_field : str
+        The name of your land size field
+    value_field : str
+        The name of your land value field
+    verbose : bool
+        Whether to print verbose output
+    """
+    
+    
+    class Progress(CallBack):
+        def on_loop_end(self, diff):
+            # self.iter is automatically tracked inside Callback
+            print(f"iter {self.iter:>3d}   dev.change={diff:9.3e}")
+    
+    if verbose:
+        print("Fitting land SLICE model...")
+
+
+    df = df_in[[value_field, size_field, "latitude", "longitude"]].copy()
+    med_land_size = float(np.median(df[size_field]))
+
+    # Y = Size-detrended location factor
+    df["Y"] = div_series_z_safe(
+        df[value_field],
+        np.sqrt(
+            df[size_field] / med_land_size
+        )
+    )
+
+    if verbose:
+        print("-->fitting thin-plate spline for location factor...")
+        
+    # Fit a thin-plate spline for location factor L(lat, lon)
+    basis = te(0, 1, n_splines=40, spline_order=3)
+    gam_L : LinearGAM = LinearGAM(
+        basis,
+        max_iter=40,
+        callbacks=[Progress()],
+        verbose=verbose
+    )
+    gam_L.fit(
+        df[['latitude', 'longitude']].values,
+        np.log(df['Y']).values
+    )
+
+    if verbose:
+        print("-->estimating initial location factor...")
+    # L_hat = Initial estimated location factor (mostly depends on latitude/longitude)
+    df['L_hat'] = np.exp(gam_L.predict(df[['latitude', 'longitude']].values))
+
+    # Z = Location-detrended land values (mostly depends on size)
+    df["Z"] = df[value_field] / df["L_hat"]
+
+    # Define a power law curve function
+    def power_curve(s, alpha, beta):
+        return alpha * (s / med_land_size)**beta
+
+    # Solve for location-detrended-land-value and observed size to fit the power law curve
+    # - with bounds: alpha>0 (always positive), 0<beta<1 (monotonic-up & concave)
+    # - this enforces that land increases in value with size, but with diminishing returns to marginal size
+    if verbose:
+        print("-->fitting power law curve for size factor...")
+    popt, _ = curve_fit(
+        f=power_curve,
+        p0=[np.median(df["Z"]),0.5],
+        xdata=df[size_field].values,
+        ydata=df["Z"].values,
+        bounds=([0, 1e-6], [np.inf, 0.999])
+    )
+
+    # Coefficients for the power law curve:
+    alpha_hat, beta_hat = popt
+
+    # Function to call the power law curve with memorized coefficients and a given size
+    def F_hat(s):
+        return power_curve(np.asarray(s), alpha_hat, beta_hat)
+
+    if verbose:
+        print("-->tightening up values with one more iteration...")
+
+    # Tighten up our values with an extra iteration
+    df["Y2"] = df[value_field] / F_hat(df[size_field])
+    gam_L2 : LinearGAM = gam_L.fit(df[["latitude", "longitude"]], np.log(df["Y2"]))   # refit L
+
+    if verbose:
+        print("-->estimating final location factor...")
+
+    # L_hat = Final estimated location factor
+    df["L_hat"] = np.exp( gam_L2.predict(df[["latitude", "longitude"]]))
+
+    # could refit L_hat once more here if desired
+    return LandSLICEModel(
+        alpha_hat,
+        beta_hat,
+        gam_L2,
+        med_land_size,
+        size_field
+    )
 
 ##############################

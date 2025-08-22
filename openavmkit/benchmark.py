@@ -30,6 +30,7 @@ from openavmkit.modeling import (
     run_xgboost,
     run_lightgbm,
     run_catboost,
+    run_slice,
     SingleModelResults,
     run_garbage,
     run_average,
@@ -47,6 +48,7 @@ from openavmkit.modeling import (
     predict_xgboost,
     predict_catboost,
     predict_lightgbm,
+    predict_slice,
     GarbageModel,
     AverageModel,
     DataSplit,
@@ -72,6 +74,7 @@ from openavmkit.utilities.modeling import (
     LocalSqftModel,
     LocalSomersModel,
     PassThroughModel,
+    LandSLICEModel,
     GWRModel,
     MRAModel,
     GroundTruthModel,
@@ -473,7 +476,10 @@ def get_variable_recommendations(
     entry: dict | None = model_entries.get("model", model_entries.get("default", {}))
     if variables_to_use is None:
         variables_to_use: list | None = entry.get("ind_vars", None)
-
+    
+    if len(variables_to_use) == 0 or variables_to_use is None:
+        raise ValueError("No independent variables provided! Please define some!")
+    
     cats = get_fields_categorical(settings, df_sales, include_boolean=False)
     flagged = []
     for variable in variables_to_use:
@@ -1045,6 +1051,8 @@ def get_data_split_for(
     """
     if name == "local_sqft":
         _ind_vars = location_fields + ["bldg_area_finished_sqft", "land_area_sqft"]
+    elif name == "slice":
+        _ind_vars = ["land_area_sqft", "latitude", "longitude"]
     elif name == "local_somers":
         _ind_vars = location_fields + [
             "bldg_area_finished_sqft",
@@ -1194,6 +1202,13 @@ def run_one_model(
 
     are_ind_vars_default = entry.get("ind_vars", None) is None
     ind_vars: list | None = entry.get("ind_vars", default_entry.get("ind_vars", None))
+    
+    if vacant_only or hedonic:
+        default_value = True
+        if model_name == "assessor":
+            default_value = False
+        do_clamp = entry.get("do_clamp", default_value)
+    
     # no duplicates!
     ind_vars = list(set(ind_vars))
     if ind_vars is None:
@@ -1243,7 +1258,6 @@ def run_one_model(
 
     intercept = entry.get("intercept", True)
     n_trials = entry.get("n_trials", 50)
-    print(f"n_trials = {n_trials} for model: {model_name}")
     t.stop("setup")
 
     t.start("run")
@@ -1305,6 +1319,8 @@ def run_one_model(
         results = run_catboost(
             ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
+    elif model_name == "slice":
+        results = run_slice(ds, verbose=verbose)
     else:
         raise ValueError(f"Model {model_name} not found!")
     t.stop("run")
@@ -1312,7 +1328,8 @@ def run_one_model(
     if ds.vacant_only or ds.hedonic:
         # If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
         max_trim = _get_max_ratio_study_trim(settings, results.ds.model_group)
-        results = _clamp_land_predictions(results, results.ds.model_group, model_name, outpath, max_trim)
+        if do_clamp:
+            results = _clamp_land_predictions(results, results.ds.model_group, model_name, outpath, max_trim)
 
     if save_results:
         t.start("write")
@@ -1465,6 +1482,9 @@ def run_ensemble(
     tuple[SingleModelResults, list[str]]
         A tuple containing the SingleModelResults of the ensemble model and a list of models used in the ensemble.
     """
+    if verbose:
+        print("Optimizing ensemble...")
+        
     ensemble_list = _optimize_ensemble(
         df_sales,
         df_universe,
@@ -1478,6 +1498,8 @@ def run_ensemble(
         hedonic=hedonic,
         ensemble_list=None,
     )
+    if verbose:
+        print("Running ensemble...")
     ensemble = _run_ensemble(
         df_sales,
         df_universe,
@@ -1492,6 +1514,8 @@ def run_ensemble(
         settings=settings,
         verbose=verbose,
     )
+    if verbose:
+        print("Finished ensemble!")
     return ensemble, ensemble_list
 
 
@@ -1524,6 +1548,7 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
         "cod": [],
         "prd": [],
         "prb": [],
+        "count_trim": [],
         "cod_trim": [],
         "prd_trim": [],
         "prb_trim": [],
@@ -1555,6 +1580,7 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
             data["cod"].append(pred_results.ratio_study.cod)
             data["prd"].append(pred_results.ratio_study.prd)
             data["prb"].append(pred_results.ratio_study.prb)
+            data["count_trim"].append(pred_results.ratio_study.count_trim)
             data["cod_trim"].append(pred_results.ratio_study.cod_trim)
             data["prd_trim"].append(pred_results.ratio_study.prd_trim)
             data["prb_trim"].append(pred_results.ratio_study.prb_trim)
@@ -1598,6 +1624,7 @@ def _format_benchmark_df(df: pd.DataFrame, transpose: bool = True):
         "utility_score": fancy_format,
         "count_sales": "{:,.0f}",
         "count_univ": "{:,.0f}",
+        "count_trim": "{:,.0f}",
         "mse": fancy_format,
         "rmse": fancy_format,
         "mape": fancy_format,
@@ -1718,7 +1745,10 @@ def _predict_one_model(
     elif model_name == "catboost":
         catboost_regressor: CatBoostRegressor = smr.model
         results = predict_catboost(ds, catboost_regressor, timing, verbose)
-
+    elif model_name == "slice":
+        slice_model: LandSLICEModel = smr.model
+        results = predict_slice(ds, slice_model, timing, verbose)
+    
     if ds.vacant_only or ds.hedonic:
         # If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
         max_trim = _get_max_ratio_study_trim(settings, smr.ds.model_group)
@@ -1771,12 +1801,12 @@ def _clamp_land_predictions(
         .rename(columns={field_pred: "land_value"})
     )
     df_land_sales = (
-        results.df_sales[["key", field_pred]]
+        results.df_sales[["key_sale", field_pred]]
         .copy()
         .rename(columns={field_pred: "land_value"})
     )
     df_land_test = (
-        results.df_test[["key", field_pred]]
+        results.df_test[["key_sale", field_pred]]
         .copy()
         .rename(columns={field_pred: "land_value"})
     )
@@ -1786,10 +1816,10 @@ def _clamp_land_predictions(
         df_univ[["key", "prediction"]], on="key", how="left"
     )
     df_land_sales = df_land_sales.merge(
-        df_sales[["key", "prediction"]], on="key", how="left"
+        df_sales[["key_sale", "prediction"]], on="key_sale", how="left"
     )
     df_land_test = df_land_test.merge(
-        df_test[["key", "prediction"]], on="key", how="left"
+        df_test[["key_sale", "prediction"]], on="key_sale", how="left"
     )
 
     # Clamp land value to the range of (0.0, prediction)
@@ -1830,10 +1860,18 @@ def _clamp_land_predictions(
     y_pred_test = np.asarray(y_pred_test)
     y_pred_sales = np.asarray(y_pred_sales)
     y_pred_univ = np.asarray(y_pred_univ)
-
+    
+    ds = results.ds.copy()
+    
+    # reconstruct dataframes
+    
+    ds.df_test = df_land_test.merge(ds.df_test[["key_sale"] + [f for f in ds.df_test if f not in df_land_test]], on="key_sale", how="left")
+    ds.df_sales = df_land_sales.merge(ds.df_sales[["key_sale"] + [f for f in ds.df_sales if f not in df_land_sales]], on="key_sale", how="left")
+    ds.df_universe = df_land_univ.merge(ds.df_universe[["key"] + [f for f in ds.df_universe if f not in df_land_univ]], on="key", how="left")
+    
     # Create a new SingleModelResults object with the clamped land value predictions
     results = SingleModelResults(
-        results.ds,
+        ds,
         field_pred,
         results.field_horizontal_equity_id,
         model_name,
@@ -2046,6 +2084,8 @@ def _write_ensemble_model_results(
         df_ensemble = dfs[key]
         if ensemble_list is not None:
             df_ensemble = df_ensemble[prim_keys + ensemble_list]
+            if merge_key == "key_sale" and "key" in df_ensemble:
+                df_ensemble = df_ensemble.drop(columns=["key"])
             df = df_basic.merge(df_ensemble, on=merge_key, how="left")
         else:
             df = df_basic
@@ -2203,7 +2243,7 @@ def _optimize_ensemble_allocation_iteration(
             f"score = {score:5.0f}, best = {best_score:5.0f}, ensemble = {ensemble_list}..."
         )
 
-    if score < best_score and len(ensemble_list) >= 3:
+    if score < best_score and len(ensemble_list) >= 1:
         best_score = score
         best_list = ensemble_list.copy()
 
@@ -2349,7 +2389,7 @@ def _optimize_ensemble_iteration(
         df_test_ensemble = df_test_ensemble.merge(
             df_pred_test, on="key_sale", how="left"
         )
-
+        
         df_sales_ensemble = df_sales_ensemble.merge(
             df_pred_sales, on="key_sale", how="left"
         )
@@ -2382,8 +2422,8 @@ def _optimize_ensemble_iteration(
     )
     timing.stop("total")
 
-    print(f"Results: score = {results.utility_train}, r2 = {results.pred_train.r2}, mape = {results.pred_train.mape}, mse = {results.pred_train.mse}")
-    score = results.utility_train
+    print(f"Results: score = {results.utility_sales_lookback}, r2 = {results.pred_sales_lookback.r2}, mape = {results.pred_sales_lookback.mape}, rmse = {results.pred_sales_lookback.rmse}")
+    score = results.utility_sales_lookback
 
     # Add early exit if score is nan
     if pd.isna(score):
@@ -2407,7 +2447,7 @@ def _optimize_ensemble_iteration(
         if key in all_results.model_results:
             model_results = all_results.model_results[key]
 
-            model_score = model_results.utility_train
+            model_score = model_results.utility_sales_lookback
 
             if model_score > worst_score:
                 worst_score = model_score
@@ -2504,12 +2544,16 @@ def _run_ensemble(
     timing.start("train")
     for m_key in ensemble_list:
         m_results = all_results.model_results[m_key]
+        
         _df_test = m_results.df_test[["key_sale"]].copy()
         _df_test.loc[:, m_key] = m_results.pred_test.y_pred
+        
         _df_sales = m_results.df_sales[["key_sale"]].copy()
         _df_sales.loc[:, m_key] = m_results.pred_sales.y_pred
+        
         _df_univ = m_results.df_universe[["key"]].copy()
         _df_univ.loc[:, m_key] = m_results.pred_univ
+        
         df_test_ensemble = df_test_ensemble.merge(_df_test, on="key_sale", how="left")
         df_sales_ensemble = df_sales_ensemble.merge(
             _df_sales, on="key_sale", how="left"
@@ -3323,6 +3367,7 @@ def _model_performance_metrics(
     text += ("=" * 80) + "\n"
     metrics_data = {
         "Model": [],
+        "count": [],
         "RMSE": [],
         "MSE": [],
         "MAPE": [],
@@ -3332,6 +3377,7 @@ def _model_performance_metrics(
     }
     trimmed_data = {
         "Model": [],
+        "count": [],
         "RMSE": [],
         "MSE": [],
         "MAPE": [],
@@ -3363,7 +3409,7 @@ def _model_performance_metrics(
 
         y_ratio = y_pred / y_true
         mask = trim_outliers_mask(y_ratio, max_trim)
-
+        
         if len(mask) == 0:
             y_true_trim = y_true
             y_pred_trim = y_pred
@@ -3404,8 +3450,12 @@ def _model_performance_metrics(
             mape_trim = np.nan
             mse_trim = np.nan
             rmse_trim = np.nan
-
+        
+        count = len(y_true)
+        count_trim = len(y_true_trim)
+        
         metrics_data["Model"].append(model_name)
+        metrics_data["count"].append(count)
         metrics_data["MAPE"].append(mape)
         metrics_data["MSE"].append(mse)
         metrics_data["RMSE"].append(rmse)
@@ -3414,6 +3464,7 @@ def _model_performance_metrics(
         metrics_data["Slope"].append(slope)
 
         trimmed_data["Model"].append(model_name)
+        trimmed_data["count"].append(count_trim)
         trimmed_data["MAPE"].append(mape_trim)
         trimmed_data["MSE"].append(mse)
         trimmed_data["RMSE"].append(rmse)
@@ -3424,6 +3475,7 @@ def _model_performance_metrics(
     # Create and display metrics DataFrame
     metrics_df = pd.DataFrame(metrics_data)
     metrics_df.set_index("Model", inplace=True)
+    metrics_df["count"] = metrics_df["count"].apply(lambda x: f"{x:,}").astype(str)
     metrics_df["MSE"] = metrics_df["MSE"].apply(lambda x: fancy_format(x)).astype(str)
     metrics_df["RMSE"] = metrics_df["RMSE"].apply(lambda x: f"{x:,.0f}").astype(str)
     metrics_df["MAPE"] = metrics_df["MAPE"].apply(lambda x: f"{x:.2f}").astype(str)
@@ -3433,6 +3485,7 @@ def _model_performance_metrics(
 
     trimmed_df = pd.DataFrame(trimmed_data)
     trimmed_df.set_index("Model", inplace=True)
+    trimmed_df["count"] = trimmed_df["count"].apply(lambda x: f"{x:,}").astype(str)
     trimmed_df["MSE"] = trimmed_df["MSE"].apply(lambda x: fancy_format(x)).astype(str)
     trimmed_df["RMSE"] = trimmed_df["RMSE"].apply(lambda x: f"{x:,.0f}").astype(str)
     trimmed_df["MAPE"] = trimmed_df["MAPE"].apply(lambda x: f"{x:.2f}").astype(str)
@@ -3440,8 +3493,8 @@ def _model_performance_metrics(
     trimmed_df["m.ratio"] = trimmed_df["m.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
     trimmed_df["avg.ratio"] = trimmed_df["avg.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
 
-    metrics_df = metrics_df[["MAPE","MSE","RMSE","m.ratio","avg.ratio","Slope"]]
-    trimmed_df = trimmed_df[["MAPE","MSE","RMSE","m.ratio","avg.ratio","Slope"]]
+    metrics_df = metrics_df[["count","MAPE","MSE","RMSE","m.ratio","avg.ratio","Slope"]]
+    trimmed_df = trimmed_df[["count","MAPE","MSE","RMSE","m.ratio","avg.ratio","Slope"]]
 
     float_cols = metrics_df.select_dtypes(include=['float']).columns
     metrics_df[float_cols] = metrics_df[float_cols].map(lambda x: f"{x:.2f}")
@@ -3582,7 +3635,7 @@ def _run_models(
 
     # Enforce that horizontal equity cluster ID's have already been calculated
     if "he_id" not in df_univ:
-        raise ValueError("Could not find equity cluster ID's in the dataframe (he_id)")
+        warnings.warn("Could not find equity cluster ID's in the dataframe (he_id) -- no horizontal equity test will be performed!")
 
     model_results = {}
     outpath = f"out/models/{model_group}/{outdir}"
@@ -3666,6 +3719,8 @@ def _run_models(
     t.stop("calc benchmarks")
 
     if run_ensemble:
+        if verbose:
+            print(f"Optimizing ensemble...")
         t.start("optimize ensemble")
         best_ensemble = _optimize_ensemble(
             df_sales=df_sales,
@@ -3682,6 +3737,8 @@ def _run_models(
 
         # Run the ensemble model
         t.start("run ensemble")
+        if verbose:
+            print(f"Running ensemble...")
         ensemble_results = _run_ensemble(
             df_sales=df_sales,
             df_universe=df_univ,
@@ -3698,10 +3755,14 @@ def _run_models(
         )
         t.stop("run ensemble")
 
+        if verbose:
+            print(f"Writing ensemble pickle...")
         out_pickle = f"{outpath}/model_ensemble.pickle"
         with open(out_pickle, "wb") as file:
             pickle.dump(ensemble_results, file)
 
+        if verbose:
+            print(f"Adding ensemble to results...")
         # Calculate final results, including ensemble
         t.start("calc final results")
         all_results.add_model("ensemble", ensemble_results)
@@ -3719,6 +3780,8 @@ def _run_models(
         verbose=verbose,
     )
     
+    if verbose:
+        print("Generating results...")
     first_results: SingleModelResults = list(all_results.model_results.values())[0]
     test_count = len(first_results.df_test)
     study_count = len(first_results.df_sales_lookback)
