@@ -37,6 +37,9 @@ from openavmkit.data import (
     SalesUniversePair,
     get_sup_model_group,
     get_hydrated_sales_from_sup,
+    write_parquet,
+    write_gpkg,
+    write_zipped_shapefile
 )
 from openavmkit.sales_scrutiny_study import (
     run_sales_scrutiny_per_model_group,
@@ -1109,7 +1112,11 @@ def write_checkpoint(data: Any, path: str):
 
 
 def write_notebook_output_sup(
-    sup: SalesUniversePair, prefix: str = "1-assemble"
+    sup: SalesUniversePair, 
+    prefix: str = "1-assemble",
+    parquet: bool = True,
+    gpkg: bool = False,
+    shp: bool = False
 ) -> None:
     """
     Write notebook output to disk.
@@ -1123,43 +1130,50 @@ def write_notebook_output_sup(
         Sales and universe data.
     prefix : str, optional
         File prefix for naming output files. Defaults to "1-assemble".
+    parquet : bool, optional
+        Whether to write to parquet format. Defaults to true.
+    gpkg : bool, optional
+        Whether to write to gpkg format. Defaults to false.
+    shp : bool, optional
+        Whether to write to ESRI shapefile format. Defaults to false.
     """
-
+    
+    os.makedirs("out/look", exist_ok=True)
     with open(f"out/{prefix}-sup.pickle", "wb") as file:
         pickle.dump(sup, file)
-    os.makedirs("out/look", exist_ok=True)
-
-    def write_parquet(df, path):
-        # If it has a geometry column, write as GeoParquet
-        if "geometry" in df.columns:
-            # Ensure it's a GeoDataFrame
-            gdf = df if isinstance(df, gpd.GeoDataFrame) else gpd.GeoDataFrame(df, geometry="geometry", crs=getattr(df, "crs", None))
-
-            # You MUST have a CRS for it to be recorded in metadata
-            if gdf.crs is None:
-                raise ValueError(f"{path}: geometry has no CRS. Set it (e.g., gdf = gdf.set_crs('EPSG:4326')) before writing.")
-
-            # GeoPandas writes WKB + GeoParquet metadata (including CRS)
-            gdf.to_parquet(path, engine="pyarrow", index=False)
-        else:
-            # Regular table
-            df.to_parquet(path, engine="pyarrow", index=False)
-
+    
     # universe
-    write_parquet(sup["universe"], f"out/look/{prefix}-universe.parquet")
-
+    if parquet:
+        write_parquet(sup["universe"], f"out/look/{prefix}-universe.parquet")
+    if gpkg:
+        write_gpkg(sup["universe"], f"out/look/{prefix}-universe.gpkg")
+    if shp:
+        write_zipped_shapefile(sup["universe"], f"out/look/{prefix}-universe.shp.zip")
+    
     # sales
-    write_parquet(sup["sales"], f"out/look/{prefix}-sales.parquet")
-
+    if parquet:
+        write_parquet(sup["sales"], f"out/look/{prefix}-sales.parquet")
+    
     # sales (hydrated)
     df_hydrated = get_hydrated_sales_from_sup(sup)
-    write_parquet(df_hydrated, f"out/look/{prefix}-sales-hydrated.parquet")
+    if parquet:
+        write_parquet(df_hydrated, f"out/look/{prefix}-sales-hydrated.parquet")
+    if gpkg:
+        write_gpkg(df_hydrated, f"out/look/{prefix}-sales-hydrated.gpkg")
+    if shp:
+        write_zipped_shapefile(df_hydrated, f"out/look/{prefix}-sales-hydrated.shp.zip")
 
-    print("Results written to:")
     print(f"...out/{prefix}-sup.pickle")
-    print(f"...out/look/{prefix}-universe.parquet")
-    print(f"...out/look/{prefix}-sales.parquet")
-    print(f"...out/look/{prefix}-sales-hydrated.parquet")
+    if parquet:
+        print(f"...out/look/{prefix}-universe.parquet")
+        print(f"...out/look/{prefix}-sales.parquet")
+        print(f"...out/look/{prefix}-sales-hydrated.parquet")
+    if gpkg:
+        print(f"...out/look/{prefix}-universe.gpkg")
+        print(f"...out/look/{prefix}-sales-hydrated.gpkg")
+    if shp:
+        print(f"...out/look/{prefix}-universe.shp.zip")
+        print(f"...out/look/{prefix}-sales-hydrated.shp.zip")
 
 
 def cloud_sync(
