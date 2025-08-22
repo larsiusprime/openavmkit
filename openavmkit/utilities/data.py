@@ -129,9 +129,10 @@ def div_series_z_safe(
         The result of the division with divide-by-zero cases replaced by ``None``
     """
 
-    if isinstance(numerator, pd.core.arrays.floating.FloatingArray):
+    # Handle both pandas and bodo.pandas array types
+    if hasattr(numerator, 'to_numpy') and not hasattr(numerator, 'index'):
         numerator = pd.Series(numerator)
-    if isinstance(denominator, pd.core.arrays.floating.FloatingArray):
+    if hasattr(denominator, 'to_numpy') and not hasattr(denominator, 'index'):
         denominator = pd.Series(denominator)
 
     # fast path for ndarray
@@ -148,7 +149,7 @@ def div_series_z_safe(
 
         return out
     # ---------- pandas path (preferred for DF math) ----------
-    if isinstance(numerator, pd.Series) and isinstance(denominator, pd.Series):
+    if hasattr(numerator, 'to_numpy') and hasattr(denominator, 'to_numpy'):
         num = numerator
         den = denominator.reindex(num.index)  # preserve num's order; no sorting
 
@@ -160,7 +161,7 @@ def div_series_z_safe(
         
         np.divide(a, b, out=out, where=mask)
         return pd.Series(out, index=num.index, dtype="Float64")
-    raise ValueError(f"Can only operate on pd.Series of np.ndarray, found: {type(numerator), type(denominator)}")
+    raise ValueError(f"Can only operate on Series-like objects or np.ndarray, found: {type(numerator), type(denominator)}")
 
 
 def div_df_z_safe(df: pd.DataFrame, numerator: str, denominator: str):
@@ -600,8 +601,8 @@ def ensure_categories(
         dtype in either DataFrame is not Categorical, both DataFrames are
         returned without modification.
     """
-    if isinstance(df[field].dtype, pd.CategoricalDtype) and isinstance(
-        df_other[field].dtype, pd.CategoricalDtype
+    if hasattr(df[field].dtype, 'categories') and hasattr(
+        df_other[field].dtype, 'categories'
     ):
 
         # union keeps order of appearance in the first operands
@@ -653,11 +654,11 @@ def align_categories(
 
     for col in df_left.columns.union(df_right.columns):
 
-        left_is_cat = isinstance(
-            df_left.get(col, pd.Series(dtype="object")).dtype, pd.CategoricalDtype
+        left_is_cat = hasattr(
+            df_left.get(col, pd.Series(dtype="object")).dtype, 'categories'
         )
-        right_is_cat = isinstance(
-            df_right.get(col, pd.Series(dtype="object")).dtype, pd.CategoricalDtype
+        right_is_cat = hasattr(
+            df_right.get(col, pd.Series(dtype="object")).dtype, 'categories'
         )
 
         # If exactly one side is categorical, convert the other side first
@@ -891,7 +892,7 @@ def _left_wins(s1, s2):
     Return a Series that keeps s1’s values wherever they’re non-NA,
     otherwise falls back to s2 – even when both are Categoricals.
     """
-    if isinstance(s1.dtype, pd.CategoricalDtype) and isinstance(s2.dtype, pd.CategoricalDtype):
+    if hasattr(s1.dtype, 'categories') and hasattr(s2.dtype, 'categories'):
         # make both columns share the **union** of their categories
         cats = s1.cat.categories.union(s2.cat.categories)
         s1 = s1.cat.set_categories(cats)

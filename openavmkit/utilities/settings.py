@@ -1092,7 +1092,7 @@ def _simulate_removed_buildings(
     fields_impr_bool = fields_impr["boolean"]
 
     for field in fields_impr_cat:
-        if not isinstance(df[field].dtype, pd.CategoricalDtype):
+        if not hasattr(df[field].dtype, 'categories'):
             df[field] = df[field].astype("category")
         # add UNKNOWN if needed
         if "UNKNOWN" not in df[field].cat.categories:
