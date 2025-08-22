@@ -1566,6 +1566,7 @@ def run_ratio_study(
     field_sales: str,
     start_date: str,
     end_date: str,
+    land_only: bool = False,
     max_trim: float = 0.05
 ):
     # Filter to just the designated model group
@@ -1579,6 +1580,13 @@ def run_ratio_study(
         df_sales["sale_date"].ge(start_date) &
         df_sales["sale_date"].le(end_date)
     ]
+    
+    valid_field = "valid_for_ratio_study"
+    if land_only:
+        valid_field = "valid_for_land_ratio_study"
+        
+    if valid_field in df_sales:
+        df_sales = df_sales[df_sales[valid_field].eq(True)]
 
     # Get predictions and sales
     predictions = df_sales[field_prediction]
@@ -1645,7 +1653,8 @@ def plot_prediction_vs_sales(
     field_prediction: str,
     field_truth: str,
     start_date: str,
-    end_date: str
+    end_date: str,
+    land_only: bool = False
 ):
     # Filter to just the designated model group
     sup = get_sup_model_group(sup, model_group)
@@ -1658,6 +1667,13 @@ def plot_prediction_vs_sales(
         df_sales["sale_date"].ge(start_date) &
         df_sales["sale_date"].le(end_date)
     ]
+    
+    valid_field = "valid_for_ratio_study"
+    if land_only == True:
+        valid_field = "valid_for_land_ratio_study"
+    
+    if valid_field in df_sales:
+        df_sales = df_sales[df_sales[valid_field].eq(True)]
     
     plot_scatterplot(
         df_sales, 
