@@ -183,7 +183,7 @@ The full set of parcels in the jurisdiction, regardless of whether the parcels h
 
 **SalesUniversePair set**
 
-This refers to a data set created by the openavmkit library by merging together "Sales" set and the "Universe" set. We use this data structure to make sure that both the "sales" and "universe" data set are processed together.
+In any OpenAVMKit model, this refers to a data set created by merging together "Sales" set and the "Universe" set. We use this data structure to make sure that both the "sales" and "universe" data set are processed together in a consistent manner.
 
 ### Modeling
 
