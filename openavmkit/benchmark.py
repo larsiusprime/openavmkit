@@ -3244,7 +3244,7 @@ def _model_performance_plots(
                     count_na = mask_na.count()
                     print(f"WARNING: {field} has {count_na} NaN values!")
                     df = df[~mask_na]
-
+            
             plot_title = f"{label}/{title}/{model_group}/{model_name}\n{the_count}/{sales_count} sales from {earliest_date} to {latest_date}"
 
             plot_scatterplot(
@@ -3302,6 +3302,20 @@ def _get_earliest_and_latest_date(df: pd.DataFrame):
             latest_date = "N/A"
     return earliest_date, latest_date
 
+
+def _model_performance_metrics(
+    model_group: str, 
+    all_results: MultiModelResults, 
+    title: str,
+    max_trim: float
+):
+    # Get first model_results from all_results:
+    first_results: SingleModelResults = list(all_results.model_results.values())[0]
+    test_count = len(first_results.df_test)
+    sales_count = len(first_results.df_sales)
+    
+    earliest_date, latest_date = _get_earliest_and_latest_date(first_results.df_test)    
+
     # Add performance metrics table
     text = f"\n************************************************************\n"
     text += f"{title} Benchmark ({model_group}) -- Academic Metrics\n"
@@ -3310,8 +3324,8 @@ def _get_earliest_and_latest_date(df: pd.DataFrame):
     text += ("=" * 80) + "\n"
     metrics_data = {
         "Model": [],
-        "R² ols": [],
-        "R² y=x": [],
+        "RMSE": [],
+        "MSE": [],
         "MAPE": [],
         "m.ratio": [],
         "avg.ratio": [],
@@ -3319,8 +3333,8 @@ def _get_earliest_and_latest_date(df: pd.DataFrame):
     }
     trimmed_data = {
         "Model": [],
-        "R² ols": [],
-        "R² y=x": [],
+        "RMSE": [],
+        "MSE": [],
         "MAPE": [],
         "Slope": [],
         "m.ratio": [],
@@ -3366,14 +3380,13 @@ def _get_earliest_and_latest_date(df: pd.DataFrame):
             reg = _simple_ols(df_test, "y_true", "y_pred", intercept=False)
             slope, r2_0 = reg["slope"], reg["r2"]
 
-            # Raw R² calculation
-            ss_res = np.sum((y_true - y_pred) ** 2)
-            ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
-            r2_raw = 1 - (ss_res / ss_tot)
+            # MSE 
+            mse = calc_mse(y_pred, y_true)
+            rmse = np.sqrt(mse)
         else:
             slope = np.nan
-            r2_0 = np.nan
-            r2_raw = np.nan
+            mse = np.nan
+            rmse = np.nan
             mape = np.nan
 
         if len(y_true_trim) > 1 and len(y_pred_trim) > 1:
@@ -3385,28 +3398,26 @@ def _get_earliest_and_latest_date(df: pd.DataFrame):
             reg = _simple_ols(df_trim, "y_true", "y_pred", intercept=False)
             slope_trim, r2_trim = reg["slope"], reg["r2"]
 
-            # Raw R² calculation for trimmed data
-            ss_res_trim = np.sum((y_true_trim - y_pred_trim) ** 2)
-            ss_tot_trim = np.sum((y_true_trim - np.mean(y_true_trim)) ** 2)
-            r2_raw_trim = 1 - (ss_res_trim / ss_tot_trim)
+            mse_trim = calc_mse(y_pred_trim, y_true_trim)
+            rmse = np.sqrt(mse_trim)
         else:
             slope_trim = np.nan
-            r2_trim = np.nan
-            r2_raw_trim = np.nan
             mape_trim = np.nan
+            mse_trim = np.nan
+            rmse_trim = np.nan
 
         metrics_data["Model"].append(model_name)
-        metrics_data["R² ols"].append(r2_0)
-        metrics_data["R² y=x"].append(r2_raw)
         metrics_data["MAPE"].append(mape)
+        metrics_data["MSE"].append(mse)
+        metrics_data["RMSE"].append(rmse)
         metrics_data["m.ratio"].append(model_result.pred_test.ratio_study.median_ratio)
         metrics_data["avg.ratio"].append(model_result.pred_test.ratio_study.mean_ratio)
         metrics_data["Slope"].append(slope)
 
         trimmed_data["Model"].append(model_name)
-        trimmed_data["R² ols"].append(r2_trim)
-        trimmed_data["R² y=x"].append(r2_raw_trim)
         trimmed_data["MAPE"].append(mape_trim)
+        trimmed_data["MSE"].append(mse)
+        trimmed_data["RMSE"].append(rmse)
         trimmed_data["m.ratio"].append(model_result.pred_test.ratio_study.median_ratio_trim)
         trimmed_data["avg.ratio"].append(model_result.pred_test.ratio_study.mean_ratio_trim)
         trimmed_data["Slope"].append(slope_trim)
@@ -3414,8 +3425,8 @@ def _get_earliest_and_latest_date(df: pd.DataFrame):
     # Create and display metrics DataFrame
     metrics_df = pd.DataFrame(metrics_data)
     metrics_df.set_index("Model", inplace=True)
-    metrics_df["R² ols"] = metrics_df["R² ols"].apply(lambda x: f"{x:.2f}").astype(str)
-    metrics_df["R² y=x"] = metrics_df["R² y=x"].apply(lambda x: f"{x:.2f}").astype(str)
+    metrics_df["MSE"] = metrics_df["MSE"].apply(lambda x: fancy_format(x)).astype(str)
+    metrics_df["RMSE"] = metrics_df["RMSE"].apply(lambda x: f"{x:,.0f}").astype(str)
     metrics_df["MAPE"] = metrics_df["MAPE"].apply(lambda x: f"{x:.2f}").astype(str)
     metrics_df["Slope"] = metrics_df["Slope"].apply(lambda x: f"{x:.2f}").astype(str)
     metrics_df["m.ratio"] = metrics_df["m.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
@@ -3423,15 +3434,15 @@ def _get_earliest_and_latest_date(df: pd.DataFrame):
 
     trimmed_df = pd.DataFrame(trimmed_data)
     trimmed_df.set_index("Model", inplace=True)
-    trimmed_df["R² ols"] = trimmed_df["R² ols"].apply(lambda x: f"{x:.2f}").astype(str)
-    trimmed_df["R² y=x"] = trimmed_df["R² y=x"].apply(lambda x: f"{x:.2f}").astype(str)
+    trimmed_df["MSE"] = trimmed_df["MSE"].apply(lambda x: fancy_format(x)).astype(str)
+    trimmed_df["RMSE"] = trimmed_df["RMSE"].apply(lambda x: f"{x:,.0f}").astype(str)
     trimmed_df["MAPE"] = trimmed_df["MAPE"].apply(lambda x: f"{x:.2f}").astype(str)
     trimmed_df["Slope"] = trimmed_df["Slope"].apply(lambda x: f"{x:.2f}").astype(str)
     trimmed_df["m.ratio"] = trimmed_df["m.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
     trimmed_df["avg.ratio"] = trimmed_df["avg.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
 
-    metrics_df = metrics_df[["R² ols","R² y=x","MAPE","m.ratio","avg.ratio","Slope"]]
-    trimmed_df = trimmed_df[["R² ols","R² y=x","MAPE","m.ratio","avg.ratio","Slope"]]
+    metrics_df = metrics_df[["MAPE","MSE","RMSE","m.ratio","avg.ratio","Slope"]]
+    trimmed_df = trimmed_df[["MAPE","MSE","RMSE","m.ratio","avg.ratio","Slope"]]
 
     float_cols = metrics_df.select_dtypes(include=['float']).columns
     metrics_df[float_cols] = metrics_df[float_cols].map(lambda x: f"{x:.2f}")
@@ -3708,10 +3719,24 @@ def _run_models(
         save_results=save_results,
         verbose=verbose,
     )
-
+    
+    first_results: SingleModelResults = list(all_results.model_results.values())[0]
+    test_count = len(first_results.df_test)
+    study_count = len(first_results.df_sales_lookback)
+    sales_count = len(first_results.df_sales)
+    
+    earliest_date, latest_date = _get_earliest_and_latest_date(first_results.df_test)
+    earliest_date_study, latest_date_study = _get_earliest_and_latest_date(first_results.df_sales_lookback)
+    earliest_date_full, latest_date_full = _get_earliest_and_latest_date(first_results.df_sales)
+    
     print(f"\n************************************************************")
     print(f"{titleword} Benchmark ({model_group}) -- Assessor Metrics")
-    print(f"************************************************************\n")
+    print(f"************************************************************")
+    print(f"Holdout set : {test_count}/{sales_count} sales from ({earliest_date} to {latest_date})")
+    print(f"  Study set : {study_count}/{sales_count} sales from ({earliest_date_study} to {latest_date_study}")
+    print(f"   Full set : {sales_count}/{sales_count} sales from ({earliest_date_full} to {latest_date_full})")
+    print("=" * 80)
+    print("\n")
     print(all_results.benchmark.print())
 
     title = titleword
