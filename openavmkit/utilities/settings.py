@@ -1014,25 +1014,9 @@ def _get_sales(
     Filters for sales with a positive sale price, valid_sale marked True. If vacant_only
     is True, only includes rows where vacant_sale is True.
     """
-    df = df_in.copy()
-    valid_sale_dtype = df["valid_sale"].dtype
-    if valid_sale_dtype != bool:
-        if _is_series_all_bools(df["valid_sale"]):
-            df["valid_sale"] = df["valid_sale"].astype(bool)
-        else:
-            raise ValueError(
-                f"The 'valid_sale' column must be a boolean type (found: {valid_sale_dtype}) with values: {df['valid_sale'].unique()}"
-            )
+    df = df_in.copy().reset_index(drop=True)
 
     if "vacant_sale" in df:
-        vacant_sale_dtype = df["vacant_sale"].dtype
-        if vacant_sale_dtype != bool:
-            if _is_series_all_bools(df["vacant_sale"]):
-                df["vacant_sale"] = df["vacant_sale"].astype(bool)
-            else:
-                raise ValueError(
-                    f"The 'vacant_sale' column must be a boolean type (found: {vacant_sale_dtype}) with values: {df['vacant_sale'].unique()}"
-                )
         # check for vacant sales:
         idx_vacant_sale = df["vacant_sale"].eq(True)
 
@@ -1050,13 +1034,26 @@ def _get_sales(
         # if a property was NOT vacant at time of sale, but is vacant now, then the sale is invalid:
         idx_is_vacant = df["is_vacant"].eq(True)
         df.loc[~idx_vacant_sale & idx_is_vacant, "valid_sale"] = False
+        idx_valid_sale = df["valid_sale"].eq(True)
+        
 
     # Use sale_price_time_adj if it exists, otherwise use sale_price
     sale_field = "sale_price_time_adj" if "sale_price_time_adj" in df else "sale_price"
     idx_sale_price = df[sale_field].gt(0)
+    
+    
     idx_valid_sale = df["valid_sale"].eq(True)
-    idx_is_vacant = df["vacant_sale"].eq(True)
+    
     idx_all = idx_sale_price & idx_valid_sale & (idx_is_vacant if vacant_only else True)
+    
+    idx_vacant_sale = df["vacant_sale"].eq(True)
+    
+    
+    if vacant_only:
+        idx_all = idx_sale_price & idx_valid_sale & idx_vacant_sale
+    else:
+        idx_all = idx_sale_price & idx_valid_sale
+    
 
     df_sales: pd.DataFrame = df[idx_all].copy()
 
