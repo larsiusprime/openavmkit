@@ -166,26 +166,26 @@ class LandPredictionResults:
         # Phase 1: Accuracy
         if "sale" in dep_var:
             df = df[df["valid_for_land_ratio_study"].eq(True)].copy()
-            is_land_predictions = df[land_prediction_field]
+            land_predictions = df[land_prediction_field]
             sale_prices = df[dep_var]
         elif dep_var == "true_land_value":
             df = df_univ.copy()
-            is_land_predictions = df[land_prediction_field]
+            land_predictions = df[land_prediction_field]
             sale_prices = df[dep_var]
         else:
             raise ValueError(
                 f"Unsupported dep_var '{dep_var}' for land prediction results."
             )
 
-        self.land_ratio_study = RatioStudy(is_land_predictions, sale_prices, max_trim)
+        self.land_ratio_study = RatioStudy(land_predictions, sale_prices, max_trim)
         mse, r2, adj_r2 = calc_mse_r2_adj_r2(
-            is_land_predictions, sale_prices, len(ind_vars)
+            land_predictions, sale_prices, len(ind_vars)
         )
         self.mse = mse
         self.rmse = np.sqrt(mse)
         self.r2 = r2
         self.adj_r2 = adj_r2
-        self.prb, _, _ = calc_prb(is_land_predictions, sale_prices)
+        self.prb, _, _ = calc_prb(land_predictions, sale_prices)
 
         df_univ_valid = df_univ.drop(columns="geometry", errors="ignore").copy()
 
@@ -619,7 +619,7 @@ class DataSplit:
         self.split()
     
     def is_land_predictions(self)->bool:
-        return self.vacant_only or self.hedonic_test_against_vacant_sales
+        return self.vacant_only or self.hedonic
 
     def copy(self):
         """
@@ -1232,7 +1232,7 @@ class SingleModelResults:
         self.pred_test = PredictionResults(
             self.dep_var_test, self.ind_vars, field_prediction, df_test, max_trim, self.is_land_predictions
         )
-        self.df_test = self.pred_test.df
+        self.df_test = self.pred_test.df.copy()
         timing.stop("stats_test")
 
         timing.start("stats_sales")
@@ -1245,7 +1245,7 @@ class SingleModelResults:
             self.pred_sales = PredictionResults(
                 self.dep_var_test, self.ind_vars, field_prediction, df_sales, max_trim, self.is_land_predictions
             )
-            self.df_sales = self.pred_sales.df
+            self.df_sales = self.pred_sales.df.copy()
 
             # If we have predictions for sales, we also have predictions for the training subset
             df_train = df_sales.copy()
