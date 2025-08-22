@@ -122,7 +122,7 @@ def write_checkpoint(data: Any, path: str):
     os.makedirs("out/checkpoints", exist_ok=True)
     if isinstance(data, gpd.GeoDataFrame):
         data.to_parquet(f"out/checkpoints/{path}.parquet", engine="pyarrow")
-    elif isinstance(data, pd.DataFrame):
+    elif hasattr(data, 'to_numpy'):
         data.to_parquet(f"out/checkpoints/{path}.parquet")
     else:
         with open(f"out/checkpoints/{path}.pickle", "wb") as file:

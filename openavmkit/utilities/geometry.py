@@ -484,11 +484,15 @@ def ensure_geometries(df, geom_col="geometry", crs=None):
         a brand‑new GeoDataFrame with a _clean_ geometry column.
     """
     # Copy into a plain DataFrame (drops any old GeoDataFrame metadata)
-    data = pd.DataFrame(df).copy()
+    # Handle both pandas and bodo.pandas DataFrames
+    if hasattr(df, 'to_pandas'):
+        data = df.to_pandas().copy()
+    else:
+        data = df.copy()
 
     def _parse(val):
         # 1) Nulls
-        if val is None or (isinstance(val, float) and pd.isna(val)):
+        if val is None or (hasattr(val, '__float__') and pd.isna(val)):
             return None
         # 2) Already Shapely?
         if isinstance(val, BaseGeometry):

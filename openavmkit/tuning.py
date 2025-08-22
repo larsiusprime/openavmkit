@@ -361,7 +361,7 @@ def _xgb_rolling_origin_cv(
     mape_scores = []
 
     for train_idx, val_idx in kf.split(X):
-        if isinstance(X, pd.DataFrame):
+        if hasattr(X, 'iloc'):
             X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
             y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
         else:
@@ -419,8 +419,8 @@ def _catboost_rolling_origin_cv(
     mape_scores = []
 
     for train_idx, val_idx in kf.split(X):
-        # Use .iloc for Pandas DataFrames
-        if isinstance(X, pd.DataFrame):
+        # Use .iloc for DataFrame-like objects
+        if hasattr(X, 'iloc'):
             X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
             y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
         else:
@@ -489,8 +489,8 @@ def _lightgbm_rolling_origin_cv(X, y, params, n_splits=5, random_state=42):
     mape_scores = []
 
     for train_idx, val_idx in kf.split(X):
-        # Use .iloc for Pandas DataFrames
-        if isinstance(X, pd.DataFrame):
+        # Use .iloc for DataFrame-like objects
+        if hasattr(X, 'iloc'):
             X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
             y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
         else:
