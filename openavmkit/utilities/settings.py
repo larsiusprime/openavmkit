@@ -109,6 +109,17 @@ def get_valuation_date(s: dict):
     return val_date
 
 
+def get_look_back_dates(s: dict):
+    rs = s.get("analysis", {}).get("ratio_study", {})
+    look_back_years = rs.get("look_back_years", 1)
+    val_date = get_valuation_date(s)
+        
+    # Look back N years BEFORE the valuation date
+    look_back_date = val_date - pd.DateOffset(years=look_back_years)
+    
+    return look_back_date, val_date
+
+
 def get_center(s: dict, gdf: gpd.GeoDataFrame = None) -> tuple[float, float]:
     """
     Get the centroid of all the provided parcel geometry
