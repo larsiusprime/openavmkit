@@ -347,8 +347,6 @@ class PredictionResults:
             ~pd.isna(df[prediction_field])
         ]
         
-        y_clean = y[y_mask & y_pred_mask]
-
         y = df_clean[dep_var].to_numpy()
         y_pred = df_clean[prediction_field].to_numpy()
         

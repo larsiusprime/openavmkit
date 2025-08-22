@@ -1919,8 +1919,7 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
     dfs = {
         "sales": results.df_sales[["key_sale"] + fields].copy(),
         "universe": results.df_universe[fields].copy(),
-        "test": results.df_test[["key_sale"] + fields].copy(),
-        "sales_lookback": results.df_sales_lookback[["key_sale"] + fields].copy(),
+        "test": results.df_test[["key_sale"] + fields].copy()
     }
 
     for key in dfs:
