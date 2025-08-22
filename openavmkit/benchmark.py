@@ -2504,12 +2504,16 @@ def _run_ensemble(
     timing.start("train")
     for m_key in ensemble_list:
         m_results = all_results.model_results[m_key]
+        
         _df_test = m_results.df_test[["key_sale"]].copy()
         _df_test.loc[:, m_key] = m_results.pred_test.y_pred
+        
         _df_sales = m_results.df_sales[["key_sale"]].copy()
         _df_sales.loc[:, m_key] = m_results.pred_sales.y_pred
+        
         _df_univ = m_results.df_universe[["key"]].copy()
         _df_univ.loc[:, m_key] = m_results.pred_univ
+        
         df_test_ensemble = df_test_ensemble.merge(_df_test, on="key_sale", how="left")
         df_sales_ensemble = df_sales_ensemble.merge(
             _df_sales, on="key_sale", how="left"

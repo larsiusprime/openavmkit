@@ -294,6 +294,8 @@ class PredictionResults:
         Adjusted R-squared.
     ratio_study : RatioStudy
         RatioStudy object.
+    df : pd.DataFrame
+        DataFrame corresponding to y and y_pred
     """
 
     def __init__(
@@ -346,6 +348,7 @@ class PredictionResults:
             ~pd.isna(df[dep_var]) & 
             ~pd.isna(df[prediction_field])
         ]
+        self.df = df_clean
         
         y = df_clean[dep_var].to_numpy()
         y_pred = df_clean[prediction_field].to_numpy()
@@ -1229,6 +1232,7 @@ class SingleModelResults:
         self.pred_test = PredictionResults(
             self.dep_var_test, self.ind_vars, field_prediction, df_test, max_trim, self.is_land_predictions
         )
+        self.df_test = self.pred_test.df
         timing.stop("stats_test")
 
         timing.start("stats_sales")
@@ -1241,6 +1245,7 @@ class SingleModelResults:
             self.pred_sales = PredictionResults(
                 self.dep_var_test, self.ind_vars, field_prediction, df_sales, max_trim, self.is_land_predictions
             )
+            self.df_sales = self.pred_sales.df
 
             # If we have predictions for sales, we also have predictions for the training subset
             df_train = df_sales.copy()
@@ -1257,15 +1262,16 @@ class SingleModelResults:
             self.pred_train = PredictionResults(
                 self.dep_var_test, self.ind_vars, field_prediction, df_train, max_trim, self.is_land_predictions
             )
+            self.df_train = self.pred_train.df
             
             # Get prediction results ONLY for the lookback period
             start_date, end_date = get_look_back_dates(ds.settings)
-            df_sales_lookback = filter_df_by_date_range(df_sales, start_date, end_date)
+            self.df_sales_lookback = filter_df_by_date_range(df_sales, start_date, end_date)
             
             self.pred_sales_lookback = PredictionResults(
-                self.dep_var_test, self.ind_vars, field_prediction, df_sales_lookback, max_trim, self.is_land_predictions
+                self.dep_var_test, self.ind_vars, field_prediction, self.df_sales_lookback, max_trim, self.is_land_predictions
             )
-            self.df_sales_lookback = df_sales_lookback
+            self.df_sales_lookback = self.pred_sales_lookback.df
             
 
         timing.stop("stats_sales")
