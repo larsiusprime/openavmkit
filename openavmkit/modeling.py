@@ -1,7 +1,7 @@
 import json
 import os
 import pickle
-
+from datetime import date
 from numpy.linalg import LinAlgError
 import polars as pl
 from joblib import Parallel, delayed
@@ -41,6 +41,7 @@ from openavmkit.data import (
     get_hydrated_sales_from_sup,
     get_sale_field,
     get_train_test_keys,
+    filter_df_by_date_range
 )
 from openavmkit.filters import select_filter
 from openavmkit.ratio_study import RatioStudy
@@ -69,7 +70,7 @@ from openavmkit.utilities.data import (
     div_series_z_safe,
     calc_spatial_lag,
 )
-from openavmkit.utilities.settings import get_valuation_date, _get_max_ratio_study_trim
+from openavmkit.utilities.settings import get_valuation_date, _get_max_ratio_study_trim, get_look_back_dates
 from openavmkit.utilities.stats import (
     quick_median_chd_pl,
     calc_mse_r2_adj_r2,
@@ -165,26 +166,26 @@ class LandPredictionResults:
         # Phase 1: Accuracy
         if "sale" in dep_var:
             df = df[df["valid_for_land_ratio_study"].eq(True)].copy()
-            land_predictions = df[land_prediction_field]
+            is_land_predictions = df[land_prediction_field]
             sale_prices = df[dep_var]
         elif dep_var == "true_land_value":
             df = df_univ.copy()
-            land_predictions = df[land_prediction_field]
+            is_land_predictions = df[land_prediction_field]
             sale_prices = df[dep_var]
         else:
             raise ValueError(
                 f"Unsupported dep_var '{dep_var}' for land prediction results."
             )
 
-        self.land_ratio_study = RatioStudy(land_predictions, sale_prices, max_trim)
+        self.land_ratio_study = RatioStudy(is_land_predictions, sale_prices, max_trim)
         mse, r2, adj_r2 = calc_mse_r2_adj_r2(
-            land_predictions, sale_prices, len(ind_vars)
+            is_land_predictions, sale_prices, len(ind_vars)
         )
         self.mse = mse
         self.rmse = np.sqrt(mse)
         self.r2 = r2
         self.adj_r2 = adj_r2
-        self.prb, _, _ = calc_prb(land_predictions, sale_prices)
+        self.prb, _, _ = calc_prb(is_land_predictions, sale_prices)
 
         df_univ_valid = df_univ.drop(columns="geometry", errors="ignore").copy()
 
@@ -301,7 +302,8 @@ class PredictionResults:
         ind_vars: list[str], 
         prediction_field: str, 
         df: pd.DataFrame,
-        max_trim: float
+        max_trim: float,
+        is_land_predictions: bool = False
     ):
         """
         Initialize a PredictionResults instance.
@@ -322,63 +324,69 @@ class PredictionResults:
             DataFrame on which predictions were computed.
         max_trim : float
             The maximum amount of records allowed to be trimmed in a ratio study
+        is_land_predictions : bool
+            Whether these predictions are for land or not
         """
 
         self.dep_var = dep_var
         self.ind_vars = ind_vars
-
+        
         y = df[dep_var].to_numpy()
-        y_pred = df[prediction_field].to_numpy()
+        
+        df[dep_var] = pd.to_numeric(df[dep_var], errors="coerce")
+        df[prediction_field] = pd.to_numeric(df[prediction_field], errors="coerce")
+        
+        valid_field = "valid_for_ratio_study"
+        if is_land_predictions:
+            valid_field = "valid_for_land_ratio_study"
+            
+        # select only values that are not NaN in either and are valid for ratio study:
+        df_clean = df[
+            df[valid_field] & 
+            ~pd.isna(df[dep_var]) & 
+            ~pd.isna(df[prediction_field])
+        ]
+        
+        y_clean = y[y_mask & y_pred_mask]
 
+        y = df_clean[dep_var].to_numpy()
+        y_pred = df_clean[prediction_field].to_numpy()
+        
+        
         self.y = y
         self.y_pred = y_pred
-
-        df_valid = df[df["valid_for_ratio_study"].eq(True)]
-
-        y = df_valid[dep_var].to_numpy()
-        y_pred = df_valid[prediction_field].to_numpy()
-
-        # get a mask of all NaN values in y_pred:
-        y_pred_mask = ~pd.isna(y_pred)
-        y_mask = ~pd.isna(y)
-
-        # select only values that are not NaN in either:
-        y_clean = y[y_mask & y_pred_mask]
-        y_pred_clean = y_pred[y_mask & y_pred_mask]
-        y_clean = pd.to_numeric(y_clean, errors="coerce")
-        y_pred_clean = pd.to_numeric(y_pred_clean, errors="coerce")
-
-        if len(y_clean) > 0 and len(y_pred_clean) > 0:
-            self.mse = mean_squared_error(y_clean, y_pred_clean)
+        
+        if len(y) > 0 and len(y_pred) > 0:
+            self.mse = mean_squared_error(y, y_pred)
             self.rmse = np.sqrt(self.mse)
-            self.mape = mean_absolute_percentage_error(y_clean, y_pred_clean)
-            var_y = np.var(y_clean)
+            self.mape = mean_absolute_percentage_error(y, y_pred)
+            var_y = np.var(y)
 
             if var_y == 0:
                 self.r2 = float("nan")  # R² undefined when variance is 0
                 self.slope = float("nan")
             else:
-                df = pd.DataFrame(data={"y": y_clean, "y_pred": y_pred_clean})
+                df = pd.DataFrame(data={"y": y, "y_pred": y_pred})
                 ols_results = simple_ols(df, "y", "y_pred")
                 self.r2 = ols_results["r2"]
                 self.slope = ols_results["slope"]
 
-            y_ratio = y_pred_clean / y_clean
+            y_ratio = y_pred / y
             mask = trim_outliers_mask(y_ratio, max_trim)
 
-            y_pred_trim = y_pred_clean[mask]
-            y_clean_trim = y_clean[mask]
+            y_pred_trim = y_pred[mask]
+            y_trim = y[mask]
 
-            if len(y_clean_trim) > 0 and len(y_pred_trim) > 0:
-                self.mse_trim = mean_squared_error(y_clean_trim, y_pred_trim)
+            if len(y_trim) > 0 and len(y_pred_trim) > 0:
+                self.mse_trim = mean_squared_error(y_trim, y_pred_trim)
                 self.rmse_trim = np.sqrt(self.mse_trim)
-                self.mape_trim = mean_absolute_percentage_error(y_clean_trim, y_pred_trim)
-                var_y_trim = np.var(y_clean_trim)
+                self.mape_trim = mean_absolute_percentage_error(y_trim, y_pred_trim)
+                var_y_trim = np.var(y_trim)
                 if var_y_trim == 0:
                     self.r2_trim = float("nan")
                     self.slope_trim = float("nan")
                 else:
-                    df = pd.DataFrame(data={"y": y_clean_trim, "y_pred": y_pred_trim})
+                    df = pd.DataFrame(data={"y": y_trim, "y_pred": y_pred_trim})
                     ols_results = simple_ols(df, "y", "y_pred")
                     self.r2_trim = ols_results["r2"]
                     self.slope_trim = ols_results["slope"]
@@ -421,7 +429,7 @@ class PredictionResults:
         else:
             self.adj_r2 = 1 - ((1 - self.r2) * (n - 1) / divisor)
 
-        self.ratio_study = RatioStudy(y_pred_clean, y_clean, max_trim)
+        self.ratio_study = RatioStudy(y_pred, y, max_trim)
 
 
 class DataSplit:
@@ -608,6 +616,9 @@ class DataSplit:
         self.hedonic_test_against_vacant_sales = hedonic_test_against_vacant_sales
         self.days_field = days_field
         self.split()
+    
+    def is_land_predictions(self)->bool:
+        return self.vacant_only or self.hedonic_test_against_vacant_sales
 
     def copy(self):
         """
@@ -1122,6 +1133,8 @@ class SingleModelResults:
         Composite utility score for the test set, used for comparing models.
     utility_train : float
         Composite utility score for the training set, used for comparing models.
+    is_land_predictions : bool
+        Whether these results are land predictions or not.
     timing : TimingData
         Timing data for different phases of the model run.
     """
@@ -1170,6 +1183,8 @@ class SingleModelResults:
         """
 
         self.ds = ds
+        
+        self.is_land_predictions = ds.is_land_predictions()
 
         max_trim = _get_max_ratio_study_trim(ds.settings, ds.model_group)
 
@@ -1214,7 +1229,7 @@ class SingleModelResults:
             timing = TimingData()
         timing.start("stats_test")
         self.pred_test = PredictionResults(
-            self.dep_var_test, self.ind_vars, field_prediction, df_test, max_trim
+            self.dep_var_test, self.ind_vars, field_prediction, df_test, max_trim, self.is_land_predictions
         )
         timing.stop("stats_test")
 
@@ -1222,10 +1237,11 @@ class SingleModelResults:
 
         self.pred_train = None
         self.pred_sales = None
+        self.pred_sales_lookback = None
 
         if y_pred_sales is not None:
             self.pred_sales = PredictionResults(
-                self.dep_var_test, self.ind_vars, field_prediction, df_sales, max_trim
+                self.dep_var_test, self.ind_vars, field_prediction, df_sales, max_trim, self.is_land_predictions
             )
 
             # If we have predictions for sales, we also have predictions for the training subset
@@ -1241,8 +1257,18 @@ class SingleModelResults:
 
             df_train = df_train[df_train["key_sale"].isin(ds.train_keys)]
             self.pred_train = PredictionResults(
-                self.dep_var_test, self.ind_vars, field_prediction, df_train, max_trim
+                self.dep_var_test, self.ind_vars, field_prediction, df_train, max_trim, self.is_land_predictions
             )
+            
+            # Get prediction results ONLY for the lookback period
+            start_date, end_date = get_look_back_dates(ds.settings)
+            df_sales_lookback = filter_df_by_date_range(df_sales, start_date, end_date)
+            
+            self.pred_sales_lookback = PredictionResults(
+                self.dep_var_test, self.ind_vars, field_prediction, df_sales_lookback, max_trim, self.is_land_predictions
+            )
+            self.df_sales_lookback = df_sales_lookback
+            
 
         timing.stop("stats_sales")
 
@@ -1323,14 +1349,14 @@ class SingleModelResults:
         str += f"---->PRB    : {self.pred_test.ratio_study.prb:8.4f}\n"
         str += f"\n"
         str += f"-->All sales set, rows: {len(self.pred_sales.y)}\n"
-        str += f"---->RMSE   : {self.pred_sales.rmse:8.0f}\n"
-        str += f"---->R2     : {self.pred_sales.r2:8.4f}\n"
-        str += f"---->Adj R2 : {self.pred_sales.adj_r2:8.4f}\n"
-        str += f"---->Slope  : {self.pred_sales.slope:8.4f}\n"
-        str += f"---->M.Ratio: {self.pred_sales.ratio_study.median_ratio:8.4f}\n"
-        str += f"---->COD    : {self.pred_sales.ratio_study.cod:8.4f}\n"
-        str += f"---->PRD    : {self.pred_sales.ratio_study.prd:8.4f}\n"
-        str += f"---->PRB    : {self.pred_sales.ratio_study.prb:8.4f}\n"
+        str += f"---->RMSE   : {self.pred_sales_lookback.rmse:8.0f}\n"
+        str += f"---->R2     : {self.pred_sales_lookback.r2:8.4f}\n"
+        str += f"---->Adj R2 : {self.pred_sales_lookback.adj_r2:8.4f}\n"
+        str += f"---->Slope  : {self.pred_sales_lookback.slope:8.4f}\n"
+        str += f"---->M.Ratio: {self.pred_sales_lookback.ratio_study.median_ratio:8.4f}\n"
+        str += f"---->COD    : {self.pred_sales_lookback.ratio_study.cod:8.4f}\n"
+        str += f"---->PRD    : {self.pred_sales_lookback.ratio_study.prd:8.4f}\n"
+        str += f"---->PRB    : {self.pred_sales_lookback.ratio_study.prb:8.4f}\n"
         str += f"---->CHD    : {self.chd:8.4f}\n"
         str += f"\n"
         return str
@@ -1565,7 +1591,7 @@ def predict_mra(
     timing.stop("predict_univ")
 
     timing.stop("total")
-
+    
     results = SingleModelResults(
         ds,
         "prediction",
