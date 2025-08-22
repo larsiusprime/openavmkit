@@ -1,6 +1,13 @@
 import gc
 import math
 import os
+from datetime import date
+
+import tempfile
+import zipfile
+import shutil
+
+from pathlib import Path
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -4844,3 +4851,190 @@ def get_sup_model_group(sup: SalesUniversePair, model_group: str):
     df_univ = sup.universe[sup.universe["model_group"].eq(model_group)].copy()
     return SalesUniversePair(df_sales, df_univ)
     
+
+def write_parquet(df, path):
+    """
+    Write data to a parquet file.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Data to be written
+    path : str
+        File path for saving the parquet.
+    """
+    
+    if not path.endswith(".parquet"):
+        raise ValueError("Path must end with .parquet!")
+    
+    # If it has a geometry column, write as GeoParquet
+    if "geometry" in df.columns:
+        # Ensure it's a GeoDataFrame
+        gdf = df if isinstance(df, gpd.GeoDataFrame) else gpd.GeoDataFrame(df, geometry="geometry", crs=getattr(df, "crs", None))
+
+        # You MUST have a CRS for it to be recorded in metadata
+        if gdf.crs is None:
+            raise ValueError(f"{path}: geometry has no CRS. Set it (e.g., gdf = gdf.set_crs('EPSG:4326')) before writing.")
+
+        # GeoPandas writes WKB + GeoParquet metadata (including CRS)
+        gdf.to_parquet(path, engine="pyarrow", index=False)
+    else:
+        # Regular table
+        df.to_parquet(path, engine="pyarrow", index=False)
+
+
+def write_gpkg(df, path):
+    """
+    Write data to a geopackage file.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Data to be written
+    path : str
+        File path for saving the geopackage.
+    """
+    if not path.endswith(".gpkg"):
+        raise ValueError("Path must end with .gpkg!")
+    
+    # If it has a geometry column, write as GeoParquet
+    if "geometry" in df.columns:
+        # Ensure it's a GeoDataFrame
+        gdf = df if isinstance(df, gpd.GeoDataFrame) else gpd.GeoDataFrame(df, geometry="geometry", crs=getattr(df, "crs", None))
+       
+        # You MUST have a CRS for it to be recorded in metadata
+        if gdf.crs is None:
+            raise ValueError(f"{path}: geometry has no CRS. Set it (e.g., gdf = gdf.set_crs('EPSG:4326')) before writing.")
+        
+        gdf.to_file(path, driver='GPKG', layer='name', mode='w')
+    else:
+        raise ValueError("cannot write to gpkg without geometry")
+
+
+def write_shapefile(df, path):
+    """
+    Write data to a shapefile file.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Data to be written
+    path : str
+        File path for saving the shapefile.
+    """
+    
+    if not path.endswith(".shp"):
+        raise ValueError("Path must end with .shp!")
+    
+    # If it has a geometry column, write as GeoParquet
+    if "geometry" in df.columns:
+        # Ensure it's a GeoDataFrame
+        gdf = df if isinstance(df, gpd.GeoDataFrame) else gpd.GeoDataFrame(df, geometry="geometry", crs=getattr(df, "crs", None))
+
+        # You MUST have a CRS for it to be recorded in metadata
+        if gdf.crs is None:
+            raise ValueError(f"{path}: geometry has no CRS. Set it (e.g., gdf = gdf.set_crs('EPSG:4326')) before writing.")
+
+        gdf.to_file(path)
+    else:
+        raise ValueError("cannot write to gpkg without geometry")
+
+
+def write_zipped_shapefile(df, path: str) -> Path:
+    """
+    Write a zipped ESRI Shapefile. Produces a single {name}.shp.zip with the
+    shapefile parts (name.shp, .shx, .dbf, .prj, .cpg, etc.) at the ZIP root.
+
+    Parameters
+    ----------
+    df : pd.DataFrame or gpd.GeoDataFrame
+        Data to be written (must include a 'geometry' column and a CRS).
+    path : str
+        Destination path ending with '.shp.zip' (e.g., 'out/roads.shp.zip').
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the created .shp.zip
+    """
+    p = Path(path)
+
+    # Require ".shp.zip" exactly, per your spec
+    if p.suffixes[-2:] != [".shp", ".zip"]:
+        raise ValueError("Path must end with .shp.zip (e.g., 'out/roads.shp.zip').")
+
+    # layer name (strip .zip then .shp)
+    layer = Path(p.stem).stem
+    if not layer:
+        raise ValueError("Could not derive layer name from path.")
+
+    # Make sure parent directory exists
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write shapefile into a temp dir, then zip and move atomically
+    with tempfile.TemporaryDirectory() as tmpdir_str:
+        tmpdir = Path(tmpdir_str)
+        shp_path = tmpdir / f"{layer}.shp"
+
+        # Reuse your existing function (validates geometry + CRS)
+        write_shapefile(df, str(shp_path))
+
+        # Common shapefile sidecar extensions we may need to include if present
+        sidecars = {
+            ".shp", ".shx", ".dbf", ".prj", ".cpg",
+            ".qix", ".sbn", ".sbx", ".fbn", ".fbx",
+            ".ain", ".aih", ".ixs", ".mxs", ".atx",
+            ".xml", ".qpj"
+        }
+
+        tmp_zip = tmpdir / f"{layer}.shp.zip"
+        with zipfile.ZipFile(tmp_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for ext in sorted(sidecars):
+                f = tmpdir / f"{layer}{ext}"
+                if f.exists():
+                    # Store with just the filename at the ZIP root
+                    zf.write(f, arcname=f.name)
+
+        # Move the finished ZIP to the destination (overwrites if exists)
+        shutil.move(str(tmp_zip), str(p))
+
+    return p
+
+
+def filter_df_by_date_range(df, start_date, end_date):
+    """
+    Filter df to rows where 'sale_date' is between start_date and end_date (inclusive).
+    - start_date/end_date may be 'YYYY-MM-DD' strings or date/datetime/Timestamp.
+    - Time-of-day and time zones are ignored.
+    - Rows with missing/unparseable 'sale_date' are dropped.
+    """
+    import pandas as pd
+    from datetime import date, datetime, timedelta
+    from pandas.api.types import is_datetime64tz_dtype
+
+    def _as_date(x):
+        # If already a date (but not datetime), keep it
+        if isinstance(x, date) and not isinstance(x, datetime):
+            return x
+        # Otherwise parse and take the calendar date
+        return pd.to_datetime(x).date()
+
+    start_d = _as_date(start_date)
+    end_d   = _as_date(end_date)
+    if start_d > end_d:
+        raise ValueError("start_date cannot be after end_date.")
+
+    # Coerce to datetime; tolerate bad/missing → NaT
+    s = pd.to_datetime(df["sale_date"], errors="coerce")
+
+    # Strip timezone info if present, preserving local wall time
+    if is_datetime64tz_dtype(s.dtype):
+        s = s.dt.tz_localize(None)
+
+    # Build inclusive range using an exclusive upper bound
+    start_ts = pd.Timestamp(start_d)                       # 00:00:00 on start day
+    end_excl = pd.Timestamp(end_d) + pd.Timedelta(days=1)  # first moment after end day
+
+    # NaT values compare as False and will be dropped
+    mask = s.ge(start_ts) & s.lt(end_excl)
+    return df.loc[mask].copy()
