@@ -88,7 +88,8 @@ from openavmkit.utilities.settings import (
     get_fields_boolean,
     _get_sales,
     _simulate_removed_buildings,
-    _get_max_ratio_study_trim
+    _get_max_ratio_study_trim,
+    get_look_back_dates
 )
 from openavmkit.utilities.stats import (
     calc_vif_recursive_drop,
@@ -99,6 +100,7 @@ from openavmkit.utilities.stats import (
     calc_r2,
     calc_cross_validation_score,
     calc_cod,
+    calc_mse,
     trim_outliers_mask,
 )
 from openavmkit.utilities.timing import TimingData
@@ -183,13 +185,13 @@ class BenchmarkResults:
             self.df_stats_test_post_val is not None
             and not self.test_post_val_empty
         ):
-            result += "Test set (post-valuation-date only):\n"
+            result += "Holdout set (post-valuation-date only):\n"
             result += _format_benchmark_df(self.df_stats_test_post_val)
             result += "\n\n"
-        result += "Test set:\n"
+        result += "Holdout set:\n"
         result += _format_benchmark_df(self.df_stats_test)
         result += "\n\n"
-        result += "Universe set:\n"
+        result += "Study set:\n"
         result += _format_benchmark_df(self.df_stats_full)
         result += "\n\n"
         return result
@@ -1538,7 +1540,7 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
                 pred_results = results.pred_test
                 subset = "Test set (post-valuation date)"
             else:
-                pred_results = results.pred_sales
+                pred_results = results.pred_sales_lookback
                 subset = "Universe set"
 
             data["model"].append(key)
@@ -1918,6 +1920,7 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
         "sales": results.df_sales[["key_sale"] + fields].copy(),
         "universe": results.df_universe[fields].copy(),
         "test": results.df_test[["key_sale"] + fields].copy(),
+        "sales_lookback": results.df_sales_lookback[["key_sale"] + fields].copy(),
     }
 
     for key in dfs:
@@ -3166,19 +3169,12 @@ def _run_hedonic_models(
         print("")
 
 
-def _model_performance_plots(
-    model_group: str, all_results: MultiModelResults, title: str
-):
-    # Get first model_results from all_results:
-    first_results: SingleModelResults = list(all_results.model_results.values())[0]
-    test_count = len(first_results.df_test)
-    sales_count = len(first_results.df_sales)
-
-    sale_date = first_results.df_test["sale_date"]
+def _fix_earliest_latest_dates(df: pd.DataFrame):
+    sale_date = df["sale_date"]
     if sale_date is None:
         print("WARNING: sale_date is None, using index instead")
-        earliest_date = "???"
-        latest_date = "???"
+        earliest_date_test = "???"
+        latest_date_test = "???"
     elif sale_date.dtype == "datetime64[ns]":
         earliest_date = sale_date.min()
         latest_date = sale_date.max()
@@ -3193,38 +3189,54 @@ def _model_performance_plots(
             latest_date = "???"
     else:
         # Convert to datetime if not already
-        first_results.df_test["sale_date"] = pd.to_datetime(
-            first_results.df_test["sale_date"], errors="coerce"
+        df["sale_date"] = pd.to_datetime(
+            df["sale_date"], errors="coerce"
         )
-        if first_results.df_test["sale_date"].isna().any():
+        if df["sale_date"].isna().any():
             print("WARNING: sale_date has NaN values after conversion")
         # Get min and max dates
         # using the converted column
-        earliest_date = first_results.df_test["sale_date"].min()
-        latest_date = first_results.df_test["sale_date"].max()
+        earliest_date = df["sale_date"].min()
+        latest_date = df["sale_date"].max()
+    return earliest_date, latest_date
 
+
+def _model_performance_plots(
+    model_group: str, all_results: MultiModelResults, title: str
+):
+    # Get first model_results from all_results:
+    first_results: SingleModelResults = list(all_results.model_results.values())[0]
+    test_count = len(first_results.df_test)
+    sales_count = len(first_results.df_sales_lookback)
+    
+    earliest_date_test, latest_date_test = _fix_earliest_latest_dates(first_results.df_test)
+    earliest_date_study, latest_date_study = _fix_earliest_latest_dates(first_results.df_sales_lookback)
+    
     for model_name, model_result in all_results.model_results.items():
 
         dfs = {
             "test": model_result.df_test.copy(),
-            "sales": model_result.df_sales.copy(),
+            "sales": model_result.df_sales_lookback.copy(),
         }
 
         for key in dfs:
             df = dfs[key]
+            the_count = len(df)
+            sales_count = len(model_result.pred_sales_lookback.y)
 
             label = key.upper()
-
+            
             if key == "test":
                 df["y_pred"] = model_result.pred_test.y_pred
                 df["y_true"] = model_result.pred_test.y
-                the_count = test_count
-
+                earliest_date = earliest_date_test
+                latest_date = latest_date_test
             else:
-                df["y_pred"] = model_result.pred_sales.y_pred
-                df["y_true"] = model_result.pred_sales.y
-                the_count = sales_count
-
+                df["y_pred"] = model_result.pred_sales_lookback.y_pred
+                df["y_true"] = model_result.pred_sales_lookback.y
+                earliest_date = earliest_date_study
+                latest_date = latest_date_study
+                
             # Note any NA predictions:
             for field in ["y_pred", "y_true"]:
                 if df[field].isna().any():
@@ -3256,18 +3268,10 @@ def _model_shaps(model_group: str, all_results: MultiModelResults, title: str):
         compute_shap(smr, True, _title)
 
 
-def _model_performance_metrics(
-    model_group: str, 
-    all_results: MultiModelResults, 
-    title: str,
-    max_trim: float
-):
-    # Get first model_results from all_results:
-    first_results: SingleModelResults = list(all_results.model_results.values())[0]
-    test_count = len(first_results.df_test)
-    sales_count = len(first_results.df_sales)
-
-    sale_date = first_results.df_test["sale_date"]
+def _get_earliest_and_latest_date(df: pd.DataFrame):
+    
+    sale_date = df["sale_date"]
+    
     if sale_date is None:
         print("WARNING: sale_date is None, using index instead")
         earliest_date = "???"
@@ -3277,15 +3281,15 @@ def _model_performance_metrics(
         latest_date = sale_date.max()
     else:
         # Convert to datetime if not already
-        first_results.df_test["sale_date"] = pd.to_datetime(
-            first_results.df_test["sale_date"], errors="coerce"
+        df["sale_date"] = pd.to_datetime(
+            df["sale_date"], errors="coerce"
         )
-        if first_results.df_test["sale_date"].isna().any():
+        if df["sale_date"].isna().any():
             print("WARNING: sale_date has NaN values after conversion")
         # Get min and max dates
         # using the converted column
-        earliest_date = first_results.df_test["sale_date"].min()
-        latest_date = first_results.df_test["sale_date"].max()
+        earliest_date = df["sale_date"].min()
+        latest_date = df["sale_date"].max()
 
         if not pd.isna(earliest_date):
             earliest_date = earliest_date.strftime("%Y-%m-%d")
@@ -3296,6 +3300,7 @@ def _model_performance_metrics(
             latest_date = latest_date.strftime("%Y-%m-%d")
         else:
             latest_date = "N/A"
+    return earliest_date, latest_date
 
     # Add performance metrics table
     text = f"\n************************************************************\n"
