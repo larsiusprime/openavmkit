@@ -357,7 +357,8 @@ def _run_ratio_study_breakdowns(
     df_sales = df_sales[df_sales["sale_year"].ge(look_back_year)]
 
     # insert "overall" breakdown into the first position:
-    breakdowns.insert(0, {"by": "overall"})
+    breakdowns.insert(0, {"by": "overall_i"})
+    breakdowns.insert(1, {"by": "overall_v"})
 
     df_v = get_vacant_sales(df_sales, settings)
     df_i = get_vacant_sales(df_sales, settings, invert=True)
@@ -385,15 +386,32 @@ def _run_ratio_study_breakdowns(
 
         predictions = df_sales[prediction_field].values
         ground_truth = df_sales["sale_price"].values
-
         idx_na = pd.isna(predictions) | pd.isna(ground_truth)
         predictions = predictions[~idx_na]
         ground_truth = ground_truth[~idx_na]
+        
+        predictions_i = df_i[prediction_field].values
+        ground_truth_i = df_i["sale_price"].values
+        idx_na_i = pd.isna(predictions_i) | pd.isna(ground_truth_i)
+        predictions_i = predictions_i[~idx_na_i]
+        ground_truth_i = ground_truth_i[~idx_na_i]
+        
+        predictions_v = df_v[prediction_field].values
+        ground_truth_v = df_v["sale_price"].values
+        idx_na_v = pd.isna(predictions_v) | pd.isna(ground_truth_v)
+        predictions_v = predictions_v[~idx_na_v]
+        ground_truth_v = ground_truth_v[~idx_na_v]
         
         max_trim = _get_max_ratio_study_trim(settings, model_group)
 
         results["overall"] = RatioStudyBootstrapped(
             predictions, ground_truth, max_trim, confidence_interval, iterations
+        )
+        results["overall_i"] = RatioStudyBootstrapped(
+            predictions_i, ground_truth_i, max_trim, confidence_interval, iterations
+        )
+        results["overall_v"] = RatioStudyBootstrapped(
+            predictions_v, ground_truth_v, max_trim, confidence_interval, iterations
         )
 
         for is_vacant in [False, True]:
@@ -410,7 +428,7 @@ def _run_ratio_study_breakdowns(
 
             for breakdown in breakdowns:
                 by = breakdown.get("by")
-                if by == "overall":
+                if "overall" in by:
                     continue
                 if "<" in by:
                     # TODO: when we have variable replacement in settings maybe we won't need this anymore
@@ -585,55 +603,76 @@ def _write_ratio_study_report(
     locality_name = settings.get("locality", {}).get("name", "Local Jurisdiction")
 
     dd = get_data_dictionary(settings)
-
-    data_overall = {
-        "Statistic": ["Count", "Median ratio", "COD", "COD 95% conf. range"],
-        locality_name: [],
-        "Our results": [],
-    }
-
-    data_overall_trim = {
-        "Statistic": ["Count", "Median ratio", "COD", "COD 95% conf. range"],
-        locality_name: [],
-        "Our results": [],
-    }
+    
+    # --
+    
+    data_overall = {}
+    dfs_overall = {}
+    for iv in ["i", "v"]:
+        for trim in ["", "_trim"]:
+            data_overall[f"{iv}{trim}"] = {
+                "Statistic": ["Count", "Median ratio", "COD", "COD 95% conf. range"],
+                locality_name: [],
+                "Our results": [],
+            }
 
     impr_fields = get_fields_impr_as_list(settings)
     
     max_trim = _get_max_ratio_study_trim(settings, model_group)
+    for iv in ["i", "v"]:
+        for modeler in all_results:
+            modeler_entry = all_results[modeler]
+            if modeler_entry == {}:
+                overall_entry = RatioStudyBootstrapped(np.array([]), np.array([]), max_trim)
+            else:
+                overall_entry: RatioStudyBootstrapped = modeler_entry.get(f"overall_{iv}")
+
+            data_untrim = []
+            data_trim = []
+
+            data_untrim.append(f"{overall_entry.count:,.0f}")
+            data_untrim.append(f"{overall_entry.median_ratio.value:5.2f}")
+            data_untrim.append(f"{overall_entry.cod.value:5.1f}")
+            data_untrim.append(
+                f"{overall_entry.cod.low:6.1f} - {overall_entry.cod.high:6.1f}"
+            )
+
+            data_trim.append(f"{overall_entry.count_trim:,.0f}")
+            data_trim.append(f"{overall_entry.median_ratio.value:5.2f}")
+            data_trim.append(f"{overall_entry.cod_trim.value:5.1f}")
+            data_trim.append(
+                f"{overall_entry.cod_trim.low:6.1f} - {overall_entry.cod_trim.high:6.1f}"
+            )
+            
+            if modeler == "assessor":
+                data_overall[iv][locality_name] = data_untrim
+                data_overall[f"{iv}{trim}"][locality_name] = data_trim
+            else:
+                data_overall[iv]["Our results"] = data_untrim
+                data_overall[f"{iv}{trim}"]["Our results"] = data_trim
+            
+    df_untrim_i = pd.DataFrame(data=data_overall["i"])
+    df_untrim_v = pd.DataFrame(data=data_overall["v"])
+    df_trim_i = pd.DataFrame(data=data_overall["i_trim"])
+    df_trim_v = pd.DataFrame(data=data_overall["v_trim"])
+
+    overall_results = "#### Improved property only (untrimmed)\n"
+    overall_results += df_to_markdown(df_untrim_i)
+    overall_results += "\n\n"
+    overall_results += "#### Improved property only (trimmed)\n"
+    overall_results += df_to_markdown(df_trim_i)
+    overall_results += "\n\n"
+    overall_results += "#### Vacant land only (untrimmed)\n"
+    overall_results += df_to_markdown(df_untrim_v)
+    overall_results += "\n\n"
+    overall_results += "#### Vacant land only (trimmed)\n"
+    overall_results += df_to_markdown(df_trim_v)
+    overall_results += "\n\n"
+    
     for modeler in all_results:
         modeler_entry = all_results[modeler]
-        if modeler_entry == {}:
-            overall_entry = RatioStudyBootstrapped(np.array([]), np.array([]), max_trim)
-        else:
-            overall_entry: RatioStudyBootstrapped = modeler_entry.get("overall")
-
-        data_untrim = []
-        data_trim = []
-
-        data_untrim.append(f"{overall_entry.count:,.0f}")
-        data_untrim.append(f"{overall_entry.median_ratio:5.2f}")
-        data_untrim.append(f"{overall_entry.cod:5.1f}")
-        data_untrim.append(
-            f"{overall_entry.cod_ci_low:6.1f} - {overall_entry.cod_ci_high:6.1f}"
-        )
-
-        data_trim.append(f"{overall_entry.count_trim:,.0f}")
-        data_trim.append(f"{overall_entry.median_ratio:5.2f}")
-        data_trim.append(f"{overall_entry.cod_trim:5.1f}")
-        data_trim.append(
-            f"{overall_entry.cod_trim_ci_low:6.1f} - {overall_entry.cod_trim_ci_high:6.1f}"
-        )
-
-        if modeler == "assessor":
-            data_overall[locality_name] = data_untrim
-            data_overall_trim[locality_name] = data_trim
-        else:
-            data_overall["Our results"] = data_untrim
-            data_overall_trim["Our results"] = data_trim
-
         for vacant_status in modeler_entry:
-            if vacant_status == "overall":
+            if "overall" in vacant_status:
                 continue
             vacant_name = (
                 "vacant land" if vacant_status == "vacant" else "improved property"
@@ -665,11 +704,11 @@ def _write_ratio_study_report(
                     data[by_name].append(cluster_key)
                     data["Count"].append(f"{rs.count:,.0f}")
 
-                    median_ratio = _format_stat(rs.median_ratio)
-                    cod = _format_stat(rs.cod)
-                    cod_ci = _format_pair(rs.cod_ci_low, rs.cod_ci_high)
-                    cod_trim = _format_stat(rs.cod_trim)
-                    cod_trim_ci = _format_pair(rs.cod_trim_ci_low, rs.cod_trim_ci_high)
+                    median_ratio = _format_stat(rs.median_ratio.value)
+                    cod = _format_stat(rs.cod.value)
+                    cod_ci = _format_pair(rs.cod.low, rs.cod.high)
+                    cod_trim = _format_stat(rs.cod_trim.value)
+                    cod_trim_ci = _format_pair(rs.cod_trim.low, rs.cod_trim.high)
 
                     data["Median ratio"].append(median_ratio)
                     data["COD"].append(cod)
@@ -688,14 +727,8 @@ def _write_ratio_study_report(
                     else:
                         modeler_results += md_chunk
 
-    df_untrim = pd.DataFrame(data=data_overall)
-    df_trim = pd.DataFrame(data=data_overall_trim)
-
-    overall_results = "#### Untrimmed\n\n"
-    overall_results += df_to_markdown(df_untrim)
-    overall_results += "\n\n"
-    overall_results += "#### Trimmed\n\n"
-    overall_results += df_to_markdown(df_trim)
+    
+    ##---
 
     report.set_var("overall_results", overall_results)
     report.set_var("locality_results", locality_results)
