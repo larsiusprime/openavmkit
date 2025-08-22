@@ -1244,14 +1244,14 @@ def _do_perform_spatial_inference(
         inference_mask = pd.Series(False, index=df.index)
         filter_result = select_filter(df, filters)
 
-        if isinstance(filter_result, pd.DataFrame):
-            filter_result = filter_result.iloc[:, 0]
-
-        if isinstance(filter_result, pd.Series):
-            common_indices = df.index.intersection(filter_result.index)
-            inference_mask.loc[common_indices] = filter_result.loc[
-                common_indices
-            ].astype(bool)
+        if hasattr(filter_result, 'to_numpy'):
+            if hasattr(filter_result, 'columns'):  # DataFrame-like
+                filter_result = filter_result.iloc[:, 0]
+            elif hasattr(filter_result, 'index'):  # Series-like
+                common_indices = df.index.intersection(filter_result.index)
+                inference_mask.loc[common_indices] = filter_result.loc[
+                    common_indices
+                ].astype(bool)
         else:
             if len(filter_result) == len(df):
                 inference_mask = pd.Series(filter_result, index=df.index).astype(bool)

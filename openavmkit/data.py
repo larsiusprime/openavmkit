@@ -4,7 +4,7 @@ import os
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Tuple
 
 import shapely
 
@@ -40,13 +40,16 @@ from openavmkit.utilities.data import (
     combine_dfs,
     div_series_z_safe,
     merge_and_stomp_dfs,
+    fill_from_df
 )
 from openavmkit.utilities.geometry import (
     get_crs,
     clean_geometry,
     identify_irregular_parcels,
     geolocate_point_to_polygon,
+    ensure_geometries,
     is_likely_epsg4326,
+    detect_crs_from_parquet
 )
 from openavmkit.utilities.settings import (
     get_fields_categorical,
@@ -683,7 +686,9 @@ def enrich_df_streets(
 
 
 def enrich_sup_spatial_lag(
-    sup: SalesUniversePair, settings: dict, verbose: bool = False
+    sup: SalesUniversePair, 
+    settings: dict, 
+    verbose: bool = False
 ) -> SalesUniversePair:
     """Enrich the sales and universe DataFrames with spatial lag features.
 
@@ -708,29 +713,79 @@ def enrich_sup_spatial_lag(
     SalesUniversePair
         Enriched SalesUniversePair with spatial lag features.
     """
+    
+    mg_ids = get_model_group_ids(settings)
+    
+    df_sales = sup.sales
+    df_universe = sup.universe
+    
+    # For each model group, calculate its spatial lag surface(s)
+    for mg in mg_ids:
+        sup_mg = _enrich_sup_spatial_lag_for_model_group(
+            sup,
+            settings,
+            mg,
+            verbose
+        )
+        if sup_mg is None:
+            continue
+        # For each spatial lag surface, copy it back to the master SalesUniversePair
+        sl_cols = [field for field in sup_mg.universe.columns if field.startswith("spatial_lag_")]
+        for col in sl_cols:
+            # Only fill in values that haven't been set already
+            if col in sup_mg.sales:
+                df_sales = fill_from_df(df_sales, sup_mg.sales, "key_sale", col)
+            if col in sup_mg.universe:
+                df_universe = fill_from_df(df_universe, sup_mg.universe, "key", col)
+    
+    sup.sales = df_sales
+    sup.universe = df_universe
+    
+    return sup
 
-    BANDWIDTH_MILES = 0.5  # distance at which confidence → 0
+
+def _enrich_sup_spatial_lag_for_model_group(
+    sup: SalesUniversePair, 
+    settings: dict, 
+    model_group: str,
+    verbose: bool = False
+) -> SalesUniversePair:
+
+    s_sl = (
+        settings.get("data", {})
+        .get("process", {})
+        .get("enrich", {})
+        .get("spatial_lag", {})
+    )
+    
+    s_mgs = s_sl.get("model_groups", {})
+    if model_group not in s_mgs:
+        warnings.warn(f"Could not find model entry \"{model_group}\" in process.enrich.spatial_lag.model_groups, skipping...")
+        return None
+    
+    entry = s_mgs.get(model_group)
+    sample_from_mgs = entry.get("sample_from", [])
+    if len(sample_from_mgs) == 0:
+        raise ValueError(f"'process.enrich.spatial_lag.model_groups.{model_group}' does not specify \"sample_from\"! Provide an explicit list of model groups you are sampling from. A safe default is just the same model group.")
+    
+    BANDWIDTH_MILES = 0.5  # distance at which confidence --> 0
     METRES_PER_MILE = 1609.344
     D_SCALE = BANDWIDTH_MILES * METRES_PER_MILE
 
     df_sales = sup.sales.copy()
     df_universe = sup.universe.copy()
 
-    s_sl = (
-        settings.get("data", {})
-        .get("process", {})
-        .get("enrich", {})
-        .get("universe", {})
-        .get("spatial_lag", {})
-    )
-    ex_model_groups = s_sl.get("exclude_model_groups", [])
-
     df_hydrated = get_hydrated_sales_from_sup(sup)
     train_keys, test_keys = get_train_test_keys(df_hydrated, settings)
-
-    for mg in ex_model_groups:
-        df_hydrated = df_hydrated[df_hydrated["model_group"].ne(mg)]
-
+    
+    # only WRITE TO the given model group
+    df_hydrated_mg = df_hydrated[df_hydrated["model_group"].eq(model_group)]
+    df_sales = df_sales[df_sales["key_sale"].isin(df_hydrated_mg["key_sale"].values)]
+    df_universe = df_universe[df_universe["model_group"].eq(model_group)]
+    
+    # only SAMPLE FROM the designated source model groups
+    df_hydrated = df_hydrated[df_hydrated["model_group"].isin(sample_from_mgs)]
+    
     sale_field = get_sale_field(settings)
     sale_field_vacant = f"{sale_field}_vacant"
 
@@ -810,10 +865,6 @@ def enrich_sup_spatial_lag(
         n_na_coords = universe_coords.shape[0] - np.count_nonzero(
             pd.isna(universe_coords).any(axis=1)
         )
-        if verbose:
-            print(
-                f"Number of parcels in universe with coordinates: {n_na_coords} / {universe_coords.shape[0]}"
-            )
 
         # Query the tree: for each parcel in df_universe, find the k nearest sales
         # distances: shape (n_universe, k); indices: corresponding indices in df_sales
@@ -883,10 +934,23 @@ def enrich_sup_spatial_lag(
         # ------------------------------------------------
 
     df_test = df_sales.loc[df_sales["key_sale"].isin(test_keys)].copy()
-    df_universe = _enrich_universe_spatial_lag(df_universe, df_test)
-
-    sup.set("sales", df_sales)
-    sup.set("universe", df_universe)
+    
+    # we pass in the original sup.universe so we can re-select model groups properly within this function
+    df_universe_enriched = _enrich_universe_spatial_lag(
+        sup.universe,
+        df_test,
+        model_group=model_group,
+        sample_from_mgs=sample_from_mgs,
+        settings=settings
+    )
+    
+    # we merge back all new spatial lag fields back into the universe
+    sl_fields = [field for field in df_universe_enriched.columns if field.startswith("spatial_lag_")]
+    for field in sl_fields:
+        df_universe = fill_from_df(df_universe, df_universe_enriched, "key", field)
+    
+    # we return a new sup containing our modified sales & universe
+    sup = SalesUniversePair(df_sales, df_universe)
     return sup
 
 
@@ -990,7 +1054,7 @@ def _enrich_data(
     Parameters
     ----------
     sup : SalesUniversePair
-        SalesUniversePair containing sales and universe data.
+        The SalesUniversePair containing sales and universe data.
     s_enrich : dict
         Enrichment instructions.
     dataframes : dict[str, pd.DataFrame]
@@ -1006,101 +1070,74 @@ def _enrich_data(
         Enriched SalesUniversePair.
     """
 
-    supkeys: list[SUPKey] = ["universe", "sales"]
+    if verbose:
+        print(f"Enriching data...")
 
-    # Add the "both" entries to both "universe" and "sales" and delete the "both" entry afterward.
-    if "both" in s_enrich:
-        s_enrich2 = s_enrich.copy()
-        s_both = s_enrich.get("both")
-        for key in s_both:
-            for supkey in supkeys:
-                sup_entry = s_enrich.get(supkey, {})
-                if key in sup_entry:
-                    # Check if the key already exists on "sales" or "universe"
-                    raise ValueError(
-                        f'Cannot enrich \'{key}\' twice -- found in both "both" and "{supkey}". Please remove one.'
-                    )
-                entry = s_both[key]
-                # add the entry from "both" to both the "sales" & "universe" entry
-                sup_entry2 = s_enrich2.get(supkey, {})
-                sup_entry2[key] = entry
-                s_enrich2[supkey] = sup_entry2
-        del s_enrich2["both"]  # remove the now-redundant "both" key
-        s_enrich = s_enrich2
+    df_sales = sup.sales
+    df_univ = sup.universe
 
-    for supkey in supkeys:
-        if verbose:
-            print(f"Enriching {supkey}...")
+    if s_enrich is not None:
 
-        df = sup.sales if supkey == "sales" else sup.universe
+        # do spatial joins on user data
+        df_univ = _enrich_df_spatial_joins(
+            df_univ, s_enrich, dataframes, settings, verbose=verbose
+        )
 
-        s_enrich_local: dict | None = s_enrich.get(supkey, None)
+        # add building footprints
+        df_univ = _enrich_df_overture(
+            df_univ, s_enrich, dataframes, settings, verbose=verbose
+        )
 
-        if s_enrich_local is not None:
-            # Handle Census enrichment for universe if enabled
-            if supkey == "universe":
+        # add lat/lon/rectangularity etc.
+        df_univ = _basic_geo_enrichment(df_univ, settings, verbose=verbose)
 
-                # do spatial joins on user data
-                df = _enrich_df_spatial_joins(
-                    df, s_enrich_local, dataframes, settings, verbose=verbose
-                )
-
-                # add building footprints
-                df = _enrich_df_overture(
-                    df, s_enrich_local, dataframes, settings, verbose=verbose
-                )
-
-                # add lat/lon/rectangularity etc.
-                df = _basic_geo_enrichment(df, settings, verbose=verbose)
-
-                if "census" in s_enrich_local:
-                    df = _enrich_df_census(
-                        df, s_enrich_local.get("census", {}), verbose=verbose
-                    )
-                if "openstreetmap" in s_enrich_local:
-                    df = _enrich_df_openstreetmap(
-                        df,
-                        s_enrich_local.get("openstreetmap", {}),
-                        s_enrich_local,
-                        verbose=verbose,
-                        use_cache=True,
-                    )
-
-                # add distances to user-defined locations
-                df = _enrich_df_user_distances(
-                    df, s_enrich_local, dataframes, settings, verbose=verbose
-                )
-
-                # fill in missing data based on geospatial patterns (should happen after all other enrichments have been done)
-                df = _enrich_spatial_inference(
-                    df, s_enrich_local, dataframes, settings, verbose=verbose
-                )
-
-                # TODO: Universe Permit enrichment
-                # if "permits" in s_enrich_local:
-                # df = _enrich_permits(df, s_enrich_local, dataframes, settings, False, verbose=verbose)
-
-            elif supkey == "sales":
-                if "permits" in s_enrich_local:
-                    df = _enrich_permits(
-                        df, s_enrich_local, dataframes, settings, True, verbose=verbose
-                    )
-
-        # User calcs apply at the VERY end of enrichment, after all automatic enrichments have been applied
-        if s_enrich_local is not None:
-            df = _enrich_df_basic(
-                df,
-                s_enrich_local,
-                dataframes,
-                settings,
-                supkey == "sales",
-                verbose=verbose,
+        # handle Census enrichment for universe if enabled
+        if "census" in s_enrich:
+            df_univ = _enrich_df_census(
+                df_univ, s_enrich.get("census", {}), verbose=verbose
             )
 
-        # Enforce vacant status
-        df = _enrich_vacant(df, settings)
+        # handle distance enrichment for universe if enabled
+        if "distances" in s_enrich:
+            df_univ = _enrich_df_distances(
+                df_univ,
+                s_enrich.get("distances", {}),
+                dataframes,
+                verbose=verbose,
+                use_cache=True,
+            )
 
-        sup.set(supkey, df)
+        if "permits" in s_enrich:
+            # df_univ = _enrich_permits(
+            #     df_univ, s_enrich, dataframes, settings, is_sales=False, verbose=verbose
+            # )
+            df_sales = _enrich_permits(
+                df_sales, s_enrich, dataframes, settings, is_sales=True, verbose=verbose
+            )
+
+        # fill in missing data based on geospatial patterns (should happen after all other enrichments have been done)
+        if "infer" in s_enrich:
+            df_univ = _enrich_spatial_inference(
+                df_univ, s_enrich, dataframes, settings, verbose=verbose
+            )
+
+    # User calcs apply at the VERY end of enrichment, after all automatic enrichments have been applied
+    if s_enrich is not None:
+        df_univ = _enrich_df_basic(
+            df_univ,
+            s_enrich,
+            dataframes,
+            settings,
+            is_sales=False,
+            verbose=verbose,
+        )
+
+    # Enforce vacant status
+    df_univ = _enrich_vacant(df_univ, settings)
+    df_sales = _enrich_vacant(df_sales, settings)
+
+    sup.set("universe", df_univ)
+    sup.set("sales", df_sales)
 
     return sup
 
@@ -1187,10 +1224,10 @@ def _enrich_df_census(
         return df
 
 
-def _enrich_df_openstreetmap(
+def _enrich_df_distances(
     df_in: pd.DataFrame | gpd.GeoDataFrame,
-    osm_settings: dict,
-    s_enrich_this: dict,
+    dist_settings: dict,
+    dataframes: dict[str, pd.DataFrame],
     verbose: bool = False,
     use_cache: bool = False,
 ) -> pd.DataFrame | gpd.GeoDataFrame:
@@ -1202,7 +1239,7 @@ def _enrich_df_openstreetmap(
         print("Enriching with OpenStreetMap data...")
 
     if use_cache:
-        df_out = get_cached_df(df_in, "osm/all", "key", osm_settings)
+        df_out = get_cached_df(df_in, "osm/all", "key", dist_settings)
         if df_out is not None:
             if verbose:
                 print("--> found cached data")
@@ -1211,13 +1248,13 @@ def _enrich_df_openstreetmap(
     df = df_in.copy()
 
     try:
-        if not osm_settings.get("enabled", False):
+        if not dist_settings.get("enabled", False):
             if verbose:
                 print("OpenStreetMap enrichment disabled, skipping all OSM features")
             return df
 
         # Initialize OpenStreetMap service
-        osm_service = init_service_openstreetmap(osm_settings)
+        osm_service = init_service_openstreetmap(dist_settings)
 
         # Convert DataFrame to GeoDataFrame if it isn't already
         if not isinstance(df, gpd.GeoDataFrame):
@@ -1250,17 +1287,26 @@ def _enrich_df_openstreetmap(
 
         bbox = [west, south, east, north]
 
-        # Get distances configuration from settings
-        distances_config = {
-            dist["id"]: dist
-            for dist in s_enrich_this.get("distances", [])
-            if isinstance(dist, dict)
-        }
+        def get_feature(thing: str, _bbox: Tuple[float, float, float, float], s: dict, _use_cache: bool = True):
+            use_osm = s.get("osm", False)
+            source = s.get("source", None)
+            if use_osm:
+                return osm_service.get_features(thing, _bbox, s, _use_cache)
+            elif source:
+                df = None
+                if source in dataframes:
+                    df = dataframes[source]
+                    if df is not None:
+                        if "geometry" not in df.columns:
+                            raise ValueError(f"Distance entry ({thing}) source dataframe with id \"{source}\" has no geometry!")
+                if df is None:
+                    raise ValueError(f"Could not find dataframe with id \"{source}\" matching distance entry ({thing}.source={source})")
+                return osm_service.get_features(thing, _bbox, s, _use_cache, df)
+            else:
+                raise ValueError(f"Distance entry ({thing}) must have either \"osm\" or \"source\" field!")
 
-        # Define a dictionary to hold feature configurations
-        features_config = {
+        default_configs = {
             "water_bodies": {
-                "getter": osm_service.get_water_bodies,
                 "verbose_label": "water bodies",
                 "store_top": True,
                 "error_method": "print",  # print error message with traceback
@@ -1268,7 +1314,6 @@ def _enrich_df_openstreetmap(
                 "type_field": "water",  # field containing feature type for unnamed features
             },
             "transportation": {
-                "getter": osm_service.get_transportation,
                 "verbose_label": "transportation networks",
                 "store_top": False,  # no top features for transportation
                 "error_method": "warn",  # use warnings.warn
@@ -1276,7 +1321,6 @@ def _enrich_df_openstreetmap(
                 "type_field": "highway",
             },
             "educational": {
-                "getter": osm_service.get_educational_institutions,
                 "verbose_label": "educational institutions",
                 "store_top": True,
                 "error_method": "warn",
@@ -1284,7 +1328,6 @@ def _enrich_df_openstreetmap(
                 "type_field": "amenity",
             },
             "parks": {
-                "getter": osm_service.get_parks,
                 "verbose_label": "parks",
                 "store_top": True,
                 "error_method": "warn",
@@ -1292,7 +1335,6 @@ def _enrich_df_openstreetmap(
                 "type_field": "leisure",
             },
             "golf_courses": {
-                "getter": osm_service.get_golf_courses,
                 "verbose_label": "golf courses",
                 "store_top": True,
                 "error_method": "warn",
@@ -1301,43 +1343,48 @@ def _enrich_df_openstreetmap(
             },
         }
 
+        features_config = {}
+
+        for key in dist_settings:
+            if key == "enabled":
+                continue
+            features_config[key] = dist_settings[key]
+
         # Loop through each feature configuration:
         for feature, config in features_config.items():
             # Check if feature is enabled in the osm_settings
-            feature_settings = osm_settings.get(feature, {})
-            if feature_settings.get("enabled", False):
+            if config.get("enabled", True):
+
+                default_config = default_configs.get(feature, {})
+                for key in default_config:
+                    if key not in config:
+                        config[key] = default_config[key]
+
                 if verbose:
-                    print(f"--> Getting {config['verbose_label']}...")
+                    print(f"--> Getting {feature}...")
                 try:
                     # Call the designated getter function
-                    result = config["getter"](
-                        bbox=bbox, settings=feature_settings, use_cache=use_cache
+                    is_osm = config.get("osm", False)
+                    result = get_feature(
+                        thing=feature,
+                        _bbox=bbox,
+                        s=config,
+                        _use_cache=use_cache
                     )
                     if verbose:
                         if result.empty:
-                            print(f"    No {config['verbose_label']} found")
+                            print(f"    No {config.get('verbose_label', feature)} found")
                         else:
-                            print(f"--> Found {len(result)} {config['verbose_label']}")
+                            print(f"--> Found {len(result)} {config.get('verbose_label',feature)}")
                             pd.set_option("display.max_columns", None)
                             pd.set_option("display.max_rows", None)
                             pd.set_option("display.width", 1000)
 
                     if not result.empty:
                         # Get distance settings from distances configuration
-                        feature_id = f"osm_{feature}"
-                        distance_settings = distances_config.get(feature_id, {})
-
-                        # If no settings found, try with _top suffix as fallback
-                        if (
-                            not distance_settings
-                            and f"{feature_id}_top" in distances_config
-                        ):
-                            distance_settings = distances_config.get(
-                                f"{feature_id}_top", {}
-                            )
-
-                        max_distance = distance_settings.get("max_distance", None)
-                        unit = distance_settings.get("unit", "km")
+                        feature_id = f"osm_{feature}" if is_osm else feature
+                        max_distance = config.get("max_distance", None)
+                        unit = config.get("unit", "km")
 
                         if verbose:
                             print(f"\nDistance settings for {feature_id}:")
@@ -1351,12 +1398,12 @@ def _enrich_df_openstreetmap(
                         )
 
                         # If store_top is enabled, calculate distances to top features
-                        if config["store_top"] and feature_settings.get("top_n", 0) > 0:
+                        if config.get("store_top", False) and config.get("top_n", 0) > 0:
                             # Get top features based on configured sort field
-                            sort_field = config["sort_field"]
+                            sort_field = config.get("sort_field")
                             if sort_field in result.columns:
                                 top_features = result.nlargest(
-                                    feature_settings["top_n"], sort_field
+                                    config["top_n"], sort_field
                                 )
                             else:
                                 # Fallback to first numeric column or just take first N
@@ -1365,11 +1412,11 @@ def _enrich_df_openstreetmap(
                                 ).columns
                                 if len(numeric_cols) > 0:
                                     top_features = result.nlargest(
-                                        feature_settings["top_n"], numeric_cols[0]
+                                        config.get("top_n", 1), numeric_cols[0]
                                     )
                                 else:
                                     top_features = result.head(
-                                        feature_settings["top_n"]
+                                        config.get("top_n", 1)
                                     )
 
                             # Calculate distances to each top feature
@@ -1382,7 +1429,7 @@ def _enrich_df_openstreetmap(
                                     feature_name = str(top_feature["name"])
                                 else:
                                     # Use type field if available
-                                    type_field = config["type_field"]
+                                    type_field = config.get("type_field")
                                     if type_field in top_feature and pd.notna(
                                         top_feature[type_field]
                                     ):
@@ -1411,14 +1458,14 @@ def _enrich_df_openstreetmap(
                                 )
 
                 except Exception as e:
-                    err_msg = f"Failed to get {config['verbose_label']}: {str(e)}"
-                    if config["error_method"] == "warn":
+                    err_msg = f"Failed to get {config.get('verbose_label', feature)}: {str(e)}"
+                    if config.get("error_method", None) == "warn":
                         warnings.warn(err_msg)
                     else:
                         print("ERROR " + err_msg)
                         print("Traceback: " + traceback.format_exc())
 
-        write_cached_df(df_in, df, "osm/all", "key", osm_settings)
+        write_cached_df(df_in, df, "osm/all", "key", dist_settings)
 
         return df
 
@@ -2258,10 +2305,16 @@ def _boolify_column_in_df(df: pd.DataFrame, field: str, na_handling: str = None)
 
 
 def _enrich_universe_spatial_lag(
-    df_univ_in: pd.DataFrame, df_test: pd.DataFrame
+    df_univ_in: pd.DataFrame,
+    df_test: pd.DataFrame,
+    model_group : str,
+    sample_from_mgs : list[str],
+    settings: dict
 ) -> pd.DataFrame:
 
     df = df_univ_in.copy()
+
+    s_sl = settings.get("data", {}).get("process", {}).get("enrich", {}).get("spatial_lag", {})
 
     if "floor_area_ratio" not in df:
         df["floor_area_ratio"] = div_series_z_safe(
@@ -2271,20 +2324,31 @@ def _enrich_universe_spatial_lag(
         df["bedroom_density"] = div_series_z_safe(
             df["bldg_rooms_bed"], df["land_area_sqft"]
         )
-
+    
+    # only include samples not in the test set
     df_train_univ = df[~df["key"].isin(df_test["key"].values)].copy()
+    # only sample from model groups explicitly listed
+    df_train_univ = df_train_univ[df_train_univ["model_group"].isin(sample_from_mgs)]
+
+    # only write to records in the model group:
+    df = df[df["model_group"].eq(model_group)]
 
     # FAR, bedroom density, and big five:
-    value_fields = [
-        "floor_area_ratio",
-        "bedroom_density",
-        "bldg_age_years",
-        "bldg_effective_age_years",
-        "bldg_area_finished_sqft",
-        "land_area_sqft",
-        "bldg_quality_num",
-        "bldg_condition_num",
-    ]
+    value_fields = {
+        "floor_area_ratio": 5,
+        "bedroom_density": 5,
+        "bldg_age_years": 5,
+        "bldg_effective_age_years": 5,
+        "bldg_area_finished_sqft": 5,
+        "land_area_sqft": 5,
+        "bldg_quality_num": 5,
+        "bldg_condition_num": 5,
+    }
+
+    extra_fields = s_sl.get("fields", {})
+    for key in extra_fields:
+        value_fields[key] = extra_fields[key]
+
 
     # Build a cKDTree from df_sales coordinates
 
@@ -2300,7 +2364,7 @@ def _enrich_universe_spatial_lag(
             continue
 
         # Choose the number of nearest neighbors to use
-        k = 5  # You can adjust this number as needed
+        k = value_fields[value_field]
 
         # Query the tree: for each parcel in df_universe, find the k nearest parcels
         # distances: shape (n_universe, k); indices: corresponding indices in df_sales
@@ -2355,9 +2419,12 @@ def _enrich_df_basic(
     calculations, year built enrichment, and vacant status enrichment.
     """
     df = df_in.copy()
-    s_ref = s_enrich_this.get("ref_tables", [])
-    s_calc = s_enrich_this.get("calc", {})
-    s_tweak = s_enrich_this.get("tweak", {})
+
+    supkey = "sales" if is_sales else "universe"
+
+    s_ref = s_enrich_this.get("ref_tables", {}).get(supkey, [])
+    s_calc = s_enrich_this.get("calc", {}).get(supkey, {})
+    s_tweak = s_enrich_this.get("tweak", {}).get(supkey, {})
 
     # reference tables:
     df = _perform_ref_tables(df, s_ref, dataframes, verbose=verbose)
@@ -2617,44 +2684,6 @@ def _enrich_permits(
     return df
 
 
-def _enrich_df_user_distances(
-    gdf_in: gpd.GeoDataFrame,
-    s_enrich_this: dict,
-    dataframes: dict[str, pd.DataFrame],
-    settings: dict,
-    verbose: bool = False,
-) -> gpd.GeoDataFrame:
-    print("Enrich df user distances")
-    s_dist = s_enrich_this.get("distances", [])
-    # Filter out OSM distances
-    # These are handled directly within the open street map enrichment call
-
-    entries = []
-    for d in s_dist:
-        if isinstance(d, str):
-            entry = {"id": d}
-        elif isinstance(d, dict):
-            entry = d
-        else:
-            raise ValueError(f"Invalid entry in distances: {d}")
-        if entry.get("id").startswith("osm_"):
-            # Skip OSM distances
-            warnings.warn(
-                f"Skipping OSM distance entry: {entry['id']}, handle that via data.process.enrich.universe.openstreetmap instead"
-            )
-            continue
-        entries.append(entry)
-
-    return _perform_distance_calculations(
-        gdf_in,
-        entries,
-        dataframes,
-        get_long_distance_unit(settings),
-        verbose=verbose,
-        cache_key="geom/distance",
-    )
-
-
 def _enrich_polar_coordinates(
     gdf_in: gpd.GeoDataFrame, settings: dict, verbose: bool = False
 ) -> gpd.GeoDataFrame:
@@ -2749,6 +2778,9 @@ def _basic_geo_enrichment(
     gdf["land_area_gis_delta_percent"] = div_series_z_safe(
         gdf["land_area_gis_delta_sqft"], gdf["land_area_sqft"]
     )
+
+    gdf["land_area_sqft_log"] = np.log(gdf["land_area_sqft"])
+
     t.stop("area")
     if verbose:
         _t = t.get("area")
@@ -3074,19 +3106,11 @@ def _do_perform_distance_calculations(
     # Combine original DataFrame with new columns using concat
     df_out = pd.concat([df_in, new_df], axis=1)
 
-    # Figure out what the net change was and cache that
-    new_columns = [col for col in new_df.columns if col not in df_in.columns]
-    if len(new_columns) > 0:
-        df_net_change = df_out[["key"] + new_columns].copy()
-
-        # check for duplicate keys:
-        if df_net_change.duplicated(subset="key").sum() > 0:
-            raise ValueError(
-                f"Duplicate keys found after distance calculation for '{_id}.' This should not happen."
-            )
-
-        # # save to cache:
-        # write_cache(f"osm/distance_{_id}", df_net_change, signature, "df")
+    # Calculate log versions of all columns
+    for col in new_columns:
+        if col in df_out and "dist_to_" in col:
+            log_dist_to = col.replace("dist_to_", "log_dist_to_", 1)
+            df_out[log_dist_to] = np.log(df_out[col])
 
     write_cached_df(df_in, df_out, f"osm/do_distance_{_id}", "key", signature)
 
@@ -3109,13 +3133,20 @@ def _do_perform_distance_calculations_osm(
 
     # Get appropriate CRS for distance calculations
     crs = get_crs(df_in, "equal_distance")
-    print(f"Calculation CRS: {crs}")
 
     # Check for duplicate keys
     if df_in.duplicated(subset="key").sum() > 0:
         raise ValueError(
             f"Duplicate keys found before distance calculation for '{_id}.' This should not happen."
         )
+
+    if max_distance is not None:
+        # Convert max_distance to meters (since our distances are in meters)
+        max_distance_m = max_distance / unit_factors[unit]
+    else:
+        max_distance_m = None
+
+    print(f"Calculating distance, id={_id}, max_distance={max_distance}, unit={unit}, max_distance (in meters)={max_distance_m}")
 
     # Construct cache signature
     signature = {
@@ -3141,7 +3172,7 @@ def _do_perform_distance_calculations_osm(
 
     # Calculate distances for all parcels first
     nearest = gpd.sjoin_nearest(
-        df_projected, gdf_projected, how="left", distance_col="distance"
+        df_projected, gdf_projected, how="left", distance_col="distance", max_distance=max_distance_m
     )
 
     # Handle duplicates by keeping shortest distance
@@ -3155,9 +3186,6 @@ def _do_perform_distance_calculations_osm(
     within_series = pd.Series(False, index=df_projected.index)
 
     if max_distance is not None:
-        # Convert max_distance to meters (since our distances are in meters)
-        max_distance_m = max_distance / unit_factors[unit]
-
         # Mark parcels within max_distance
         within_series[distance_series <= max_distance_m] = True
 
@@ -3174,11 +3202,20 @@ def _do_perform_distance_calculations_osm(
         # Convert distances to target unit
         distance_series = distance_series * unit_factors[unit]
 
+    proximity_series = np.max(distance_series) - distance_series
+
     # Create output DataFrame with new columns
     new_df = pd.DataFrame(
-        {f"dist_to_{_id}": distance_series, f"within_{_id}": within_series},
+        {
+            f"dist_to_{_id}": distance_series,
+            f"within_{_id}": within_series,
+            f"proximity_to_{_id}": proximity_series
+        },
         index=df_projected.index,
     )
+
+    # Fill null proximity with 0.0 (maximum distance)
+    new_df[f"proximity_to_{_id}"] = new_df[f"proximity_to_{_id}"].fillna(0.0)
 
     # Combine with original DataFrame
     df_out = pd.concat([df_in, new_df], axis=1)
@@ -3955,18 +3992,27 @@ def _merge_dict_of_dfs(
     return df_merged
 
 
-def _write_canonical_splits(sup: SalesUniversePair, settings: dict):
+def _write_canonical_splits(sup: SalesUniversePair, settings: dict, verbose: bool=False):
     """Write canonical split keys for sales data to disk."""
     df_sales_in = sup.sales
     df_univ = sup.universe
+
+    if verbose:
+        print(f"Write canonical splits...")
+        print(f"Sales in = {len(df_sales_in)}")
+    
     df_sales = _get_sales(df_sales_in, settings, df_univ=df_univ)
     model_groups = get_model_group_ids(settings, df_sales)
+    
+    if verbose:
+        print(f"Get sales= {len(df_sales)}")
+    
     instructions = settings.get("modeling", {}).get("instructions", {})
     test_train_frac = instructions.get("test_train_frac", 0.8)
     random_seed = instructions.get("random_seed", 1337)
     for model_group in model_groups:
         _do_write_canonical_split(
-            model_group, df_sales, settings, test_train_frac, random_seed
+            model_group, df_sales, settings, test_train_frac, random_seed, verbose
         )
 
 
@@ -3976,6 +4022,7 @@ def _perform_canonical_split(
     settings: dict,
     test_train_fraction: float = 0.8,
     random_seed: int = 1337,
+    verbose : bool = False
 ):
     """Perform a canonical split of the sales DataFrame for a given model group into test
     and training sets.
@@ -3995,7 +4042,11 @@ def _perform_canonical_split(
     #   - whatever is not in the TEST set
     #   - never use post-valuation-date sales, even if there's some left over
     #   - aim to be 80% of total sales
-
+    
+    if verbose:
+        print("")
+        print(f"Making canonical test/train split for model group {model_group}...")
+    
     rs = settings.get("analysis", {}).get("ratio_study", {})
     look_back_years = rs.get("look_back_years", 1)
     val_date = get_valuation_date(settings)
@@ -4010,12 +4061,14 @@ def _perform_canonical_split(
     df = df_sales_in[df_sales_in["model_group"].eq(model_group)].copy()
     df_v = get_vacant_sales(df, settings)
     df_i = df.drop(df_v.index)
+    
+    df_check = df[df["vacant_sale"].eq(True)]
 
     df_v_pre_val = df_v[
         df_v["sale_age_days"].ge(0)
     ]  # Positive sale_age_days indicates days BEFORE the valuation date
     df_i_pre_val = df_i[df_i["sale_age_days"].ge(0)]
-
+    
     # Find sales that occurred on or after the look_back_date (i.e., within 1 year of the valuation date, but not after it)
     df_v_look_back = df_v[
         df_v["sale_age_days"].le(look_back_days) & (df_v["sale_age_days"].ge(0))
@@ -4030,21 +4083,52 @@ def _perform_canonical_split(
         df_v["sale_age_days"].lt(0)
     ]  # Negative sale_age_days indicates days AFTER the valuation date
     df_i_post_val = df_i[df_i["sale_age_days"].lt(0)]
+    
+    count_v = len(df_v)
+    count_i = len(df_i)
+    count_pre_val_v = len(df_v_pre_val)
+    count_pre_val_i = len(df_i_pre_val)
+    count_post_val_v = len(df_v_post_val)
+    count_post_val_i = len(df_i_post_val)
+    count_look_back_v = len(df_v_look_back)
+    count_look_back_i = len(df_i_look_back)
+
+    if verbose:
+        print("All:")
+        print(f"--> Vacant  : {count_v}")
+        print(f"--> Improved: {count_i}")
+        print("Pre-valuation: ")
+        print(f"--> Vacant  : {count_pre_val_v}")
+        print(f"--> Improved: {count_pre_val_i}") 
+        print(f"Post-valuation: ")
+        print(f"--> Vacant    : {count_post_val_v}")
+        print(f"--> Improved  : {count_post_val_v}")
+        print(f"In look back period: ")
+        print(f"--> Vacant    : {count_look_back_v}")
+        print(f"--> Improved  : {count_look_back_i}")
+
 
     test_share = 1.0 - test_train_fraction
 
     # This is how many test sales we need
-    test_set_count = np.floor(len(df) * test_share).astype(int)
-
+    test_set_count = np.ceil(len(df) * test_share).astype(int)
+    if len(df) <= 30:
+        test_set_count_v = np.ceil(len(df_v) * test_share).astype(int)
+    else:
+        test_set_count_v = max(15, np.ceil(len(df_v) * test_share).astype(int))
+    test_set_count_i = test_set_count - test_set_count_v
+    
     # Sales in general
     count_sales_all = len(df)
+    count_sales_all_v = len(df_v)
+    count_sales_all_i = len(df_i)
 
     # Sales after the val date
     count_post_val = len(df_v_post_val) + len(df_i_post_val)
 
     # Sales within the look back period
     count_look_back = len(df_v_look_back) + len(df_i_look_back)
-
+    
     np.random.seed(random_seed)
 
     df_v_test: pd.DataFrame | None = None
@@ -4082,70 +4166,113 @@ def _perform_canonical_split(
 
         if count_look_back > 0 and remaining_test_frac <= 1.0:
             # We can sample the lookback sales alone to fill the test set
+            n_v = max(test_set_count_v, np.floor(len(df_v_look_back) * remaining_test_frac).astype(int))
+            n_i = max(test_set_count_i, np.floor(len(df_i_look_back) * remaining_test_frac).astype(int))
+            
+            remaining_test_count_v = test_set_count_v - len(df_v_test)
+            remaining_test_count_i = test_set_count_i - len(df_i_test)
 
-            n_v = np.floor(len(df_v_look_back) * remaining_test_frac).astype(int)
-            n_i = np.floor(len(df_i_look_back) * remaining_test_frac).astype(int)
-            diff = remaining_test_count - (n_v + n_i)
-            while diff > 0:
-                old_diff = diff
+            diff_v = remaining_test_count_v - n_v
+            diff_i = remaining_test_count_i - n_i
+
+            while diff_v > 0:
+                old_diff = diff_v
                 if len(df_v_look_back) > n_v:
                     n_v += 1
-                    diff -= 1
+                    diff_v -= 1
+                if diff_v == old_diff:
+                    break
+    
+            while diff_i > 0:
+                old_diff = diff_i
                 if len(df_i_look_back) > n_i:
                     n_i += 1
-                    diff -= 1
-                if diff == old_diff:
+                    diff_i -= 1
+                if diff_i == old_dif:
                     break
-
-            _df_v_test = df_v_look_back.sample(n=n_v, random_state=random_seed)
-            _df_i_test = df_i_look_back.sample(n=n_i, random_state=random_seed)
-
-            df_v_test = pd.concat([df_v_test, _df_v_test])
-            df_i_test = pd.concat([df_i_test, _df_i_test])
+            
+            if n_v > 0 and len(df_v_look_back) > 0:
+                n_v = min(n_v, len(df_v_look_back))
+                _df_v_test = df_v_look_back.sample(n=n_v, random_state=random_seed)
+                df_v_test = pd.concat([df_v_test, _df_v_test])
+            if n_i > 0 and len(df_i_look_back) > 0:
+                n_i = min(n_i, len(df_i_look_back))
+                _df_i_test = df_i_look_back.sample(n=n_i, random_state=random_seed)
+                df_i_test = pd.concat([df_i_test, _df_i_test])
         else:
             # We need to sample ALL the lookback sales to start with...
             df_v_test = pd.concat([df_v_test, df_v_look_back])
             df_i_test = pd.concat([df_i_test, df_i_look_back])
-
+            
+            if len(df_v_test) > test_set_count_v:
+                # in case we already have enough vacant sales in the test set
+                df_v_test = df_v_test.sample(n=test_set_count_v, random_state=random_seed)
+           
             # ...and then we need to sample the pre-valuation sales to fill the remainder of the test set
-            remaining_test_count = test_set_count - (count_post_val + count_look_back)
+            remaining_test_count_v = test_set_count_v - len(df_v_test)
+            remaining_test_count_i = test_set_count_i - len(df_i_test)
 
             # Figure out how many sales we haven't touched yet
-            untouched_sales_count = count_sales_all - (count_post_val + count_look_back)
+            untouched_sales_count_v = count_sales_all_v - len(df_v_test)
+            untouched_sales_count_i = count_sales_all_i - len(df_i_test)
+
             df_v_untouched = df_v[~df_v["key_sale"].isin(df_v_test["key_sale"])]
             df_i_untouched = df_i[~df_i["key_sale"].isin(df_i_test["key_sale"])]
 
             # Express how many more we need as a fraction of the untouched sales
-            remaining_test_frac = remaining_test_count / untouched_sales_count
+            remaining_test_frac_i = 0 if untouched_sales_count_i == 0 else remaining_test_count_i / untouched_sales_count_i
+            remaining_test_frac_v = 0 if untouched_sales_count_v == 0 else remaining_test_count_v / untouched_sales_count_v
 
-            n_v = np.floor(len(df_v_untouched) * remaining_test_frac).astype(int)
-            n_i = np.floor(len(df_i_untouched) * remaining_test_frac).astype(int)
-            diff = remaining_test_count - (n_v + n_i)
-            while diff > 0:
-                old_diff = diff
+            n_v = np.floor(len(df_v_untouched) * remaining_test_frac_v).astype(int)
+            n_i = np.floor(len(df_i_untouched) * remaining_test_frac_i).astype(int)
+            
+            diff_v = remaining_test_count_v - n_v
+            diff_i = remaining_test_count_i - n_i
+            
+            while diff_v > 0:
+                old_diff = diff_v
                 if len(df_v_look_back) > n_v:
                     n_v += 1
-                    diff -= 1
+                    diff_v -= 1
+                if diff_v == old_diff:
+                    break
+    
+            while diff_i > 0:
+                old_diff = diff_i
                 if len(df_i_look_back) > n_i:
                     n_i += 1
-                    diff -= 1
-                if diff == old_diff:
+                    diff_i -= 1
+                if diff_i == old_dif:
                     break
 
+            n_v = min(n_v, len(df_v_untouched))
+            n_i = min(n_i, len(df_i_untouched))
+
             # Sample the untouched sales to fill the test set
-            _df_v_test = df_v_untouched.sample(n=n_v, random_state=random_seed)
-            _df_i_test = df_i_untouched.sample(n=n_i, random_state=random_seed)
-
-            # Add the untouched sales to the test set -- we're finally done
-            df_v_test = pd.concat([df_v_test, _df_v_test])
-            df_i_test = pd.concat([df_i_test, _df_i_test])
-
+            # Then, add the untouched sales to the test set -- we're finally done
+            if n_v > 0:
+                _df_v_test = df_v_untouched.sample(n=n_v, random_state=random_seed)
+                df_v_test = pd.concat([df_v_test, _df_v_test])
+            
+            if n_i > 0:
+                _df_i_test = df_i_untouched.sample(n=n_i, random_state=random_seed)
+                df_i_test = pd.concat([df_i_test, _df_i_test])
+            
         # Training set is whatever is not in the test set
         df_v_train = df_v_pre_val[~df_v_pre_val["key_sale"].isin(df_v_test["key_sale"])]
         df_i_train = df_i_pre_val[~df_i_pre_val["key_sale"].isin(df_i_test["key_sale"])]
 
     df_test = pd.concat([df_v_test, df_i_test]).reset_index(drop=True)
     df_train = pd.concat([df_v_train, df_i_train]).reset_index(drop=True)
+    
+    if verbose:
+        print(f"--> Test set  : {len(df_test)}")
+        print(f"----> Vacant  : {len(df_v_test)}")
+        print(f"----> Improved: {len(df_i_test)}")
+        print(f"--> Train set : {len(df_train)}")
+        print(f"----> Vacant  : {len(df_v_train)}")
+        print(f"----> Improved: {len(df_i_train)}")
+    
     return df_test, df_train
 
 
@@ -4155,13 +4282,14 @@ def _do_write_canonical_split(
     settings: dict,
     test_train_fraction: float = 0.8,
     random_seed: int = 1337,
+    verbose: bool = False
 ):
     """Write the canonical split keys (train and test) for a given model group to disk.
     Also performs outlier detection on training data if enabled in settings.
     """
     # Get initial split
     df_test, df_train = _perform_canonical_split(
-        model_group, df_sales_in, settings, test_train_fraction, random_seed
+        model_group, df_sales_in, settings, test_train_fraction, random_seed, verbose
     )
 
     # Get initial keys
@@ -4177,6 +4305,7 @@ def _do_write_canonical_split(
     pd.DataFrame({"key_sale": test_keys}).to_csv(
         f"{outpath}/test_keys.csv", index=False
     )
+
 
 
 def _read_split_keys(model_group: str):
@@ -4683,3 +4812,35 @@ def _process_permits_sales(
             print(f"--> {len(renovations_1)} minor renovations.")
 
     return df_sales
+
+
+def read_sales_univ(path: str):
+    sales_path = f"{path}sales.parquet"
+    univ_path = f"{path}universe.parquet"
+    if not os.path.exists(sales_path):
+        raise ValueError(f"{sales_path} does not exist!")
+    if not os.path.exists(univ_path):
+        raise ValueError(f"{univ_path} does not exist!")
+    df_sales = pd.read_parquet(sales_path)
+    df_univ = _read_univ_parquet(univ_path)
+    return SalesUniversePair(df_sales, df_univ)
+
+
+def _read_univ_parquet(path: str):
+    df = pd.read_parquet(path)
+    if "geometry" in df:
+        crs, geom_col = detect_crs_from_parquet(path, "geometry")
+        gdf = ensure_geometries(df, geom_col=geom_col, crs=crs)
+        if gdf.crs is None:
+            raise ValueError("No CRS found in parquet metadata")
+        return gdf
+    return df
+
+def get_sup_model_group(sup: SalesUniversePair, model_group: str):
+    df = get_hydrated_sales_from_sup(sup)
+    df = df[df["model_group"].eq(model_group)]
+    keys = df["key_sale"].unique()
+    df_sales = sup.sales[sup.sales["key_sale"].isin(keys)]
+    df_univ = sup.universe[sup.universe["model_group"].eq(model_group)].copy()
+    return SalesUniversePair(df_sales, df_univ)
+    

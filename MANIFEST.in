@@ -1,0 +1,1 @@
+recursive-include openavmkit/resources *.json *.yaml *.yml *.txt

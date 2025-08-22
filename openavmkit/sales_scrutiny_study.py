@@ -1,7 +1,8 @@
 import os
 import warnings
 import pandas as pd
-from diptest import diptest
+import numpy as np
+from sklearn.mixture import GaussianMixture
 
 from openavmkit.data import (
   _get_sales,
@@ -208,9 +209,6 @@ class SalesScrutinyStudy:
         # ensure unique:
         keys_flagged = list(dict.fromkeys(keys_flagged))
 
-        if verbose:
-            print(f"--> Flagged {len(keys_flagged)} total sales")
-
         if len(df) > 0:
 
             num_valid_sales_before = len(df[df["valid_sale"].eq(True)])
@@ -220,10 +218,10 @@ class SalesScrutinyStudy:
             num_valid_sales_after = len(df[df["valid_sale"].eq(True)])
 
             if verbose:
-                print(f"--> Valid sales before: {num_valid_sales_before}")
-                print(f"--> Valid sales after: {num_valid_sales_after}")
+                print(f"--> Unmarked sales before: {num_valid_sales_before}")
+                print(f"--> Unmarked sales after: {num_valid_sales_after}")
                 diff = num_valid_sales_before - num_valid_sales_after
-                print(f"--> Marked {diff} new invalid sales")
+                print(f"--> Marked {diff} new potentially invalid sales")
 
             # merge ss_id into df:
             df = combine_dfs(df, df_v[["key_sale", "ss_id"]], index="key_sale")
@@ -456,6 +454,8 @@ def _run_land_percentiles(sup: SalesUniversePair, settings: dict):
         df_sales["sale_price_time_adj"], df_sales["land_area_sqft"]
     )
     locations = get_locations(settings, df_sales)
+    ss = settings.get("analysis", {}).get("sales_scrutiny", {})
+    deed_id = ss.get("deed_id", "deed_id")
 
     def _do_run_land_percentiles(df: pd.DataFrame, model_group: str):
         df.sort_values(
@@ -473,7 +473,7 @@ def _run_land_percentiles(sup: SalesUniversePair, settings: dict):
             "sale_price_time_adj_land_sqft_percentile",
             "deed_book",
             "deed_page",
-            "deed_id",
+            deed_id,
             "sale_year",
             "bldg_year_built",
             "bldg_area_finished_sqft",
@@ -572,21 +572,30 @@ def run_heuristics(
 
     #### Multi-parcel sales detection heuristics
 
-    # 1 -- Flag sales with identical deed ids
-    vcs = df_sales[deed_id].value_counts()
-    idx_dupe_deeds = vcs[vcs > 1].index.values
-    df_sales.loc[df_sales[deed_id].isin(idx_dupe_deeds), "flag_dupe_deed"] = True
+    # 1 -- Flag sales with identical deed IDs AND identical sale dates
+    if "deed_id" in df_sales:
+        df_sales["deed_date"] = df_sales[deed_id].astype(str)+"---"+df_sales["sale_date"].astype(str)
+        vcs_deed_date = df_sales["deed_date"].value_counts()
+        idx_dupe_deed_dates = vcs_deed_date[vcs_deed_date > 1].index.values
+        df_sales.loc[
+            df_sales["deed_date"].isin(idx_dupe_deed_dates),
+            "flag_dupe_deed_date"
+        ] = True
+        # drop extraneous column
+        df_sales = df_sales.drop(columns="deed_date")
+    else:
+        warnings.warn("You didn't provide a `deed_id` in `analysis.sales_scrutiny.deed_id`, so no deed-based sales validation heuristic can be run")
 
     # 2 -- Flag sales made on the same date for the same price
-    vcs = df_sales["sale_date"].value_counts()
-    idx_dupe_dates = vcs[vcs > 1].index.values
-    vcs = df_sales["sale_price"].value_counts()
-    idx_dupe_prices = vcs[vcs > 1].index.values
+    df_sales["date_price"] = df_sales["sale_date"].astype(str) + "---" + df_sales["sale_price"].astype(str)
+    vcs_date_price = df_sales["date_price"].value_counts()
+    idx_dupe_date_price = vcs_date_price[vcs_date_price > 1].index.values
     df_sales.loc[
-        df_sales["sale_date"].isin(idx_dupe_dates)
-        & df_sales["sale_price"].isin(idx_dupe_prices),
+        df_sales["date_price"].isin(idx_dupe_date_price),
         "flag_dupe_date_price",
     ] = True
+    # drop extraneous column
+    df_sales = df_sales.drop(columns="date_price")
 
     #### Misclassified vacant sales detection heuristics
 
@@ -599,7 +608,7 @@ def run_heuristics(
     df_sales.loc[idx_false_vacant, "flag_false_vacant"] = True
 
     files = {
-        "flag_dupe_deed": "duplicated_deeds",
+        "flag_dupe_deed_date": "duplicated_deeds_and_dates",
         "flag_dupe_date_price": "duplicated_dates_and_prices",
         "flag_false_vacant": "classified_vacant_but_bldg_older_than_sale_year",
     }
@@ -625,7 +634,7 @@ def run_heuristics(
                         "sale_price_time_adj",
                         "deed_book",
                         "deed_page",
-                        "deed_id",
+                        deed_id,
                         "sale_year",
                         "bldg_year_built",
                         "bldg_area_finished_sqft",
@@ -656,14 +665,14 @@ def run_heuristics(
                         "sale_price_time_adj": "Sale price\n(Time adj.)",
                         "deed_book": "Deed book",
                         "deed_page": "Deed page",
-                        "deed_id": "Deed ID",
+                        deed_id: "Deed ID",
                         "sale_year": "Year sold",
                         "bldg_year_built": "Year built",
                         "bldg_area_finished_sqft": "Impr sqft",
                         "land_area_sqft": "Land sqft",
                         "valid_sale": "Valid sale",
                         "vacant_sale": "Vacant sale",
-                        "flag_dupe_deed": "Repeated\ndeed ID",
+                        "flag_dupe_deed_date": "Repeated\ndeed & sale date",
                         "flag_dupe_date_price": "Repeated\nsale date & price",
                         "flag_false_vacant": "Bldg older\nthan sale year",
                     }
@@ -709,7 +718,7 @@ def run_heuristics(
         print(f"Dropped {len(bad_keys)} invalid sales keys identified by heuristic")
         df_sales = sup.sales.copy()
         df_sales = df_sales[~df_sales["key_sale"].isin(bad_keys)]
-        sup.df_sales = df_sales
+        sup.set("sales", df_sales)
     else:
         print(
             f"Identified {len(bad_keys)} invalid sales keys identified by heuristic, but not dropping them"
@@ -1068,13 +1077,59 @@ def _get_base_sales_field(field: str):
 
 
 def _identify_bimodal_clusters(df, sales_field):
+    """
+    Identify clusters whose distribution of `sales_field` is likely bimodal
+    using Gaussian Mixture Models with information-criterion + separation checks.
+
+    Criteria:
+      - BIC(1) - BIC(2) >= 10  (2 components strongly preferred)
+      - Ashman's D > 2.0       (components well-separated)
+      - min component weight >= 0.15 (avoid tiny spurious modes)
+    """
     bimodal_clusters = []
 
     for cluster_id, group in df.groupby("ss_id"):
-        values = group[sales_field].values
-        if len(values) > 3:
-            dip, p_value = diptest(values)
-            if p_value < 0.05:  # Statistically significant deviation from unimodality
-                bimodal_clusters.append(cluster_id)
+        values = group[sales_field].to_numpy(dtype=float)
+        values = values[np.isfinite(values)]
+        # Need at least a few points to estimate two components sensibly
+        if values.size < 8:
+            continue
+
+        X = values.reshape(-1, 1)
+
+        # 1 vs 2 components BIC comparison
+        gm1 = GaussianMixture(n_components=1, covariance_type="full", random_state=0)
+        gm2 = GaussianMixture(n_components=2, covariance_type="full", random_state=0)
+
+        gm1.fit(X)
+        gm2.fit(X)
+
+        bic1 = gm1.bic(X)
+        bic2 = gm2.bic(X)
+        delta_bic = bic1 - bic2  # positive favors 2 components
+
+        if delta_bic < 10.0:
+            continue  # not enough evidence for 2 modes
+
+        # Separation: Ashman's D
+        means = np.sort(gm2.means_.ravel())
+        covars = gm2.covariances_.ravel()  # since full, but 1D -> shape (2,1,1) or (2,)
+        # Guard in case of extremely small variances
+        covars = np.maximum(covars, 1e-12)
+        mu1, mu2 = means
+        # Match covariances to sorted means: use argsort on original means
+        order = np.argsort(gm2.means_.ravel())
+        vars_sorted = covars[order]
+        D = (np.sqrt(2.0) * abs(mu2 - mu1)) / np.sqrt(vars_sorted[0] + vars_sorted[1])
+
+        if D <= 2.0:
+            continue  # components not well separated
+
+        # Component weights sanity check
+        weights = gm2.weights_[order]
+        if np.min(weights) < 0.15:
+            continue  # one component too small -> likely a tail, not a mode
+
+        bimodal_clusters.append(cluster_id)
 
     return bimodal_clusters

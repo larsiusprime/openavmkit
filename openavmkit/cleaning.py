@@ -320,7 +320,7 @@ def _fill_with(df: pd.DataFrame, field: str, value):
     if field not in df:
         return df
 
-    if isinstance(df[field].dtype, pd.CategoricalDtype):
+    if hasattr(df[field].dtype, 'categories'):  # Categorical-like dtype
         if value not in df[field].cat.categories:
             df[field] = df[field].cat.add_categories(value)
 

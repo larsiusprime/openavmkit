@@ -308,6 +308,7 @@ def evaluate_trial_one_land_result(
     land_results: SingleModelResults,
     sale_field: str,
     ground_truth_land_field: str,
+    max_trim: float,
     verbose: bool = False,
 ):
     sup = sup.copy()
@@ -330,6 +331,7 @@ def evaluate_trial_one_land_result(
         sale_field,
         land_results.ind_vars,
         sup,
+        max_trim
     )
 
     scores_truth = LandPredictionResults(
@@ -339,6 +341,7 @@ def evaluate_trial_one_land_result(
         ground_truth_land_field,
         land_results.ind_vars,
         sup,
+        max_trim
     )
 
     return {
@@ -436,7 +439,8 @@ def evaluate_trial_land_results(
             )
             if non_null_land_univ_count == 0 or non_null_main_univ_count == 0:
                 continue
-
+            
+            max_trim = _get_max_ratio_study_trim(settings, model_group)
             data = evaluate_trial_one_land_result(
                 key,
                 sup,
@@ -445,6 +449,7 @@ def evaluate_trial_land_results(
                 sale_field,
                 ground_truth_land_field,
                 verbose,
+                max_trim
             )
             rows_v.append(data)
 
@@ -464,7 +469,8 @@ def evaluate_trial_land_results(
 
             if non_null_land_univ_count == 0 or non_null_main_univ_count == 0:
                 continue
-
+            
+            max_trim = _get_max_ratio_study_trim(settings, model_group)
             data = evaluate_trial_one_land_result(
                 key,
                 sup,

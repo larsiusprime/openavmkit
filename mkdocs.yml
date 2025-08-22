@@ -8,6 +8,7 @@ theme:
   favicon: assets/images/favicon.ico
   features:
     - navigation.tabs
+    - toc.integrate
 
 plugins:
   - search
@@ -34,9 +35,10 @@ plugins:
 
   - gen-files:
       scripts:
-        - docs/reference/gen.py
+        - docs/api/gen.py
   - literate-nav
 
 nav:
-  - Home: index.md
-  - API: reference/
+  - Home: index.html
+  - Docs: docs/
+  - API: api/

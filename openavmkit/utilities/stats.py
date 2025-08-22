@@ -13,6 +13,7 @@ from sklearn.linear_model import ElasticNet, LinearRegression
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from statsmodels.tools.sm_exceptions import MissingDataError
 
+from openavmkit.utilities.data import div_series_z_safe
 from openavmkit.utilities.settings import get_fields_boolean, get_fields_categorical
 
 
@@ -134,6 +135,97 @@ def calc_cod(values: np.ndarray) -> float:
     return cod
 
 
+def calc_ratio_stats_bootstrap(
+    predictions: np.ndarray,
+    ground_truth: np.ndarray,
+    confidence_interval: float = 0.95,
+    iterations: int = 10000,
+    seed: int = 777
+) -> dict:
+    """
+    Calculate ratio study statistics (Median ratio, Mean ratio, COD, PRD) with
+    bootstrap percentile confidence intervals, following IAAO definitions.
+    
+    Parameters
+    ----------
+    predictions: np.ndarray
+        An array of predicted values
+    ground_truth: np.ndarray
+        An array of corresponding ground truth (e.g. sale price) values
+    confidence_interval: float
+        The size of the confidence interval (e.g. 0.95 = 95% confidence)
+    iterations: int, optional
+        The number of bootstrap iterations to perform. Defaults to 10,000.
+    seed: int, optional
+        Random seed, for reproducibility. Defaults to 777.
+    
+    Returns
+    -------
+    dict
+        {
+          "median_ratio": ConfidenceStat,
+          "mean_ratio": ConfidenceStat,
+          "cod": ConfidenceStat,   # COD = 100 * mean(|ri - median(r)|) / median(r)
+          "prd": ConfidenceStat    # PRD = mean(r) / weighted_mean(r)
+        }
+    """
+    # --- input hygiene ---
+    p = np.asarray(predictions, dtype=float).ravel()
+    s = np.asarray(ground_truth,  dtype=float).ravel()
+    if p.shape != s.shape:
+        raise ValueError("predictions and ground_truth must have the same shape")
+
+    mask = np.isfinite(p) & np.isfinite(s) & (s > 0)  # sales must be > 0
+    p, s = p[mask], s[mask]
+    n = p.size
+    if n == 0:
+        return None
+
+    r = p / s
+
+    # Point estimates from the original sample
+    med_ratio_point = np.median(r)
+    mean_ratio_point = np.mean(r)
+    cod_point = (np.mean(np.abs(r - med_ratio_point)) / med_ratio_point) * 100.0
+    weighted_mean_ratio_point = p.sum() / s.sum()
+    prd_point = mean_ratio_point / weighted_mean_ratio_point
+
+    # Bootstrap on indices of the (p, s) pairs
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, n, size=(iterations, n))
+
+    r_samp = (p[idx] / s[idx])                     # (B, n) ratios per replicate
+    med_samp = np.median(r_samp, axis=1)           # (B,)
+    mean_samp = np.mean(r_samp, axis=1)            # (B,)
+    
+    # per-replicate weighted mean ratio: sum(p)/sum(s) for the bootstrap sample
+    wmr_samp = (p[idx].sum(axis=1) / s[idx].sum(axis=1))
+    
+    # per-replicate COD uses the replicate's own median
+    cod_samp = (np.mean(np.abs(r_samp - med_samp[:, None]), axis=1) / med_samp) * 100.0
+    
+    # per-replicate PRD
+    prd_samp = mean_samp / wmr_samp
+
+    # percentile confidence intervals
+    alpha = (1.0 - confidence_interval) / 2.0
+    def ci(a):
+        lo, hi = np.quantile(a, [alpha, 1.0 - alpha])
+        return float(lo), float(hi)
+
+    med_lo, med_hi   = ci(med_samp)
+    mean_lo, mean_hi = ci(mean_samp)
+    cod_lo, cod_hi   = ci(cod_samp)
+    prd_lo, prd_hi   = ci(prd_samp)
+    
+    return {
+        "median_ratio": ConfidenceStat(med_ratio_point,  confidence_interval, med_lo,  med_hi),
+        "mean_ratio":   ConfidenceStat(mean_ratio_point, confidence_interval, mean_lo, mean_hi),
+        "cod":          ConfidenceStat(cod_point,        confidence_interval, cod_lo,  cod_hi),
+        "prd":          ConfidenceStat(prd_point,        confidence_interval, prd_lo,  prd_hi),
+    }
+
+
 def calc_cod_bootstrap(
     values: np.ndarray,
     confidence_interval: float = 0.95,
@@ -201,7 +293,9 @@ def calc_prd(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
     float
         The PRD value.
     """
-    ratios = predictions / ground_truth
+    ratios = div_series_z_safe(predictions, ground_truth)
+    if len(ratios) == 0:
+        return float("nan")
     mean_ratio = np.mean(ratios)
     sum_ground_truth = np.sum(ground_truth)
     if sum_ground_truth == 0:
@@ -243,7 +337,7 @@ def calc_prd_bootstrap(
     Returns
     -------
     tuple[float, float, float]
-        A tuple containing the lower bound, median PRD, and upper bound of the confidence interval.
+        A tuple containing median PRD, the lower bound, and upper bound of the confidence interval.
     """
 
     np.random.seed(seed)
@@ -256,65 +350,148 @@ def calc_prd_bootstrap(
     alpha = (1.0 - confidence_interval) / 2
     lower_bound, upper_bound = np.quantile(prds, [alpha, 1.0 - alpha])
     median_prd = np.median(prds)
-    return lower_bound, median_prd, upper_bound
+    return median_prd, lower_bound, upper_bound
+
+
+def trim_outlier_ratios(
+    predictions: np.ndarray,
+    ground_truth: np.ndarray,
+    max_percent: float = 0.10,
+    iqr_factor: float = 1.5
+) -> (np.ndarray, np.ndarray):
+    
+    ratios = div_series_z_safe(predictions, ground_truth).astype(float)
+    trim_mask = trim_outliers_mask(ratios, max_percent, iqr_factor)
+    trim_ratios = ratios[trim_mask]
+    trim_predictions = predictions[trim_mask]
+    trim_ground_truth = ground_truth[trim_mask]
+    return trim_predictions, trim_ground_truth
 
 
 def trim_outliers(
     values: np.ndarray,
-    lower_quantile: float = 0.25,
-    upper_quantile: float = 0.75
+    max_percent: float = 0.10,
+    iqr_factor: float = 1.5
 ) -> np.ndarray:
     """
-    Trim outliers from an array of values based on quantile thresholds.
+    Trim outliers using IQR fences per IAAO guidance, with a max trim cap.
+    Fails immediately if NaNs are detected.
+
+    1) Compute Q1, Q3, IQR = Q3 - Q1.
+    2) Trim values outside [Q1 - iqr_factor*IQR, Q3 + iqr_factor*IQR].
+    3) If more than max_percent would be removed, instead trim by symmetric
+       quantile cut so total trimmed <= max_percent.
 
     Parameters
     ----------
     values : np.ndarray
-        Input array of numeric values.
-    lower_quantile : float, optional
-        Lower quantile bound. Values below this quantile will be removed. Defaults to 0.25.
-    upper_quantile : float, optional
-        Upper quantile bound. Values above this quantile will be removed. Defaults to 0.75.
+        1D numeric array with no NaNs allowed.
+    max_percent : float, optional
+        Maximum fraction to remove (e.g., 0.10 = 10%).
+    iqr_factor : float, optional
+        1.5 for standard outliers, 3.0 for extreme outliers.
 
     Returns
     -------
     np.ndarray
-        Array with values outside the specified quantile bounds removed.
-    """
-    if len(values) == 0:
-        return values
-    lower_bound = np.quantile(values, lower_quantile)
-    upper_bound = np.quantile(values, upper_quantile)
-    return values[(values >= lower_bound) & (values <= upper_bound)]
+        Trimmed array according to the above rules.
 
+    Raises
+    ------
+    ValueError
+        If any NaN is detected in `values`.
+    """
+    if np.isnan(values).any():
+        raise ValueError("NaN values detected — remove or impute them before trimming.")
+
+    if values.size == 0:
+        return values
+
+    # IQR fences
+    q1, q3 = np.quantile(values, [0.25, 0.75])
+    iqr = q3 - q1
+    lower_fence = q1 - iqr_factor * iqr
+    upper_fence = q3 + iqr_factor * iqr
+
+    within_fences = (values >= lower_fence) & (values <= upper_fence)
+    trimmed_iqr = values[within_fences]
+
+    n = values.size
+    max_trim = int(np.floor(n * max_percent))
+
+    # If IQR-based trimming exceeds cap, fall back to symmetric quantile trim
+    trimmed_count = n - trimmed_iqr.size
+    if trimmed_count > max_trim:
+        tail_fraction = max_percent / 2.0
+        low_q, high_q = tail_fraction, 1.0 - tail_fraction
+        lo, hi = np.quantile(values, [low_q, high_q])
+        keep = (values >= lo) & (values <= hi)
+        trimmed = values[keep]
+    else:
+        trimmed = trimmed_iqr
+
+    return trimmed
 
 def trim_outliers_mask(
     values: np.ndarray,
-    lower_quantile: float = 0.25,
-    upper_quantile: float = 0.75
+    max_percent: float = 0.10,
+    iqr_factor: float = 1.5,
 ) -> np.ndarray:
     """
-    Generate a boolean mask for values within specified quantile bounds.
+    Trim outliers using IQR fences per IAAO guidance, with a max trim cap.
+    Fails immediately if NaNs are detected.
+
+    1) Compute Q1, Q3, IQR = Q3 - Q1.
+    2) Trim values outside [Q1 - iqr_factor*IQR, Q3 + iqr_factor*IQR].
+    3) If more than max_percent would be removed, instead trim by symmetric
+       quantile cut so total trimmed <= max_percent.
 
     Parameters
     ----------
     values : np.ndarray
-        Input array of numeric values.
-    lower_quantile : float, optional
-        Lower quantile bound. Values below this quantile are masked out. Defaults to 0.25.
-    upper_quantile : float, optional
-        Upper quantile bound. Values above this quantile are masked out. Defaults to 0.75.
-
+        1D numeric array with no NaNs allowed.
+    max_percent : float, optional
+        Maximum fraction to remove (e.g., 0.10 = 10%).
+    iqr_factor : float, optional
+        1.5 for standard outliers, 3.0 for extreme outliers.
+    
     Returns
     -------
     np.ndarray
         Boolean array where `True` indicates values within the quantile bounds.
+
+    Raises
+    ------
+    ValueError
+        If any NaN is detected in `values`.
     """
-    if len(values) == 0:
+    if np.isnan(values).any():
+        raise ValueError("NaN values detected — remove or impute them before trimming.")
+
+    if values.size == 0:
         return values
-    lower_bound = np.quantile(values, lower_quantile)
-    upper_bound = np.quantile(values, upper_quantile)
-    return (values >= lower_bound) & (values <= upper_bound)
+
+    # IQR fences
+    q1, q3 = np.quantile(values, [0.25, 0.75])
+    iqr = q3 - q1
+    lower_fence = q1 - iqr_factor * iqr
+    upper_fence = q3 + iqr_factor * iqr
+
+    within_fences = (values >= lower_fence) & (values <= upper_fence)
+    trimmed_iqr = values[within_fences]
+
+    n = values.size
+    max_trim = int(np.floor(n * max_percent))
+
+    # If IQR-based trimming exceeds cap, fall back to symmetric quantile trim
+    trimmed_count = n - trimmed_iqr.size
+    if trimmed_count > max_trim:
+        tail_fraction = max_percent / 2.0
+        low_q, high_q = tail_fraction, 1.0 - tail_fraction
+        lo, hi = np.quantile(values, [low_q, high_q])
+        return (values >= lo) & (values <= hi)
+    else:
+        return within_fences
 
 
 def calc_prb(
@@ -351,47 +528,49 @@ def calc_prb(
     ValueError
         If `predictions` and `ground_truth` have different lengths.
     """
-    if len(predictions) != len(ground_truth):
-        raise ValueError("predictions and ground_truth must have the same length")
+    # 1. Basic shape checks --------------------------------------------------
+    predictions = np.asarray(predictions, dtype=float)
+    ground_truth = np.asarray(ground_truth, dtype=float)
+    if predictions.shape != ground_truth.shape:
+        raise ValueError("predictions and ground_truth must have the same length/shape")
 
-    if predictions.size == 0 or ground_truth.size == 0:
-        return float("nan"), float("nan"), float("nan")
+    # 2. Clean rows that cannot be used --------------------------------------
+    mask = (
+        ~np.isnan(predictions)
+        & ~np.isnan(ground_truth)
+        & (predictions > 0)          # cannot take log2 of non‑positive numbers
+        & (ground_truth > 0)
+    )
+    n_ok = int(mask.sum())
+    if n_ok < 3:                     # OLS needs at least 3 rows
+        warnings.warn(
+            f"Only {n_ok} valid observation(s) after cleaning – PRB not computed."
+        )
+        return np.nan, np.nan, np.nan
 
-    # TODO: this block is necessary because predictions is not guaranteed to have non-zero values
-    predictions = predictions.copy()
-    ground_truth = ground_truth.copy()
+    preds = predictions[mask]
+    truth = ground_truth[mask]
 
-    na_indices = np.where(pd.isna(predictions))
-    predictions = np.delete(predictions, na_indices)
-    ground_truth = np.delete(ground_truth, na_indices)
-
-    zero_indices = np.where(predictions <= 0)
-    predictions = np.delete(predictions, zero_indices)
-    ground_truth = np.delete(ground_truth, zero_indices)
-
-    predictions = predictions.astype(np.float64)
-
-    ratios = predictions / ground_truth
+    # 3. Build transformed variables -----------------------------------------
+    ratios = preds / truth
     median_ratio = np.median(ratios)
 
-    try:
-        left_hand = (ratios - median_ratio) / median_ratio
-        right_hand = np.log2(((predictions / median_ratio) + ground_truth))
-        right_hand = sm.tools.tools.add_constant(right_hand)
-    except ValueError:
-        return float("nan"), float("nan"), float("nan")
+    left = (ratios - median_ratio) / median_ratio
+    right = np.log2(preds / median_ratio + truth)
+    right = sm.add_constant(right)   # adds intercept term
 
-    mra_model = sm.OLS(endog=left_hand, exog=right_hand).fit()
-    prb = mra_model.params[0]
+    # 4. Fit model + CI -------------------------------------------------------
+    with np.errstate(all="ignore"):  # silence harmless internal numpy warnings
+        model = sm.OLS(left, right).fit()
 
-    # get confidence interval from MRA model:
-    conf_int = mra_model.conf_int(alpha=1.0 - confidence_interval, cols=None)
-    try:
-        prb_lower = conf_int[0, 0]  # Lower bound for the first parameter
-        prb_upper = conf_int[0, 1]  # Upper bound for the first parameter
-    except IndexError:
-        prb_lower = float("nan")
-        prb_upper = float("nan")
+    # Guard against degenerate fit (rare but better to be explicit)
+    if model.df_resid <= 0 or not np.isfinite(model.params[0]):
+        return np.nan, np.nan, np.nan
+
+    prb = float(model.params[0])
+    prb_lower, prb_upper = (
+        model.conf_int(alpha=1.0 - confidence_interval)[0].tolist()
+    )
 
     return prb, prb_lower, prb_upper
 
@@ -485,7 +664,7 @@ def calc_correlations(
 
         naive_corr_sans_target = naive_corr.iloc[1:, 1:]
 
-        # Calculate the strength of the correlation with the target variable
+        # Get the (absolute) strength of the correlation with the target variable
         strength = naive_corr.iloc[:, 0].abs()
 
         # drop the target variable from strength:
@@ -644,9 +823,15 @@ def calc_r2(
     """
     results = {"variable": [], "r2": [], "adj_r2": [], "coef_sign": []}
     for var in variables:
-        X = df[var].copy()
-        X = sm.add_constant(X)
-        X = X.astype(np.float64)
+        data = pd.concat([df[var], y], axis=1).dropna()
+        if len(data) < 3 or data[var].nunique() < 2:
+            results["variable"].append(var)
+            results["r2"].append(float("nan"))
+            results["adj_r2"].append(float("nan"))
+            results["coef_sign"].append(float("nan"))
+            continue                          # skip ill-posed models
+
+        X = sm.add_constant(data[var].astype(float))
         try:
             model = sm.OLS(y, X).fit()
         except MissingDataError as e:
@@ -1052,3 +1237,32 @@ def calc_cross_validation_score(
         return float("nan")
 
     return -scores.mean()  # Convert negative MSE to positive
+
+
+class ConfidenceStat:
+    """
+    Any statistic along with it's confidence interval upper and lower bounds, and whether it is statistically significant
+    
+    Attributes
+    ----------
+    value : float
+        The base value of the statistic
+    confidence_interval : float
+        The % value of the confidence interval (e.g. 0.95 for 95% confidence interval)
+    low : float
+        The lower bound of the confidence interval
+    high : float
+        The upper bound of the confidence interval
+    """
+    def __init__(
+        self,
+        value : float,
+        confidence_interval : float,
+        low : float,
+        high : float
+    ):
+        self.value = value
+        self.confidence_interval = confidence_interval
+        self.low = low
+        self.high = high
+    

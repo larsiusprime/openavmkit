@@ -1,12 +1,14 @@
 import os
 import pickle
 import warnings
+import math
 
 from matplotlib import pyplot as plt
 import pandas as pd
 from catboost import CatBoostRegressor
 from lightgbm import Booster
 from sklearn.linear_model import Ridge
+from sklearn.metrics import mean_absolute_percentage_error
 from statsmodels.nonparametric.kernel_regression import KernelReg
 from xgboost import XGBRegressor
 from IPython.display import display
@@ -75,7 +77,7 @@ from openavmkit.utilities.modeling import (
     GroundTruthModel,
     SpatialLagModel,
 )
-from openavmkit.utilities.plotting import plot_scatterplot
+from openavmkit.utilities.plotting import plot_scatterplot, _simple_ols
 from openavmkit.utilities.settings import (
     get_fields_categorical,
     get_variable_interactions,
@@ -86,6 +88,7 @@ from openavmkit.utilities.settings import (
     get_fields_boolean,
     _get_sales,
     _simulate_removed_buildings,
+    _get_max_ratio_study_trim
 )
 from openavmkit.utilities.stats import (
     calc_vif_recursive_drop,
@@ -118,6 +121,12 @@ class BenchmarkResults:
         DataFrame with statistics for the test set (post-valuation-date only).
     df_stats_full: pd.DataFrame
         DataFrame with statistics for the full universe.
+    test_empty : bool
+        Whether df_stats_test contains no records
+    full_empty: bool
+        Whether df_stats_full contains no records
+    test_post_val_empty: bool
+        Whether df_stats_test_post_val contains no records
     """
 
     def __init__(
@@ -146,6 +155,18 @@ class BenchmarkResults:
         self.df_stats_test_post_val = df_stats_test_post_val
         self.df_stats_full = df_stats_full
 
+        test_empty = False == (df_stats_test["count_sales"].sum() > 0)
+        full_empty = False == (df_stats_full["count_sales"].sum() > 0)
+
+        if df_stats_test_post_val is not None:
+            test_post_val_empty = False == (df_stats_test_post_val["count_sales"].sum() > 0)
+        else:
+            test_post_val_empty = True
+
+        self.test_empty = test_empty
+        self.full_empty = full_empty
+        self.test_post_val_empty = test_post_val_empty
+
     def print(self) -> str:
         """
         Return a formatted string summarizing the benchmark results.
@@ -160,7 +181,7 @@ class BenchmarkResults:
         result += "\n\n"
         if (
             self.df_stats_test_post_val is not None
-            and len(self.df_stats_test_post_val) > 0
+            and not self.test_post_val_empty
         ):
             result += "Test set (post-valuation-date only):\n"
             result += _format_benchmark_df(self.df_stats_test_post_val)
@@ -248,9 +269,12 @@ def try_variables(
     df_vacant = _simulate_removed_buildings(df_vacant, settings, idx_vacant)
 
     # update df_hydrated with *all* the characteristics of df_vacant where their keys match:
-    df_hydrated.update(df_vacant)
+    df_hydrated.loc[idx_vacant, df_vacant.columns] = df_vacant.values
 
     all_best_variables = {}
+
+    try_vars = settings.get("modeling", {}).get("try_variables", {})
+    model_groups_to_skip = try_vars.get("skip", [])
 
     def _try_variables(
         df_in: pd.DataFrame,
@@ -276,12 +300,14 @@ def try_variables(
                         print("No valid sales found, skipping...")
                     continue
 
+            try_vars = settings.get("modeling", {}).get("try_variables", {})
             variables_to_use = (
-                settings.get("modeling", {}).get("experiment", {}).get("variables", [])
+                try_vars.get("variables", [])
             )
+
             if len(variables_to_use) == 0:
                 raise ValueError(
-                    "No variables defined. Please check settings `modeling.experiment.variables`"
+                    "No variables defined. Please check settings `modeling.try_variables.variables`"
                 )
 
             df_univ = df_univ[df_univ["model_group"].eq(model_group)].copy()
@@ -320,6 +346,7 @@ def try_variables(
             "results": all_best_variables,
         },
         key="key_sale",
+        skip=model_groups_to_skip
     )
 
     sale_field = get_sale_field(settings)
@@ -334,7 +361,19 @@ def try_variables(
             results = entry[vacant_status]
             pd.set_option("display.max_rows", None)
             results = results[~results["corr_strength"].isna()]
-            display(results)
+
+            styled = results.style.format(
+                {
+                    "corr_strength": "{:,.2f}",
+                    "corr_clarity": "{:,.2f}",
+                    "corr_score": "{:,.2f}",
+                    "r2": "{:,.2f}",
+                    "adj_r2": "{:,.2f}",
+                    "coef_sign": "{:,.0f}"
+                }
+            )
+
+            display(styled)
             file_out = f"out/try/{model_group}/{vacant_status}.csv"
             if not os.path.exists(os.path.dirname(file_out)):
                 os.makedirs(os.path.dirname(file_out))
@@ -567,10 +606,6 @@ def get_variable_recommendations(
                 bool_cols.append(col)
 
         if bool_cols:
-            if verbose:
-                print(
-                    f"Excluding {len(bool_cols)} boolean columns from VIF calculation: {', '.join(bool_cols[:5])}{'...' if len(bool_cols) > 5 else ''}"
-                )
             vif_X = vif_X.drop(columns=bool_cols)
 
         # Don't run VIF if we have no columns left or too few rows
@@ -733,6 +768,7 @@ def run_models(
     run_hedonic: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
+    do_plots: bool = False
 ):
     """
     Runs predictive models on the given SalesUniversePair.
@@ -772,6 +808,8 @@ def run_models(
         Whether to run ensemble models.
     do_shaps : bool, optional
         Whether to compute SHAP values.
+    do_plots : bool, optional
+        Whether to plot scatterplots
 
     Returns
     -------
@@ -798,31 +836,44 @@ def run_models(
     t.start("run model groups")
     for model_group in model_groups:
         t.start(f"model group: {model_group}")
-        if verbose:
-            print("")
-            print("")
-            print("******************************************************")
-            print(f"Running models for model_group: {model_group}")
-            print("******************************************************")
-            print("")
-            print("")
-        for vacant_only in [False, True]:
-            if vacant_only and not run_vacant:
+        for main_vacant_hedonic in ["main", "vacant", "hedonic"]:
+            if main_vacant_hedonic == "main" and not run_main:
                 continue
-            if not vacant_only and not run_main:
+            if main_vacant_hedonic == "vacant" and not run_vacant:
                 continue
+            if main_vacant_hedonic == "hedonic" and not run_hedonic:
+                continue
+
+            models_to_skip = s_inst.get(main_vacant_hedonic, {}).get("skip", {}).get(model_group, [])
+
+            if "all" in models_to_skip:
+                if verbose:
+                    print(
+                        f"Skipping all models for model_group: {model_group}/{main_vacant_hedonic}"
+                    )
+                continue
+
+            if verbose:
+                print("")
+                print("")
+                print("******************************************************")
+                print(f"Running models for model_group: {model_group}")
+                print("******************************************************")
+                print("")
+                print("")
+
             mg_results = _run_models(
                 sup,
                 model_group,
                 settings,
-                vacant_only,
+                main_vacant_hedonic,
                 save_params,
                 use_saved_params,
                 save_results,
                 verbose,
-                run_hedonic,
                 run_ensemble,
                 do_shaps=do_shaps,
+                do_plots=do_plots
             )
             if mg_results is not None:
                 dict_all_results[model_group] = mg_results
@@ -1136,7 +1187,8 @@ def run_one_model(
         sales_chase = False
 
     if verbose:
-        print(f" running model {model} on {len(df_sales)} rows...")
+        print(f"------------------------------------------------")
+        print(f"Running model {model} on {len(df_sales)} rows...")
 
     are_ind_vars_default = entry.get("ind_vars", None) is None
     ind_vars: list | None = entry.get("ind_vars", default_entry.get("ind_vars", None))
@@ -1188,6 +1240,8 @@ def run_one_model(
         return None
 
     intercept = entry.get("intercept", True)
+    n_trials = entry.get("n_trials", 50)
+    print(f"n_trials = {n_trials} for model: {model_name}")
     t.stop("setup")
 
     t.start("run")
@@ -1239,15 +1293,15 @@ def run_one_model(
         results = run_gwr(ds, outpath, save_params, use_saved_params, verbose=verbose)
     elif model_name == "xgboost":
         results = run_xgboost(
-            ds, outpath, save_params, use_saved_params, verbose=verbose
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
     elif model_name == "lightgbm":
         results = run_lightgbm(
-            ds, outpath, save_params, use_saved_params, verbose=verbose
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
     elif model_name == "catboost":
         results = run_catboost(
-            ds, outpath, save_params, use_saved_params, verbose=verbose
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
     else:
         raise ValueError(f"Model {model_name} not found!")
@@ -1255,7 +1309,8 @@ def run_one_model(
 
     if ds.vacant_only or ds.hedonic:
         # If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
-        results = _clamp_land_predictions(results, results.ds.model_group, model_name)
+        max_trim = _get_max_ratio_study_trim(settings, results.ds.model_group)
+        results = _clamp_land_predictions(results, results.ds.model_group, model_name, outpath, max_trim)
 
     if save_results:
         t.start("write")
@@ -1543,6 +1598,7 @@ def _format_benchmark_df(df: pd.DataFrame, transpose: bool = True):
         "count_univ": "{:,.0f}",
         "mse": fancy_format,
         "rmse": fancy_format,
+        "mape": fancy_format,
         "r2": dig2_fancy_format,
         "adj_r2": dig2_fancy_format,
         "median_ratio": dig2_fancy_format,
@@ -1663,7 +1719,8 @@ def _predict_one_model(
 
     if ds.vacant_only or ds.hedonic:
         # If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
-        results = _clamp_land_predictions(results, smr.ds.model_group, model_name)
+        max_trim = _get_max_ratio_study_trim(settings, smr.ds.model_group)
+        results = _clamp_land_predictions(results, smr.ds.model_group, model_name, outpath, max_trim)
 
     if save_results:
         _write_model_results(results, outpath, settings)
@@ -1672,25 +1729,31 @@ def _predict_one_model(
 
 
 def _clamp_land_predictions(
-    results: SingleModelResults, model_group: str, model_name: str
+    results: SingleModelResults, model_group: str, model_name: str, outpath: str, max_trim: float
 ):
     """
     Clamp land value predictions based on the full market value predictions.
     This function ensures that land value predictions are non-negative and do not exceed the full market value predictions.
     """
 
+    lookpath = "main"
+    if "vacant" in outpath:
+        lookpath = "main"
+    if "hedonic" in outpath:
+        lookpath = "hedonic_full"
+
     # Look for the corresponding universe, sales, and test predictions for the land value model.
-    df_univ = load_model_results(model_group, model_name, "universe", "main")
+    df_univ = load_model_results(model_group, model_name, "universe", lookpath)
     if df_univ is not None:
         # There's a match for this model name (ex: "xgboost" or "lightgbm") in the set of main models
-        df_sales = load_model_results(model_group, model_name, "sales", "main")
-        df_test = load_model_results(model_group, model_name, "test", "main")
+        df_sales = load_model_results(model_group, model_name, "sales", lookpath)
+        df_test = load_model_results(model_group, model_name, "test", lookpath)
     else:
         # There's not a match for this model name, so we look for the ensemble as the baseline
-        df_univ = load_model_results(model_group, "ensemble", "universe", "main")
+        df_univ = load_model_results(model_group, "ensemble", "universe", lookpath)
         if df_univ is not None:
-            df_sales = load_model_results(model_group, "ensemble", "sales", "main")
-            df_test = load_model_results(model_group, "ensemble", "test", "main")
+            df_sales = load_model_results(model_group, "ensemble", "sales", lookpath)
+            df_test = load_model_results(model_group, "ensemble", "test", lookpath)
         else:
             warnings.warn(
                 f"Couldn't find main baseline for {model_group}/{model_name} land value predictions, skipping clamping. Run finalize and try again!"
@@ -1730,8 +1793,8 @@ def _clamp_land_predictions(
     # Clamp land value to the range of (0.0, prediction)
     # - No negative land values are allowed
     # - Land value cannot exceed the full market value prediction
-    # - NOTE: this does *not* look at any sales data, so it's not cheating, just another step in the prediction algorithm
-    #         we're just looking at another prediction we made earlier in the pipeline and using that to judge land value
+    # - NOTE: this does *not* look at any sales data, so it's not cheating, it's just another step in the prediction algorithm
+    #   we're just looking at another prediction we made earlier in the pipeline and using that to judge land value
 
     count_univ_clipped = df_land_univ[
         df_land_univ["land_value"].lt(0)
@@ -1778,7 +1841,7 @@ def _clamp_land_predictions(
         y_pred_univ,
         results.timing,
         results.verbose,
-        results.sale_filter,
+        results.sale_filter
     )
 
     count_univ = len(results.df_universe)
@@ -2067,7 +2130,8 @@ def _optimize_ensemble_allocation(
         )
 
     if verbose:
-        print(f"Best score = {best_score:8.0f}, ensemble = {best_list}")
+        if not np.isinf(best_score):
+            print(f"Best score = {best_score:8.0f}, ensemble = {best_list}")
     return best_list
 
 
@@ -2126,7 +2190,7 @@ def _optimize_ensemble_allocation_iteration(
         y_pred_sales=y_pred_sales_ensemble.to_numpy(),
         y_pred_univ=y_pred_univ_ensemble.to_numpy(),
         timing=timing,
-        verbose=verbose,
+        verbose=verbose
     )
     score = results.utility_train
 
@@ -2205,6 +2269,7 @@ def _optimize_ensemble(
 
     vacant_status = "vacant" if vacant_only else "main"
     df_test = ds.df_test
+    df_sales = ds.df_sales
     df_univ = ds.df_universe
     instructions = settings.get("modeling", {}).get("instructions", {})
 
@@ -2224,8 +2289,11 @@ def _optimize_ensemble(
     best_score = float("inf")
 
     while len(ensemble_list) > 1:
+        if verbose:
+            print(f"Ensembling with : {ensemble_list}")
         best_score, best_list = _optimize_ensemble_iteration(
             df_test,
+            df_sales,
             df_univ,
             timing,
             all_results,
@@ -2237,12 +2305,13 @@ def _optimize_ensemble(
         )
 
     if verbose:
-        print(f"Best score = {best_score:8.0f}, ensemble = {best_list}")
+        print(f"-->Ensemble finished. Best score = {best_score:8.2f}, ensemble = {best_list}")
     return best_list
 
 
 def _optimize_ensemble_iteration(
     df_test: pd.DataFrame,
+    df_sales: pd.DataFrame,
     df_univ: pd.DataFrame,
     timing: TimingData,
     all_results: MultiModelResults,
@@ -2253,6 +2322,7 @@ def _optimize_ensemble_iteration(
     verbose: bool = False,
 ):
     df_test_ensemble = df_test[["key_sale", "key"]].copy()
+    df_sales_ensemble = df_sales[["key_sale", "key"]].copy()
     df_univ_ensemble = df_univ[["key"]].copy()
     if len(ensemble_list) == 0:
         ensemble_list = [key for key in all_results.model_results.keys()]
@@ -2268,11 +2338,18 @@ def _optimize_ensemble_iteration(
         df_pred_test = m_results.df_test[["key_sale", field_prediction]].copy()
         df_pred_test = df_pred_test.rename(columns={field_prediction: m_key})
 
+        df_pred_sales = m_results.df_sales[["key_sale", field_prediction]].copy()
+        df_pred_sales = df_pred_sales.rename(columns={field_prediction: m_key})
+
         df_pred_univ = m_results.df_universe[["key", field_prediction]].copy()
         df_pred_univ = df_pred_univ.rename(columns={field_prediction: m_key})
 
         df_test_ensemble = df_test_ensemble.merge(
             df_pred_test, on="key_sale", how="left"
+        )
+
+        df_sales_ensemble = df_sales_ensemble.merge(
+            df_pred_sales, on="key_sale", how="left"
         )
         df_univ_ensemble = df_univ_ensemble.merge(df_pred_univ, on="key", how="left")
     timing.stop("train")
@@ -2282,26 +2359,28 @@ def _optimize_ensemble_iteration(
     timing.stop("predict_test")
 
     timing.start("predict_sales")
+    y_pred_sales_ensemble = df_sales_ensemble[ensemble_list].median(axis=1)
     timing.stop("predict_sales")
 
     timing.start("predict_univ")
     y_pred_univ_ensemble = df_univ_ensemble[ensemble_list].median(axis=1)
     timing.stop("predict_univ")
 
-    results = SingleModelResults(
+    results : SingleModelResults = SingleModelResults(
         ds,
         "prediction",
         "he_id",
         "ensemble",
         model="ensemble",
         y_pred_test=y_pred_test_ensemble.to_numpy(),
-        y_pred_sales=None,
+        y_pred_sales=y_pred_sales_ensemble.to_numpy(),
         y_pred_univ=y_pred_univ_ensemble.to_numpy(),
         timing=timing,
-        verbose=verbose,
+        verbose=verbose
     )
     timing.stop("total")
 
+    print(f"Results: score = {results.utility_train}, r2 = {results.pred_train.r2}, mape = {results.pred_train.mape}, mse = {results.pred_train.mse}")
     score = results.utility_train
 
     # Add early exit if score is nan
@@ -2312,7 +2391,7 @@ def _optimize_ensemble_iteration(
 
     if verbose:
         print(
-            f"score = {score:5.0f}, best = {best_score:5.0f}, ensemble = {ensemble_list}..."
+            f"score = {score:5.2f}, best = {best_score:5.2f}, ensemble = {ensemble_list}..."
         )
 
     if score < best_score:  # and len(ensemble_list) >= 3:
@@ -2448,7 +2527,7 @@ def _run_ensemble(
     timing.start("predict_univ")
     y_pred_univ_ensemble = df_univ_ensemble[ensemble_list].median(axis=1)
     timing.stop("predict_univ")
-
+    
     results = SingleModelResults(
         ds,
         "prediction",
@@ -2573,17 +2652,6 @@ def _calc_variable_recommendations(
     report: MarkdownReport = None,
 ):
     """Calculate variable recommendations based on various statistical metrics.
-
-    :param ds: DataSplit object containing the data. :type ds: DataSplit :param settings:
-    Settings dictionary. :type settings: dict :param correlation_results: Correlation
-    analysis results. :type correlation_results: dict :param enr_results: Elastic net
-    regularization results. :type enr_results: dict :param r2_values_results: R² values
-    DataFrame. :type r2_values_results: pandas.DataFrame :param p_values_results: P-value
-    analysis results. :type p_values_results: dict :param t_values_results: T-value
-    analysis results. :type t_values_results: dict :param vif_results: VIF analysis
-    results. :type vif_results: dict :param report: Optional MarkdownReport object. :type
-    report: MarkdownReport or None :returns: DataFrame with variable recommendations.
-    :rtype: pandas.DataFrame
     """
     feature_selection = (
         settings.get("modeling", {})
@@ -2620,7 +2688,14 @@ def _calc_variable_recommendations(
     df = df[df["variable"].ne("const")]
 
     adj_r2_thresh = thresh.get("adj_r2", 0.1)
+    adj_r2_thresh_bonus = thresh.get("adj_r2_bonus", 0.25)
+
+    # 1 point for being over the minimum amount
     df.loc[df["adj_r2"].gt(adj_r2_thresh), "weighted_score"] += 1
+
+    if adj_r2_thresh_bonus > adj_r2_thresh:
+        # 1 point for reaching a higher threshold
+        df.loc[df["adj_r2"].gt(adj_r2_thresh_bonus), "weighted_score"] += 1
 
     weight_corr_score = weights.get("corr_score", 1)
     weight_enr_coef = weights.get("enr_coef", 1)
@@ -2946,13 +3021,15 @@ def _run_hedonic_models(
     verbose: bool = False,
     save_results: bool = False,
     run_ensemble: bool = True,
+    do_plots: bool = False
 ):
     """
     Run hedonic models and ensemble them, then update the benchmark.
     """
     hedonic_results = {}
+
     # Run hedonic models
-    outpath = f"out/models/{model_group}/hedonic"
+    outpath = f"out/models/{model_group}/hedonic_land"
     if not os.path.exists(outpath):
         os.makedirs(outpath)
 
@@ -3050,7 +3127,7 @@ def _run_hedonic_models(
         # Calculate final results, including ensemble
         all_hedonic_results.add_model("ensemble", ensemble_results)
 
-    # --- ADD THIS BLOCK: Run stacked ensemble for hedonic ---
+    # --- Run stacked ensemble for hedonic ---
     _run_stacked_ensemble_for_model_group(
         t=TimingData(),
         model_group=model_group,
@@ -3061,28 +3138,32 @@ def _run_hedonic_models(
         save_results=save_results,
         verbose=verbose,
     )
-    # --- END BLOCK ---
-
-    print(f"HEDONIC BENCHMARK ({model_group})")
+    
+    print(f"\n************************************************************")
+    print(f"HEDONIC LAND BENCHMARK ({model_group}) -- Assessor Metrics")
+    print(f"************************************************************\n")
     print(all_hedonic_results.benchmark.print())
+    
+    max_trim = _get_max_ratio_study_trim(settings, model_group)
 
-    title = "HEDONIC"
-    perf_metrics = _model_performance_metrics(model_group, all_hedonic_results, title)
+    title = "HEDONIC LAND"
+    perf_metrics = _model_performance_metrics(model_group, all_hedonic_results, title, max_trim)
     print(perf_metrics)
     print("")
 
-    # _model_performance_plots(model_group, all_hedonic_results, title)
-    print("")
+    if do_plots:
+        _model_performance_plots(model_group, all_hedonic_results, title)
+        print("")
 
     # Post-valuation metrics
     title = f"{title} (POST-VALUATION DATE)"
-    post_val_results = _get_post_valuation_mmr(all_hedonic_results)
-    perf_metrics = _model_performance_metrics(model_group, post_val_results, title)
-    print(perf_metrics)
-    print("")
+    if not all_hedonic_results.benchmark.test_post_val_empty:
+        post_val_results = _get_post_valuation_mmr(all_hedonic_results)
+        perf_metrics = _model_performance_metrics(model_group, post_val_results, title, max_trim)
+        print(perf_metrics)
+        print("")
 
-    # _model_performance_plots(model_group, post_val_results, title)
-    print("")
+        print("")
 
 
 def _model_performance_plots(
@@ -3101,6 +3182,15 @@ def _model_performance_plots(
     elif sale_date.dtype == "datetime64[ns]":
         earliest_date = sale_date.min()
         latest_date = sale_date.max()
+        if not pd.isna(earliest_date):
+            earliest_date = earliest_date.strftime("%Y-%m-%d")
+        else:
+            earliest_date = "???"
+
+        if not pd.isna(latest_date):
+            latest_date = latest_date.strftime("%Y-%m-%d")
+        else:
+            latest_date = "???"
     else:
         # Convert to datetime if not already
         first_results.df_test["sale_date"] = pd.to_datetime(
@@ -3128,28 +3218,33 @@ def _model_performance_plots(
             if key == "test":
                 df["y_pred"] = model_result.pred_test.y_pred
                 df["y_true"] = model_result.pred_test.y
+                the_count = test_count
+
             else:
                 df["y_pred"] = model_result.pred_sales.y_pred
                 df["y_true"] = model_result.pred_sales.y
+                the_count = sales_count
 
             # Note any NA predictions:
-            if df["y_pred"].isna().any():
-                mask_na = df["y_pred"].isna()
-                count_na = mask_na.count()
-                print(f"WARNING: y_pred has {count_na} NaN values!")
-                df = df[~mask_na]
+            for field in ["y_pred", "y_true"]:
+                if df[field].isna().any():
+                    mask_na = df[field].isna()
+                    count_na = mask_na.count()
+                    print(f"WARNING: {field} has {count_na} NaN values!")
+                    df = df[~mask_na]
 
-            df["metadata"] = df["key_sale"] + "\n" + df["address"]
+            plot_title = f"{label}/{title}/{model_group}/{model_name}\n{the_count}/{sales_count} sales from {earliest_date} to {latest_date}"
+
             plot_scatterplot(
                 df,
                 "y_true",
                 "y_pred",
                 "Sale price",
                 "Prediction",
-                title=f"{label}/{title}/{model_group}: {model_name}\n{test_count}/{sales_count} sales from {earliest_date} to {latest_date}",
+                title=plot_title,
                 best_fit_line=True,
-                perfect_fit_line=True,
-                metadata_field="metadata",
+                perfect_fit_line=True
+                #metadata_field="metadata",
             )
 
 
@@ -3162,7 +3257,10 @@ def _model_shaps(model_group: str, all_results: MultiModelResults, title: str):
 
 
 def _model_performance_metrics(
-    model_group: str, all_results: MultiModelResults, title: str
+    model_group: str, 
+    all_results: MultiModelResults, 
+    title: str,
+    max_trim: float
 ):
     # Get first model_results from all_results:
     first_results: SingleModelResults = list(all_results.model_results.values())[0]
@@ -3189,22 +3287,39 @@ def _model_performance_metrics(
         earliest_date = first_results.df_test["sale_date"].min()
         latest_date = first_results.df_test["sale_date"].max()
 
+        if not pd.isna(earliest_date):
+            earliest_date = earliest_date.strftime("%Y-%m-%d")
+        else:
+            earliest_date = "N/A"
+
+        if not pd.isna(latest_date):
+            latest_date = latest_date.strftime("%Y-%m-%d")
+        else:
+            latest_date = "N/A"
+
     # Add performance metrics table
-    text = f"\n{title} Model Performance Metrics for {model_group}: (* = trimmed)\n"
+    text = f"\n************************************************************\n"
+    text += f"{title} Benchmark ({model_group}) -- Academic Metrics\n"
+    text += f"************************************************************\n"
     text += f"Testing {test_count}/{sales_count} sales from ({earliest_date} to {latest_date})\n"
     text += ("=" * 80) + "\n"
     metrics_data = {
         "Model": [],
-        "R²": [],
-        "R²_raw": [],  # Added raw R²
+        "R² ols": [],
+        "R² y=x": [],
+        "MAPE": [],
         "m.ratio": [],
-        "mean.ratio": [],
+        "avg.ratio": [],
+        "Slope": []
+    }
+    trimmed_data = {
+        "Model": [],
+        "R² ols": [],
+        "R² y=x": [],
+        "MAPE": [],
         "Slope": [],
-        "R²*": [],
-        "R²_raw*": [],  # Added trimmed raw R²
-        "Slope*": [],
-        "m.ratio*": [],
-        "mean.ratio*": [],
+        "m.ratio": [],
+        "avg.ratio": [],
     }
 
     for model_name, model_result in all_results.model_results.items():
@@ -3229,7 +3344,7 @@ def _model_performance_metrics(
         y_pred = y_pred.astype(np.float64)
 
         y_ratio = y_pred / y_true
-        mask = trim_outliers_mask(y_ratio)
+        mask = trim_outliers_mask(y_ratio, max_trim)
 
         if len(mask) == 0:
             y_true_trim = y_true
@@ -3238,14 +3353,13 @@ def _model_performance_metrics(
             y_true_trim = y_true[mask]
             y_pred_trim = y_pred[mask]
 
-        # Calculate raw R² for untrimmed
         if len(y_true) > 1 and len(y_pred) > 1:
-            # OLS regression
-            reg = LinearRegression()
-            reg.fit(y_true.reshape(-1, 1), y_pred)
-            slope = reg.coef_[0]
-            intercept = reg.intercept_
-            r2 = reg.score(y_true.reshape(-1, 1), y_pred)
+            # MAPE calculation
+            mape = mean_absolute_percentage_error(y_true, y_pred)
+
+            # OLS R² calculation
+            reg = _simple_ols(df_test, "y_true", "y_pred", intercept=False)
+            slope, r2_0 = reg["slope"], reg["r2"]
 
             # Raw R² calculation
             ss_res = np.sum((y_true - y_pred) ** 2)
@@ -3253,18 +3367,18 @@ def _model_performance_metrics(
             r2_raw = 1 - (ss_res / ss_tot)
         else:
             slope = np.nan
-            intercept = np.nan
-            r2 = np.nan
+            r2_0 = np.nan
             r2_raw = np.nan
+            mape = np.nan
 
-        # Calculate raw R² for trimmed
         if len(y_true_trim) > 1 and len(y_pred_trim) > 1:
-            # OLS regression
-            reg_trim = LinearRegression()
-            reg_trim.fit(y_true_trim.reshape(-1, 1), y_pred_trim)
-            slope_trim = reg_trim.coef_[0]
-            intercept_trim = reg_trim.intercept_
-            r2_trim = reg_trim.score(y_true_trim.reshape(-1, 1), y_pred_trim)
+            # MAPE calculation
+            mape_trim = mean_absolute_percentage_error(y_true_trim, y_pred_trim)
+            
+            # OLS R² calculation
+            df_trim = pd.DataFrame(data={"y_true":y_true_trim,"y_pred":y_pred_trim})
+            reg = _simple_ols(df_trim, "y_true", "y_pred", intercept=False)
+            slope_trim, r2_trim = reg["slope"], reg["r2"]
 
             # Raw R² calculation for trimmed data
             ss_res_trim = np.sum((y_true_trim - y_pred_trim) ** 2)
@@ -3272,71 +3386,150 @@ def _model_performance_metrics(
             r2_raw_trim = 1 - (ss_res_trim / ss_tot_trim)
         else:
             slope_trim = np.nan
-            intercept_trim = np.nan
             r2_trim = np.nan
             r2_raw_trim = np.nan
-
-        if model_result.pred_test.r2 is not None:
-            r2_0 = model_result.pred_test.r2
-        else:
-            r2_0 = np.nan
-        if model_result.pred_test.r2_trim is not None:
-            r2_trim_0 = model_result.pred_test.r2_trim
-        else:
-            r2_trim_0 = np.nan
+            mape_trim = np.nan
 
         metrics_data["Model"].append(model_name)
-        metrics_data["R²"].append(r2_0)
-        metrics_data["R²_raw"].append(r2_raw)
+        metrics_data["R² ols"].append(r2_0)
+        metrics_data["R² y=x"].append(r2_raw)
+        metrics_data["MAPE"].append(mape)
         metrics_data["m.ratio"].append(model_result.pred_test.ratio_study.median_ratio)
-        metrics_data["mean.ratio"].append(model_result.pred_test.ratio_study.mean_ratio)
-        metrics_data["m.ratio*"].append(
-            model_result.pred_test.ratio_study.median_ratio_trim
-        )
-        metrics_data["mean.ratio*"].append(
-            model_result.pred_test.ratio_study.mean_ratio_trim
-        )
-        metrics_data["R²*"].append(r2_trim)
-        metrics_data["R²_raw*"].append(r2_raw_trim)
+        metrics_data["avg.ratio"].append(model_result.pred_test.ratio_study.mean_ratio)
         metrics_data["Slope"].append(slope)
-        metrics_data["Slope*"].append(slope_trim)
+
+        trimmed_data["Model"].append(model_name)
+        trimmed_data["R² ols"].append(r2_trim)
+        trimmed_data["R² y=x"].append(r2_raw_trim)
+        trimmed_data["MAPE"].append(mape_trim)
+        trimmed_data["m.ratio"].append(model_result.pred_test.ratio_study.median_ratio_trim)
+        trimmed_data["avg.ratio"].append(model_result.pred_test.ratio_study.mean_ratio_trim)
+        trimmed_data["Slope"].append(slope_trim)
 
     # Create and display metrics DataFrame
     metrics_df = pd.DataFrame(metrics_data)
     metrics_df.set_index("Model", inplace=True)
-    metrics_df["R²"] = metrics_df["R²"].apply(lambda x: f"{x:.2f}")
-    metrics_df["R²_raw"] = metrics_df["R²_raw"].apply(lambda x: f"{x:.2f}")
-    metrics_df["Slope"] = metrics_df["Slope"].apply(lambda x: f"{x:.2f}")
-    metrics_df["m.ratio"] = metrics_df["m.ratio"].apply(lambda x: f"{x:.2f}")
-    metrics_df["mean.ratio"] = metrics_df["mean.ratio"].apply(lambda x: f"{x:.2f}")
-    metrics_df["m.ratio*"] = metrics_df["m.ratio*"].apply(lambda x: f"{x:.2f}")
-    metrics_df["mean.ratio*"] = metrics_df["mean.ratio*"].apply(lambda x: f"{x:.2f}")
-    metrics_df["R²*"] = metrics_df["R²*"].apply(lambda x: f"{x:.2f}")
-    metrics_df["R²_raw*"] = metrics_df["R²_raw*"].apply(lambda x: f"{x:.2f}")
-    metrics_df["Slope*"] = metrics_df["Slope*"].apply(lambda x: f"{x:.2f}")
+    metrics_df["R² ols"] = metrics_df["R² ols"].apply(lambda x: f"{x:.2f}").astype(str)
+    metrics_df["R² y=x"] = metrics_df["R² y=x"].apply(lambda x: f"{x:.2f}").astype(str)
+    metrics_df["MAPE"] = metrics_df["MAPE"].apply(lambda x: f"{x:.2f}").astype(str)
+    metrics_df["Slope"] = metrics_df["Slope"].apply(lambda x: f"{x:.2f}").astype(str)
+    metrics_df["m.ratio"] = metrics_df["m.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
+    metrics_df["avg.ratio"] = metrics_df["avg.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
 
-    text += metrics_df.to_string() + "\n"
+    trimmed_df = pd.DataFrame(trimmed_data)
+    trimmed_df.set_index("Model", inplace=True)
+    trimmed_df["R² ols"] = trimmed_df["R² ols"].apply(lambda x: f"{x:.2f}").astype(str)
+    trimmed_df["R² y=x"] = trimmed_df["R² y=x"].apply(lambda x: f"{x:.2f}").astype(str)
+    trimmed_df["MAPE"] = trimmed_df["MAPE"].apply(lambda x: f"{x:.2f}").astype(str)
+    trimmed_df["Slope"] = trimmed_df["Slope"].apply(lambda x: f"{x:.2f}").astype(str)
+    trimmed_df["m.ratio"] = trimmed_df["m.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
+    trimmed_df["avg.ratio"] = trimmed_df["avg.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
+
+    metrics_df = metrics_df[["R² ols","R² y=x","MAPE","m.ratio","avg.ratio","Slope"]]
+    trimmed_df = trimmed_df[["R² ols","R² y=x","MAPE","m.ratio","avg.ratio","Slope"]]
+
+    float_cols = metrics_df.select_dtypes(include=['float']).columns
+    metrics_df[float_cols] = metrics_df[float_cols].map(lambda x: f"{x:.2f}")
+    
+    float_cols = trimmed_df.select_dtypes(include=['float']).columns
+    trimmed_df[float_cols] = trimmed_df[float_cols].map(lambda x: f"{x:.2f}")
+    
+    text += "\nUNTRIMMED\n"
+    text += metrics_df.to_markdown() + "\n"
+    text += f"\nTRIMMED\n"
+    text += trimmed_df.to_markdown() + "\n"
     text += ("=" * 80) + "\n"
     return text
+
+
+def _trim_hedonic_sales(
+    df_sales: pd.DataFrame,
+    model_group: str,
+    impr_to_vac_ratio: float,
+    random_seed: int,
+    verbose: bool = False
+):
+    test_keys, train_keys = _read_split_keys(model_group)
+    rng = np.random.default_rng(random_seed)
+
+    all_vac_keys = df_sales.loc[df_sales["vacant_sale"], "key_sale"]
+
+    selected_keys: set[str] = set(all_vac_keys)
+
+    if verbose:
+        print(f"-->Trimming hedonic sales for model group '{model_group}'...")
+        print(f"---->all sales   : {len(df_sales)}")
+        print(f"---->vacant sales: {len(all_vac_keys)}")
+    
+    for is_test in [True, False]:
+        subset_keys = test_keys if is_test else train_keys
+        mask = df_sales["key_sale"].isin(subset_keys)
+
+        vac_mask   = mask & df_sales["vacant_sale"].eq(True)
+        impr_mask  = mask & df_sales["vacant_sale"].eq(False)
+        
+        n_vac   = vac_mask.sum()
+        n_impr  = impr_mask.sum()
+
+        target = min(n_impr, math.ceil(n_vac * impr_to_vac_ratio))
+        if target == 0:
+            continue
+        
+        improvs = df_sales.index[impr_mask]
+        sampled_idx = rng.choice(improvs, size=target, replace=False)
+        
+        n_samples = len(df_sales.loc[sampled_idx, "key_sale"])
+        
+        if verbose:
+            word = "test" if is_test else "train"
+            print(f"------>{word} sales  : {mask.sum()}")
+            print(f"------>vacant sales: {n_vac}")
+            print(f"------>num sampled : {n_samples}")
+        
+        selected_keys.update(df_sales.loc[sampled_idx, "key_sale"])
+    
+    if verbose:
+        print(f"-------->Final selection: {len(selected_keys)} keys")
+    
+    return df_sales[df_sales["key_sale"].isin(selected_keys)]
 
 
 def _run_models(
     sup: SalesUniversePair,
     model_group: str,
     settings: dict,
-    vacant_only: bool = False,
+    main_vacant_hedonic: str = "main",
     save_params: bool = True,
     use_saved_params: bool = True,
     save_results: bool = False,
     verbose: bool = False,
-    run_hedonic: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
+    do_plots: bool = False
 ):
     """
     Run models for a given model group and process ensemble results.
     """
-
+    
+    outdir = ""
+    if main_vacant_hedonic == "main":
+        is_hedonic = False
+        vacant_only = False
+        outdir = "main"
+        titleword = "MAIN"
+    elif main_vacant_hedonic == "vacant":
+        is_hedonic = False
+        vacant_only = True
+        outdir = "vacant"
+        titleword = "VACANT"
+    elif main_vacant_hedonic == "hedonic":
+        is_hedonic = True
+        vacant_only = False
+        outdir = "hedonic_full"
+        titleword = "HEDONIC FULL"
+    else:
+        raise ValueError(f"The only supported values are 'main', 'vacant', and 'hedonic', got '{main_vacant_hedonic}' instead!")
+    
     t = TimingData()
     t.start("total")
 
@@ -3350,22 +3543,24 @@ def _run_models(
     s = settings
     s_model = s.get("modeling", {})
     s_inst = s_model.get("instructions", {})
-    vacant_status = "vacant" if vacant_only else "main"
+    s_mvh = s_inst.get(main_vacant_hedonic, {})
 
+    if is_hedonic:
+        # For a hedonic model, we don't want to overload the vacant signal
+        # so we grab only a modest amount of improved sales to supplement the vacants
+        s_sel = s_mvh.get("select", {})
+        impr_to_vac_ratio = s_sel.get("improved_to_vacant_ratio", 4.0)
+        random_seed = s_inst.get("random_seed", 1337)
+        
+        df_sales = _trim_hedonic_sales(df_sales, model_group, impr_to_vac_ratio, random_seed, verbose)
+        
     default_value = get_sale_field(settings, df_sales)
     dep_var = s_inst.get("dep_var", default_value)
     dep_var_test = s_inst.get("dep_var_test", default_value)
     fields_cat = get_fields_categorical(s, df_univ, include_boolean=True)
-    models_to_run = s_inst.get(vacant_status, {}).get("run", None)
-    models_to_skip = s_inst.get(vacant_status, {}).get("skip", {}).get(model_group, [])
+    models_to_run = s_inst.get(main_vacant_hedonic, {}).get("run", None)
 
-    if "all" in models_to_skip:
-        print(
-            f"Skipping all models for model_group: {model_group}, vacant_only: {vacant_only}"
-        )
-        return None
-
-    model_entries = s_model.get("models").get(vacant_status, {})
+    model_entries = s_model.get("models").get(main_vacant_hedonic, {})
 
     if models_to_run is None:
         models_to_run = list(model_entries.keys())
@@ -3375,7 +3570,7 @@ def _run_models(
         raise ValueError("Could not find equity cluster ID's in the dataframe (he_id)")
 
     model_results = {}
-    outpath = f"out/models/{model_group}/{vacant_status}"
+    outpath = f"out/models/{model_group}/{outdir}"
     if not os.path.exists(outpath):
         os.makedirs(outpath)
 
@@ -3410,12 +3605,6 @@ def _run_models(
     # Run the models one by one and stash the results
     t.start("run_models")
     for model in models_to_run:
-
-        if model in models_to_skip:
-            print(
-                f"Skipping model: {model} for model_group: {model_group}, vacant_only: {vacant_only}"
-            )
-            continue
 
         model_variables = best_variables
         # For tree-based models, we don't perform variable reduction
@@ -3515,37 +3704,39 @@ def _run_models(
         verbose=verbose,
     )
 
-    if vacant_only:
-        print(f"VACANT BENCHMARK ({model_group})")
-    else:
-        print(f"MAIN BENCHMARK ({model_group})")
+    print(f"\n************************************************************")
+    print(f"{titleword} Benchmark ({model_group}) -- Assessor Metrics")
+    print(f"************************************************************\n")
     print(all_results.benchmark.print())
 
-    title = "VACANT" if vacant_only else "MAIN"
+    title = titleword
 
+    max_trim = _get_max_ratio_study_trim(settings, model_group)
+    
     # Add performance metrics table
-    perf_metrics = _model_performance_metrics(model_group, all_results, title)
+    perf_metrics = _model_performance_metrics(model_group, all_results, title, max_trim)
     print(perf_metrics)
     print("")
 
     if do_shaps:
         _model_shaps(model_group, all_results, title)
 
-    # _model_performance_plots(model_group, all_results, title)
+    if do_plots:
+        _model_performance_plots(model_group, all_results, title)
     print("")
 
     # Post-valuation metrics
-    title = f"{title} (POST-VALUATION DATE)"
-    post_val_results = _get_post_valuation_mmr(all_results)
-    perf_metrics = _model_performance_metrics(model_group, post_val_results, title)
-    if perf_metrics is not None:
-        print(perf_metrics)
-        print("")
+    if not all_results.benchmark.test_post_val_empty:
+        post_val_results = _get_post_valuation_mmr(all_results)
+        title = f"{title} (Post-valuation date)"
+        perf_metrics = _model_performance_metrics(model_group, post_val_results, title, max_trim)
+        if perf_metrics is not None:
+            print(perf_metrics)
+            print("")
 
-        # _model_performance_plots(model_group, all_results, title)
-        print("")
+            print("")
 
-    if not vacant_only and run_hedonic:
+    if not vacant_only and is_hedonic:
         t.start("run hedonic models")
         _run_hedonic_models(
             settings=settings,
@@ -3560,6 +3751,7 @@ def _run_models(
             verbose=verbose,
             save_results=save_results,
             run_ensemble=run_ensemble,
+            do_plots=do_plots
         )
         t.stop("run hedonic models")
 

@@ -1,4 +1,4 @@
-# docs/reference/gen.py
+# docs/api/gen.py
 from pathlib import Path
 import pkgutil
 import importlib
@@ -29,8 +29,8 @@ def has_public_content(mod) -> bool:
 def docs_path_for(module_name: str) -> Path:
   parts = module_name.split(".")[1:] # strip leading "openavmkit"
   if len(parts) == 1:
-    return Path("reference", "Core", parts[0]).with_suffix(".md")
-  return Path("reference", *parts).with_suffix(".md")
+    return Path("api", "Core", parts[0]).with_suffix(".md")
+  return Path("api", *parts).with_suffix(".md")
 
 
 for module in pkgutil.walk_packages([package.replace(".", "/")], prefix=f"{package}."):

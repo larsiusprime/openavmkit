@@ -91,7 +91,7 @@ cod = calc_cod(ratios)
 
 ## Using the Jupyter Notebooks
 
-Make sure that you've already installed the `jupyter` library. If not, see [Quick Start](getting_started.md#quick-start) for instructions.
+Make sure that you've already installed the `jupyter` library. If not, see [Getting Started](getting_started.md#running-jupyter-notebooks) for instructions.
 
 The `notebooks/` directory contains several pre-written Jupyter notebooks that demonstrate how to use the library interactively. These notebooks are especially useful for new users, as they contain step-by-step explanations and examples.
 
@@ -102,15 +102,15 @@ jupyter notebook
 
 This should open a new tab in your web browser with the Jupyter interface.
 
-![Jupyter interface](assets/images/jupyter_01.png)
+![Jupyter interface](../assets/images/jupyter_01.png)
 
 2. Navigate to the `notebooks/` directory in the Jupyter interface and open the notebook you want to run.
 
-![Open notebook](assets/images/jupyter_02.png)
+![Open notebook](../assets/images/jupyter_02.png)
 
 3. Double-click on your chosen notebook to open it.
 
-![Running notebook](assets/images/jupyter_03.png)
+![Running notebook](../assets/images/jupyter_03.png)
 
 For information on how to use Jupyter notebooks in general, refer to the [official Jupyter notebook documentation](https://jupyter-notebook.readthedocs.io/en/stable/).
 
@@ -181,6 +181,9 @@ The portion of the sale set (typically 20%) that we set aside to evaluate our mo
 **Universe set**  
 The full set of parcels in the jurisdiction, regardless of whether the parcels have sold or not. This is the data set we will generate predictions for.
 
+**SalesUniversePair set**
+
+In any OpenAVMKit model, this refers to a data set created by merging together "Sales" set and the "Universe" set. We use this data structure to make sure that both the "sales" and "universe" data set are processed together in a consistent manner.
 
 ### Modeling
 

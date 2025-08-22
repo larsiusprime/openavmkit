@@ -17,6 +17,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import geopandas as gpd
 
 import openavmkit
 import openavmkit.data
@@ -25,6 +26,7 @@ import openavmkit.land
 import openavmkit.checkpoint
 import openavmkit.ratio_study
 import openavmkit.horizontal_equity_study
+import openavmkit.vertical_equity_study
 import openavmkit.cleaning
 
 from openavmkit.cleaning import clean_valid_sales, validate_arms_length_sales
@@ -33,6 +35,7 @@ from openavmkit.data import (
     _load_dataframe,
     process_data,
     SalesUniversePair,
+    get_sup_model_group,
     get_hydrated_sales_from_sup,
 )
 from openavmkit.sales_scrutiny_study import (
@@ -51,6 +54,19 @@ from openavmkit.utilities.settings import (
     get_fields_impr,
     get_fields_other,
     get_valuation_date,
+)
+from openavmkit.utilities.plotting import (
+    plot_scatterplot
+)
+from openavmkit.ratio_study import (
+    RatioStudy,
+    RatioStudyBootstrapped
+)
+from openavmkit.horizontal_equity_study import (
+    HorizontalEquityStudy
+)
+from openavmkit.vertical_equity_study import (
+    VerticalEquityStudy
 )
 
 
@@ -760,7 +776,7 @@ def process_sales(
 
     print(f"len before validate = {len(sup['sales'])}")
 
-    # validate arms length sales using outlier detection
+    # validate arms length sales using filters
     sup = validate_arms_length_sales(sup, settings, verbose)
 
     print(f"len after validate = {len(sup['sales'])}")
@@ -1113,37 +1129,31 @@ def write_notebook_output_sup(
         pickle.dump(sup, file)
     os.makedirs("out/look", exist_ok=True)
 
-    # Handle geometry columns for both universe and sales
-    def prepare_df_for_parquet(df):
+    def write_parquet(df, path):
+        # If it has a geometry column, write as GeoParquet
         if "geometry" in df.columns:
-            # Convert geometry to WKB for storage
-            df = df.copy()
-            if hasattr(df, "to_wkb"):
-                # If it's a GeoDataFrame, use to_wkb() method
-                df["geometry"] = df.geometry.to_wkb()
-            else:
-                # If it's a regular DataFrame with geometry column
-                import shapely.wkb
+            # Ensure it's a GeoDataFrame
+            gdf = df if isinstance(df, gpd.GeoDataFrame) else gpd.GeoDataFrame(df, geometry="geometry", crs=getattr(df, "crs", None))
 
-                df["geometry"] = df["geometry"].apply(
-                    lambda geom: geom.wkb if geom is not None else None
-                )
-        return df
+            # You MUST have a CRS for it to be recorded in metadata
+            if gdf.crs is None:
+                raise ValueError(f"{path}: geometry has no CRS. Set it (e.g., gdf = gdf.set_crs('EPSG:4326')) before writing.")
 
-    # Prepare and write universe DataFrame
-    df_universe = prepare_df_for_parquet(sup["universe"])
-    df_universe.to_parquet(f"out/look/{prefix}-universe.parquet", engine="pyarrow")
+            # GeoPandas writes WKB + GeoParquet metadata (including CRS)
+            gdf.to_parquet(path, engine="pyarrow", index=False)
+        else:
+            # Regular table
+            df.to_parquet(path, engine="pyarrow", index=False)
 
-    # Prepare and write sales DataFrame
+    # universe
+    write_parquet(sup["universe"], f"out/look/{prefix}-universe.parquet")
 
-    df_sales = prepare_df_for_parquet(sup["sales"])
-    df_sales.to_parquet(f"out/look/{prefix}-sales.parquet")
+    # sales
+    write_parquet(sup["sales"], f"out/look/{prefix}-sales.parquet")
 
+    # sales (hydrated)
     df_hydrated = get_hydrated_sales_from_sup(sup)
-    df_hydrated = prepare_df_for_parquet(df_hydrated)
-    df_hydrated.to_parquet(
-        f"out/look/{prefix}-sales-hydrated.parquet", engine="pyarrow"
-    )
+    write_parquet(df_hydrated, f"out/look/{prefix}-sales-hydrated.parquet")
 
     print("Results written to:")
     print(f"...out/{prefix}-sup.pickle")
@@ -1216,6 +1226,39 @@ def cloud_sync(
     )
 
 
+def load_cleaned_data_for_modeling(settings: dict):
+    """
+    Read and return the cleaned data from notebook 2 so notebook 3 can use it.
+    Additionally, check the sales scrutiny settings for the invalid key file, and
+    if it's defined, use that to exclude any recently marked invalid sales.
+    
+    (This saves having to do a full round trip through notebook 1&2 just to exclude a newly
+    identified invalid sale)
+    
+    Parameters
+    ----------
+    settings : dict
+        Configuration settings
+        
+    Returns
+    -------
+    SalesUniversePair
+        The cleaned and ready SalesUniversePair
+    
+    """
+    sales_univ_pair = read_pickle("out/2-clean-sup")
+    s_sales_scrutiny = settings.get("analysis", {}).get("sales_scrutiny", {})
+    invalid_key_file = s_sales_scrutiny.get("invalid_key_file")
+    if invalid_key_file is not None:
+        if os.path.exists(invalid_key_file):
+            df_invalid_keys = pd.read_csv(invalid_key_file, dtype={"key_sale": str})
+            bad_keys = df_invalid_keys["key_sale"].values
+            df_sales = sales_univ_pair.sales
+            df_sales = df_sales[~df_sales["key_sale"].isin(bad_keys)].copy()
+            sales_univ_pair.sales = df_sales
+    return sales_univ_pair
+
+
 def read_pickle(path: str) -> Any:
     """
     Read and return data from a pickle file.
@@ -1274,6 +1317,7 @@ def try_models(
     run_hedonic: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
+    do_plots: bool = False
 ) -> None:
     """
     Tries out predictive models on the given SalesUniversePair. Optimized for speed
@@ -1315,6 +1359,8 @@ def try_models(
         Flag to run ensemble models. Defaults to True.
     do_shaps : bool, optional
         Flag to run SHAP analysis. Defaults to False.
+    do_plots : bool, optional
+        Flag to plot scatterplots. Defaults to False.
     """
 
     openavmkit.benchmark.run_models(
@@ -1329,6 +1375,7 @@ def try_models(
         run_hedonic=run_hedonic,
         run_ensemble=run_ensemble,
         do_shaps=do_shaps,
+        do_plots=do_plots
     )
 
 
@@ -1381,6 +1428,7 @@ def finalize_models(
         run_hedonic=True,
         run_ensemble=True,
         do_shaps=False,
+        do_plots=False
     )
 
 
@@ -1396,6 +1444,7 @@ def run_models(
     run_hedonic: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
+    do_plots: bool = False
 ):
     """
     Runs predictive models on the given SalesUniversePair.
@@ -1435,6 +1484,8 @@ def run_models(
         Whether to run ensemble models.
     do_shaps : bool, optional
         Whether to compute SHAP values.
+    do_plots : bool, optional
+        Whether to plot scatterplots
 
     Returns
     -------
@@ -1453,10 +1504,11 @@ def run_models(
         run_hedonic,
         run_ensemble,
         do_shaps,
+        do_plots
     )
 
 
-def write_canonical_splits(sup: SalesUniversePair, settings: dict) -> None:
+def write_canonical_splits(sup: SalesUniversePair, settings: dict, verbose: bool = False) -> None:
     """
     Write canonical splits for the sales DataFrame.
 
@@ -1470,9 +1522,11 @@ def write_canonical_splits(sup: SalesUniversePair, settings: dict) -> None:
         Sales and universe data.
     settings : dict
         Configuration settings.
+    verbose : bool
+        Whether to print verbose output.
     """
 
-    openavmkit.data._write_canonical_splits(sup, settings)
+    openavmkit.data._write_canonical_splits(sup, settings, verbose)
 
 
 def run_and_write_ratio_study_breakdowns(settings: dict) -> None:
@@ -1487,6 +1541,121 @@ def run_and_write_ratio_study_breakdowns(settings: dict) -> None:
     openavmkit.ratio_study.run_and_write_ratio_study_breakdowns(settings)
 
 
+def read_sales_univ(path: str):
+    return openavmkit.data.read_sales_univ(path)
+
+
+def run_ratio_study(
+    sup: SalesUniversePair,
+    model_group: str,
+    field_prediction: str,
+    field_sales: str,
+    start_date: str,
+    end_date: str,
+    max_trim: float = 0.05
+):
+    # Filter to just the designated model group
+    sup = get_sup_model_group(sup, model_group)
+    
+    # Merge universe characteristics onto sales to create one combined dataframe
+    df_sales = get_hydrated_sales_from_sup(sup)
+
+    # Select only sales between the start and end date
+    df_sales = df_sales[
+        df_sales["sale_date"].ge(start_date) &
+        df_sales["sale_date"].le(end_date)
+    ]
+
+    # Get predictions and sales
+    predictions = df_sales[field_prediction]
+    sales = df_sales[field_sales]
+
+    # Run the ratio study and return it
+    return RatioStudyBootstrapped(predictions, sales, max_trim)
+
+
+def run_horizontal_equity_study(
+    sup: SalesUniversePair,
+    model_group: str,
+    field: str,
+    cluster_id: str = "he_id",
+):
+    if cluster_id not in sup.universe:
+        return None
+    
+    # Filter to just the designated model group
+    sup = get_sup_model_group(sup, model_group)
+
+    df = sup.universe
+
+    he_study = HorizontalEquityStudy(df, cluster_id, field)
+    return he_study
+
+
+def run_vertical_equity_study(
+    sup: SalesUniversePair,
+    model_group: str,
+    field_prediction: str,
+    field_sales: str,
+    start_date: str,
+    end_date: str,
+    max_trim: float = 0.05
+):
+    # Filter to just the designated model group
+    sup = get_sup_model_group(sup, model_group)
+    
+    # Merge universe characteristics onto sales to create one combined dataframe
+    df_sales = get_hydrated_sales_from_sup(sup)
+
+    # Select only sales between the start and end date
+    df_sales = df_sales[
+        df_sales["sale_date"].ge(start_date) &
+        df_sales["sale_date"].le(end_date)
+    ]
+
+    # Get predictions and sales
+    predictions = df_sales[field_prediction]
+    sales = df_sales[field_sales]
+
+    # Run the vertical equity study and print the results
+    return VerticalEquityStudy(
+        df_sales,
+        field_sales,
+        field_prediction
+    )
+
+
+def plot_prediction_vs_sales(
+    sup: SalesUniversePair,
+    model_group: str,
+    field_prediction: str,
+    field_truth: str,
+    start_date: str,
+    end_date: str
+):
+    # Filter to just the designated model group
+    sup = get_sup_model_group(sup, model_group)
+    
+    # Merge universe characteristics onto sales to create one combined dataframe
+    df_sales = get_hydrated_sales_from_sup(sup)
+
+    # Select only sales between the start and end date
+    df_sales = df_sales[
+        df_sales["sale_date"].ge(start_date) &
+        df_sales["sale_date"].le(end_date)
+    ]
+    
+    plot_scatterplot(
+        df_sales, 
+        field_truth, 
+        field_prediction, 
+        field_truth, 
+        field_prediction, 
+        "Sale price vs. Prediction",
+        best_fit_line=True, 
+        perfect_fit_line=True
+    )
+    
 # PRIVATE:
 
 

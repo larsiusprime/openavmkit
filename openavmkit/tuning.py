@@ -6,7 +6,7 @@ import pandas as pd
 from catboost import Pool, CatBoostRegressor
 
 from sklearn.model_selection import KFold
-from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import mean_absolute_percentage_error
 from optuna.integration import CatBoostPruningCallback
 
 #######################################
@@ -19,7 +19,7 @@ def _tune_xgboost(
     y,
     sizes,
     he_ids,
-    n_trials=100,
+    n_trials=50,
     n_splits=5,
     random_state=42,
     cat_vars=None,
@@ -33,7 +33,7 @@ def _tune_xgboost(
         """Objective function for Optuna to optimize XGBoost hyperparameters."""
         params = {
             "objective": "reg:squarederror",  # Regression objective
-            "eval_metric": "mae",  # Mean Absolute Error
+            "eval_metric": "mape",  # Mean Absolute Percentage Error
             "tree_method": "hist",  # Use 'hist' for performance; use 'gpu_hist' for GPUs
             "learning_rate": trial.suggest_float("learning_rate", 0.001, 0.1, log=True),
             "max_depth": trial.suggest_int("max_depth", 3, 15),
@@ -62,7 +62,7 @@ def _tune_xgboost(
         }
         num_boost_round = trial.suggest_int("num_boost_round", 100, 3000)
 
-        mae = _xgb_rolling_origin_cv(
+        mape = _xgb_rolling_origin_cv(
             X,
             y,
             params,
@@ -76,9 +76,9 @@ def _tune_xgboost(
         )
         if verbose:
             print(
-                f"-->trial # {trial.number}/{n_trials}, MAE: {mae:10.0f}"
+                f"-->trial # {trial.number}/{n_trials}, MAPE: {mape:0.4f}"
             )  # , params: {params}")
-        return mae  # Optuna minimizes, so return the MAE directly
+        return mape  # Optuna minimizes, so return the MAPE directly
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = optuna.create_study(direction="minimize")
@@ -87,7 +87,7 @@ def _tune_xgboost(
     )
     if verbose:
         print(
-            f"Best trial: {study.best_trial.number} with MAE: {study.best_trial.value:10.0f} and params: {study.best_trial.params}"
+            f"Best trial: {study.best_trial.number} with MAPE: {study.best_trial.value:0.4f} and params: {study.best_trial.params}"
         )
     return study.best_params
 
@@ -97,7 +97,7 @@ def _tune_lightgbm(
     y,
     sizes,
     he_ids,
-    n_trials=100,
+    n_trials=50,
     n_splits=5,
     random_state=42,
     cat_vars=None,
@@ -123,7 +123,7 @@ def _tune_lightgbm(
         """Objective function for Optuna to optimize LightGBM hyperparameters."""
         params = {
             "objective": "regression",
-            "metric": "mae",  # Mean Absolute Error for regression
+            "metric": "mape",
             "boosting_type": "gbdt",
             "num_iterations": trial.suggest_int("num_iterations", 300, 5000),
             "learning_rate": trial.suggest_float(
@@ -148,14 +148,14 @@ def _tune_lightgbm(
         }
 
         # Use rolling-origin cross-validation
-        mae = _lightgbm_rolling_origin_cv(
+        mape = _lightgbm_rolling_origin_cv(
             X, y, params, n_splits=n_splits, random_state=random_state
         )
         if verbose:
             print(
-                f"-->trial # {trial.number}/{n_trials}, MAE: {mae:10.0f}"
+                f"-->trial # {trial.number}/{n_trials}, MAPE: {mape:0.4f}"
             )  # , params: {params}")
-        return mae  # Optuna minimizes, so return the MAE directly
+        return mape  # Optuna minimizes, so return the MAPE directly
 
     # Run Bayesian Optimization with Optuna
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -168,7 +168,7 @@ def _tune_lightgbm(
 
     if verbose:
         print(
-            f"Best trial: {study.best_trial.number} with MAE: {study.best_trial.value:10.0f} and params: {study.best_trial.params}"
+            f"Best trial: {study.best_trial.number} with MAPE: {study.best_trial.value:0.4f} and params: {study.best_trial.params}"
         )
     return study.best_params
 
@@ -180,7 +180,7 @@ def _tune_catboost(
     he_ids,
     verbose=False,
     cat_vars=None,
-    n_trials=100,
+    n_trials=50,
     n_splits=5,
     random_state=42,
 ):
@@ -201,59 +201,50 @@ def _tune_catboost(
     def objective(trial):
         # 2) Only valid constructor params here:
         params = {
-            "loss_function": "RMSE",
-            "eval_metric": "RMSE",
-            "iterations": trial.suggest_int("iterations", 300, 1000),
-            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-            "depth": trial.suggest_int("depth", 4, 10),
-            "border_count": trial.suggest_int("border_count", 32, 64),
-            "random_strength": trial.suggest_float("random_strength", 0, 10),
-            "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 10, log=True),
-            "bootstrap_type": "Bayesian",
-            "bagging_temperature": trial.suggest_float("bagging_temperature", 0, 10),
-            "boosting_type": "Plain",
-            "task_type": "CPU",  # CPU so we can use pruning callbacks
-            "thread_count": -1,  # all cores
-            "random_seed": random_state,
-            "verbose": False,
-        }
-        if (
-            trial.suggest_categorical(
+            "loss_function": "MAPE", "eval_metric": "MAPE",
+              "iterations": trial.suggest_int("iterations", 300, 1000),
+              "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+              "depth": trial.suggest_int("depth", 4, 10), "border_count": trial.suggest_int("border_count", 32, 64),
+              "random_strength": trial.suggest_float("random_strength", 0, 10),
+              "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 10, log=True), "bootstrap_type": "Bayesian",
+              "bagging_temperature": trial.suggest_float("bagging_temperature", 0, 10), "boosting_type": "Plain",
+              "task_type": "CPU", "thread_count": -1, "random_seed": random_state, "verbose": False,
+              "grow_policy": trial.suggest_categorical(
                 "grow_policy", ["SymmetricTree", "Depthwise", "Lossguide"]
-            )
-            == "Lossguide"
-        ):
-            params["grow_policy"] = "Lossguide"
-            params["max_leaves"] = trial.suggest_int("max_leaves", 31, 128)
-        else:
-            params["grow_policy"] = trial.params["grow_policy"]
+              )
+        }
+        if params["grow_policy"] == "Lossguide":
+            params["max_leaves"] = trial.suggest_int("max_leaves", 31, 256)
 
+        pruning_cb = CatBoostPruningCallback(trial, "MAPE")
+        mapes = []
         # 3) Loop folds, pass early_stopping & pruning into fit()
-        maes = []
         for train_pool, val_pool in cv_pools:
             model = CatBoostRegressor(**params)
             model.fit(
                 train_pool,
                 eval_set=val_pool,
-                early_stopping_rounds=50,
-                use_best_model=True,
-                callbacks=[CatBoostPruningCallback(trial, "RMSE")],
+                early_stopping_rounds=100,
+                callbacks=[pruning_cb],
                 verbose=False,
             )
-            y_pred = model.predict(val_pool)
-            maes.append(mean_absolute_error(val_pool.get_label(), y_pred))
+            pruning_cb.check_pruned()
+            mapes.append(mean_absolute_percentage_error(val_pool.get_label(), model.predict(val_pool)))
 
-        return sum(maes) / len(maes)
+        return sum(mapes) / len(mapes)
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = optuna.create_study(
-        direction="minimize", pruner=optuna.pruners.MedianPruner()
+        direction="minimize",
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=15,
+            n_warmup_steps=100,
+            interval_steps=10)
     )
     study.optimize(objective, n_trials=n_trials, n_jobs=1)
 
     if verbose:
         print(
-            f"Best trial #{study.best_trial.number} → RMSE={study.best_trial.value:.4f}"
+            f"Best trial #{study.best_trial.number} → MAPE={study.best_trial.value:.4f}"
         )
         print("Params:", study.best_trial.params)
 
@@ -262,8 +253,8 @@ def _tune_catboost(
 
 def _plateau_callback(study, trial):
     """Stops the study if no significant improvement (>= 1% over the current best value)
-    is observed over the last 20 trials."""
-    plateau_trials = 20
+    is observed over the last 10 trials."""
+    plateau_trials = 10
     improvement_threshold = 0.01  # require at least 1% improvement
 
     # Only check if we've completed enough trials.
@@ -364,13 +355,13 @@ def _xgb_rolling_origin_cv(
         verbose_eval (int|bool): Logging interval for XGBoost. Default is 50.
 
     Returns:
-        float: Mean MAE score across all folds.
+        float: Mean MAPE score across all folds.
     """
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-    mae_scores = []
+    mape_scores = []
 
     for train_idx, val_idx in kf.split(X):
-        if isinstance(X, pd.DataFrame):
+        if hasattr(X, 'iloc'):
             X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
             y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
         else:
@@ -401,11 +392,10 @@ def _xgb_rolling_origin_cv(
 
         # Predict and evaluate
         y_pred = model.predict(val_data, iteration_range=(0, model.best_iteration))
-        mae = mean_absolute_error(y_val, y_pred)
-        mae_scores.append(mae)
+        mape = mean_absolute_percentage_error(y_val, y_pred)
+        mape_scores.append(mape)
 
-    mean_mae = np.mean(mae_scores)
-    return mean_mae
+    return np.mean(mape_scores)
 
 
 def _catboost_rolling_origin_cv(
@@ -423,14 +413,14 @@ def _catboost_rolling_origin_cv(
         verbose (bool): Whether to print CatBoost training logs.
 
     Returns:
-        float: Mean MAE score across all folds.
+        float: Mean MAPE score across all folds.
     """
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-    mae_scores = []
+    mape_scores = []
 
     for train_idx, val_idx in kf.split(X):
-        # Use .iloc for Pandas DataFrames
-        if isinstance(X, pd.DataFrame):
+        # Use .iloc for DataFrame-like objects
+        if hasattr(X, 'iloc'):
             X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
             y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
         else:
@@ -477,9 +467,9 @@ def _catboost_rolling_origin_cv(
 
         # Predict and evaluate
         y_pred = model.predict(X_val)
-        mae_scores.append(mean_absolute_error(y_val, y_pred))
+        mape_scores.append(mean_absolute_percentage_error(y_val, y_pred))
 
-    return np.mean(mae_scores)
+    return np.mean(mape_scores)
 
 
 def _lightgbm_rolling_origin_cv(X, y, params, n_splits=5, random_state=42):
@@ -493,14 +483,14 @@ def _lightgbm_rolling_origin_cv(X, y, params, n_splits=5, random_state=42):
         random_state (int): Random seed for reproducibility. Default is 42.
 
     Returns:
-        float: Mean MAE score across all folds.
+        float: Mean MAPE score across all folds.
     """
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-    mae_scores = []
+    mape_scores = []
 
     for train_idx, val_idx in kf.split(X):
-        # Use .iloc for Pandas DataFrames
-        if isinstance(X, pd.DataFrame):
+        # Use .iloc for DataFrame-like objects
+        if hasattr(X, 'iloc'):
             X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
             y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
         else:
@@ -532,6 +522,6 @@ def _lightgbm_rolling_origin_cv(X, y, params, n_splits=5, random_state=42):
 
         # Predict and evaluate
         y_pred = model.predict(X_val, num_iteration=model.best_iteration)
-        mae_scores.append(mean_absolute_error(y_val, y_pred))
+        mape_scores.append(mean_absolute_percentage_error(y_val, y_pred))
 
-    return np.mean(mae_scores)
+    return np.mean(mape_scores)

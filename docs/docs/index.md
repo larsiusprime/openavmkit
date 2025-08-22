@@ -1,18 +1,16 @@
-# OpenAVMKit
+# Documentation
 
-OpenAVMKit is a python library for real estate mass appraisal. It includes modules for data cleaning, data enrichment, modeling, and statistical evaluation of predictive models. It also includes Jupyter notebooks that model typical workflows.
-
-## 1. Getting started
-- [Setting up Python Environment](getting_started.md#setting-up-python-environment)
-- [Setting up OpenAVMKit](getting_started.md#setting-up-openavmkit)
+## [Getting started](getting_started.md)
+- [Install from PyPI](getting_started.md#option-1-install-from-pypi)
+- [Install from Git](getting_started.md#option-2-install-from-git)
 - [Running Tests](getting_started.md#running-tests)
 - [Running your first locality](getting_started.md#running-your-first-locality)
-## 2. The basics
+## [The basics](the_basics.md)
 - [Creating a new locality](the_basics.md#creating-a-new-locality)
 - [Code modules](the_basics.md#code-modules)
 - [Jupyter Notebooks](the_basics.md#using-the-jupyter-notebooks)
 - [Terminology](the_basics.md#terminology)
-## 3. Configuration
+## [Configuration](config.md)
 - [Cloud storage](config.md#configuring-cloud-storage)
 - [PDF report generation](config.md#configuring-pdf-report-generation)
 - [US Census API](config.md#configuring-census-api-access)

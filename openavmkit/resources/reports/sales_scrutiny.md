@@ -1,8 +1,8 @@
 # Anomalous Sales Analysis
 
-Locality: {{{locality}}}  
-Valuation date: {{{val_date}}}  
-Model group: {{{model_group}}}
+Locality: {{locality}}  
+Valuation date: {{val_date}}  
+Model group: {{model_group}}
 
 ## Executive Summary
 
@@ -19,23 +19,23 @@ Similar properties sold in similar locations that do *not* have similar prices m
 
 ### Method
 
-We group sales into similar clusters, then look for sales that stick out within their groups. These anomalies could indicate invalid sale, incorrect property characteristics, or missing information. Not every anomaly is necessarily invalid--some are simply natural outliers--but they should all be manually reviewed by {{{locality}}}.
+We group sales into similar clusters, then look for sales that stick out within their groups. These anomalies could indicate invalid sale, incorrect property characteristics, or missing information. Not every anomaly is necessarily invalid--some are simply natural outliers--but they should all be manually reviewed by {{locality}}.
 
 ### Results
 
-We flagged **{{{num_sales_flagged}}}** anomalous sales out of **{{{num_sales_total}}}** sales total for the **{{{model_group}}}** model group.
+We flagged **{{num_sales_flagged}}** anomalous sales out of **{{num_sales_total}}** sales total for the **{{model_group}}** model group.
 
 Here is a breakdown of anomalies by type:
 
 | Anomaly type                                           |                Number of sales |               % of Total sales |
 |--------------------------------------------------------|-------------------------------:|-------------------------------:|
-| 1 - High OR low price/sqft, high OR low square footage | {{{num_sales_flagged_type_1}}} | {{{pct_sales_flagged_type_1}}} |
-| 2 - Low price, low price/sqft                          | {{{num_sales_flagged_type_2}}} | {{{pct_sales_flagged_type_2}}} |  
-| 3 - High price, high price/sqft                        | {{{num_sales_flagged_type_3}}} | {{{pct_sales_flagged_type_3}}} |
-| 4 - Price in range, high price/sqft                    | {{{num_sales_flagged_type_4}}} | {{{pct_sales_flagged_type_4}}} |
-| 5 - Price in range, low price/sqft                     | {{{num_sales_flagged_type_5}}} | {{{pct_sales_flagged_type_5}}} |
-| **Flagged sales**                                      |    **{{{num_sales_flagged}}}** |    **{{{pct_sales_flagged}}}** |
-| **Total sales**                                        |      **{{{num_sales_total}}}** |                       **100%** |
+| 1 - High OR low price/sqft, high OR low square footage | {{num_sales_flagged_type_1}} | {{pct_sales_flagged_type_1}} |
+| 2 - Low price, low price/sqft                          | {{num_sales_flagged_type_2}} | {{pct_sales_flagged_type_2}} |  
+| 3 - High price, high price/sqft                        | {{num_sales_flagged_type_3}} | {{pct_sales_flagged_type_3}} |
+| 4 - Price in range, high price/sqft                    | {{num_sales_flagged_type_4}} | {{pct_sales_flagged_type_4}} |
+| 5 - Price in range, low price/sqft                     | {{num_sales_flagged_type_5}} | {{pct_sales_flagged_type_5}} |
+| **Flagged sales**                                      |    **{{num_sales_flagged}}** |    **{{pct_sales_flagged}}** |
+| **Total sales**                                        |      **{{num_sales_total}}** |                       **100%** |
 
 Note that a sale can be flagged as having multiple anomalies, so the total number flagged will not necessarily be the total of each of the sub categories.
 

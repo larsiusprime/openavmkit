@@ -26,7 +26,7 @@ from mgwr.gwr import GWR
 from mgwr.gwr import _compute_betas_gwr, Kernel
 
 from mgwr.sel_bw import Sel_BW
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 from statsmodels.nonparametric._kernel_base import EstimatorSettings
 from statsmodels.nonparametric.kernel_regression import KernelReg
 from statsmodels.regression.linear_model import RegressionResults
@@ -69,7 +69,7 @@ from openavmkit.utilities.data import (
     div_series_z_safe,
     calc_spatial_lag,
 )
-from openavmkit.utilities.settings import get_valuation_date
+from openavmkit.utilities.settings import get_valuation_date, _get_max_ratio_study_trim
 from openavmkit.utilities.stats import (
     quick_median_chd_pl,
     calc_mse_r2_adj_r2,
@@ -79,6 +79,7 @@ from openavmkit.utilities.stats import (
 from openavmkit.tuning import _tune_lightgbm, _tune_xgboost, _tune_catboost
 from openavmkit.utilities.timing import TimingData
 
+pd.set_option("future.no_silent_downcasting", True)
 
 PredictionModel = Union[
     MRAModel,
@@ -111,6 +112,7 @@ class LandPredictionResults:
         dep_var: str,
         ind_vars: list[str],
         sup: SalesUniversePair,
+        max_trim: float
     ):
 
         necessary_fields = [
@@ -174,7 +176,7 @@ class LandPredictionResults:
                 f"Unsupported dep_var '{dep_var}' for land prediction results."
             )
 
-        self.land_ratio_study = RatioStudy(land_predictions, sale_prices)
+        self.land_ratio_study = RatioStudy(land_predictions, sale_prices, max_trim)
         mse, r2, adj_r2 = calc_mse_r2_adj_r2(
             land_predictions, sale_prices, len(ind_vars)
         )
@@ -283,6 +285,8 @@ class PredictionResults:
         Mean squared error.
     rmse : float
         Root mean squared error.
+    mape : float
+        Mean absolute percent error.
     r2 : float
         R-squared.
     adj_r2 : float
@@ -292,7 +296,12 @@ class PredictionResults:
     """
 
     def __init__(
-        self, dep_var: str, ind_vars: list[str], prediction_field: str, df: pd.DataFrame
+        self, 
+        dep_var: str, 
+        ind_vars: list[str], 
+        prediction_field: str, 
+        df: pd.DataFrame,
+        max_trim: float
     ):
         """
         Initialize a PredictionResults instance.
@@ -311,6 +320,8 @@ class PredictionResults:
             Name of the field containing model predictions.
         df : pandas.DataFrame
             DataFrame on which predictions were computed.
+        max_trim : float
+            The maximum amount of records allowed to be trimmed in a ratio study
         """
 
         self.dep_var = dep_var
@@ -340,6 +351,7 @@ class PredictionResults:
         if len(y_clean) > 0 and len(y_pred_clean) > 0:
             self.mse = mean_squared_error(y_clean, y_pred_clean)
             self.rmse = np.sqrt(self.mse)
+            self.mape = mean_absolute_percentage_error(y_clean, y_pred_clean)
             var_y = np.var(y_clean)
 
             if var_y == 0:
@@ -352,7 +364,7 @@ class PredictionResults:
                 self.slope = ols_results["slope"]
 
             y_ratio = y_pred_clean / y_clean
-            mask = trim_outliers_mask(y_ratio)
+            mask = trim_outliers_mask(y_ratio, max_trim)
 
             y_pred_trim = y_pred_clean[mask]
             y_clean_trim = y_clean[mask]
@@ -360,6 +372,7 @@ class PredictionResults:
             if len(y_clean_trim) > 0 and len(y_pred_trim) > 0:
                 self.mse_trim = mean_squared_error(y_clean_trim, y_pred_trim)
                 self.rmse_trim = np.sqrt(self.mse_trim)
+                self.mape_trim = mean_absolute_percentage_error(y_clean_trim, y_pred_trim)
                 var_y_trim = np.var(y_clean_trim)
                 if var_y_trim == 0:
                     self.r2_trim = float("nan")
@@ -372,6 +385,7 @@ class PredictionResults:
             else:
                 self.mse_trim = float("nan")
                 self.rmse_trim = float("nan")
+                self.mape_trim = float("nan")
                 self.r2_trim = float("nan")
                 self.slope_trim = float("nan")
 
@@ -387,6 +401,7 @@ class PredictionResults:
         else:
             self.mse = float("nan")
             self.rmse = float("nan")
+            self.mape = float("nan")
             self.r2 = float("nan")
             self.adj_r2 = float("nan")
             self.slope = float("nan")
@@ -406,7 +421,7 @@ class PredictionResults:
         else:
             self.adj_r2 = 1 - ((1 - self.r2) * (n - 1) / divisor)
 
-        self.ratio_study = RatioStudy(y_pred_clean, y_clean)
+        self.ratio_study = RatioStudy(y_pred_clean, y_clean, max_trim)
 
 
 class DataSplit:
@@ -778,15 +793,8 @@ class DataSplit:
         for col in cat_vars:
             if col in union_df.columns:
                 # If the column is of categorical type, ensure "missing" is a known category
-                if pd.api.types.is_categorical_dtype(union_df[col].dtype):
+                if hasattr(union_df[col].dtype, 'categories'):
                     if "missing" not in union_df[col].cat.categories:
-                        # Make a copy to avoid SettingWithCopyWarning if union_df[col] is a slice
-                        # and then add the new category
-                        # It's generally safer to operate on copies when modifying dtypes or categories
-                        # of columns that might be views.
-                        # However, given union_df is constructed by pd.concat, its columns should be copies.
-                        # For safety and to ensure modification, we explicitly assign back if add_categories
-                        # doesn't always modify inplace or if it returns a new Series for certain versions/cases.
                         current_col_series = union_df[col]
                         try:
                             current_col_series = current_col_series.cat.add_categories(
@@ -1102,6 +1110,8 @@ class SingleModelResults:
         The model used for prediction.
     pred_test : PredictionResults
         Results for the test set.
+    pred_train : PredictionResults
+        Results for the training set
     pred_sales : PredictionResults, optional
         Results for the sales set.
     pred_univ : Any
@@ -1128,7 +1138,7 @@ class SingleModelResults:
         y_pred_univ: np.ndarray,
         timing: TimingData | None = None,
         verbose: bool = False,
-        sale_filter: list = None,
+        sale_filter: list = None
     ):
         """
         Initialize SingleModelResults by attaching predictions and computing performance metrics.
@@ -1160,6 +1170,8 @@ class SingleModelResults:
         """
 
         self.ds = ds
+
+        max_trim = _get_max_ratio_study_trim(ds.settings, ds.model_group)
 
         df_univ = ds.df_universe.copy()
         df_sales = ds.df_sales.copy()
@@ -1202,14 +1214,18 @@ class SingleModelResults:
             timing = TimingData()
         timing.start("stats_test")
         self.pred_test = PredictionResults(
-            self.dep_var_test, self.ind_vars, field_prediction, df_test
+            self.dep_var_test, self.ind_vars, field_prediction, df_test, max_trim
         )
         timing.stop("stats_test")
 
         timing.start("stats_sales")
+
+        self.pred_train = None
+        self.pred_sales = None
+
         if y_pred_sales is not None:
             self.pred_sales = PredictionResults(
-                self.dep_var_test, self.ind_vars, field_prediction, df_sales
+                self.dep_var_test, self.ind_vars, field_prediction, df_sales, max_trim
             )
 
             # If we have predictions for sales, we also have predictions for the training subset
@@ -1225,8 +1241,9 @@ class SingleModelResults:
 
             df_train = df_train[df_train["key_sale"].isin(ds.train_keys)]
             self.pred_train = PredictionResults(
-                self.dep_var_test, self.ind_vars, field_prediction, df_train
+                self.dep_var_test, self.ind_vars, field_prediction, df_train, max_trim
             )
+
         timing.stop("stats_sales")
 
         self.pred_univ = y_pred_univ
@@ -1252,9 +1269,9 @@ class SingleModelResults:
         timing.stop("chd")
 
         timing.start("utility")
-        self.utility_test = (1.0 - self.pred_test.adj_r2) * 1000
+        self.utility_test = self.pred_test.mape * 100
         if y_pred_sales is not None:
-            self.utility_train = (1.0 - self.pred_train.adj_r2) * 1000
+            self.utility_train = self.pred_train.mape * 100
         else:
             self.utility_train = float("nan")
         timing.stop("utility")
@@ -2500,6 +2517,7 @@ def run_xgboost(
     save_params: bool = False,
     use_saved_params: bool = False,
     verbose: bool = False,
+    n_trials: int = 50
 ) -> SingleModelResults:
     """
     Run an XGBoost model by tuning parameters, training, and predicting.
@@ -2514,6 +2532,8 @@ def run_xgboost(
         Whether to save tuned parameters. Defaults to False.
     use_saved_params : bool, optional
         Whether to load saved parameters. Defaults to False.
+    n_trials : int, optional
+        How many trials do run during parameter search. Defaults to 50.
     verbose : bool, optional
         If True, print verbose output. Defaults to False.
 
@@ -2555,6 +2575,7 @@ def run_xgboost(
         save_params,
         use_saved_params,
         verbose,
+        n_trials=n_trials
     )
 
     parameters["verbosity"] = 0
@@ -2634,6 +2655,7 @@ def run_lightgbm(
     outpath: str,
     save_params: bool = False,
     use_saved_params: bool = False,
+    n_trials: int = 50,
     verbose: bool = False,
 ) -> SingleModelResults:
     """
@@ -2649,6 +2671,8 @@ def run_lightgbm(
         Whether to save tuned parameters. Defaults to False.
     use_saved_params : bool, optional
         Whether to load saved parameters. Defaults to False.
+    n_trials : int, optional
+        How many trials do run during parameter search. Defaults to 50.
     verbose : bool, optional
         If True, print verbose output. Defaults to False.
 
@@ -2694,6 +2718,7 @@ def run_lightgbm(
         save_params,
         use_saved_params,
         verbose,
+        n_trials=n_trials
     )
 
     # Remove any problematic parameters that might cause errors with forced splits
@@ -2822,6 +2847,7 @@ def run_catboost(
     outpath: str,
     save_params: bool = False,
     use_saved_params: bool = False,
+    n_trials: int = 50,
     verbose: bool = False,
 ) -> SingleModelResults:
     """
@@ -2837,6 +2863,8 @@ def run_catboost(
         Whether to save tuned parameters. Defaults to False.
     use_saved_params : bool, optional
         Whether to load saved parameters. Defaults to False.
+    n_trials : int, optional
+        How many trials do run during parameter search. Defaults to 50.
     verbose : bool, optional
         If True, print verbose output. Defaults to False.
 
@@ -2865,6 +2893,7 @@ def run_catboost(
         save_params,
         use_saved_params,
         verbose,
+        n_trials=n_trials
     )
     timing.stop("parameter_search")
 
@@ -3420,6 +3449,13 @@ def predict_local_sqft(
             how="left",
         )
 
+        df_impr.loc[df_impr["per_impr_sqft"].eq(0), "per_impr_sqft"] = df_impr[
+            f"{location_field}_per_impr_sqft"
+        ]
+        df_land.loc[df_land["per_land_sqft"].eq(0), "per_land_sqft"] = df_land[
+            f"{location_field}_per_land_sqft"
+        ]
+
         after_count_zero_impr = df_impr["per_impr_sqft"].eq(0).sum()
         after_count_zero_land = df_land["per_land_sqft"].eq(0).sum()
 
@@ -3435,13 +3471,6 @@ def predict_local_sqft(
             print(
                 f"--> painted {delta_land} land values, {after_count_zero_land} remaining zeroes"
             )
-
-        df_impr.loc[df_impr["per_impr_sqft"].eq(0), "per_impr_sqft"] = df_impr[
-            f"{location_field}_per_impr_sqft"
-        ]
-        df_land.loc[df_land["per_land_sqft"].eq(0), "per_land_sqft"] = df_land[
-            f"{location_field}_per_land_sqft"
-        ]
 
         # do_debug = True
         #

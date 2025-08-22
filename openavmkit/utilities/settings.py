@@ -166,7 +166,7 @@ def get_fields_land(s: dict, df: pd.DataFrame = None):
     fields_unclassified = _get_unclassified_fields(s, df)
 
     for field in fields_unclassified:
-        if field.startswith("dist_to_") or field.startswith("within_"):
+        if field.startswith("dist_to_") or field.startswith("within_") or field.startswith("proximity_to_") or field.startswith("spatial_lag_"):
             fields_land["numeric"].append(field)
 
     for key in fields_land:
@@ -1064,6 +1064,12 @@ def _is_series_all_bools(series: pd.Series) -> bool:
     return True
 
 
+def _get_max_ratio_study_trim(settings: dict, model_group: str)->float:
+    trim = settings.get("analysis",{}).get("ratio_study",{}).get("trim",{})
+    entry = trim.get(model_group, trim.get("default", {}))
+    return entry.get("max_percent", 0.1)
+
+
 def _simulate_removed_buildings(
     df: pd.DataFrame, settings: dict, idx_vacant: pd.Series = None
 ):
@@ -1086,7 +1092,7 @@ def _simulate_removed_buildings(
     fields_impr_bool = fields_impr["boolean"]
 
     for field in fields_impr_cat:
-        if not isinstance(df[field].dtype, pd.CategoricalDtype):
+        if not hasattr(df[field].dtype, 'categories'):
             df[field] = df[field].astype("category")
         # add UNKNOWN if needed
         if "UNKNOWN" not in df[field].cat.categories:

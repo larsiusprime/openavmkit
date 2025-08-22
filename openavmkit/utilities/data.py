@@ -3,6 +3,7 @@ import pickle
 
 import numpy as np
 import pandas as pd
+import geopandas as gpd
 import osmnx as ox
 from collections import defaultdict
 
@@ -127,22 +128,40 @@ def div_series_z_safe(
     pd.Series | np.ndarray
         The result of the division with divide-by-zero cases replaced by ``None``
     """
-    # Get the index of all rows where the denominator is zero.
-    idx_denominator_zero = denominator == 0
 
-    # Get the numerator and denominator for rows where the denominator is not zero.
-    series_numerator = numerator[~idx_denominator_zero]
-    series_denominator = denominator[~idx_denominator_zero]
+    # Handle both pandas and bodo.pandas array types
+    if hasattr(numerator, 'to_numpy') and not hasattr(numerator, 'index'):
+        numerator = pd.Series(numerator)
+    if hasattr(denominator, 'to_numpy') and not hasattr(denominator, 'index'):
+        denominator = pd.Series(denominator)
 
-    # Make a copy of the denominator and convert to a float type.
-    result = denominator.copy().astype("Float64")
+    # fast path for ndarray
+    if isinstance(numerator, np.ndarray) or isinstance(denominator, np.ndarray):
+        num = np.asarray(numerator, dtype=np.float64, order='K')
+        den = np.asarray(denominator, dtype=np.float64, order='K')
 
-    # Replace all values where denominator is zero with None.
-    result[idx_denominator_zero] = None
+        # pre-allocate the output filled with NaN
+        out = np.full_like(num, np.nan, dtype=np.float64)
 
-    # Replace other values with the result of the division.
-    result[~idx_denominator_zero] = series_numerator / series_denominator
-    return result
+        # element-wise division only where the denominator is non‑zero
+        # np.divide writes directly into `out`
+        np.divide(num, den, out=out, where=den != 0)
+
+        return out
+    # ---------- pandas path (preferred for DF math) ----------
+    if hasattr(numerator, 'to_numpy') and hasattr(denominator, 'to_numpy'):
+        num = numerator
+        den = denominator.reindex(num.index)  # preserve num's order; no sorting
+
+        a = num.to_numpy(dtype=np.float64, copy=False)
+        b = den.to_numpy(dtype=np.float64, copy=False)
+
+        out = np.full_like(a, np.nan, dtype=np.float64)
+        mask = (b != 0) & ~np.isnan(b)
+        
+        np.divide(a, b, out=out, where=mask)
+        return pd.Series(out, index=num.index, dtype="Float64")
+    raise ValueError(f"Can only operate on Series-like objects or np.ndarray, found: {type(numerator), type(denominator)}")
 
 
 def div_df_z_safe(df: pd.DataFrame, numerator: str, denominator: str):
@@ -233,6 +252,7 @@ def do_per_model_group(
     key: str = "key",
     verbose: bool = False,
     instructions=None,
+    skip:list|None=None
 ) -> pd.DataFrame:
     """Apply a function to each subset of the DataFrame grouped by ``model_group``, updating
     rows based on matching indices.
@@ -253,6 +273,8 @@ def do_per_model_group(
         Whether to print verbose output. Default is False.
     instructions : Any, optional
         Special instructions for the function
+    skip : list, optional
+        List of model group names to skip
 
     Returns
     -------
@@ -269,6 +291,10 @@ def do_per_model_group(
 
     for model_group in model_groups:
         if pd.isna(model_group):
+            continue
+        if skip is not None and model_group in skip:
+            if verbose:
+                print(f"Skipping model group: {model_group}")
             continue
 
         if verbose:
@@ -301,6 +327,43 @@ def do_per_model_group(
                     )
 
     return df
+
+
+def fill_from_df(
+    df_a: pd.DataFrame, 
+    df_b: pd.DataFrame,
+    key: str,
+    field: str
+) -> pd.DataFrame:
+    """
+    Copies values from field `field` in `df_b`, to the corresponding field in `df_a`, but only
+    where the values in `df_a` are empty. Aligns on `key` as the index.
+    
+    Parameters
+    ----------
+    df_a : pd.DataFrame
+        Base DataFrame you want to copy values TO
+    df_b : pd.DataFrame
+        Other DataFrame you want copy values FROM
+    key : str
+        Key field that you want to use to align the two Dataframes
+    field : str
+        Name of the field you want to copy from one DataFrame to the other
+    
+    Returns
+    -------
+    The modified DataFrame with copied values
+    """
+    df_a = df_a.merge(
+        df_b[[key, field]],
+        on=key,
+        how="left",
+        suffixes=("","___b___")
+    )
+    if f"{field}___b___" in df_a:
+        df_a[field] = df_a[field].fillna(df_a[f"{field}___b___"])
+        df_a = df_a.drop(columns=f"{field}___b___")
+    return df_a
 
 
 def merge_and_stomp_dfs(
@@ -367,15 +430,9 @@ def merge_and_stomp_dfs(
                 df_merge[col] = df1_col
         else:
             # prefer df1's column value everywhere df1 has a non-null value
-            # Filter out empty entries before combining
-            df1_col = df_merge[col + "_1"].dropna()
-            df2_col = df_merge[col + "_2"].dropna()
-            if df1_col.size > 0 and df2_col.size > 0:
-                df_merge[col] = df1_col.combine_first(df2_col)
-            elif df1_col.size > 0:
-                df_merge[col] = df1_col
-            else:
-                df_merge[col] = df2_col
+            s1 = df_merge[f"{col}_1"]
+            s2 = df_merge[f"{col}_2"]
+            df_merge[col] = _left_wins(s1, s2)
 
     df_merge.drop(columns=suffixed_columns, inplace=True)
     return df_merge
@@ -544,8 +601,8 @@ def ensure_categories(
         dtype in either DataFrame is not Categorical, both DataFrames are
         returned without modification.
     """
-    if isinstance(df[field].dtype, pd.CategoricalDtype) and isinstance(
-        df_other[field].dtype, pd.CategoricalDtype
+    if hasattr(df[field].dtype, 'categories') and hasattr(
+        df_other[field].dtype, 'categories'
     ):
 
         # union keeps order of appearance in the first operands
@@ -597,11 +654,11 @@ def align_categories(
 
     for col in df_left.columns.union(df_right.columns):
 
-        left_is_cat = isinstance(
-            df_left.get(col, pd.Series(dtype="object")).dtype, pd.CategoricalDtype
+        left_is_cat = hasattr(
+            df_left.get(col, pd.Series(dtype="object")).dtype, 'categories'
         )
-        right_is_cat = isinstance(
-            df_right.get(col, pd.Series(dtype="object")).dtype, pd.CategoricalDtype
+        right_is_cat = hasattr(
+            df_right.get(col, pd.Series(dtype="object")).dtype, 'categories'
         )
 
         # If exactly one side is categorical, convert the other side first
@@ -830,8 +887,22 @@ def load_model_results(
     return None
 
 
-# TODO: WIP
+def _left_wins(s1, s2):
+    """
+    Return a Series that keeps s1’s values wherever they’re non-NA,
+    otherwise falls back to s2 – even when both are Categoricals.
+    """
+    if hasattr(s1.dtype, 'categories') and hasattr(s2.dtype, 'categories'):
+        # make both columns share the **union** of their categories
+        cats = s1.cat.categories.union(s2.cat.categories)
+        s1 = s1.cat.set_categories(cats)
+        s2 = s2.cat.set_categories(cats)
 
+    # element-wise choose left over right
+    return s1.where(s1.notna(), s2)
+
+
+# TODO: WIP
 
 def _encode_city_blocks(place: str):
 

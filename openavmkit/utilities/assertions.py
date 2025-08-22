@@ -183,8 +183,8 @@ def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None, allow_weak
                 return False
             else:
                 # we're going to reindex on primary key and proceed with comparisons on that basis
-                a = a.set_index(primary_key)
-                b = b.set_index(primary_key)
+                a_indexed = a.set_index(primary_key)
+                b_indexed = b.set_index(primary_key)
         else:
             print("Indices do not match")
             print(a_sorted_index)
@@ -201,39 +201,37 @@ def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None, allow_weak
         if not series_are_equal(a[col], b[col]):
             # try again using primary key as the index:
             if primary_key is not None:
-                a = a.set_index(primary_key)
-                b = b.set_index(primary_key)
+                # Create temporary indexed versions to avoid modifying original DataFrames
+                a_indexed = a.set_index(primary_key)
+                b_indexed = b.set_index(primary_key)
                 # try again:
-                if not series_are_equal(a[col], b[col]):
+                if not series_are_equal(a_indexed[col], b_indexed[col]):
                     no_match = True
             else:
                 no_match = True
 
             if no_match:
 
-                old_val = pd.get_option("display.max_columns")
-                pd.set_option("display.max_columns", None)
+                # Use context manager to avoid global state pollution
+                with pd.option_context('display.max_columns', None):
+                    bad_rows_a = a[~a[col].eq(b[col])]
+                    bad_rows_b = b[~a[col].eq(b[col])]
 
-                bad_rows_a = a[~a[col].eq(b[col])]
-                bad_rows_b = b[~a[col].eq(b[col])]
+                    weak_fail = False
 
-                weak_fail = False
-
-                if len(bad_rows_a) == 0 and len(bad_rows_b) == 0:
-                    weak_fail = True
-                    if not allow_weak:
-                        print(
-                            f"Column '{col}' does not match even though rows are naively equal, look:"
-                        )
-                        print(a[col])
-                        print(b[col])
-                else:
-                    print(f"Column '{col}' does not match, look:")
-                    # print rows that are not equal:
-                    print(bad_rows_a[col])
-                    print(bad_rows_b[col])
-
-                pd.set_option("display.max_columns", old_val)
+                    if len(bad_rows_a) == 0 and len(bad_rows_b) == 0:
+                        weak_fail = True
+                        if not allow_weak:
+                            print(
+                                f"Column '{col}' does not match even though rows are naively equal, look:"
+                            )
+                            print(a[col])
+                            print(b[col])
+                    else:
+                        print(f"Column '{col}' does not match, look:")
+                        # print rows that are not equal:
+                        print(bad_rows_a[col])
+                        print(bad_rows_b[col])
 
                 if weak_fail and allow_weak:
                     continue
@@ -259,16 +257,33 @@ def series_are_equal(a: pd.Series, b: pd.Series):
     bool
         Whether the two series are equal or not
     """
-    # deal with 32-bit vs 64-bit type nonsense:
-
+    # deal with type differences (pandas vs bodo.pandas, pyarrow vs numpy)
+    
+    # Convert both to numpy arrays for comparison to avoid dtype issues
+    # Handle nullable integer types (Int64) more carefully
+    try:
+        a_np = a.to_numpy()
+        b_np = b.to_numpy()
+        
+        # Check if they're exactly equal first (only if no NA values)
+        if not (pd.isna(a).any() or pd.isna(b).any()):
+            if np.array_equal(a_np, b_np):
+                return True
+    except (TypeError, ValueError):
+        # If numpy conversion fails (e.g., with nullable types), fall back to pandas comparison
+        pass
+    
+    # If not exactly equal, check for float precision differences
     a_type = a.dtype
     b_type = b.dtype
 
-    a_is_float = "float" in str(a_type).lower()
-    b_is_float = "float" in str(b_type).lower()
+    # Use proper pandas API instead of string parsing
+    # Handle both float and double types (pandas vs bodo.pandas)
+    a_is_float = pd.api.types.is_float_dtype(a_type) or "double" in str(a_type).lower()
+    b_is_float = pd.api.types.is_float_dtype(b_type) or "double" in str(b_type).lower()
 
-    a_is_int = "int" in str(a_type).lower()
-    b_is_int = "int" in str(b_type).lower()
+    a_is_int = pd.api.types.is_integer_dtype(a_type)
+    b_is_int = pd.api.types.is_integer_dtype(b_type)
 
     if a_is_float and b_is_float:
 
@@ -282,7 +297,8 @@ def series_are_equal(a: pd.Series, b: pd.Series):
         b_fill_na = b.fillna(0)
 
         # compare floats with epsilon:
-        result = a_fill_na.subtract(b_fill_na).abs().max() < 1e-6
+        FLOAT_COMPARISON_TOLERANCE = 1e-6  # Relative tolerance for float comparisons
+        result = a_fill_na.subtract(b_fill_na).abs().max() < FLOAT_COMPARISON_TOLERANCE
         if result == False:
             print(
                 f"Comparing floats with epsilon:\n{a_fill_na.subtract(b_fill_na).abs().max()}"
@@ -290,11 +306,16 @@ def series_are_equal(a: pd.Series, b: pd.Series):
         return result
 
     if a_is_int and b_is_int:
-        # compare integers directly:
-        result = a.subtract(b).abs().max() == 0
-        if result == False:
-            print(f"Comparing integers directly:\n{a.subtract(b).abs().max()}")
-        return result
+        # Handle nullable integer types (Int64) more carefully
+        try:
+            # compare integers directly:
+            result = a.subtract(b).abs().max() == 0
+            if result == False:
+                print(f"Comparing integers directly:\n{a.subtract(b).abs().max()}")
+            return result
+        except (TypeError, ValueError):
+            # If subtraction fails (e.g., with nullable types), use pandas comparison
+            return a.equals(b)
 
     # ensure that the two series contain the same information:
     if not a.equals(b):
@@ -304,8 +325,8 @@ def series_are_equal(a: pd.Series, b: pd.Series):
         b.loc[b.isna()] = np.nan
 
         # check which values are NaN:
-        a_is_nan = pd.isna(a) | a.isna() | a.isnull() | a.eq(None)
-        b_is_nan = pd.isna(b) | b.isna() | b.isnull() | b.eq(None)
+        a_is_nan = pd.isna(a)  # Single, reliable method
+        b_is_nan = pd.isna(b)  # Single, reliable method
 
         # mask out the NaN values and see if those sections are equal:
         a_masked = a[~a_is_nan]
