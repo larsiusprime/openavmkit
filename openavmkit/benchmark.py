@@ -1530,6 +1530,7 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
         "cod": [],
         "prd": [],
         "prb": [],
+        "count_trim": [],
         "cod_trim": [],
         "prd_trim": [],
         "prb_trim": [],
@@ -1561,6 +1562,7 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
             data["cod"].append(pred_results.ratio_study.cod)
             data["prd"].append(pred_results.ratio_study.prd)
             data["prb"].append(pred_results.ratio_study.prb)
+            data["count_trim"].append(pred_results.ratio_study.count_trim)
             data["cod_trim"].append(pred_results.ratio_study.cod_trim)
             data["prd_trim"].append(pred_results.ratio_study.prd_trim)
             data["prb_trim"].append(pred_results.ratio_study.prb_trim)
@@ -1604,6 +1606,7 @@ def _format_benchmark_df(df: pd.DataFrame, transpose: bool = True):
         "utility_score": fancy_format,
         "count_sales": "{:,.0f}",
         "count_univ": "{:,.0f}",
+        "count_trim": "{:,.0f}",
         "mse": fancy_format,
         "rmse": fancy_format,
         "mape": fancy_format,
@@ -3336,6 +3339,7 @@ def _model_performance_metrics(
     text += ("=" * 80) + "\n"
     metrics_data = {
         "Model": [],
+        "count": [],
         "RMSE": [],
         "MSE": [],
         "MAPE": [],
@@ -3345,6 +3349,7 @@ def _model_performance_metrics(
     }
     trimmed_data = {
         "Model": [],
+        "count": [],
         "RMSE": [],
         "MSE": [],
         "MAPE": [],
@@ -3417,8 +3422,12 @@ def _model_performance_metrics(
             mape_trim = np.nan
             mse_trim = np.nan
             rmse_trim = np.nan
-
+        
+        count = len(y_true)
+        count_trim = len(y_true_trim)
+        
         metrics_data["Model"].append(model_name)
+        metrics_data["count"].append(count)
         metrics_data["MAPE"].append(mape)
         metrics_data["MSE"].append(mse)
         metrics_data["RMSE"].append(rmse)
@@ -3427,6 +3436,7 @@ def _model_performance_metrics(
         metrics_data["Slope"].append(slope)
 
         trimmed_data["Model"].append(model_name)
+        trimmed_data["count"].append(count_trim)
         trimmed_data["MAPE"].append(mape_trim)
         trimmed_data["MSE"].append(mse)
         trimmed_data["RMSE"].append(rmse)
@@ -3437,6 +3447,7 @@ def _model_performance_metrics(
     # Create and display metrics DataFrame
     metrics_df = pd.DataFrame(metrics_data)
     metrics_df.set_index("Model", inplace=True)
+    metrics_df["count"] = metrics_df["count"].apply(lambda x: f"{x:,}").astype(str)
     metrics_df["MSE"] = metrics_df["MSE"].apply(lambda x: fancy_format(x)).astype(str)
     metrics_df["RMSE"] = metrics_df["RMSE"].apply(lambda x: f"{x:,.0f}").astype(str)
     metrics_df["MAPE"] = metrics_df["MAPE"].apply(lambda x: f"{x:.2f}").astype(str)
@@ -3446,6 +3457,7 @@ def _model_performance_metrics(
 
     trimmed_df = pd.DataFrame(trimmed_data)
     trimmed_df.set_index("Model", inplace=True)
+    trimmed_df["count"] = trimmed_df["count"].apply(lambda x: f"{x:,}").astype(str)
     trimmed_df["MSE"] = trimmed_df["MSE"].apply(lambda x: fancy_format(x)).astype(str)
     trimmed_df["RMSE"] = trimmed_df["RMSE"].apply(lambda x: f"{x:,.0f}").astype(str)
     trimmed_df["MAPE"] = trimmed_df["MAPE"].apply(lambda x: f"{x:.2f}").astype(str)
@@ -3453,8 +3465,8 @@ def _model_performance_metrics(
     trimmed_df["m.ratio"] = trimmed_df["m.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
     trimmed_df["avg.ratio"] = trimmed_df["avg.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
 
-    metrics_df = metrics_df[["MAPE","MSE","RMSE","m.ratio","avg.ratio","Slope"]]
-    trimmed_df = trimmed_df[["MAPE","MSE","RMSE","m.ratio","avg.ratio","Slope"]]
+    metrics_df = metrics_df[["count","MAPE","MSE","RMSE","m.ratio","avg.ratio","Slope"]]
+    trimmed_df = trimmed_df[["count","MAPE","MSE","RMSE","m.ratio","avg.ratio","Slope"]]
 
     float_cols = metrics_df.select_dtypes(include=['float']).columns
     metrics_df[float_cols] = metrics_df[float_cols].map(lambda x: f"{x:.2f}")
