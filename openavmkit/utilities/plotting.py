@@ -312,13 +312,12 @@ def _plot_histogram_mult(
 
         data = data.dropna()
         counts, _, _ = plt.hist(data, bins=_bins, label=label, alpha=alpha)
-
+        ylim_max = max(ylim_max, np.percentile(counts, 95))
+    
     plt.gca().xaxis.set_major_formatter(_human_fmt(digits=3))
 
     # capture y-limits
-    _ylim_max = np.percentile(counts, 95)
-    ylim_max = max(ylim_max, _ylim_max)
-
+    
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
     plt.title(title)
