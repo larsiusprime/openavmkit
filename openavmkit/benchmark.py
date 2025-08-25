@@ -2363,7 +2363,7 @@ def _optimize_ensemble_iteration(
         df_test_ensemble = df_test_ensemble.merge(
             df_pred_test, on="key_sale", how="left"
         )
-
+        
         df_sales_ensemble = df_sales_ensemble.merge(
             df_pred_sales, on="key_sale", how="left"
         )
@@ -2396,8 +2396,8 @@ def _optimize_ensemble_iteration(
     )
     timing.stop("total")
 
-    print(f"Results: score = {results.utility_train}, r2 = {results.pred_train.r2}, mape = {results.pred_train.mape}, mse = {results.pred_train.mse}")
-    score = results.utility_train
+    print(f"Results: score = {results.utility_sales_lookback}, r2 = {results.pred_sales_lookback.r2}, mape = {results.pred_sales_lookback.mape}, rmse = {results.pred_sales_lookback.rmse}")
+    score = results.utility_sales_lookback
 
     # Add early exit if score is nan
     if pd.isna(score):
@@ -2421,7 +2421,7 @@ def _optimize_ensemble_iteration(
         if key in all_results.model_results:
             model_results = all_results.model_results[key]
 
-            model_score = model_results.utility_train
+            model_score = model_results.utility_sales_lookback
 
             if model_score > worst_score:
                 worst_score = model_score
@@ -3383,7 +3383,7 @@ def _model_performance_metrics(
 
         y_ratio = y_pred / y_true
         mask = trim_outliers_mask(y_ratio, max_trim)
-
+        
         if len(mask) == 0:
             y_true_trim = y_true
             y_pred_trim = y_pred
