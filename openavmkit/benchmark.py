@@ -30,6 +30,7 @@ from openavmkit.modeling import (
     run_xgboost,
     run_lightgbm,
     run_catboost,
+    run_slice,
     SingleModelResults,
     run_garbage,
     run_average,
@@ -47,6 +48,7 @@ from openavmkit.modeling import (
     predict_xgboost,
     predict_catboost,
     predict_lightgbm,
+    predict_slice,
     GarbageModel,
     AverageModel,
     DataSplit,
@@ -72,6 +74,7 @@ from openavmkit.utilities.modeling import (
     LocalSqftModel,
     LocalSomersModel,
     PassThroughModel,
+    LandSLICEModel,
     GWRModel,
     MRAModel,
     GroundTruthModel,
@@ -1045,6 +1048,8 @@ def get_data_split_for(
     """
     if name == "local_sqft":
         _ind_vars = location_fields + ["bldg_area_finished_sqft", "land_area_sqft"]
+    elif name == "slice":
+        _ind_vars = ["land_area_sqft", "latitude", "longitude"]
     elif name == "local_somers":
         _ind_vars = location_fields + [
             "bldg_area_finished_sqft",
@@ -1243,7 +1248,6 @@ def run_one_model(
 
     intercept = entry.get("intercept", True)
     n_trials = entry.get("n_trials", 50)
-    print(f"n_trials = {n_trials} for model: {model_name}")
     t.stop("setup")
 
     t.start("run")
@@ -1305,6 +1309,8 @@ def run_one_model(
         results = run_catboost(
             ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
+    elif model_name == "slice":
+        results = run_slice(ds, verbose=verbose)
     else:
         raise ValueError(f"Model {model_name} not found!")
     t.stop("run")
@@ -1718,7 +1724,10 @@ def _predict_one_model(
     elif model_name == "catboost":
         catboost_regressor: CatBoostRegressor = smr.model
         results = predict_catboost(ds, catboost_regressor, timing, verbose)
-
+    elif model_name == "slice":
+        slice_model: LandSLICEModel = smr.model
+        results = predict_slice(ds, slice_model, timing, verbose)
+    
     if ds.vacant_only or ds.hedonic:
         # If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
         max_trim = _get_max_ratio_study_trim(settings, smr.ds.model_group)
