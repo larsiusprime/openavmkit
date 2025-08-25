@@ -4056,6 +4056,10 @@ def _perform_canonical_split(
     
     rs = settings.get("analysis", {}).get("ratio_study", {})
     look_back_years = rs.get("look_back_years", 1)
+    
+    md = settings.get("modeling", {}).get("metadata", {})
+    use_sales_from = md.get("use_sales_from", None)
+    
     val_date = get_valuation_date(settings)
 
     # Look back N years BEFORE the valuation date
@@ -4066,6 +4070,11 @@ def _perform_canonical_split(
 
     # Get our sales dataframe for this model group and split it into vacant and improved sales
     df = df_sales_in[df_sales_in["model_group"].eq(model_group)].copy()
+    
+    # Only use sales on or after the use_sales_from year
+    if use_sales_from is not None:
+        df = df[df["sale_year"].ge(use_sales_from)]
+    
     df_v = get_vacant_sales(df, settings)
     df_i = df.drop(df_v.index)
     
@@ -4113,7 +4122,7 @@ def _perform_canonical_split(
         print(f"In look back period: ")
         print(f"--> Vacant    : {count_look_back_v}")
         print(f"--> Improved  : {count_look_back_i}")
-
+        print("")
 
     test_share = 1.0 - test_train_fraction
 
@@ -4249,7 +4258,7 @@ def _perform_canonical_split(
                 if len(df_i_look_back) > n_i:
                     n_i += 1
                     diff_i -= 1
-                if diff_i == old_dif:
+                if diff_i == old_diff:
                     break
 
             n_v = min(n_v, len(df_v_untouched))
@@ -4272,13 +4281,55 @@ def _perform_canonical_split(
     df_test = pd.concat([df_v_test, df_i_test]).reset_index(drop=True)
     df_train = pd.concat([df_v_train, df_i_train]).reset_index(drop=True)
     
+    df_v_test_look_back = df_v_test[
+        df_v_test["sale_age_days"].le(look_back_days) & 
+        df_v_test["sale_age_days"].ge(0)
+    ]
+    
+    df_i_test_look_back = df_i_test[
+        df_i_test["sale_age_days"].le(look_back_days) & 
+        df_i_test["sale_age_days"].ge(0)
+    ]
+    
+    df_v_train_look_back = df_v_train[
+        df_v_train["sale_age_days"].le(look_back_days) & 
+        df_v_train["sale_age_days"].ge(0)
+    ]
+    
+    df_i_train_look_back = df_i_train[
+        df_i_train["sale_age_days"].le(look_back_days) & 
+        df_i_train["sale_age_days"].ge(0)
+    ]     
+    
     if verbose:
-        print(f"--> Test set  : {len(df_test)}")
-        print(f"----> Vacant  : {len(df_v_test)}")
-        print(f"----> Improved: {len(df_i_test)}")
-        print(f"--> Train set : {len(df_train)}")
-        print(f"----> Vacant  : {len(df_v_train)}")
-        print(f"----> Improved: {len(df_i_train)}")
+        print(f"--> Test set       : {len(df_test)}")
+        print(f"------> Vacant     : {len(df_v_test)}")
+        print(f"------> Improved   : {len(df_i_test)}")
+        print(f"----> In lookback")
+        print(f"------> Vacant     : {len(df_v_test_look_back)}")
+        print(f"------> Improved   : {len(df_i_test_look_back)}")
+        
+        print(f"--> Train set      : {len(df_train)}")
+        print(f"------> Vacant     : {len(df_v_train)}")
+        print(f"------> Improved   : {len(df_i_train)}")
+        print(f"----> In lookback")
+        print(f"-------> Vacant    : {len(df_v_train_look_back)}")
+        print(f"-------> Improved  : {len(df_i_train_look_back)}")
+    
+        keys_v_test = len(df_v_test["key_sale"].unique())
+        keys_i_test = len(df_i_test["key_sale"].unique())
+        keys_v_train = len(df_v_train["key_sale"].unique())
+        keys_i_train = len(df_i_train["key_sale"].unique())
+        
+        print(f"")
+        print(f"Unique keys:")
+        print(f"Test set:")
+        print(f"--> Vacant  : {keys_v_test}")
+        print(f"--> Improved: {keys_i_test}")
+        print(f"Train set:")
+        print(f"--> Vacant  : {keys_v_train}")
+        print(f"--> Improved: {keys_i_train}")
+        
     
     return df_test, df_train
 
