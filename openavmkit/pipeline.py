@@ -57,6 +57,10 @@ from openavmkit.utilities.settings import (
     get_fields_impr,
     get_fields_other,
     get_valuation_date,
+    get_model_group_ids
+)
+from openavmkit.calculations import (
+    div_series_z_safe
 )
 from openavmkit.utilities.plotting import (
     plot_scatterplot
@@ -1391,6 +1395,125 @@ def try_models(
         do_shaps=do_shaps,
         do_plots=do_plots
     )
+
+
+def identify_outliers(
+    sup: SalesUniversePair,
+    settings: dict
+):
+    outliers = settings.get("analysis", {}).get("outliers", {})
+    df_sales = get_hydrated_sales_from_sup(sup)    
+    ids = get_model_group_ids(settings, df_sales)
+    
+    ss = settings.get("analysis", {}).get("sales_scrutiny", {})
+    deed_id = ss.get("deed_id", None)
+    location = ss.get("location", None)
+    skip = outliers.get("skip", [])
+    
+    mgs = outliers.get("model_groups", {})
+    
+    default = outliers.get("default", {})
+    
+    for id in ids:
+        if id in skip:
+            continue
+        df_sub = df_sales[df_sales["model_group"].eq(id)]
+        entry = mgs.get(id, default)
+        print("====================")
+        print(f"MODEL GROUP = {id}")
+        for mtype in ["main","vacant","hedonic_land"]:
+            model = entry.get("mtype", "ensemble")
+            
+            path = f"out/models/{id}/{mtype}/{model}/pred_sales.csv"
+            outpath = f"out/models/{id}/{mtype}/{model}/outliers.csv"
+            
+            if os.path.exists(path):
+                
+                print("")
+                print("----------------------")
+                print(f"TYPE = {mtype}")
+                usecols = ["key_sale", "sale_price", "sale_date", "prediction", "prediction_ratio"]
+                dtypes = {
+                    "key_sale": "str",
+                    "sale_price": "float",
+                    "sale_date": "str",
+                    "prediction": "float",
+                    "prediction_ratio": "float"
+                }
+                dfm = pd.read_csv(path, dtype=dtypes, usecols=usecols)
+                dfm["sale_date"] = pd.to_datetime(dfm["sale_date"])
+                dfm = dfm[
+                    dfm["prediction_ratio"].ge(0.75) |
+                    dfm["prediction_ratio"].le(1.25)
+                ]
+                key_fields = ["key_sale", "address", location, deed_id, "bldg_area_finished_sqft", "land_area_sqft", "assr_market_value", "assr_land_value", "assr_impr_value", "vacant_sale"]
+                key_fields = [field for field in key_fields if field is not None and field in df_sub]
+                dfm = dfm.merge(df_sub[key_fields], on="key_sale", how="left")
+                value_fields = ["sale_price", "prediction", "assr_market_value", "assr_land_value", "assr_impr_value"]
+                for v in value_fields:
+                    if "impr" not in v:
+                        dfm[f"{v}_land_sqft"] = div_series_z_safe(dfm[v], dfm["land_area_sqft"])
+                    if "land" not in v:
+                        dfm[f"{v}_impr_sqft"] = div_series_z_safe(dfm[v], dfm["bldg_area_finished_sqft"])
+                
+                dfm_i = dfm[dfm["vacant_sale"].eq(False)]
+                dfm_v = dfm[dfm["vacant_sale"].eq(True)]
+
+                
+                df_loc_price_i = dfm_i.groupby(location)["sale_price"].agg(["count","median"]).reset_index().rename(columns={
+                    "count":"local_impr_sales",
+                    "median":"local_impr_price"
+                })
+                df_loc_price_is = dfm_i.groupby(location)["sale_price_impr_sqft"].agg(["median"]).reset_index().rename(columns={
+                    "median":"local_impr_price_sqft"
+                })
+                
+                df_loc_price_v = dfm_v.groupby(location)["sale_price"].agg(["count","median"]).reset_index().rename(columns={
+                    "count":"local_land_sales",
+                    "median":"local_land_price"
+                })
+                df_loc_price_vs = dfm_v.groupby(location)["sale_price_land_sqft"].agg(["median"]).reset_index().rename(columns={
+                    "median":"local_land_price_sqft"
+                })
+                
+                if mtype == "main":
+                    dfm = dfm.merge(df_loc_price_i, on=location, how="left")
+                    dfm = dfm.merge(df_loc_price_is, on=location, how="left")
+                
+                dfm = dfm.merge(df_loc_price_v, on=location, how="left")
+                dfm = dfm.merge(df_loc_price_vs, on=location, how="left")
+                
+                #Re-arrange columns in a massively opinionated way
+                cols = dfm.columns.tolist()
+                put_at_front = ["key_sale", deed_id, "address", "prediction_ratio", "prediction", "sale_price"]
+                if mtype == "main":
+                    put_at_front += ["prediction_impr_sqft", "sale_price_impr_sqft", "local_impr_price_sqft", "local_impr_sales"]
+                put_at_front += ["prediction_land_sqft", "sale_price_land_sqft", "local_land_price_sqft", "local_land_sales"]
+                put_at_end = ["address", location]
+                
+                cols = [col for col in cols if col not in put_at_front and col not in put_at_end]
+                cols = put_at_front + cols + put_at_end
+                
+                dfm = dfm[cols]
+                
+                dfm.to_csv(outpath, index=False)
+                
+                print("")
+                print("Top 10 UNDER-predictions:")
+                print("")
+                dfm = dfm.sort_values(by="prediction_ratio", ascending=True)
+                display(dfm.head(n=10))
+                
+                print("")
+                print("Top 10 OVER-predictions:")
+                print("")
+                dfm = dfm.sort_values(by="prediction_ratio", ascending=False)
+                display(dfm.head(n=10))
+                
+                
+                
+                print("")
+        
 
 
 def finalize_models(
