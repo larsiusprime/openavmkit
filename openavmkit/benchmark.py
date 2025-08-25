@@ -2058,6 +2058,8 @@ def _write_ensemble_model_results(
         df_ensemble = dfs[key]
         if ensemble_list is not None:
             df_ensemble = df_ensemble[prim_keys + ensemble_list]
+            if merge_key == "key_sale" and "key" in df_ensemble:
+                df_ensemble = df_ensemble.drop(columns=["key"])
             df = df_basic.merge(df_ensemble, on=merge_key, how="left")
         else:
             df = df_basic
@@ -2215,7 +2217,7 @@ def _optimize_ensemble_allocation_iteration(
             f"score = {score:5.0f}, best = {best_score:5.0f}, ensemble = {ensemble_list}..."
         )
 
-    if score < best_score and len(ensemble_list) >= 3:
+    if score < best_score and len(ensemble_list) >= 1:
         best_score = score
         best_list = ensemble_list.copy()
 
