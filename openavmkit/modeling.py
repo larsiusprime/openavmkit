@@ -802,7 +802,7 @@ class DataSplit:
         for col in cat_vars:
             if col in union_df.columns:
                 # If the column is of categorical type, ensure "missing" is a known category
-                if isinstance(union_df[col].dtype, pd.CategoricalDtype):
+                if hasattr(union_df[col].dtype, 'categories'):
                     if "missing" not in union_df[col].cat.categories:
                         current_col_series = union_df[col]
                         try:
