@@ -1030,11 +1030,26 @@ def run_sales_scrutiny(
     SalesUniversePair
         Updated SalesUniversePair after sales scrutiny analysis.
     """
-    sup = run_heuristics(sup, settings, drop_heuristic_outliers, verbose)
+    
+    ss = settings.get("analysis", {}).get("sales_scrutiny", {})
+    clusters_enabled = ss.get("clusters_enabled", True)
+    heuristics_enabled = ss.get("heuristics_enabled", True)
+    
+    os.makedirs("out/sales_scrutiny/", exist_ok=True)
+    
+    if heuristics_enabled:
+        sup = run_heuristics(sup, settings, drop_heuristic_outliers, verbose)
+    elif verbose:
+        print(f"Skipping sales scrutiny heuristics...")
+    
     sup = drop_manual_exclusions(sup, settings, verbose)
-    sup = run_sales_scrutiny_per_model_group_sup(
-        sup, settings, drop_cluster_outliers, verbose
-    )
+    
+    if clusters_enabled:
+        sup = run_sales_scrutiny_per_model_group_sup(
+            sup, settings, drop_cluster_outliers, verbose
+        )
+    elif verbose:
+        print(f"Skipping clustered sales scrutiny analysis...")
     return sup
 
 
