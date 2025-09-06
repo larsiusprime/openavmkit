@@ -48,7 +48,7 @@ from openavmkit.sales_scrutiny_study import (
     drop_manual_exclusions,
 )
 from openavmkit.time_adjustment import enrich_time_adjustment
-from openavmkit.utilities.data import combine_dfs
+from openavmkit.utilities.data import combine_dfs, div_df_z_safe
 from openavmkit.utilities.settings import (
     get_fields_categorical,
     get_fields_numeric,
@@ -346,7 +346,10 @@ def examine_df_in_ridiculous_detail(df: pd.DataFrame, s: dict):
                 non_zero = len(df_non_null[np.abs(df_non_null[n]).gt(0)])
                 perc = non_zero / len(df)
                 non_null = len(df_non_null)
-                perc_non_null = non_null / len(df)
+                if len(df) != 0:
+                    perc_non_null = non_null / len(df)
+                else:
+                    perc_non_null = float('nan')
                 print(
                     get_line(
                         n, df[n].dtype, non_zero, perc, non_null, perc_non_null, ""
@@ -362,9 +365,15 @@ def examine_df_in_ridiculous_detail(df: pd.DataFrame, s: dict):
                 fields_noted.append(b)
                 df_non_null = df[~pd.isna(df[b])]
                 non_zero = len(df_non_null[np.abs(df_non_null[b]).gt(0)])
-                perc = non_zero / len(df)
+                if len(df) != 0:
+                    perc = non_zero / len(df)
+                else:
+                    perc = float("nan")
                 non_null = len(df_non_null)
-                perc_non_null = non_null / len(df)
+                if len(df) != 0:
+                    perc_non_null = non_null / len(df)
+                else:
+                    perc_non_null = float("nan")
                 print(
                     get_line(
                         b,
@@ -414,8 +423,14 @@ def examine_df_in_ridiculous_detail(df: pd.DataFrame, s: dict):
         print_horz_line("=")
         for u in fields_unclassified:
             non_zero = (~pd.isna(df[u])).sum()
-            perc = non_zero / len(df)
-            perc_non_null = non_zero / len(df)
+            if len(df) != 0:
+                perc = non_zero / len(df)
+            else:
+                perc = float("nan")
+            if len(df) != 0:
+                perc_non_null = non_zero / len(df)
+            else:
+                perc_non_null = float("nan")
             print(
                 get_line(
                     u, df[u].dtype, non_zero, perc, non_zero, perc, list(df[u].unique())
@@ -561,9 +576,15 @@ def examine_df(df: pd.DataFrame, s: dict):
                 fields_noted.append(n)
                 df_non_null = df[~pd.isna(df[n])]
                 non_zero = len(df_non_null[np.abs(df_non_null[n]).gt(0)])
-                perc = non_zero / len(df)
+                if len(df) != 0:
+                    perc = non_zero / len(df)
+                else:
+                    perc = float("nan")
                 non_null = len(df_non_null)
-                perc_non_null = non_null / len(df)
+                if len(df) != 0:
+                    perc_non_null = non_null / len(df)
+                else:
+                    perc_non_null = float("nan")
                 print_buffer(
                     get_line(
                         n, df[n].dtype, non_zero, perc, non_null, perc_non_null, ""
@@ -578,9 +599,16 @@ def examine_df(df: pd.DataFrame, s: dict):
                 fields_noted.append(b)
                 df_non_null = df[~pd.isna(df[b])]
                 non_zero = len(df_non_null[np.abs(df_non_null[b]).gt(0)])
-                perc = non_zero / len(df)
+                if len(df) != 0:
+                    perc = non_zero / len(df)
+                else:
+                    perc = float("nan")
+                
                 non_null = len(df_non_null)
-                perc_non_null = non_null / len(df)
+                if non_null != 0:
+                    perc_non_null = non_null / len(df)
+                else:
+                    perc_non_null = float("nan")
                 print_buffer(
                     get_line(
                         b,
@@ -600,7 +628,10 @@ def examine_df(df: pd.DataFrame, s: dict):
             for c in cats:
                 fields_noted.append(c)
                 non_zero = (~pd.isna(df[c])).sum()
-                perc = non_zero / len(df)
+                if len(df) != 0:
+                    perc = non_zero / len(df)
+                else:
+                    perc = float("nan")
                 print_buffer(
                     get_line(
                         c,
