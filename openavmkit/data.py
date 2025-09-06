@@ -3584,7 +3584,22 @@ def _load_dataframe(
                         df[col] = df[col].astype(target_dtype)
                         df = _boolify_column_in_df(df, col, "na_false")
                 else:
-                    df[col] = df[col].astype(dtype_map[col])
+                    dtype_value = dtype_map[col]
+                    try:
+                        df[col] = df[col].astype(dtype_value)
+                    except ValueError as e:
+                        if dtype_value == "float":
+                            # force lowercase since we've converting to float anyways
+                            df[col] = df[col].astype(str).str.lower()
+                            
+                            # check for and clear various known problematic strings
+                            for badvalue in [' ', '<na>', 'none', 'null', 'na']:
+                                df.loc[df[col].eq(badvalue), col] = None
+                            
+                            warnings.warn(f"Column {col} had values that could not be cast to float, suppressed them to null")
+                            df[col] = df[col].astype(dtype_value, errors="ignore")
+                        else:
+                            raise ValueError(f"Error casting column {col} to dtype {dtype_map[col]}: {e}")
 
     elif ext == "csv":
         df = pd.read_csv(filename, usecols=cols_to_load, dtype=dtype_map)
