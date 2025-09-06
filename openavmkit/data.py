@@ -680,14 +680,22 @@ def enrich_df_streets(
     gpd.GeoDataFrame
         Enriched GeoDataFrame with additional columns for street-related metrics.
     """
-    df_out = _enrich_df_streets(
-        df_in, settings, spacing, max_ray_length, network_buffer, verbose
-    )
+    e_streets = settings.get("data",{}).get("process", {}).get("enrich", {})
+    do_streets = e_streets.get("enabled", False)
+    
+    if do_streets:
+        df_out = _enrich_df_streets(
+            df_in, settings, spacing, max_ray_length, network_buffer, verbose
+        )
 
-    # add somers unit land size normalization using frontage & depth
-    df_out["land_area_somers_ft"] = get_size_in_somers_units_ft(
-        df_out["frontage_ft_1"], df_out["depth_ft_1"]
-    )
+        # add somers unit land size normalization using frontage & depth
+        df_out["land_area_somers_ft"] = get_size_in_somers_units_ft(
+            df_out["frontage_ft_1"], df_out["depth_ft_1"]
+        )
+    else:
+        df_out = df_in
+        if verbose:
+            print(f"Street enrichment disabled. To enable it, add `data.process.enrich.streets.enabled = true` to your settings file.")
 
     return df_out
 
