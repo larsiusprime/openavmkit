@@ -3620,7 +3620,7 @@ def _run_models(
 
     # Enforce that horizontal equity cluster ID's have already been calculated
     if "he_id" not in df_univ:
-        raise ValueError("Could not find equity cluster ID's in the dataframe (he_id)")
+        warnings.warn("Could not find equity cluster ID's in the dataframe (he_id) -- no horizontal equity test will be performed!")
 
     model_results = {}
     outpath = f"out/models/{model_group}/{outdir}"
