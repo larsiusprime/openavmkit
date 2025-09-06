@@ -476,7 +476,10 @@ def get_variable_recommendations(
     entry: dict | None = model_entries.get("model", model_entries.get("default", {}))
     if variables_to_use is None:
         variables_to_use: list | None = entry.get("ind_vars", None)
-
+    
+    if len(variables_to_use) == 0 or variables_to_use is None:
+        raise ValueError("No independent variables provided! Please define some!")
+    
     cats = get_fields_categorical(settings, df_sales, include_boolean=False)
     flagged = []
     for variable in variables_to_use:
