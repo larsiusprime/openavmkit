@@ -255,7 +255,15 @@ def mark_horizontal_equity_clusters_per_model_group_sup(
     SalesUniversePair
         Updated SalesUniversePair with marked horizontal equity clusters.
     """
-
+    
+    he = settings.get("analysis", {}).get("horizontal_equity", {})
+    enabled = he.get("enabled", True)
+    
+    if enabled == False:
+        if verbose:
+            print(f"Skipping horizontal equity clustering...")
+        return sup
+        
     df_universe = sup["universe"]
     if verbose:
         print("")
