@@ -47,8 +47,26 @@ class CensusService:
         """
         self.credentials = credentials
         self.census_client = Census(credentials.api_key)
-
-    def get_census_data(self, fips_code: str, year: int = 2022) -> pd.DataFrame:
+    
+    def get_census_map(self, census_settings: dict) -> dict:
+        
+        if census_settings is None:
+            census_settings = {}
+        
+        return {
+            "B19013_001E": "median_income",
+            "B01003_001E": "total_population",
+            "B25064_001E": "median_g_rent",
+            "B25058_001E": "median_c_rent"
+        }
+    
+    
+    def get_census_data(
+        self, 
+        fips_code: str, 
+        year: int = 2022,
+        census_settings: dict = None
+    ) -> pd.DataFrame:
         """Get Census demographic data for block groups in a given FIPS code.
 
         Parameters
@@ -57,6 +75,8 @@ class CensusService:
             5-digit FIPS code (state + county)
         year : int
             Census year to query (default: 2022)
+        census_settings : dict
+            Census settings
 
         Returns
         -------
@@ -81,13 +101,12 @@ class CensusService:
         state_fips = fips_code[:2]
         county_fips = fips_code[2:]
 
+        map = self.get_census_map(census_settings)
+        fields = ["NAME"] + [key for key in map]
+        
         # Get block group data
         data = self.census_client.acs5.state_county_blockgroup(
-            fields=[
-                "NAME",
-                "B19013_001E",  # Median income
-                "B01003_001E",
-            ],  # Total population
+            fields,
             state_fips=state_fips,
             county_fips=county_fips,
             blockgroup="*",  # All block groups
@@ -99,7 +118,7 @@ class CensusService:
 
         # Rename columns
         df = df.rename(
-            columns={"B19013_001E": "median_income", "B01003_001E": "total_pop"}
+            columns=map
         )
 
         # Create GEOID for block groups (state+county+tract+block group)
@@ -187,7 +206,7 @@ class CensusService:
             )
 
     def get_census_data_with_boundaries(
-        self, fips_code: str, year: int = 2022
+        self, fips_code: str, year: int = 2022, census_settings : dict = None
     ) -> Tuple[pd.DataFrame, gpd.GeoDataFrame]:
         """Get both Census demographic data and boundary files for block groups in a
         FIPS code.
@@ -198,7 +217,8 @@ class CensusService:
             5-digit FIPS code (state + county)
         year : int
             Census year to query (default: 2022)
-
+        census_settings : dict
+            Census settings object
         Returns
         -------
         Tuple[pd.DataFrame, gpd.GeoDataFrame]:
@@ -216,7 +236,7 @@ class CensusService:
             If API requests fail
         """
         # Get demographic data first
-        census_data = self.get_census_data(fips_code, year)
+        census_data = self.get_census_data(fips_code, year, census_settings)
         # Get the list of block groups we have data for
         valid_block_groups = census_data["std_geoid"].unique()
 
@@ -273,9 +293,9 @@ def match_to_census_blockgroups(
 
     # Create a copy of the input GeoDataFrame to avoid modifying the original
     gdf_for_join = gdf.copy()
-
-    # Store original geometry column name
-    orig_geom_col = gdf_for_join.geometry.name
+    
+    if "geometry" not in gdf_for_join:
+        raise ValueError("Input dataframe must have a 'geometry' column!")
 
     # If the data is in a geographic CRS (like WGS84/EPSG:4326),
     # reproject to a projected CRS before calculating centroids
@@ -290,14 +310,18 @@ def match_to_census_blockgroups(
 
     # Create a temporary GeoDataFrame with centroids for the spatial join
     centroid_gdf = gpd.GeoDataFrame(
-        gdf_for_join.drop(columns=[orig_geom_col]),
+        gdf_for_join.drop(columns=["geometry"]),
         geometry="centroid",
         crs=gdf_for_join.crs,
     )
 
     # Perform the spatial join
+    census_gdf = census_gdf.to_crs(centroid_gdf.crs)
+    
     joined = centroid_gdf.sjoin(census_gdf, predicate="intersects", how=join_type)
-
+    if "index_right" in joined:
+        joined = joined.drop(columns="index_right")
+    
     # If we have matches, process them
     if not joined.empty:
         # Calculate areas for each match
@@ -307,17 +331,17 @@ def match_to_census_blockgroups(
         smallest_areas = joined.groupby(level=0)["area"].idxmin()
         joined = joined.loc[smallest_areas]
 
-        try:
-            joined = joined.set_geometry(orig_geom_col)
-        except:
-            joined = joined.set_geometry("centroid")
-
         # Calculate and print percentage of records with valid census geoid
         valid_geoid_count = joined["std_geoid"].notna().sum()
         valid_percentage = (valid_geoid_count / len(gdf)) * 100
         print(
             f"Census block group matching: {valid_geoid_count} of {len(gdf)} records have valid census geoid ({valid_percentage:.2f}%)"
         )
+        
+        # restore the original geometry column
+        joined = joined.merge(gdf[["key","geometry"]], on="key", how="left")
+        joined = joined.set_geometry("geometry")
+        joined = joined.drop(columns=["centroid","area"])
 
         return joined
     else:
