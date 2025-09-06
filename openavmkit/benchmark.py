@@ -1783,12 +1783,12 @@ def _clamp_land_predictions(
         .rename(columns={field_pred: "land_value"})
     )
     df_land_sales = (
-        results.df_sales[["key", field_pred]]
+        results.df_sales[["key_sale", field_pred]]
         .copy()
         .rename(columns={field_pred: "land_value"})
     )
     df_land_test = (
-        results.df_test[["key", field_pred]]
+        results.df_test[["key_sale", field_pred]]
         .copy()
         .rename(columns={field_pred: "land_value"})
     )
@@ -1798,10 +1798,10 @@ def _clamp_land_predictions(
         df_univ[["key", "prediction"]], on="key", how="left"
     )
     df_land_sales = df_land_sales.merge(
-        df_sales[["key", "prediction"]], on="key", how="left"
+        df_sales[["key_sale", "prediction"]], on="key_sale", how="left"
     )
     df_land_test = df_land_test.merge(
-        df_test[["key", "prediction"]], on="key", how="left"
+        df_test[["key_sale", "prediction"]], on="key_sale", how="left"
     )
 
     # Clamp land value to the range of (0.0, prediction)
@@ -1842,10 +1842,18 @@ def _clamp_land_predictions(
     y_pred_test = np.asarray(y_pred_test)
     y_pred_sales = np.asarray(y_pred_sales)
     y_pred_univ = np.asarray(y_pred_univ)
-
+    
+    ds = results.ds.copy()
+    
+    # reconstruct dataframes
+    
+    ds.df_test = df_land_test.merge(ds.df_test[["key_sale"] + [f for f in ds.df_test if f not in df_land_test]], on="key_sale", how="left")
+    ds.df_sales = df_land_sales.merge(ds.df_sales[["key_sale"] + [f for f in ds.df_sales if f not in df_land_sales]], on="key_sale", how="left")
+    ds.df_universe = df_land_univ.merge(ds.df_universe[["key"] + [f for f in ds.df_universe if f not in df_land_univ]], on="key", how="left")
+    
     # Create a new SingleModelResults object with the clamped land value predictions
     results = SingleModelResults(
-        results.ds,
+        ds,
         field_pred,
         results.field_horizontal_equity_id,
         model_name,

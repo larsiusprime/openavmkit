@@ -864,10 +864,11 @@ def load_model_results(
 
         if os.path.exists(fpred):
             df = pd.read_parquet(fpred)
-            if "key_x" in df:
-                # If the DataFrame has a 'key_x' column, rename it to 'key'
-                df.rename(columns={"key_x": "key"}, inplace=True)
-            df = df[["key", "prediction"]].copy()
+            # if "key_x" in df:
+                # # If the DataFrame has a 'key_x' column, rename it to 'key'
+                # df.rename(columns={"key_x": "key"}, inplace=True)
+            fields = [f for f in ["key", "key_sale", "prediction"] if f in df]
+            df = df[fields].copy()
             return df
 
     fpred_results = f"{filepath}/pred_{subset}.pkl"
@@ -878,9 +879,9 @@ def load_model_results(
                 if subset == "universe":
                     df = results.df_universe[["key", "prediction"]].copy()
                 elif subset == "sales":
-                    df = results.df_sales[["key", "prediction"]].copy()
+                    df = results.df_sales[["key", "key_sale", "prediction"]].copy()
                 elif subset == "test":
-                    df = results.df_test[["key", "prediction"]].copy()
+                    df = results.df_test[["key", "key_sale", "prediction"]].copy()
                 return df
 
     return None
