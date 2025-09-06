@@ -1805,6 +1805,7 @@ def run_vertical_equity_study(
     model_group: str,
     field_prediction: str,
     field_sales: str,
+    field_location: str,
     start_date: str,
     end_date: str,
     max_trim: float = 0.05
@@ -1829,7 +1830,8 @@ def run_vertical_equity_study(
     return VerticalEquityStudy(
         df_sales,
         field_sales,
-        field_prediction
+        field_prediction,
+        field_location
     )
 
 
