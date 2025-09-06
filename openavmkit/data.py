@@ -1177,66 +1177,75 @@ def _enrich_df_census(
 
     df = df_in.copy()
 
-    try:
-        # Get Census credentials and initialize service
-        creds = get_creds_from_env_census()
-        census_service = init_service_census(creds)
+    # try:
+    # Get Census credentials and initialize service
+    creds = get_creds_from_env_census()
+    census_service = init_service_census(creds)
 
-        # Get FIPS code from settings
-        fips_code = census_settings.get("fips", "")
-        if not fips_code:
-            warnings.warn(
-                "Census enrichment enabled but no FIPS code provided in settings"
-            )
-            return df
-
-        year = census_settings.get("year", 2022)
-        if verbose:
-            print("Getting Census Data...")
-
-        # Get Census data with boundaries
-        census_data, census_boundaries = census_service.get_census_data_with_boundaries(
-            fips_code=fips_code, year=year
+    # Get FIPS code from settings
+    fips_code = census_settings.get("fips", "")
+    if not fips_code:
+        warnings.warn(
+            "Census enrichment enabled but no FIPS code provided in settings"
         )
+        return df
 
-        # Spatial join with universe data only
-        if not isinstance(df, gpd.GeoDataFrame):
-            warnings.warn("DataFrame is not a GeoDataFrame, skipping Census enrichment")
-            return df
+    year = census_settings.get("year", 2022)
+    if verbose:
+        print("Getting Census Data...")
+    
+    # Get Census data with boundaries
+    census_data, census_boundaries = census_service.get_census_data_with_boundaries(
+        fips_code=fips_code, year=year, census_settings=census_settings
+    )
 
-        # Get census columns to keep
-        census_cols_to_keep = ["std_geoid", "median_income", "total_pop"]
-
-        # Ensure all census columns exist in the census_boundaries
-        missing_cols = [
-            col for col in census_cols_to_keep if col not in census_boundaries.columns
+    # Spatial join with universe data only
+    if not isinstance(df, gpd.GeoDataFrame):
+        warnings.warn("DataFrame is not a GeoDataFrame, skipping Census enrichment")
+        return df
+    
+    # Get census columns to keep
+    field_map = census_service.get_census_map(census_settings)
+    census_cols_to_keep = ["std_geoid"] + [field_map[key] for key in field_map]
+    
+    # Ensure all census columns exist in the census_boundaries
+    missing_cols = [
+        col for col in census_cols_to_keep if col not in census_boundaries.columns
+    ]
+    if missing_cols:
+        # Filter to only include columns that exist
+        census_cols_to_keep = [
+            col for col in census_cols_to_keep if col in census_boundaries.columns
         ]
-        if missing_cols:
-            # Filter to only include columns that exist
-            census_cols_to_keep = [
-                col for col in census_cols_to_keep if col in census_boundaries.columns
-            ]
+    
+    # Create a copy of census_boundaries with only the columns we need
+    census_boundaries_subset = census_boundaries[
+        ["geometry"] + census_cols_to_keep
+    ].copy()
+    
+    # Replace all -666666666.0 sentinel values with None
+    for col in census_cols_to_keep:
+        if pd.api.types.is_numeric_dtype(census_boundaries_subset[col]):
+            census_boundaries_subset.loc[
+                abs(census_boundaries_subset[col] + 666666666.0).le(1e6), col
+            ] = None
+    
+    if verbose:
+        print("Performing spatial join with Census Data...")
 
-        # Create a copy of census_boundaries with only the columns we need
-        census_boundaries_subset = census_boundaries[
-            ["geometry"] + census_cols_to_keep
-        ].copy()
+    # Perform the spatial join
+    df = match_to_census_blockgroups(
+        gdf=df, census_gdf=census_boundaries_subset, join_type="left"
+    )
+    df = df.drop(columns="std_geoid")
 
-        if verbose:
-            print("Performing spatial join with Census Data...")
+    write_cached_df(df_in, df, "census", "key", census_settings)
+    
+    return df
 
-        # Perform the spatial join
-        df = match_to_census_blockgroups(
-            gdf=df, census_gdf=census_boundaries_subset, join_type="left"
-        )
-
-        write_cached_df(df_in, df, "census", "key", census_settings)
-
-        return df
-
-    except Exception as e:
-        warnings.warn(f"Failed to enrich with Census data: {str(e)}")
-        return df
+    # except Exception as e:
+        # warnings.warn(f"Failed to enrich with Census data: {str(e)}")
+    #return df
 
 
 def _enrich_df_distances(
