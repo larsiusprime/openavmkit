@@ -1298,9 +1298,12 @@ class SingleModelResults:
         pl_df = pl.DataFrame(df_univ_valid)
 
         # TODO: This might need to be changed to be the $/sqft value rather than the total value
-        self.chd = quick_median_chd_pl(
-            pl_df, field_prediction, field_horizontal_equity_id
-        )
+        if field_horizontal_equity_id in df_univ_valid:
+            self.chd = quick_median_chd_pl(
+                pl_df, field_prediction, field_horizontal_equity_id
+            )
+        else:
+            self.chd = float("nan")
         timing.stop("chd")
 
         timing.start("utility")
