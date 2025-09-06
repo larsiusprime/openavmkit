@@ -4,6 +4,33 @@ import pandas as pd
 from openavmkit.filters import resolve_filter, validate_filter_list, validate_filter, select_filter
 from openavmkit.utilities.assertions import lists_are_equal
 from openavmkit.utilities.settings import _replace_variables
+from openavmkit.calculations import _do_calc
+
+def test_filter_calc():
+    data = {
+        "num": [0,1,2,3],
+        "str": ["a","b","c","d"]
+    }
+    df = pd.DataFrame(data=data)
+    
+    filter = ["isin", "str", ["a","b"]]
+    expected = [True, True, False, False]
+    results = resolve_filter(df, filter).tolist()
+    
+    assert lists_are_equal(expected, results)
+    
+    entry = [
+        "?",
+        [
+            "isin",
+            "str",
+            ["a","b"]
+        ]
+    ]
+    
+    results = _do_calc(df, entry).tolist()
+    
+    assert lists_are_equal(expected, results)
 
 
 def test_filter_logic():
