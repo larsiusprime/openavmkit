@@ -298,7 +298,7 @@ def write_cached_df(
     the_cols = changed_cols
     if key not in the_cols:
         the_cols = [key] + changed_cols
-
+    
     df_diff_cols = df_new[the_cols].copy()
     df_diff_cols = df_diff_cols[~df_diff_cols[key].isin(added_rows)]
     signature = _get_df_signature(df_orig, extra_signature)
