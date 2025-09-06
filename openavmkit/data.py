@@ -1104,7 +1104,7 @@ def _enrich_data(
         )
 
         # add lat/lon/rectangularity etc.
-        df_univ = _basic_geo_enrichment(df_univ, settings, verbose=verbose)
+        df_univ = _basic_geo_enrichment(df_univ, s_enrich, settings, verbose=verbose)
 
         # handle Census enrichment for universe if enabled
         if "census" in s_enrich:
@@ -2731,11 +2731,24 @@ def _enrich_polar_coordinates(
 
 
 def _basic_geo_enrichment(
-    gdf_in: gpd.GeoDataFrame, settings: dict, verbose: bool = False
+    gdf_in: gpd.GeoDataFrame, s_enrich: dict, settings: dict, verbose: bool = False
 ) -> gpd.GeoDataFrame:
     """Perform basic geometric enrichment on a GeoDataFrame by adding spatial features."""
     t = TimingData()
-
+    
+    s_basic = s_enrich.get("basic", {})
+    
+    do_anything = s_basic.get("enabled", True)
+    if not do_anything:
+        if verbose:
+            print("Skipping basic geo enrichment...")
+        return
+    
+    do_latlon = s_basic.get("latlon", True)
+    do_area = s_basic.get("area", True)
+    do_shape = s_basic.get("shape", True)
+    do_polar = s_basic.get("polar", True)
+    
     if verbose:
         print(f"Performing basic geometric enrichment...")
     gdf_out = get_cached_df(gdf_in, "geom/basic", "key")
@@ -2753,25 +2766,33 @@ def _basic_geo_enrichment(
 
     gdf = gdf_in.copy()
 
-    t.start("latlon")
-    gdf_latlon = gdf.to_crs(get_crs(gdf, "latlon"))
-    gdf_area = gdf.to_crs(get_crs(gdf, "equal_area"))
-    gdf["latitude"] = gdf_latlon.geometry.centroid.y
-    gdf["longitude"] = gdf_latlon.geometry.centroid.x
-    gdf["latitude_norm"] = (gdf["latitude"] - gdf["latitude"].min()) / (
-        gdf["latitude"].max() - gdf["latitude"].min()
-    )
-    gdf["longitude_norm"] = (gdf["longitude"] - gdf["longitude"].min()) / (
-        gdf["longitude"].max() - gdf["longitude"].min()
-    )
-    t.stop("latlon")
-    if verbose:
-        _t = t.get("latlon")
-        print(f"--> added latitude/longitude...({_t:.2f}s)")
-    t.start("area")
-
-    # we converted to a metric CRS, so we are in meters right now
-    area_in_meters = gdf_area.geometry.area
+    
+    if do_latlon:
+        t.start("latlon")
+        gdf_latlon = gdf.to_crs(get_crs(gdf, "latlon"))
+        gdf["latitude"] = gdf_latlon.geometry.centroid.y
+        gdf["longitude"] = gdf_latlon.geometry.centroid.x
+        gdf["latitude_norm"] = (gdf["latitude"] - gdf["latitude"].min()) / (
+            gdf["latitude"].max() - gdf["latitude"].min()
+        )
+        gdf["longitude_norm"] = (gdf["longitude"] - gdf["longitude"].min()) / (
+            gdf["longitude"].max() - gdf["longitude"].min()
+        )
+        t.stop("latlon")
+        
+        if verbose:
+            _t = t.get("latlon")
+            print(f"--> added latitude/longitude...({_t:.2f}s)")
+    else:
+        if verbose:
+            print(f"--> skipping latitude/longitude...")
+    
+    if do_area:
+        t.start("area")
+        gdf_area = gdf.to_crs(get_crs(gdf, "equal_area"))
+        
+        # we converted to a metric CRS, so we are in meters right now
+        area_in_meters = gdf_area.geometry.area
 
     gdf["land_area_gis_sqft"] = area_in_meters * 10.7639
 
@@ -2792,22 +2813,36 @@ def _basic_geo_enrichment(
     gdf["land_area_gis_delta_sqft"] = gdf["land_area_gis_sqft"] - gdf["land_area_sqft"]
     gdf["land_area_gis_delta_percent"] = div_series_z_safe(
         gdf["land_area_gis_delta_sqft"], gdf["land_area_sqft"]
-    )
+        )
 
-    gdf["land_area_sqft_log"] = np.log(gdf["land_area_sqft"])
+        gdf["land_area_sqft_log"] = np.log(gdf["land_area_sqft"])
 
-    t.stop("area")
-    if verbose:
-        _t = t.get("area")
-        print(f"--> calculated GIS area of each parcel...({_t:.2f}s)")
-    gdf = _calc_geom_stuff(gdf, verbose)
-    t.start("polar")
-    gdf = _enrich_polar_coordinates(gdf, settings, verbose)
-    t.stop("polar")
-    if verbose:
-        _t = t.get("polar")
-        print(f"--> calculated polar coordinates...({_t:.2f}s)")
-
+        t.stop("area")
+    
+        if verbose:
+            _t = t.get("area")
+            print(f"--> calculated GIS area of each parcel...({_t:.2f}s)")
+    else:
+        if verbose:
+            print(f"--> skipping calculated area...")
+    
+    if do_shape:
+        gdf = _calc_parcel_shape(gdf, verbose)
+    else:
+        if verbose:
+            print(f"--> skipping calculated parcel shapes...")
+    
+    if do_polar:
+        t.start("polar")
+        gdf = _enrich_polar_coordinates(gdf, settings, verbose)
+        t.stop("polar")
+        if verbose:
+            _t = t.get("polar")
+            print(f"--> calculated polar coordinates...({_t:.2f}s)")
+    else:
+        if verbose:
+            print(f"--> skipping polar coordinates...")
+    
     parcels_with_no_land = gdf["land_area_sqft"].isna().sum()
     if parcels_with_no_land > 0:
         raise ValueError(
@@ -2819,7 +2854,7 @@ def _basic_geo_enrichment(
     return gdf
 
 
-def _calc_geom_stuff(
+def _calc_parcel_shape(
     gdf_in: gpd.GeoDataFrame, verbose: bool = False
 ) -> gpd.GeoDataFrame:
     """Compute additional geometric properties for a GeoDataFrame, such as rectangularity"""
