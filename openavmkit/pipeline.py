@@ -1755,16 +1755,29 @@ def run_ratio_study(
     ]
     
     valid_field = "valid_for_ratio_study"
+    if "valid_for_ratio_study" not in df_sales:
+        valid_field = "valid_sale"
+    
     if land_only:
         valid_field = "valid_for_land_ratio_study"
+        if "valid_for_land_ratio_study" not in df_sales:
+            valid_field = "vacant_sale"
         
     if valid_field in df_sales:
         df_sales = df_sales[df_sales[valid_field].eq(True)]
 
+    # Ensure only non-null values are selected
+    
+    df_sales_clean = df_sales[
+        ~df_sales[field_prediction].isna() &
+        ~df_sales[field_sales].isna() &
+        df_sales[field_sales].gt(0)
+    ]
+    
     # Get predictions and sales
-    predictions = df_sales[field_prediction]
-    sales = df_sales[field_sales]
-
+    predictions = df_sales_clean[field_prediction]
+    sales = df_sales_clean[field_sales]
+    
     # Run the ratio study and return it
     return RatioStudyBootstrapped(predictions, sales, max_trim)
 
