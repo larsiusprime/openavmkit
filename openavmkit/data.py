@@ -3216,8 +3216,7 @@ def _do_perform_distance_calculations_osm(
         "df_in_len": len(df_in),
         "gdf_in_len": len(gdf_in),
         "df_cols": sorted(df_in.columns.tolist()),
-        "gdf_cols": sorted(gdf_in.columns.tolist()),
-        "gdf_hash": hash(gdf_in.geometry.to_wkb().sum()),
+        "gdf_cols": sorted(gdf_in.columns.tolist())
     }
 
     # Check cache
