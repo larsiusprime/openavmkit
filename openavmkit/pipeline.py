@@ -659,8 +659,12 @@ def examine_df(df: pd.DataFrame, s: dict):
         print_horz_line("=")
         for u in fields_unclassified:
             non_zero = (~pd.isna(df[u])).sum()
-            perc = non_zero / len(df)
-            perc_non_null = non_zero / len(df)
+            if len(df) != 0:
+                perc = non_zero / len(df)
+                perc_non_null = non_zero / len(df)
+            else:
+                perc = float("nan")
+                perc_non_null = float("nan")
             print_buffer(
                 get_line(
                     u, df[u].dtype, non_zero, perc, non_zero, perc, list(df[u].unique())
