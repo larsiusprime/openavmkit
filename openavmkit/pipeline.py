@@ -1842,7 +1842,9 @@ def plot_prediction_vs_sales(
     field_truth: str,
     start_date: str,
     end_date: str,
-    land_only: bool = False
+    land_only: bool = False,
+    max_prediction: float = None,
+    max_truth: float = None
 ):
     # Filter to just the designated model group
     sup = get_sup_model_group(sup, model_group)
@@ -1856,9 +1858,19 @@ def plot_prediction_vs_sales(
         df_sales["sale_date"].le(end_date)
     ]
     
+    if max_prediction is not None:
+        df_sales = df_sales[df_sales[field_prediction].le(max_prediction)]
+    
+    if max_truth is not None:
+        df_sales = df_sales[df_sales[field_truth].lt(max_truth)]
+    
     valid_field = "valid_for_ratio_study"
+    if "valid_for_ratio_study" not in df_sales:
+        valid_field = "valid_sale"
     if land_only == True:
         valid_field = "valid_for_land_ratio_study"
+        if "valid_for_land_ratio_study" not in df_sales:
+            valid_field = "vacant_sale"
     
     if valid_field in df_sales:
         df_sales = df_sales[df_sales[valid_field].eq(True)]
