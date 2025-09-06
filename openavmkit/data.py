@@ -2803,25 +2803,25 @@ def _basic_geo_enrichment(
         # we converted to a metric CRS, so we are in meters right now
         area_in_meters = gdf_area.geometry.area
 
-    gdf["land_area_gis_sqft"] = area_in_meters * 10.7639
+        gdf["land_area_gis_sqft"] = area_in_meters * 10.7639
 
-    gdf["land_area_given_sqft"] = gdf["land_area_sqft"]
+        gdf["land_area_given_sqft"] = gdf["land_area_sqft"]
 
-    # Anywhere given land area is 0, negative, or NULL, use GIS area
-    gdf["land_area_sqft"] = gdf["land_area_sqft"].combine_first(
-        gdf["land_area_gis_sqft"]
-    )
-    gdf["land_area_sqft"] = np.round(
-        gdf["land_area_sqft"].combine_first(gdf["land_area_gis_sqft"])
-    ).astype(int)
-    gdf.loc[
-        gdf["land_area_given_sqft"].le(0) | gdf["land_area_given_sqft"].isna(),
-        "land_area_sqft",
-    ] = gdf["land_area_gis_sqft"]
+        # Anywhere given land area is 0, negative, or NULL, use GIS area
+        gdf["land_area_sqft"] = gdf["land_area_sqft"].combine_first(
+            gdf["land_area_gis_sqft"]
+        )
+        gdf["land_area_sqft"] = np.round(
+            gdf["land_area_sqft"].combine_first(gdf["land_area_gis_sqft"])
+        ).astype(int)
+        gdf.loc[
+            gdf["land_area_given_sqft"].le(0) | gdf["land_area_given_sqft"].isna(),
+            "land_area_sqft",
+        ] = gdf["land_area_gis_sqft"]
 
-    gdf["land_area_gis_delta_sqft"] = gdf["land_area_gis_sqft"] - gdf["land_area_sqft"]
-    gdf["land_area_gis_delta_percent"] = div_series_z_safe(
-        gdf["land_area_gis_delta_sqft"], gdf["land_area_sqft"]
+        gdf["land_area_gis_delta_sqft"] = gdf["land_area_gis_sqft"] - gdf["land_area_sqft"]
+        gdf["land_area_gis_delta_percent"] = div_series_z_safe(
+            gdf["land_area_gis_delta_sqft"], gdf["land_area_sqft"]
         )
 
         gdf["land_area_sqft_log"] = np.log(gdf["land_area_sqft"])
@@ -4948,6 +4948,22 @@ def read_sales_univ(path: str):
     df_sales = pd.read_parquet(sales_path)
     df_univ = _read_univ_parquet(univ_path)
     return SalesUniversePair(df_sales, df_univ)
+
+
+def read_predictions(model: str, model_group: str, pred_type: str):
+    df : pd.DataFrame = None
+    key = "key" if pred_type == "universe" else "key_sale"
+    for thing in ["main"]:
+        try:
+            _df = pd.read_parquet(f"out/models/{model_group}/{thing}/{model}/pred_{pred_type}.parquet")
+            _df = _df[[key, "prediction"]]
+            if df is None:
+                df = _df
+            else:
+                df = pd.concat([df,_df]).reset_index(drop=True)
+        except FileNotFoundError as e:
+            print(f"Error reading {model_group}/{model} : {e}")
+    return df
 
 
 def _read_univ_parquet(path: str):
