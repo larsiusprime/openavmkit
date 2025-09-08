@@ -1202,6 +1202,13 @@ def run_one_model(
 
     are_ind_vars_default = entry.get("ind_vars", None) is None
     ind_vars: list | None = entry.get("ind_vars", default_entry.get("ind_vars", None))
+    
+    if vacant_only or hedonic:
+        default_value = True
+        if model_name == "assessor":
+            default_value = False
+        do_clamp = entry.get("do_clamp", default_value)
+    
     # no duplicates!
     ind_vars = list(set(ind_vars))
     if ind_vars is None:
@@ -1321,6 +1328,7 @@ def run_one_model(
     if ds.vacant_only or ds.hedonic:
         # If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
         max_trim = _get_max_ratio_study_trim(settings, results.ds.model_group)
+        if do_clamp:
         results = _clamp_land_predictions(results, results.ds.model_group, model_name, outpath, max_trim)
 
     if save_results:
