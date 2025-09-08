@@ -1123,9 +1123,6 @@ def _enrich_data(
             )
 
         if "permits" in s_enrich:
-            # df_univ = _enrich_permits(
-            #     df_univ, s_enrich, dataframes, settings, is_sales=False, verbose=verbose
-            # )
             df_sales = _enrich_permits(
                 df_sales, s_enrich, dataframes, settings, is_sales=True, verbose=verbose
             )
@@ -1145,6 +1142,14 @@ def _enrich_data(
             settings,
             is_sales=False,
             verbose=verbose,
+        )
+        df_sales = _enrich_df_basic(
+            df_sales,
+            s_enrich,
+            dataframes,
+            settings,
+            is_sales=True,
+            verbose=verbose
         )
 
     # Enforce vacant status
@@ -2445,10 +2450,14 @@ def _enrich_df_basic(
     df = df_in.copy()
 
     supkey = "sales" if is_sales else "universe"
-
-    s_ref = s_enrich_this.get("ref_tables", {}).get(supkey, [])
-    s_calc = s_enrich_this.get("calc", {}).get(supkey, {})
-    s_tweak = s_enrich_this.get("tweak", {}).get(supkey, {})
+    
+    for word in ["ref_tables", "calc", "tweak"]:
+        if word in s_enrich_this:
+            warnings.warn(f"Found `word` @ `data.process.enrich.word`, but it should be under `data.process.enrich.sales` or `data.process.enrich.universe`! Nothing will happen!")
+    
+    s_ref = s_enrich_this.get(supkey, {}).get("ref_tables", [])
+    s_calc = s_enrich_this.get(supkey, {}).get("calc", {})
+    s_tweak = s_enrich_this.get(supkey, {}).get("tweak", {})
 
     # reference tables:
     df = _perform_ref_tables(df, s_ref, dataframes, verbose=verbose)
@@ -3583,12 +3592,20 @@ def _load_dataframe(
                         )
                         df[col] = df[col].astype(target_dtype)
                         df = _boolify_column_in_df(df, col, "na_false")
+                elif target_dtype == "datetime":
+                    if rename_key in extra_map:
+                        format_str = extra_map[rename_key]
+                        df[col] = pd.to_datetime(df[col].astype(str), format=format_str, errors="coerce")
+                    else:
+                        warnings.warn(
+                            f"Column '{col}' is being converted to datetime, but you didn't specify the format. Will attempt to auto-cast and coerce, which could be wrong!"
+                        )
+                        df[col] = pd.to_datetime(df[col].astype(str), errors="coerce")
                 else:
-                    dtype_value = dtype_map[col]
                     try:
-                        df[col] = df[col].astype(dtype_value)
+                        df[col] = df[col].astype(target_dtype)
                     except ValueError as e:
-                        if dtype_value == "float":
+                        if target_dtype == "float":
                             # force lowercase since we've converting to float anyways
                             df[col] = df[col].astype(str).str.lower()
                             
@@ -3597,7 +3614,7 @@ def _load_dataframe(
                                 df.loc[df[col].eq(badvalue), col] = None
                             
                             warnings.warn(f"Column {col} had values that could not be cast to float, suppressed them to null")
-                            df[col] = df[col].astype(dtype_value, errors="ignore")
+                            df[col] = df[col].astype(target_dtype, errors="ignore")
                         else:
                             raise ValueError(f"Error casting column {col} to dtype {dtype_map[col]}: {e}")
 

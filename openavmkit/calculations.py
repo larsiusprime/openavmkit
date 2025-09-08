@@ -243,7 +243,20 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i: int = 0, rename_map: dict = No
     # Filter operations
     if op == "?":
         return resolve_filter(df, entry[1], rename_map)
-
+    
+    # Trinary operations
+    
+    if op == "where":
+        lhs = entry[1]
+        rhs = entry[2]
+        rhs2 = entry[3]
+        idx = resolve_filter(df, entry[1], rename_map)
+        rhs, i = _calc_resolve(df, value=rhs, i=i, rename_map=rename_map)
+        rhs2, i2 = _calc_resolve(df, value=rhs2, i=i, rename_map=rename_map)
+        results = rhs2.copy()
+        results[idx] = rhs
+        return results
+    
     # Unary operations (LHS only)
     lhs = None
     if len(entry) > 1:
@@ -277,6 +290,7 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i: int = 0, rename_map: dict = No
 
     # Binary operations (LHS & RHS)
     rhs = None
+    
     if len(entry) > 2:
         rhs = entry[2]
         rhs, i = _calc_resolve(df, value=rhs, i=i, rename_map=rename_map)
