@@ -15,5 +15,5 @@ RUN pip install -e .
 
 RUN pip install jupyter
 
-# Expose the notebooks file as 
+# Expose the notebooks file with jupyter notebook on container start
 CMD [ "jupyter", "notebook", "--ip", "0.0.0.0", "--no-browser", "--allow-root" ]
