@@ -1,31 +1,19 @@
-# Stage 1: Build the OpenAVMKit package and install dependencies
-FROM python:3.10 AS builder
+FROM python:3.10
 
-WORKDIR /app
+WORKDIR /usr/src/app
 
-# Copy all of OpenAVMKit's build files into the container (excluding those in .dockerignore)
+## Copy all of OpenAVMKit's build files into the container
 COPY . ./
 
-# Ensure that the entrypoint script is executable
-RUN chmod +x ./simple-entrypoint.sh
+VOLUME /notebooks
 
-# --no-cache-dir is used to avoid caching packages, shrinking the image size
-RUN pip install --no-cache-dir -r requirements.txt
+RUN ls
 
-# Install local openavmkit package
-RUN pip install .
+RUN pip install -r requirements.txt
 
-# Seperately install jupyter (as specified on the openavmkit docs)
+RUN pip install -e .
+
 RUN pip install jupyter
 
-# Stage 2: Muve the built/installed packages into a distroless environment
-# Install and register the Python kernel for Jupyter
-# This makes the kernel visible to the Jupyter server.
-RUN python -m ipykernel install --user --name=python3 --display-name="Python 3 (Project)"
-
-ENTRYPOINT ["./simple-entrypoint.sh"]
-
-LABEL maintainer="Jackson Arnold <jackson.n.arnold@gmail.com>"
-
-# Future updates:
-# - Create all the dependencies in a distro environment, then move it to a distroless with the root file being /notebooks/ (no need for anything outside of that)
+# Expose the notebooks file as 
+CMD [ "jupyter", "notebook", "--ip", "0.0.0.0", "--no-browser", "--allow-root" ]
