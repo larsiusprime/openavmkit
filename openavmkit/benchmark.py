@@ -1482,6 +1482,9 @@ def run_ensemble(
     tuple[SingleModelResults, list[str]]
         A tuple containing the SingleModelResults of the ensemble model and a list of models used in the ensemble.
     """
+    if verbose:
+        print("Optimizing ensemble...")
+        
     ensemble_list = _optimize_ensemble(
         df_sales,
         df_universe,
@@ -1495,6 +1498,8 @@ def run_ensemble(
         hedonic=hedonic,
         ensemble_list=None,
     )
+    if verbose:
+        print("Running ensemble...")
     ensemble = _run_ensemble(
         df_sales,
         df_universe,
@@ -1509,6 +1514,8 @@ def run_ensemble(
         settings=settings,
         verbose=verbose,
     )
+    if verbose:
+        print("Finished ensemble!")
     return ensemble, ensemble_list
 
 
@@ -3712,6 +3719,8 @@ def _run_models(
     t.stop("calc benchmarks")
 
     if run_ensemble:
+        if verbose:
+            print(f"Optimizing ensemble...")
         t.start("optimize ensemble")
         best_ensemble = _optimize_ensemble(
             df_sales=df_sales,
@@ -3728,6 +3737,8 @@ def _run_models(
 
         # Run the ensemble model
         t.start("run ensemble")
+        if verbose:
+            print(f"Running ensemble...")
         ensemble_results = _run_ensemble(
             df_sales=df_sales,
             df_universe=df_univ,
@@ -3744,10 +3755,14 @@ def _run_models(
         )
         t.stop("run ensemble")
 
+        if verbose:
+            print(f"Writing ensemble pickle...")
         out_pickle = f"{outpath}/model_ensemble.pickle"
         with open(out_pickle, "wb") as file:
             pickle.dump(ensemble_results, file)
 
+        if verbose:
+            print(f"Adding ensemble to results...")
         # Calculate final results, including ensemble
         t.start("calc final results")
         all_results.add_model("ensemble", ensemble_results)
@@ -3765,6 +3780,8 @@ def _run_models(
         verbose=verbose,
     )
     
+    if verbose:
+        print("Generating results...")
     first_results: SingleModelResults = list(all_results.model_results.values())[0]
     test_count = len(first_results.df_test)
     study_count = len(first_results.df_sales_lookback)
