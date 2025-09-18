@@ -1473,15 +1473,15 @@ def identify_outliers(
         print(f"MODEL GROUP = {id}")
         for mtype in ["main","vacant","hedonic_land"]:
             model = entry.get("mtype", "ensemble")
+            print(f"model type = {mtype}, model = {model}")
             
             path = f"out/models/{id}/{mtype}/{model}/pred_sales.csv"
+            outdir = f"out/models/{id}/{mtype}/{model}/"
             outpath = f"out/models/{id}/{mtype}/{model}/outliers.csv"
             
-            if os.path.exists(path):
+            dfm : pd.DataFrame = None
                 
-                print("")
-                print("----------------------")
-                print(f"TYPE = {mtype}")
+            if os.path.exists(path):
                 usecols = ["key_sale", "sale_price", "sale_date", "prediction", "prediction_ratio"]
                 dtypes = {
                     "key_sale": "str",
@@ -1499,6 +1499,23 @@ def identify_outliers(
                 key_fields = ["key_sale", "address", location, deed_id, "bldg_area_finished_sqft", "land_area_sqft", "assr_market_value", "assr_land_value", "assr_impr_value", "vacant_sale"]
                 key_fields = [field for field in key_fields if field is not None and field in df_sub]
                 dfm = dfm.merge(df_sub[key_fields], on="key_sale", how="left")
+            elif model == "assessor":
+                # We can use the assessor fields directly
+                the_field = "assr_market_value"
+                if mtype == "vacant" or "hedonic_land":
+                    the_field = "assr_land_value"
+                print(f"--> for assessor model, using \"{the_field}\" as prediction field...")
+                dfm = df_sub.copy()
+                dfm["prediction"] = dfm[the_field]
+                dfm["prediction_ratio"] = div_df_z_safe(dfm, "prediction", "sale_price")
+            
+            if mtype != "main":
+                # it's a land model, only look at vacant sales:
+                dfm = dfm[dfm["vacant_sale"].eq(True)]
+            
+            if dfm is not None and "prediction" in dfm:
+                print("")
+                print("----------------------")
                 value_fields = ["sale_price", "prediction", "assr_market_value", "assr_land_value", "assr_impr_value"]
                 for v in value_fields:
                     if "impr" not in v:
@@ -1545,6 +1562,8 @@ def identify_outliers(
                 cols = put_at_front + cols + put_at_end
                 
                 dfm = dfm[cols]
+                
+                os.makedirs(outdir, exist_ok=True)
                 
                 dfm.to_csv(outpath, index=False)
                 
