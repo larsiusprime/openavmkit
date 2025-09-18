@@ -1329,7 +1329,7 @@ def run_one_model(
         # If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
         max_trim = _get_max_ratio_study_trim(settings, results.ds.model_group)
         if do_clamp:
-        results = _clamp_land_predictions(results, results.ds.model_group, model_name, outpath, max_trim)
+            results = _clamp_land_predictions(results, results.ds.model_group, model_name, outpath, max_trim)
 
     if save_results:
         t.start("write")
