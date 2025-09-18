@@ -214,6 +214,8 @@ class HorizontalEquityStudy:
             max_chd = float("nan")
             med_chd = float("nan")
             p05_chd = float("nan")
+            p25_chd = float("nan")
+            p75_chd = float("nan")
             p95_chd = float("nan")
 
         self.summary = HorizontalEquitySummary(
