@@ -1756,8 +1756,8 @@ def run_ratio_study(
     model_group: str,
     field_prediction: str,
     field_sales: str,
-    start_date: str,
-    end_date: str,
+    start_date: str = None,
+    end_date: str = None,
     land_only: bool = False,
     max_trim: float = 0.05
 ):
@@ -1768,9 +1768,10 @@ def run_ratio_study(
     df_sales = get_hydrated_sales_from_sup(sup)
 
     # Select only sales between the start and end date
-    df_sales = df_sales[
-        df_sales["sale_date"].ge(start_date) &
-        df_sales["sale_date"].le(end_date)
+    if start_date is not None and end_date is not None:
+        df_sales = df_sales[
+            df_sales["sale_date"].ge(start_date) &
+            df_sales["sale_date"].le(end_date)
     ]
     
     valid_field = "valid_for_ratio_study"
