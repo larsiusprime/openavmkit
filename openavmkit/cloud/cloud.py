@@ -34,6 +34,11 @@ def init(
         s_cloud = settings.get("cloud", {})
     else:
         s_cloud = {}
+    
+    enabled = s_cloud.get("enabled", True)
+    if not enabled:
+        print("Cloud service disabled, skipping...")
+        return None
 
     cloud_type = os.getenv("CLOUD_TYPE")
     cloud_type = s_cloud.get("type", cloud_type)

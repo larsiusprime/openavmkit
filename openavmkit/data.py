@@ -2834,9 +2834,9 @@ def _basic_geo_enrichment(
 
             # Calculate difference
             gdf["land_area_gis_delta_sqft"] = gdf["land_area_gis_sqft"] - gdf["land_area_sqft"]
-        gdf["land_area_gis_delta_percent"] = div_series_z_safe(
-            gdf["land_area_gis_delta_sqft"], gdf["land_area_sqft"]
-        )
+            gdf["land_area_gis_delta_percent"] = div_series_z_safe(
+                gdf["land_area_gis_delta_sqft"], gdf["land_area_sqft"]
+            )
 
         gdf["land_area_sqft_log"] = np.log(gdf["land_area_sqft"])
 
