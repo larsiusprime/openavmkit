@@ -313,6 +313,7 @@
 				"bldg_rooms_bath",
 				"bldg_rooms_bath_full",
 				"bldg_rooms_bath_half",
+				"bldg_rooms_total",
 				"bldg_area_footprint_sqft",
 				"bldg_area_finished_sqft_inferred",
 				"assr_impr_value",
@@ -364,6 +365,7 @@
 			],
 			"+categorical": [
 				"he_id",
+				"address",
 				"model_group",
 				"warning_vacant_discrepancy",
 				"warning_vacant_positive_year_built",
@@ -376,6 +378,7 @@
 				"key",
 				"key2",
 				"key_sale",
+				"deed_book_and_page",
 				"deed_book",
 				"deed_page"
 			],
