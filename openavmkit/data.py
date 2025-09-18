@@ -3552,8 +3552,6 @@ def _load_dataframe(
                 rename_map[original_key] = rename_key
             if len(original) > 1:
                 dtype_map[original_key] = original[1]
-                if original[1] == "datetime":
-                    dtype_map[original_key] = "str"
             if len(original) > 2:
                 extra_map[rename_key] = original[2]
         elif isinstance(original, str):
@@ -3598,9 +3596,16 @@ def _load_dataframe(
                         df[col] = df[col].astype(target_dtype)
                         df = _boolify_column_in_df(df, col, "na_false")
                 elif target_dtype == "datetime":
+                    rename_key = rename_map.get(col, col)
+                    format_str = extra_map.get(rename_key)
                     if rename_key in extra_map:
                         format_str = extra_map[rename_key]
-                        df[col] = pd.to_datetime(df[col].astype(str), format=format_str, errors="coerce")
+                        try:
+                            result = pd.to_datetime(df[col].astype(str), format=format_str)
+                        except ValueError:
+                            s = df[col].astype(str).replace({None: pd.NA, "None": pd.NA, "": pd.NA})
+                            result = pd.to_datetime(s, format=format_str, errors="coerce", exact=True)
+                        df[col] = result
                     else:
                         warnings.warn(
                             f"Column '{col}' is being converted to datetime, but you didn't specify the format. Will attempt to auto-cast and coerce, which could be wrong!"
@@ -3648,7 +3653,8 @@ def _load_dataframe(
 
     for col in df.columns:
         if col in fields_cat:
-            df[col] = df[col].astype("string")
+            if "date" not in col:
+                df[col] = df[col].astype("string")
         elif col in fields_bool or df[col].dtype == "boolean":
             na_handling = None
             if col in extra_map:
@@ -3669,9 +3675,23 @@ def _load_dataframe(
     for dkey in date_fields:
         if dkey not in time_format_map:
             example_value = df[~df[dkey].isna()][dkey].iloc[0]
-            raise ValueError(
-                f"Date field '{dkey}' does not have a time format specified. Example value from {dkey}: \"{example_value}\""
-            )
+            dtype = df[dkey].dtype
+            
+            if not (
+                pd.api.types.is_datetime64_any_dtype(df[dkey].dtype) or
+                pd.api.types.is_datetime64_dtype(df[dkey].dtype)
+            ):
+                raise ValueError(
+                    f"Date field '{dkey}' does not have a time format specified. Example value from {dkey}: \"{example_value}\""
+                )
+            
+            s = df[dkey]
+            if s.dt.tz is not None:
+                s = s.dt.tz_localize(None)  # strips tz, keeps wall time
+            # As strings 'YYYY-MM-DD'
+            ymd = s.dt.strftime('%Y-%m-%d')
+            df[dkey] = pd.to_datetime(ymd, format="%Y-%m-%d", errors="coerce")
+            
     df = enrich_time(df, time_format_map, settings)
 
     dupes = entry.get("dupes", None)
@@ -4053,7 +4073,7 @@ def _merge_dict_of_dfs(
     # Final checks
     if required_key is not None and required_key not in df_merged:
         raise ValueError(
-            f"No '{required_key}' field found in merged dataframe. This field is required."
+            f"No '{required_key}' field found in merged dataframe. This field is required. Keys found = {df_merged.columns.values}"
         )
     len_old = len(df_merged)
     df_merged = df_merged.dropna(subset=[required_key])
