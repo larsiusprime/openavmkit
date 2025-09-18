@@ -1143,6 +1143,7 @@ def _enrich_data(
             is_sales=False,
             verbose=verbose,
         )
+        
         df_sales = _enrich_df_basic(
             df_sales,
             s_enrich,
@@ -2814,21 +2815,25 @@ def _basic_geo_enrichment(
 
         gdf["land_area_gis_sqft"] = area_in_meters * 10.7639
 
-        gdf["land_area_given_sqft"] = gdf["land_area_sqft"]
+        if "land_area_sqft" not in gdf:
+            gdf["land_area_sqft"] = gdf["land_area_gis_sqft"]
+        else:
+            gdf["land_area_given_sqft"] = gdf["land_area_sqft"]
+        
+            # Anywhere given land area is 0, negative, or NULL, use GIS area
+            gdf["land_area_sqft"] = gdf["land_area_sqft"].combine_first(
+                gdf["land_area_gis_sqft"]
+            )
+            gdf["land_area_sqft"] = np.round(
+                gdf["land_area_sqft"].combine_first(gdf["land_area_gis_sqft"])
+            ).astype(int)
+            gdf.loc[
+                gdf["land_area_given_sqft"].le(0) | gdf["land_area_given_sqft"].isna(),
+                "land_area_sqft",
+            ] = gdf["land_area_gis_sqft"]
 
-        # Anywhere given land area is 0, negative, or NULL, use GIS area
-        gdf["land_area_sqft"] = gdf["land_area_sqft"].combine_first(
-            gdf["land_area_gis_sqft"]
-        )
-        gdf["land_area_sqft"] = np.round(
-            gdf["land_area_sqft"].combine_first(gdf["land_area_gis_sqft"])
-        ).astype(int)
-        gdf.loc[
-            gdf["land_area_given_sqft"].le(0) | gdf["land_area_given_sqft"].isna(),
-            "land_area_sqft",
-        ] = gdf["land_area_gis_sqft"]
-
-        gdf["land_area_gis_delta_sqft"] = gdf["land_area_gis_sqft"] - gdf["land_area_sqft"]
+            # Calculate difference
+            gdf["land_area_gis_delta_sqft"] = gdf["land_area_gis_sqft"] - gdf["land_area_sqft"]
         gdf["land_area_gis_delta_percent"] = div_series_z_safe(
             gdf["land_area_gis_delta_sqft"], gdf["land_area_sqft"]
         )
