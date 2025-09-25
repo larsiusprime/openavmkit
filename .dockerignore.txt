@@ -1,0 +1,4 @@
+notebooks/pipeline/data/
+venv/
+dockerfile
+.dockerignore
