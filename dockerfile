@@ -19,10 +19,7 @@ RUN pip install jupyter
 RUN jupyter notebook --generate-config
 
 # Change the startup directory
-RUN echo "c.NotebookApp.notebook_dir = r'\app\notebooks"  >> ~/.jupyter/jupyter_notebook_config.py
-
-# Tell Jupyter to relax its hidden files rules so the user can easily make a .env file
-RUN echo "c.ContentsManager.allow_hidden = True" >> ~/.jupyter/jupyter_notebook_config.py
+RUN echo "c.NotebookApp.notebook_dir = \app\notebooks"  >> ~/.jupyter/jupyter_notebook_config.py
 
 # Expose the notebooks file with jupyter notebook on container start
 # IP 0.0.0.0 sets it to be accessed external to the container
