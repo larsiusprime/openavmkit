@@ -16,11 +16,6 @@ RUN pip install -e .
 
 RUN pip install jupyter
 
-RUN jupyter notebook --generate-config
-
-# Change the startup directory
-RUN printf '%s\n' "c.NotebookApp.notebook_dir = \app\notebooks"  >> ~/.jupyter/jupyter_notebook_config.py
-
 # Expose the notebooks file with jupyter notebook on container start
 # IP 0.0.0.0 sets it to be accessed external to the container
 # Allow root allows it to modify the file structure and volume
