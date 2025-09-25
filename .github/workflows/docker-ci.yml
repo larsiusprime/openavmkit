@@ -4,7 +4,7 @@ name: Create and publish a Docker image to GitHub Container Repository
 # Configures this workflow to run every time a change is pushed to a branch, or when main receives a pull request
 on:
   push:
-  pull-request:
+  pull_request:
     branches:
       - main
 
