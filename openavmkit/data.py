@@ -3577,7 +3577,17 @@ def _load_dataframe(
             df = gpd.read_parquet(filename, columns=cols_to_load)
         except ValueError:
             df = pd.read_parquet(filename, columns=cols_to_load)
-
+    elif ext == "csv":
+        csv_dtype_map = {}
+        for key in dtype_map:
+            dtype_value = dtype_map[key]
+            if dtype_value == "datetime":
+                dtype_value = "string"
+            csv_dtype_map[key] = dtype_value
+        df = pd.read_csv(filename, usecols=cols_to_load, dtype=csv_dtype_map)
+    else:
+        raise ValueError(f"Unsupported file extension: {ext}")
+    
         # Enforce user's dtypes
         for col in df.columns:
             if col in dtype_map:
@@ -3626,13 +3636,8 @@ def _load_dataframe(
                             warnings.warn(f"Column {col} had values that could not be cast to float, suppressed them to null")
                             df[col] = df[col].astype(target_dtype, errors="ignore")
                         else:
-                            raise ValueError(f"Error casting column {col} to dtype {dtype_map[col]}: {e}")
-
-    elif ext == "csv":
-        df = pd.read_csv(filename, usecols=cols_to_load, dtype=dtype_map)
-    else:
-        raise ValueError(f"Unsupported file extension: {ext}")
-
+                        raise ValueError(f"Error casting column {col} to dtype {dtype_map[col]}: {e}")
+    
     # Rename columns
     df = df.rename(columns=rename_map)
 
