@@ -396,9 +396,14 @@
 	},
 	"ref": {
 		"__": "This section is where we store objects and values we'd like to include by reference elsewhere",
-		"dupes": {
+		"dupes_universe": {
 			"subset": ["key"],
 			"sort_by": ["key", "asc"],
+			"drop": true
+		},
+		"dupes_sales": {
+			"subset": ["key_sale"],
+			"sort_by": ["key_sale", "asc"],
 			"drop": true
 		}
 	}
