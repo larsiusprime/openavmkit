@@ -6,3 +6,6 @@ dockerfile
 .git
 .github
 .idea
+tests/
+signatures/
+docs/

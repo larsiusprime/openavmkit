@@ -1,0 +1,17 @@
+services:
+  openavmkit:
+    image: ghcr.io/jnarnold7/openavmkit:latest
+    container_name: openavmkit
+    restart: unless-stopped
+    volumes:
+      - openavm_data:/app/notebooks/pipeline/data
+    networks:
+      - proxy-network
+
+volumes:
+  openavm_data:
+    driver: local
+
+networks:
+  proxy-network:
+    external: true
