@@ -609,9 +609,9 @@ def process_data(
     )
 
     if "valid_sale" not in df_sales:
-        raise ValueError("The 'valid_sale' column is required in the sales data.")
+        raise ValueError("The 'valid_sale' column is required in the sales data. If you don't have anything to go on, you can just create that column and fill it with an assumption (i.e. all are valid), but ideally you should look for some kind of validation criteria for your sales.")
     if "vacant_sale" not in df_sales:
-        raise ValueError("The 'vacant_sale' column is required in the sales data.")
+        raise ValueError("The 'vacant_sale' column is required in the sales data. If you don't have anything to go on, you can just create that column and fill it with an assumption (i.e. match vacant status in the universe), but ideally you should look for some kind of sales metadata on this.")
     # Print number and percentage of valid sales
     valid_count = df_sales["valid_sale"].sum()
     total_count = len(df_sales)
