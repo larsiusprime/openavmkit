@@ -3588,54 +3588,54 @@ def _load_dataframe(
     else:
         raise ValueError(f"Unsupported file extension: {ext}")
     
-        # Enforce user's dtypes
-        for col in df.columns:
-            if col in dtype_map:
-                target_dtype = dtype_map[col]
-                if target_dtype == "bool" or target_dtype == "boolean":
-                    rename_key = rename_map.get(col, col)
-                    if rename_key in extra_map:
-                        # if the user has specified a na_handling, we will manually boolify the column
-                        na_handling = extra_map[rename_key]
-                        df = _boolify_column_in_df(df, col, na_handling)
-                    else:
-                        # otherwise, we use the exact dtype they specified with a warning and default to casting NA to false
-                        warnings.warn(
-                            f"Column '{col}' is being converted to boolean, but you didn't specify na_handling. All ambiguous values/NA's will be cast to false."
-                        )
-                        df[col] = df[col].astype(target_dtype)
-                        df = _boolify_column_in_df(df, col, "na_false")
-                elif target_dtype == "datetime":
-                    rename_key = rename_map.get(col, col)
-                    format_str = extra_map.get(rename_key)
-                    if rename_key in extra_map:
-                        format_str = extra_map[rename_key]
-                        try:
-                            result = pd.to_datetime(df[col].astype(str), format=format_str)
-                        except ValueError:
-                            s = df[col].astype(str).replace({None: pd.NA, "None": pd.NA, "": pd.NA})
-                            result = pd.to_datetime(s, format=format_str, errors="coerce", exact=True)
-                        df[col] = result
-                    else:
-                        warnings.warn(
-                            f"Column '{col}' is being converted to datetime, but you didn't specify the format. Will attempt to auto-cast and coerce, which could be wrong!"
-                        )
-                        df[col] = pd.to_datetime(df[col].astype(str), errors="coerce")
+    # Enforce user's dtypes
+    for col in df.columns:
+        if col in dtype_map:
+            target_dtype = dtype_map[col]
+            if target_dtype == "bool" or target_dtype == "boolean":
+                rename_key = rename_map.get(col, col)
+                if rename_key in extra_map:
+                    # if the user has specified a na_handling, we will manually boolify the column
+                    na_handling = extra_map[rename_key]
+                    df = _boolify_column_in_df(df, col, na_handling)
                 else:
+                    # otherwise, we use the exact dtype they specified with a warning and default to casting NA to false
+                    warnings.warn(
+                        f"Column '{col}' is being converted to boolean, but you didn't specify na_handling. All ambiguous values/NA's will be cast to false."
+                    )
+                    df[col] = df[col].astype(target_dtype)
+                    df = _boolify_column_in_df(df, col, "na_false")
+            elif target_dtype == "datetime":
+                rename_key = rename_map.get(col, col)
+                format_str = extra_map.get(rename_key)
+                if rename_key in extra_map:
+                    format_str = extra_map[rename_key]
                     try:
-                        df[col] = df[col].astype(target_dtype)
-                    except ValueError as e:
-                        if target_dtype == "float":
-                            # force lowercase since we've converting to float anyways
-                            df[col] = df[col].astype(str).str.lower()
-                            
-                            # check for and clear various known problematic strings
-                            for badvalue in [' ', '<na>', 'none', 'null', 'na']:
-                                df.loc[df[col].eq(badvalue), col] = None
-                            
-                            warnings.warn(f"Column {col} had values that could not be cast to float, suppressed them to null")
-                            df[col] = df[col].astype(target_dtype, errors="ignore")
-                        else:
+                        result = pd.to_datetime(df[col].astype(str), format=format_str)
+                    except ValueError:
+                        s = df[col].astype(str).replace({None: pd.NA, "None": pd.NA, "": pd.NA})
+                        result = pd.to_datetime(s, format=format_str, errors="coerce", exact=True)
+                    df[col] = result
+                else:
+                    warnings.warn(
+                        f"Column '{col}' is being converted to datetime, but you didn't specify the format. Will attempt to auto-cast and coerce, which could be wrong!"
+                    )
+                    df[col] = pd.to_datetime(df[col].astype(str), errors="coerce")
+            else:
+                try:
+                    df[col] = df[col].astype(target_dtype)
+                except ValueError as e:
+                    if target_dtype == "float":
+                        # force lowercase since we've converting to float anyways
+                        df[col] = df[col].astype(str).str.lower()
+                        
+                        # check for and clear various known problematic strings
+                        for badvalue in [' ', '<na>', 'none', 'null', 'na']:
+                            df.loc[df[col].eq(badvalue), col] = None
+                        
+                        warnings.warn(f"Column {col} had values that could not be cast to float, suppressed them to null")
+                        df[col] = df[col].astype(target_dtype, errors="ignore")
+                    else:
                         raise ValueError(f"Error casting column {col} to dtype {dtype_map[col]}: {e}")
     
     # Rename columns
@@ -3721,6 +3721,14 @@ def _load_dataframe(
                 if key in df:
                     dupes = {"subset": [key], "sort_by": [key, "asc"], "drop": True}
                     break
+    
+    # If it's a sales dataframe, and we're not deduplicating on key_sale, something is probably wrong:
+    if "key_sale" in df.columns.values:
+        subset = dupes.get("subset", [])
+        if dupes is not None and "key_sale" not in subset:
+            warnings.warn(
+                f"df '{filename}' contains field 'key_sale', indicating it is likely a sales dataframe. However, it's de-dupe subset is {subset}, which does not contain 'key_sale'. This could result in improper de-duplication of sales transactions."
+            )
 
     df = _handle_duplicated_rows(df, dupes)
 
