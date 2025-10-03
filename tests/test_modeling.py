@@ -2,6 +2,24 @@ import pandas as pd
 
 from openavmkit.modeling import simple_ols, _greedy_nn_limited, simple_mra
 from openavmkit.utilities.assertions import lists_are_equal
+from openavmkit.utilities.stats import calc_vif
+
+def test_vif():
+	
+	data = {
+		"a": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+	}
+	df = pd.DataFrame(data)
+	
+	data2 = {
+		"a": [10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+		"b": [3, 6, 9, 12, 15, 18, 21, 24, 27, 30],
+		"c": [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]
+	}
+	df2 = pd.DataFrame(data2)
+	
+	vif = calc_vif(df)
+	vif2 = calc_vif(df2)
 
 
 def test_simple_ols():

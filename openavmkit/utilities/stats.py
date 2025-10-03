@@ -1134,7 +1134,12 @@ def calc_vif(X: pd.DataFrame) -> pd.DataFrame:
         warnings.warn("Can't calculate VIF for less than 5 samples")
         vif_data["vif"] = [float("nan")] * len(X.columns)
         return vif_data
-
+    
+    if len(X.columns) == 1:
+        warnings.warn("Can't calculate VIF for one column")
+        vif_data["vif"] = [float("nan")] * len(X.columns)
+        return vif_data
+    
     # Calculate VIF for each column
     vif_data["vif"] = [
         variance_inflation_factor(X.values, i) for i in range(X.shape[1])
