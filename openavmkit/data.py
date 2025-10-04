@@ -3566,11 +3566,14 @@ def _load_dataframe(
     fields_in_calc = [f for f in fields_in_calc if f in column_names]
     cols_to_load += fields_in_calc
     cols_to_load = list(set(cols_to_load))
-
+    
     is_geometry = False
     if "geometry" in column_names and "geometry" not in cols_to_load:
         cols_to_load.append("geometry")
         is_geometry = True
+    if is_geometry:
+        is_geometry = entry.get("geometry", is_geometry)
+    
 
     if ext == "parquet":
         try:
@@ -3734,13 +3737,24 @@ def _load_dataframe(
 
     if is_geometry:
         gdf: gpd.GeoDataFrame = gpd.GeoDataFrame(df, geometry="geometry")
+        
+        pre_len = len(gdf)
         gdf = clean_geometry(gdf, ensure_polygon=True)
+        post_len = len(gdf)
+        
+        perc_len = (pre_len-post_len)/pre_len
+        if perc_len >= 0.25:
+            warnings.warn(f"Dropped {perc_len:.0%} of rows from dataframe \"{filename}\" due to invalid/null geometry. If you don't care about geometry for this dataframe and want to retain all rows, then set '\"geometry\": false' in settings under this dataframe's 'data.load' entry")
+        
         df = gdf
 
     drop = entry.get("drop", [])
     if len(drop) > 0:
         df = df.drop(columns=drop, errors="ignore")
-
+    
+    if verbose:
+        print(f"--> rows = {len(df)}")
+    
     return df
 
 
