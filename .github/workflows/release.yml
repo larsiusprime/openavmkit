@@ -3,12 +3,12 @@ name: Publish to (Test)PyPI on tag
 on:
   push:
     tags:
-      - 'v*'   # fire on tag pushes like v0.3.1rc3, v0.3.1
+      - 'v*'   # fire on tag pushes like v0.3.5, v0.3.5rc1
   create:      # also fire when a tag is created
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to build/publish (e.g., v0.3.1rc4)'
+        description: 'Tag to build/publish (e.g., v0.3.5 or v0.3.5rc1)'
         required: true
 
 permissions:
@@ -109,8 +109,12 @@ jobs:
 
           if [[ "$TAG" =~ (a|b|rc) ]]; then
             echo "repo_url=https://test.pypi.org/legacy/" >> $GITHUB_OUTPUT
+            echo "simple_url=https://test.pypi.org/simple" >> $GITHUB_OUTPUT
+            echo "extra_url=https://pypi.org/simple" >> $GITHUB_OUTPUT
           else
             echo "repo_url=" >> $GITHUB_OUTPUT
+            echo "simple_url=https://pypi.org/simple" >> $GITHUB_OUTPUT
+            echo "extra_url=" >> $GITHUB_OUTPUT
           fi
 
       - name: Publish
@@ -118,3 +122,54 @@ jobs:
         with:
           packages-dir: dist
           repository-url: ${{ steps.idx.outputs.repo_url }}
+          skip-existing: true   # safe re-runs
+
+  verify:
+    name: Verify install from published index
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Determine version & index
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          elif [ -n "${GITHUB_REF_NAME}" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="${GITHUB_REF##refs/tags/}"
+          fi
+          VER="${TAG#v}"
+          echo "ver=$VER" >> $GITHUB_OUTPUT
+          # Propagate URLs from publish job if needed; recompute here for simplicity
+          if [[ "$TAG" =~ (a|b|rc) ]]; then
+            echo "simple_url=https://test.pypi.org/simple" >> $GITHUB_OUTPUT
+            echo "extra_url=https://pypi.org/simple" >> $GITHUB_OUTPUT
+          else
+            echo "simple_url=https://pypi.org/simple" >> $GITHUB_OUTPUT
+            echo "extra_url=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install just-published version
+        run: |
+          python -m pip install -U pip
+          if [ -n "${{ steps.meta.outputs.extra_url }}" ]; then
+            python -m pip install --no-cache-dir \
+              --index-url "${{ steps.meta.outputs.simple_url }}" \
+              --extra-index-url "${{ steps.meta.outputs.extra_url }}" \
+              "openavmkit==${{ steps.meta.outputs.ver }}"
+          else
+            python -m pip install --no-cache-dir \
+              --index-url "${{ steps.meta.outputs.simple_url }}" \
+              "openavmkit==${{ steps.meta.outputs.ver }}"
+          fi
+
+      - name: Import check
+        run: |
+          python -c "import importlib.metadata as m, openavmkit; \
+print('installed:', m.version('openavmkit')); \
+print('__version__:', getattr(openavmkit, '__version__', '<none>'))"
