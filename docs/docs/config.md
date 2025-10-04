@@ -129,16 +129,14 @@ To enable Census enrichment in your locality settings, add the following to your
 {
   "process": {
     "enrich": {
-      "universe": {
-        "census": {
-          "enabled": true,
-          "year": 2022,
-          "fips": "24510",
-          "fields": [
-            "median_income",
-            "total_pop"
-          ]
-        }
+      "census": {
+        "enabled": true,
+        "year": 2022,
+        "fips": "24510",
+        "fields": [
+          "median_income",
+          "total_pop"
+        ]
       }
     }
   }
