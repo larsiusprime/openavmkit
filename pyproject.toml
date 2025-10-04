@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=69", "wheel", "setuptools-scm[toml]>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,7 @@ name = "openavmkit"
 description = "Open-source automated valuation model (AVM) toolkit"
 readme = "README.md"
 requires-python = ">=3.10"
+
 # Dual license (AGPLv3 OR commercial).
 license = "AGPL-3.0-only OR LicenseRef-proprietary"
 authors = [{ name = "Lars A. Doucet", email = "lars.doucet+openavmkit@gmail.com" }]
@@ -25,8 +26,8 @@ Homepage = "https://www.openavmkit.com/"
 Source = "https://github.com/larsiusprime/openavmkit"
 Issues = "https://github.com/larsiusprime/openavmkit/issues"
 
+# NOTE: remove the version-from-attr; setuptools-scm supplies the version
 [tool.setuptools.dynamic]
-version = { attr = "openavmkit.__version__" }
 dependencies = { file = ["requirements.txt"] }
 
 [tool.setuptools.packages.find]
@@ -34,7 +35,6 @@ where = ["."]
 include = ["openavmkit*"]
 
 [tool.setuptools.package-data]
-# include JSON/YAML/text assets under openavmkit/resources/** in the wheel
 openavmkit = [
   "resources/**/*.json",
   "resources/**/*.yaml",
@@ -46,3 +46,10 @@ openavmkit = [
 [tool.setuptools]
 license-files = ["LICENSE-AGPLv3", "LICENSE-COMMERCIAL"]
 include-package-data = true
+
+[tool.setuptools_scm]
+# Derive version from your git tags, e.g. v0.3.0rc2 -> 0.3.0rc2
+version_scheme = "no-guess-dev"
+local_scheme = "node-and-date"
+# (Optional) If you want a vendored version file for src checkouts, uncomment:
+# write_to = "openavmkit/_version.py"
