@@ -1654,6 +1654,7 @@ def run_mra(
     timing.start("setup")
     ds = ds.encode_categoricals_with_one_hot()
     ds.split()
+    
     if intercept:
         ds.X_train = sm.add_constant(ds.X_train, has_constant='add')
         ds.X_test = sm.add_constant(ds.X_test, has_constant='add')
