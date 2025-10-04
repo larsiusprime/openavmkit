@@ -2,7 +2,6 @@ from setuptools import setup, find_packages
 
 setup(
     name='openavmkit',
-    version='0.2.2',
     author='Lars A. Doucet',
     author_email='lars.doucet@gmail.com',
     description='Mass Appraisal and Automated Valuation Modeling tools',
