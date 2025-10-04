@@ -116,5 +116,5 @@ jobs:
       - name: Publish
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages: dist/*
+          packages-dir: dist
           repository-url: ${{ steps.idx.outputs.repo_url }}
