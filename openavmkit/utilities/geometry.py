@@ -497,7 +497,7 @@ def ensure_geometries(df, geom_col="geometry", crs=None):
         # 2) Already Shapely?
         if isinstance(val, BaseGeometry):
             return val
-        # 3) Geo‑interface dicts
+        # 3) Geo-interface dicts
         if hasattr(val, "__geo_interface__"):
             from shapely.geometry import shape
 
@@ -512,11 +512,11 @@ def ensure_geometries(df, geom_col="geometry", crs=None):
             except Exception:
                 raw = binascii.unhexlify(s)
                 return wkb.loads(raw)
-        # 5) Bytes‐like
+        # 5) Bytes-like
         if isinstance(val, (bytes, bytearray, memoryview)):
             raw = val.tobytes() if isinstance(val, memoryview) else val
             return wkb.loads(raw)
-        # 6) numpy bytes_ or other numpy scalar
+        # 6) numpy bytes or other numpy scalar
         if isinstance(val, np.generic):
             try:
                 b = bytes(val)
