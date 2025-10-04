@@ -3,19 +3,33 @@ name: Publish to (Test)PyPI on tag
 on:
   push:
     tags:
-      - 'v*'  # any tag that starts with v
+      - 'v*'   # fire on tag pushes like v0.3.1rc3, v0.3.1
+  create:      # also fire when a tag is created
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build/publish (e.g., v0.3.1rc4)'
+        required: true
 
 permissions:
   contents: read
 
 jobs:
   build:
+    # Run only for tags named v* across push/create/dispatch
+    if: >
+      (github.event_name == 'push'   && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'create' && github.ref_type == 'tag' && startsWith(github.ref, 'v')) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))
     name: Build sdist & wheel
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          # On manual dispatch, check out the requested tag; otherwise use the event ref
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -37,13 +51,22 @@ jobs:
 
       - name: Ensure tag matches package version (guardrail)
         run: |
-          TAG="${GITHUB_REF_NAME#v}"   # strip leading 'v'
+          # Figure out the tag name for all trigger types
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG_RAW="${{ inputs.tag }}"
+          elif [ -n "${GITHUB_REF_NAME}" ]; then
+            TAG_RAW="${GITHUB_REF_NAME}"
+          else
+            TAG_RAW="${GITHUB_REF##refs/tags/}"
+          fi
+          TAG="${TAG_RAW#v}"   # strip leading 'v'
           echo "TAG=${TAG}"
+
           python - <<'PY'
-import glob, pkginfo
+import glob, pkginfo, sys
 wheels = sorted(glob.glob("dist/*.whl"))
 if not wheels:
-    raise SystemExit("No wheel found in dist/")
+    sys.exit("No wheel found in dist/")
 meta = pkginfo.Wheel(wheels[0])
 print(meta.version)
 PY
@@ -66,6 +89,11 @@ PY
           path: dist/*
 
   publish:
+    # Same gating as build
+    if: >
+      (github.event_name == 'push'   && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'create' && github.ref_type == 'tag' && startsWith(github.ref, 'v')) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))
     name: Publish to (Test)PyPI
     needs: build
     runs-on: ubuntu-latest
@@ -81,7 +109,15 @@ PY
       - name: Choose index based on tag (rc/a/b -> TestPyPI)
         id: idx
         run: |
-          TAG="${GITHUB_REF_NAME}"
+          # Determine the tag name across all trigger types
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          elif [ -n "${GITHUB_REF_NAME}" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="${GITHUB_REF##refs/tags/}"
+          fi
+
           if [[ "$TAG" =~ (a|b|rc) ]]; then
             echo "repo_url=https://test.pypi.org/legacy/" >> $GITHUB_OUTPUT
           else
