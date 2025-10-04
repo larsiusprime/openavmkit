@@ -21,6 +21,10 @@ RUN python -m ipykernel install --user --name=python3 --display-name="Python 3 (
 # Expose the notebooks file with jupyter notebook on container start
 # IP 0.0.0.0 sets it to be accessed external to the container
 # Allow root allows it to modify the file structure and volume
-CMD [ "jupyter", "notebook", "--ip", "0.0.0.0", "--allow-root" ]
+# --no-browser avoids opening the browser automatically, as there is not one in the container
+CMD [ "jupyter", "notebook", "--ip", "0.0.0.0", "--allow-root", "--no-browser" ]
 
 LABEL maintainer="Jackson Arnold <jackson.n.arnold@gmail.com>"
+
+# Future updates:
+# - Create all the dependencies in a distro environment, then move it to a distroless with the root file being /notebooks/ (no need for anything outside of that)
