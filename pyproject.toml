@@ -7,11 +7,27 @@ name = "openavmkit"
 description = "Open-source automated valuation model (AVM) toolkit"
 readme = "README.md"
 requires-python = ">=3.10"
-
 # Dual license (AGPLv3 OR commercial).
 license = "AGPL-3.0-only OR LicenseRef-proprietary"
 authors = [{ name = "Lars A. Doucet", email = "lars.doucet+openavmkit@gmail.com" }]
 dynamic = ["version", "dependencies"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Financial and Insurance Industry",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: GNU Affero General Public License v3",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: Information Analysis",
+  "Topic :: Office/Business :: Financial :: Accounting",
+]
+keywords = ["avm", "mass appraisal", "valuation", "gis", "real estate"]
 
 [project.optional-dependencies]
 docs = [
