@@ -51,7 +51,7 @@ jobs:
 
       - name: Ensure tag matches package version (guardrail)
         run: |
-          # Figure out the tag name for all trigger types
+          # Determine the tag name across all trigger types
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG_RAW="${{ inputs.tag }}"
           elif [ -n "${GITHUB_REF_NAME}" ]; then
@@ -62,21 +62,10 @@ jobs:
           TAG="${TAG_RAW#v}"   # strip leading 'v'
           echo "TAG=${TAG}"
 
-          python - <<'PY'
-import glob, pkginfo, sys
-wheels = sorted(glob.glob("dist/*.whl"))
-if not wheels:
-    sys.exit("No wheel found in dist/")
-meta = pkginfo.Wheel(wheels[0])
-print(meta.version)
-PY
-          PKG_VER=$(python - <<'PY'
-import glob, pkginfo
-wheels = sorted(glob.glob("dist/*.whl"))
-print(pkginfo.Wheel(wheels[0]).version)
-PY
-)
+          # Read version from the first wheel's METADATA (no filename parsing)
+          PKG_VER=$(python -c "import glob, pkginfo; w=sorted(glob.glob('dist/*.whl'))[0]; print(pkginfo.Wheel(w).version)")
           echo "PKG_VER=${PKG_VER}"
+
           if [[ "${PKG_VER}" != "${TAG}" && "${PKG_VER}" != ${TAG}* ]]; then
             echo "Tag (v${TAG}) does not match package version (${PKG_VER})"
             exit 1
