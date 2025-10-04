@@ -171,5 +171,5 @@ jobs:
       - name: Import check
         run: |
           python -c "import importlib.metadata as m, openavmkit; \
-print('installed:', m.version('openavmkit')); \
-print('__version__:', getattr(openavmkit, '__version__', '<none>'))"
+          print('installed:', m.version('openavmkit')); \
+          print('__version__:', getattr(openavmkit, '__version__', '<none>'))"
