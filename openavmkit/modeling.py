@@ -1655,10 +1655,10 @@ def run_mra(
     ds = ds.encode_categoricals_with_one_hot()
     ds.split()
     if intercept:
-        ds.X_train = sm.add_constant(ds.X_train)
-        ds.X_test = sm.add_constant(ds.X_test)
-        ds.X_sales = sm.add_constant(ds.X_sales)
-        ds.X_univ = sm.add_constant(ds.X_univ)
+        ds.X_train = sm.add_constant(ds.X_train, has_constant='add')
+        ds.X_test = sm.add_constant(ds.X_test, has_constant='add')
+        ds.X_sales = sm.add_constant(ds.X_sales, has_constant='add')
+        ds.X_univ = sm.add_constant(ds.X_univ, has_constant='add')
 
     timing.stop("setup")
 
@@ -4639,7 +4639,7 @@ def simple_mra(df: pd.DataFrame, ind_vars: list[str], dep_var: str):
     """
     y = df[dep_var].copy()
     X = df[ind_vars].copy()
-    X = sm.add_constant(X)
+    X = sm.add_constant(X, has_constant='add')
     X = X.astype(np.float64)
     model = sm.OLS(y, X).fit()
 
@@ -4688,7 +4688,7 @@ def simple_ols(df: pd.DataFrame, ind_var: str, dep_var: str, intercept: bool = T
     y = df[dep_var].copy()
     X = df[ind_var].copy()
     if intercept:
-        X = sm.add_constant(X)
+        X = sm.add_constant(X, has_constant='add')
     X = X.astype(np.float64)
     model = sm.OLS(y, X).fit()
 

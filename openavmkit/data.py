@@ -620,7 +620,7 @@ def process_data(
     df_sales = df_sales[df_sales["valid_sale"].eq(True)].copy().reset_index(drop=True)
 
     sup: SalesUniversePair = SalesUniversePair(universe=df_univ, sales=df_sales)
-
+    
     sup = _enrich_data(
         sup, s_process.get("enrich", {}), dataframes, settings, verbose=verbose
     )
@@ -2939,7 +2939,7 @@ def _perform_spatial_joins(
 
     gdf_parcels: gpd.GeoDataFrame = dataframes["geo_parcels"]
     gdf_merged = gdf_parcels.copy()
-
+    
     if verbose:
         print(f"Performing spatial joins...")
 
