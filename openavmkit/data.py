@@ -3027,6 +3027,21 @@ def _perform_spatial_join(
 ):
     """Perform a spatial join between two GeoDataFrames using the specified predicate."""
     gdf = gdf_in.copy()
+    
+    if gdf.crs is None:
+        if is_likely_epsg4326(gdf):
+            gdf.set_crs(epsg=4326, inplace=True)
+            warnings.warn("The geodataframe was missing a CRS, but it looks like it is probably EPSG 4326, so we set that automatically. Make sure this is what you want!")
+        else:
+            raise ValueError("The geodataframe is missing a CRS, and it didn't look like EPSG 4326, so we couldn't set that automatically. Your source file is likely corrupted or missing a CRS.")
+        
+    if gdf_overlay.crs is None:
+        if is_likely_epsg4326(gdf_overlay):
+            gdf_overlay.set_crs(epsg=4326, inplace=True)
+            warnings.warn("The overlay geodataframe was missing a CRS, but it looks like it is probably EPSG 4326, so we set that automatically. Make sure this is what you want!")
+        else:
+            raise ValueError("The overlay geodataframe is missing a CRS, and it didn't look like EPSG 4326, so we couldn't set that automatically. Your source file is likely corrupted or missing a CRS.")
+    
     gdf_overlay = gdf_overlay.to_crs(gdf.crs)
     if "__overlay_id__" in gdf_overlay:
         raise ValueError(
@@ -3578,6 +3593,9 @@ def _load_dataframe(
     if ext == "parquet":
         try:
             df = gpd.read_parquet(filename, columns=cols_to_load)
+            if "geometry" in df:
+                crs, geom_col = detect_crs_from_parquet(filename, "geometry")
+                df = ensure_geometries(df, geom_col=geom_col, crs=crs)
         except ValueError:
             df = pd.read_parquet(filename, columns=cols_to_load)
     elif ext == "csv":
