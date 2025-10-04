@@ -354,7 +354,7 @@ def _simple_ols(
     y = df[dep_var]
     X = df[ind_var]
     if intercept:
-        X = sm.add_constant(X)
+        X = sm.add_constant(X, has_constant='add')
     X = X.astype(np.float64)
     y = y.astype(np.float64)
 
