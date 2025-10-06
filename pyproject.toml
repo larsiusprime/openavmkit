@@ -36,6 +36,7 @@ dev = ["pytest", "ruff"]
 Homepage = "https://www.openavmkit.com/"
 Source = "https://github.com/larsiusprime/openavmkit"
 Issues = "https://github.com/larsiusprime/openavmkit/issues"
+Changelog = "https://github.com/larsiusprime/openavmkit/blob/master/CHANGELOG.md"
 
 # NOTE: remove the version-from-attr; setuptools-scm supplies the version
 [tool.setuptools.dynamic]
