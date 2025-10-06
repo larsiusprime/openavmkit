@@ -29,6 +29,8 @@ import openavmkit.horizontal_equity_study
 import openavmkit.vertical_equity_study
 import openavmkit.cleaning
 
+from dotenv import load_dotenv, find_dotenv
+
 from openavmkit.cleaning import clean_valid_sales, validate_arms_length_sales
 from openavmkit.cloud import cloud
 from openavmkit.data import (
@@ -121,6 +123,7 @@ def init_notebook(locality: str):
     ----------
     locality : str
         The locality slug (e.g., "us-nc-guilford").
+    
     """
     first_run = False
     if hasattr(init_notebook, "nbs"):
@@ -129,6 +132,7 @@ def init_notebook(locality: str):
         nbs = None
         first_run = True
     nbs = _set_locality(nbs, locality)
+    
     if first_run:
         init_notebook.nbs = nbs
 
@@ -144,6 +148,8 @@ def init_notebook(locality: str):
                 return oldformatwarning(msg, category, filename, lineno, line)
 
         warnings.formatwarning = custom_formatwarning
+    
+    load_dotenv(dotenv_path=find_dotenv())
 
 
 def load_settings(
@@ -1234,7 +1240,6 @@ def write_notebook_output_sup(
 def cloud_sync(
     locality: str,
     verbose: bool = False,
-    env_path: str = "",
     bootstrap: str = "",
     dry_run: bool = False,
     ignore_paths: list = None,
@@ -1250,8 +1255,6 @@ def cloud_sync(
         The locality identifier used to form remote paths.
     verbose : bool, optional
         If True, prints detailed log messages. Defaults to False.
-    env_path : str, optional
-        Path to the environment configuration file. Defaults to an empty string.
     bootstrap: str, optional
         Which cloud service to bootstrap from on an initial run. Defaults to an empty string.
     dry_run : bool, optional
@@ -1272,7 +1275,7 @@ def cloud_sync(
                 }
             }
 
-    cloud_service = cloud.init(verbose, env_path=env_path, settings=settings)
+    cloud_service = cloud.init(verbose, settings=settings)
     if cloud_service is None:
         print("Cloud service not initialized, skipping...")
         return

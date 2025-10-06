@@ -1,6 +1,5 @@
 import os
 from openavmkit.cloud.azure import init_service_azure, get_creds_from_env_azure
-from dotenv import load_dotenv
 
 from openavmkit.cloud.base import CloudService, CloudType, CloudAccess, CloudCredentials
 from openavmkit.cloud.huggingface import (
@@ -11,7 +10,7 @@ from openavmkit.cloud.sftp import get_creds_from_env_sftp, init_service_sftp
 
 
 def init(
-    verbose: bool, env_path: str = "", settings: dict = None
+    verbose: bool, settings: dict = None
 ) -> CloudService | None:
     """Creates a CloudService object based on user settings.
 
@@ -19,8 +18,6 @@ def init(
     ----------
     verbose : bool
         Whether to print verbose output.
-    env_path : str
-        Path to ".env" file (which stores credentials). Default is ""
     settings : dict
         Settings dictionary (which should contain cloud settings)
 
@@ -28,13 +25,12 @@ def init(
     -------
     Initialized CloudService object
     """
-    load_dotenv(dotenv_path=env_path)
 
     if settings is not None:
         s_cloud = settings.get("cloud", {})
     else:
         s_cloud = {}
-    
+        
     enabled = s_cloud.get("enabled", True)
     if not enabled:
         print("Cloud service disabled, skipping...")
@@ -42,6 +38,7 @@ def init(
 
     cloud_type = os.getenv("CLOUD_TYPE")
     cloud_type = s_cloud.get("type", cloud_type)
+    
     if cloud_type is not None:
         cloud_type = cloud_type.lower()
 

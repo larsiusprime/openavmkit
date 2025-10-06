@@ -1,6 +1,6 @@
 # OpenAVMKit
 
-[![PyPI version](https://img.shields.io/pypi/v/openavmkit.svg)](https://pypi.org/project/openavmkit/)
+[![PyPI version](https://img.shields.io/pypi/v/openavmkit?color=blue)](https://pypi.org/project/openavmkit/)
 ![Python versions](https://img.shields.io/pypi/pyversions/openavmkit.svg)
 [![CI](https://github.com/larsiusprime/openavmkit/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/larsiusprime/openavmkit/actions/workflows/ci.yml)
 
