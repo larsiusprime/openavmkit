@@ -1,4 +1,4 @@
-azure-storage-blob==12.24.1
+azure-storage-blob==12.26.0
 catboost==1.2.8
 numpy==1.26.4
 huggingface-hub==0.29.1
@@ -23,13 +23,13 @@ census==0.8.23
 shap==0.47.2
 mpld3==0.5.10
 hilbertcurve==2.0.5
-optuna-integration==4.3.0
+optuna-integration==4.5.0
 
-pygam~=0.9.1
-pandas~=2.2.3
+pygam~=0.10.1
+pandas~=2.3.3
 ipython~=8.12.3
 geopandas~=1.0.1
-matplotlib~=3.10.1
+matplotlib~=3.10.6
 pyproj~=3.7.1
 shapely~=2.1.0
 azure-core~=1.32.0
