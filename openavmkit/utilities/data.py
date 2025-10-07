@@ -1027,3 +1027,17 @@ def _encode_city_blocks(place: str):
 
     # Done!
     print(edges[["u", "v", "road_name", "cross_w", "cross_e", "name_loc"]].head())
+
+
+def get_bldg_land_area_fields(df:pd.DataFrame):
+    bldg_area_field = ""
+    land_area_field = ""
+    for field in df:
+        if (field.endswith("_sqft") or field.endswith("_sqm")):
+            if field.startswith("bldg_area_finished_"):
+                if field in ["bldg_area_finished_sqft","bldg_area_land_sqm"]:
+                    bldg_area_field = field
+            if field.startswith("land_area_"):
+                if field in ["land_area_sqft","land_area_sqm"]:
+                    land_area_field = field
+    return bldg_area_field, land_area_field
