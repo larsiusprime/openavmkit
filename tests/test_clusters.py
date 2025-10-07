@@ -30,6 +30,7 @@ def test_make_clusters():
     field_location="hood",
     fields_categorical=["color"],
     fields_numeric=["size"],
+    settings={},
     min_cluster_size=5
   )
 
