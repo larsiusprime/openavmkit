@@ -723,6 +723,7 @@ def load_dataframes(settings: dict, verbose: bool = False) -> dict:
 
     for key in s_load:
         entry = s_load[key]
+        entry["key"] = key
         df = _load_dataframe(
             entry,
             settings,

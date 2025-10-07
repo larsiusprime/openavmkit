@@ -3533,6 +3533,7 @@ def _load_dataframe(
     type adjustments.
     """
     filename = entry.get("filename", "")
+    entry_key = entry.get("key", "")
     if filename == "":
         return None
     filename = f"in/{filename}"
@@ -3734,7 +3735,7 @@ def _load_dataframe(
             dupes = {"subset": [col], "sort_by": [col, "asc"], "drop": True}
             if dupes_was_none:
                 warnings.warn(
-                    f"'dupes' not found for geo df '{filename}', defaulting to \"{col}\" as de-dedupe key. Set 'dupes:\"auto\" to remove this warning.'"
+                    f"'dupes' not found for geo df '{entry_key}', defaulting to \"{col}\" as de-dedupe key. Set 'dupes:\"auto\" to remove this warning.'"
                 )
         else:
             keys = ["key", "key2", "key3"]
@@ -3748,7 +3749,7 @@ def _load_dataframe(
         subset = dupes.get("subset", [])
         if dupes is not None and "key_sale" not in subset:
             warnings.warn(
-                f"df '{filename}' contains field 'key_sale', indicating it is likely a sales dataframe. However, it's de-dupe subset is {subset}, which does not contain 'key_sale'. This could result in improper de-duplication of sales transactions."
+                f"df '{entry_key}' contains field 'key_sale', indicating it is likely a sales dataframe. However, it's de-dupe subset is {subset}, which does not contain 'key_sale'. This could result in improper de-duplication of sales transactions."
             )
 
     df = _handle_duplicated_rows(df, dupes)
@@ -3762,7 +3763,7 @@ def _load_dataframe(
         
         perc_len = (pre_len-post_len)/pre_len
         if perc_len >= 0.25:
-            warnings.warn(f"Dropped {perc_len:.0%} of rows from dataframe \"{filename}\" due to invalid/null geometry. If you don't care about geometry for this dataframe and want to retain all rows, then set '\"geometry\": false' in settings under this dataframe's 'data.load' entry")
+            warnings.warn(f"Dropped {perc_len:.0%} of rows from dataframe \"{entry_key}\" due to invalid/null geometry. If you don't care about geometry for this dataframe and want to retain all rows, then set '\"geometry\": false' in settings under this dataframe's 'data.load' entry")
         
         df = gdf
 
@@ -3941,12 +3942,13 @@ def _merge_dict_of_dfs(
             if col not in all_cols:
                 all_cols.append(col)
             else:
-                suffixed = f"{col}_{merge['id']}"
-                suffixes[col] = suffixed
-                if col not in conflicts:
-                    conflicts[col] = []
-                conflicts[col].append(suffixed)
-                all_suffixes.append(suffixed)
+                if how != "append":
+                    suffixed = f"{col}_{merge['id']}"
+                    suffixes[col] = suffixed
+                    if col not in conflicts:
+                        conflicts[col] = []
+                    conflicts[col].append(suffixed)
+                    all_suffixes.append(suffixed)
         df = df.rename(columns=suffixes)
         merge["df"] = df
 
