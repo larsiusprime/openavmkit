@@ -19,7 +19,7 @@ from openavmkit.modeling import SingleModelResults, plot_value_surface, simple_o
 from openavmkit.quality_control import check_land_values
 from openavmkit.utilities.data import (
     div_series_z_safe,
-    add_sqft_fields,
+    add_area_fields,
 )
 from openavmkit.utilities.plotting import plot_histogram_df
 from openavmkit.utilities.settings import get_model_group_ids
@@ -70,7 +70,7 @@ def finalize_land_values(
                 on="key",
                 how="left",
             )
-            df_values = add_sqft_fields(df_values)
+            df_values = add_area_fields(df_values, settings)
             if df_all_values is None:
                 df_all_values = df_values
             else:
@@ -540,7 +540,7 @@ def _run_land_analysis(
         df_finalize["model_market_value"] * df_finalize["model_land_alloc"]
     )
 
-    df_finalize = add_sqft_fields(df_finalize)
+    df_finalize = add_area_fields(df_finalize, settings)
 
     outpath = f"out/models/{model_group}/land_analysis.csv"
     os.makedirs(os.path.dirname(outpath), exist_ok=True)
