@@ -5250,7 +5250,7 @@ def filter_df_by_date_range(df, start_date, end_date):
     s = pd.to_datetime(df["sale_date"], errors="coerce")
 
     # Strip timezone info if present, preserving local wall time
-    if is_datetime64tz_dtype(s.dtype):
+    if isinstance(s.dtype, pd.DatetimeTZDtype):
         s = s.dt.tz_localize(None)
 
     # Build inclusive range using an exclusive upper bound
