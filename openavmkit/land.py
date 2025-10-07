@@ -5,9 +5,7 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 from geopandas import GeoDataFrame
-from pygam import LinearGAM, s, te
-from scipy.optimize import curve_fit
-from pygam.callbacks import CallBack
+from sklearn.metrics import mean_absolute_percentage_error
 
 from IPython.display import display
 from openavmkit.data import (
@@ -237,6 +235,11 @@ def _run_land_analysis(
                 models.append("ensemble")
         else:
             models = allocation.get(key, [])
+        
+        path = key
+        if key == "hedonic":
+            path = "hedonic_land"
+
         outpath = f"out/models/{model_group}/{key}"
 
         if verbose:
@@ -253,13 +256,14 @@ def _run_land_analysis(
                     if not os.path.exists(fpred_univ):
                         fpred_univ = f"{filepath}/pred_{model}_universe.parquet"
                         fpred_sales = f"{filepath}/pred_{model}_sales.parquet"
-
                     if os.path.exists(fpred_univ):
                         df_u = pd.read_parquet(fpred_univ)[["key", "prediction"]]
                         results_map[key][model] = df_u
-                        df_s = pd.read_parquet(fpred_sales)[["key", "prediction"]]
+                        df_s = pd.read_parquet(fpred_sales)
+                        if "key_x" in df_s:
+                            df_s = df_s.rename(columns={"key_x":"key"})
+                        df_s = df_s[["key", "key_sale", "prediction"]]
                         sales_map[key][model] = df_s
-                        print(f"--------> stashing {model}")
 
                 fpred_results = f"{filepath}/pred_universe.pkl"
                 fpred_sales = f"{filepath}/pred_sales.pkl"
@@ -283,7 +287,6 @@ def _run_land_analysis(
     df_all_land_sales = df_all_land_sales[["key_sale"]].merge(
         df_sales, on="key_sale", how="left"
     )
-
     all_alloc_names = []
 
     bins = 400
@@ -294,7 +297,9 @@ def _run_land_analysis(
         "type": [],
         "model": [],
         "count": [],
+        "mape": [],
         "r2": [],
+        "rmse": [],
         "alloc_median": [],
     }
 
@@ -303,53 +308,54 @@ def _run_land_analysis(
         df_alloc = results_map["main"]["ensemble"].copy()
         alloc_names = []
         entries = results_map[key]
-
+        
         for model in entries:
 
-            pred_main = results_map["main"].get(model)
-            pred_sales = sales_map["main"].get(model)
-
+            pred_main = results_map["main"].get(model).copy()
+            pred_sales = sales_map["main"].get(model).copy()
+            
+            
             if pred_main is None:
                 warnings.warn(
                     f"No main model found for model: {model}, using ensemble instead"
                 )
-                pred_main = results_map["main"].get("ensemble")
-                pred_sales = sales_map["main"].get("ensemble")
-
+                pred_main = results_map["main"].get("ensemble").copy()
+                pred_sales = sales_map["main"].get("ensemble").copy()
+            
             pred_land = (
                 results_map[key]
                 .get(model)
                 .rename(columns={"prediction": "prediction_land"})
             )
-            pred_sales = (
+            pred_sales_land = (
                 sales_map[key]
                 .get(model)
                 .rename(columns={"prediction": "prediction_land"})
             )
             df = pred_main.merge(pred_land, on="key", how="left")
-            dfs = pred_sales.merge(pred_sales, on="key_sale", how="left")
+            dfs = pred_sales.merge(pred_sales_land[["key_sale", "prediction_land"]], on="key_sale", how="left")
             alloc_name = f"{short_key}_{model}"
             df.loc[:, alloc_name] = df["prediction_land"] / df["prediction"]
             dfs.loc[:, alloc_name] = dfs["prediction_land"] / df["prediction"]
-
+            
             df_alloc = df_alloc.merge(df[["key", alloc_name]], on="key", how="left")
             df_all_alloc = df_all_alloc.merge(
                 df[["key", alloc_name]], on="key", how="left"
             )
             df_all_alloc_sales = df_all_alloc_sales.merge(
-                df[["key_sale", alloc_name]], on="key_sale", how="left"
+                dfs[["key_sale", alloc_name]], on="key_sale", how="left"
             )
 
-            df2 = df.copy().rename(columns={"prediction_land": alloc_name})
-            df2s = dfs.copy().rename(columns={"prediction_land": alloc_name})
-
+            df2 = df[["key","prediction_land"]].copy().rename(columns={"prediction_land": alloc_name})
+            df2s = dfs[["key_sale","prediction_land"]].copy().rename(columns={"prediction_land": alloc_name})
+            
             df_all_land_values = df_all_land_values.merge(
-                df2[["key", alloc_name]], on="key", how="left"
+                df[["key", alloc_name]], on="key", how="left"
             )
             df_all_land_sales = df_all_land_sales.merge(
                 df2s[["key_sale", alloc_name]], on="key_sale", how="left"
             )
-
+            
             alloc_names.append(alloc_name)
             all_alloc_names.append(alloc_name)
 
@@ -357,18 +363,18 @@ def _run_land_analysis(
             data_compare["type"].append(key)
             data_compare["model"].append(model)
             data_compare["count"].append(total_count)
-
-            mse, r2, _ = calc_mse_r2_adj_r2(df2s[alloc_name], df2s[sale_field], 1)
-
-            # data_compare["pct_neg"].append(
-            #     np.round(100 * len(df[df["prediction_land"].lt(0)]) / total_count) / 100
-            # )
-            # data_compare["pct_over"].append(
-            #     np.round(100 * len(df[df[alloc_name].gt(1)]) / total_count) / 100
-            # )
+            
+            if sale_field not in df2s:
+                df2s = df2s.merge(df_sales[["key_sale",sale_field]], on="key_sale", how="left")
+            
+            df2s_clean = df2s[~pd.isna(df2s[alloc_name]) & ~pd.isna(df2s[sale_field])]
+            mape = mean_absolute_percentage_error(df2s_clean[alloc_name], df2s_clean[sale_field])
+            mse, r2, _ = calc_mse_r2_adj_r2(df2s_clean[alloc_name], df2s_clean[sale_field], 1)
+            rmse = np.sqrt(mse)
 
             data_compare["r2"].append(r2)
-            data_compare["mse"].append(mse)
+            data_compare["rmse"].append(rmse)
+            data_compare["mape"].append(mape)
             data_compare["alloc_median"].append(
                 np.round(100 * df[alloc_name].median()) / 100
             )
@@ -781,174 +787,3 @@ def _convolve_land_analysis(
         print("=" * 80)
         print(df_results_test.to_string())
         print("")
-
-
-
-class LandSLICEModel:
-
-    """
-    SLICE stands for "Smooth Location w/ Increasing-Concavity Equation."
-    """
-
-    def __init__(
-        self,
-        alpha: float,
-        beta: float,
-        gam_L: LinearGAM,
-        med_size: float,
-        size_field: str
-    ):
-        self.alpha = alpha
-        self.beta = beta
-        self.gam_L = gam_L
-        self.med_size = med_size
-        self.size_field = size_field
-
-
-    def predict_size_factor(size_value: float):
-        return self.alpha * (size_value / self.med_size)**self.beta
-
-    def predict(
-        self,
-        df: pd.DataFrame,
-        location_factor: str = "location_factor",
-        size_factor: str = "size_factor",
-        prediction: str = "land_value"
-    ):
-        for field in ["latitude", "longitude", self.size_field]:
-            if field not in df:
-                raise ValueError(f"Required field {field} is missing from dataframe!")
-
-        # Get location factor from Lat & Lon
-        df[location_factor] = np.exp(
-            self.gam_L.predict(df[["latitude", "longitude"]])
-        )
-
-        # Get size factor from power curve
-        df[size_factor] = self.alpha * (np.asarray(df[self.size_field]) / self.med_size)**self.beta
-
-        # Prediction is simply location premium times size factor
-        df[prediction] = df[location_factor] * df[size_factor]
-        return df
-
-
-def fit_land_SLICE_model(
-    df_in : pd.DataFrame,
-    size_field: str = "land_area_sqft",
-    value_field: str = "land_value",
-    verbose: bool = False
-)->LandSLICEModel:
-    """
-    Fits land values using SLICE: "Smooth Location with Increasing-Concavity Equation"
-    
-    This model takes already-existing raw per-parcel land values and separates the contribution of land size and locational premium.
-    It also enforces three constraints: 
-    1. Locational premium must change smoothly over space
-    2. Land value in any fixed location must increase monotonically with land size
-    3. The marginal value of each additional unit of land size must decrease monotonically
-    
-    The output is an object that encodes the final fitted land values, the locational premiums, and the local land factors. Fitted land
-    values are derived by simply multiplying locational premium times local land factor.
-    
-    Parameters
-    ----------
-    df_in : pd.DataFrame
-        Input data
-    size_field : str
-        The name of your land size field
-    value_field : str
-        The name of your land value field
-    verbose : bool
-        Whether to print verbose output
-    """
-    
-    
-    class Progress(CallBack):
-        def on_loop_end(self, diff):
-            # self.iter is automatically tracked inside Callback
-            print(f"iter {self.iter:>3d}   dev.change={diff:9.3e}")
-    
-    if verbose:
-        print("Fitting land SLICE model...")
-
-
-    df = df_in[[value_field, size_field, "latitude", "longitude"]].copy()
-    med_land_size = float(np.median(df[size_field]))
-
-    # Y = Size-detrended location factor
-    df["Y"] = div_series_z_safe(
-        df[value_field],
-        np.sqrt(
-            df[size_field] / med_land_size
-        )
-    )
-
-    if verbose:
-        print("-->fitting thin-plate spline for location factor...")
-        
-    # Fit a thin-plate spline for location factor L(lat, lon)
-    basis = te(0, 1, n_splines=40, spline_order=3)
-    gam_L : LinearGAM = LinearGAM(
-        basis,
-        max_iter=40,
-        callbacks=[Progress()],
-        verbose=verbose
-    )
-    gam_L.fit(
-        df[['latitude', 'longitude']].values,
-        np.log(df['Y']).values
-    )
-
-    if verbose:
-        print("-->estimating initial location factor...")
-    # L_hat = Initial estimated location factor (mostly depends on latitude/longitude)
-    df['L_hat'] = np.exp(gam_L.predict(df[['latitude', 'longitude']].values))
-
-    # Z = Location-detrended land values (mostly depends on size)
-    df["Z"] = df[value_field] / df["L_hat"]
-
-    # Define a power law curve function
-    def power_curve(s, alpha, beta):
-        return alpha * (s / med_land_size)**beta
-
-    # Solve for location-detrended-land-value and observed size to fit the power law curve
-    # - with bounds: alpha>0 (always positive), 0<beta<1 (monotonic-up & concave)
-    # - this enforces that land increases in value with size, but with diminishing returns to marginal size
-    if verbose:
-        print("-->fitting power law curve for size factor...")
-    popt, _ = curve_fit(
-        f=power_curve,
-        p0=[np.median(df["Z"]),0.5],
-        xdata=df[size_field].values,
-        ydata=df["Z"].values,
-        bounds=([0, 1e-6], [np.inf, 0.999])
-    )
-
-    # Coefficients for the power law curve:
-    alpha_hat, beta_hat = popt
-
-    # Function to call the power law curve with memorized coefficients and a given size
-    def F_hat(s):
-        return power_curve(np.asarray(s), alpha_hat, beta_hat)
-
-    if verbose:
-        print("-->tightening up values with one more iteration...")
-
-    # Tighten up our values with an extra iteration
-    df["Y2"] = df[value_field] / F_hat(df[size_field])
-    gam_L2 : LinearGAM = gam_L.fit(df[["latitude", "longitude"]], np.log(df["Y2"]))   # refit L
-
-    if verbose:
-        print("-->estimating final location factor...")
-
-    # L_hat = Final estimated location factor
-    df["L_hat"] = np.exp( gam_L2.predict(df[["latitude", "longitude"]]))
-
-    # could refit L_hat once more here if desired
-    return LandSLICEModel(
-        alpha_hat,
-        beta_hat,
-        gam_L2,
-        med_land_size,
-        size_field
-    )

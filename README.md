@@ -1,6 +1,12 @@
 # OpenAVMKit
 
+[![PyPI version](https://img.shields.io/pypi/v/openavmkit?color=blue)](https://pypi.org/project/openavmkit/)
+![Python versions](https://img.shields.io/pypi/pyversions/openavmkit.svg)
+[![CI](https://github.com/larsiusprime/openavmkit/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/larsiusprime/openavmkit/actions/workflows/ci.yml)
+
 OpenAVMKit is a python library for real estate mass appraisal. It includes modules for data cleaning, data enrichment, modeling, and statistical evaluation of predictive models. It also includes Jupyter notebooks that model typical workflows.
+
+See the [Changelog](CHANGELOG.md)
 
 # Table of Contents
 

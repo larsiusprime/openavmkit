@@ -26,6 +26,7 @@ class VerticalEquityStudy:
         df_sales_in: pd.DataFrame,
         field_sales: str,
         field_prediction: str,
+        field_location: str,
         confidence_interval : float = 0.95,
         iterations: int = 10000,
         seed : int = 777
@@ -49,38 +50,19 @@ class VerticalEquityStudy:
         
         self.prb = ConfidenceStat(prb_point, confidence_interval, prb_low, prb_high)
         
-        # Calculate quantiles
-        #--------------------
+        # Calculate quantiles (directly from price)
+        #------------------------------------------
         
-        df_sales["quantile"] = _calc_quantiles(df_sales, field_sales)
-        
-        data = {
-            "quantile":[],
-            "ratio":[],
-            "ratio_low":[],
-            "ratio_high":[]
-        }
-        labels = df_sales["quantile"].unique()
-        for label in labels:
-            df_sub = df_sales[df_sales["quantile"].eq(label)]
-            predictions = df_sub[field_prediction]
-            sales = df_sub[field_sales]
-            
-            results = calc_ratio_stats_bootstrap(predictions, sales, confidence_interval, iterations=iterations, seed=seed)
-            med_ratio = results["median_ratio"]
-            
-            ratio = med_ratio.value
-            low = med_ratio.low
-            high = med_ratio.high
-            
-            data["ratio"].append(ratio)
-            data["ratio_low"].append(low)
-            data["ratio_high"].append(high)
-            data["quantile"].append(label)
-        
-        df = pd.DataFrame(data=data)
-        df = df.sort_values(by="quantile", key=lambda col: col.astype(int))
+        df_sales["quantile"] = _calc_quantiles(df_sales_in, field_sales)
+        df = _assemble_quantile_df(df_sales, field_sales, field_prediction, confidence_interval, iterations, seed)
         self.quantiles = df
+        
+        # Calculate quantiles (grouped price)
+        #------------------------------------------
+        
+        df_sales["quantile"] = _calc_grouped_quantiles(df_sales_in, field_sales, field_location)
+        df = _assemble_quantile_df(df_sales, field_sales,  field_prediction, confidence_interval, iterations, seed)
+        self.grouped_quantiles = df
  
     
     def summary(self):
@@ -127,12 +109,14 @@ class VerticalEquityStudy:
         
         return pd.DataFrame(data=data)
     
+    
     def plot_quantiles(
         self,
         ci_bounds:bool = False,
-        ylim=None
+        ylim=None,
+        grouped=False
     ):
-        df = self.quantiles
+        df = self.grouped_quantiles if grouped else self.quantiles
         conf = f"{self.confidence_interval*100:0.0f}"
         
         max_y = df['ratio_high'].max()
@@ -176,3 +160,47 @@ def _calc_quantiles(df: pd.DataFrame, field: str):
         last_value = quantile_value
     
     return pd.cut(df[field], bins=bins, labels=labels, include_lowest=True, duplicates="drop")
+
+
+def _calc_grouped_quantiles(df_in: pd.DataFrame, value_field: str, group_field: str):
+    df = df_in.copy()
+    df["quantile"] = _calc_quantiles(df, value_field)
+    df_group_to_quantile = df.groupby(group_field)["quantile"].agg(lambda x: pd.Series.mode(x)[0]).reset_index()
+    df2 = df_in.merge(df_group_to_quantile, on=group_field, how="left")
+    return df2["quantile"]
+
+
+def _assemble_quantile_df(df_in: pd.DataFrame, field_sales: str, field_prediction: str, confidence_interval: float, iterations: int, seed: int):
+    data = {
+        "quantile":[],
+        "ratio":[],
+        "ratio_low":[],
+        "ratio_high":[]
+    }
+    labels = df_in["quantile"].unique()
+    for label in labels:
+        df_sub = df_in[df_in["quantile"].eq(label)]
+        predictions = df_sub[field_prediction]
+        sales = df_sub[field_sales]
+        
+        if len(predictions) > 0 and len(sales) > 0:
+            results = calc_ratio_stats_bootstrap(predictions, sales, confidence_interval, iterations=iterations, seed=seed)
+            med_ratio = results["median_ratio"]
+
+            ratio = med_ratio.value
+            low = med_ratio.low
+            high = med_ratio.high
+
+            data["ratio"].append(ratio)
+            data["ratio_low"].append(low)
+            data["ratio_high"].append(high)
+            data["quantile"].append(label)
+        # else:
+            # data["ratio"].append(None)
+            # data["ratio_low"].append(None)
+            # data["ratio_high"].append(None)
+            # data["quantile"].append(label)
+    
+    df = pd.DataFrame(data=data)
+    df = df.sort_values(by="quantile", key=lambda col: col.astype(int))
+    return df

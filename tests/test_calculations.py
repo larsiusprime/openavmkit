@@ -4,6 +4,41 @@ from openavmkit.calculations import perform_calculations, _crawl_calc_dict_for_f
 from openavmkit.utilities.assertions import dfs_are_equal
 
 
+def test_calculations_where():
+    data = {
+        "market_value": [  0,  50,   0,  80,   0, 100],
+        "land_value":   [ 20,  20,  30,  30,  40,  40],
+        "impr_value":   [  0,  30,   0,  50,   0,  60]
+    }
+    df = pd.DataFrame(data=data)
+    calc = {
+        "fixed_market_value": [
+            "where",
+            [
+                "<=",
+                "market_value",
+                0
+            ],
+            [
+                "+",
+                "land_value",
+                "impr_value"
+            ],
+            "market_value"
+        ],
+    }
+    expected = {
+        "market_value": [  0,  50,   0,  80,   0, 100],
+        "land_value":   [ 20,  20,  30,  30,  40,  40],
+        "impr_value":   [  0,  30,   0,  50,   0,  60],
+        "fixed_market_value": [20, 50, 30, 80, 40, 100]
+    }
+    df_expected = pd.DataFrame(expected)
+    df_results = perform_calculations(df, calc)
+    
+    assert dfs_are_equal(df_results, df_expected, allow_weak = True)
+
+
 def test_calculations_str():
   data = {
     "neighborhood": ["a", "a", "a", "b", "b", "b", "c", "c", "c", "", " ", None],

@@ -186,7 +186,9 @@ def _calc_resolve(df: pd.DataFrame, value, i: int = 0, rename_map: dict = None):
                 )
     elif isinstance(value, list):
         # If it's a list of literals, return it as is
-        if all(isinstance(x, (int, float)) for x in value):
+        if all(
+            isinstance(x, (int, float)) or (isinstance(x, str) and x.startswith("str:")) for x in value
+            ):
             return value, i
         # Otherwise, return the result of a recursive calculation
         i += 1
@@ -241,7 +243,20 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i: int = 0, rename_map: dict = No
     # Filter operations
     if op == "?":
         return resolve_filter(df, entry[1], rename_map)
-
+    
+    # Trinary operations
+    
+    if op == "where":
+        lhs = entry[1]
+        rhs = entry[2]
+        rhs2 = entry[3]
+        idx = resolve_filter(df, entry[1], rename_map)
+        rhs, i = _calc_resolve(df, value=rhs, i=i, rename_map=rename_map)
+        rhs2, i2 = _calc_resolve(df, value=rhs2, i=i, rename_map=rename_map)
+        results = rhs2.copy()
+        results[idx] = rhs
+        return results
+    
     # Unary operations (LHS only)
     lhs = None
     if len(entry) > 1:
@@ -275,6 +290,7 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i: int = 0, rename_map: dict = No
 
     # Binary operations (LHS & RHS)
     rhs = None
+    
     if len(entry) > 2:
         rhs = entry[2]
         rhs, i = _calc_resolve(df, value=rhs, i=i, rename_map=rename_map)
@@ -350,7 +366,10 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i: int = 0, rename_map: dict = No
             return result.fillna(False).astype(bool)
     elif op == "isin":
         if all(isinstance(x, str) for x in rhs):
+            # Strip all whitespace
             result = lhs.astype(str).str.strip().isin([str(x).strip() for x in rhs])
+            # Remove "str:" prefixes from any string literals
+            result = [x[4:] if (isinstance(x,str) and x.startswith("str:")) else x for x in result]
             return result
         return lhs.isin(rhs)
     elif op == "and":
@@ -366,10 +385,18 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i: int = 0, rename_map: dict = No
         result = lhs.astype(str).apply(lambda x: f"{rhs}".join(x), axis=1)
         return result
     elif op == "datetime":
-        result = pd.to_datetime(lhs, format=rhs)
+        try:
+            result = pd.to_datetime(lhs, format=rhs)
+        except ValueError:
+            s = lhs.replace({None: pd.NA, "None": pd.NA, "": pd.NA})
+            result = pd.to_datetime(s, format=rhs, errors="coerce", exact=True)
         return result
     elif op == "datetimestr":
-        result = pd.to_datetime(lhs, format=rhs)
+        try:
+            result = pd.to_datetime(lhs, format=rhs)
+        except ValueError:
+            s = lhs.replace({None: pd.NA, "None": pd.NA, "": pd.NA})
+            result = pd.to_datetime(s, format=rhs, errors="coerce", exact=True)
         str_value = result.dt.strftime("%Y-%m-%d")
         return str_value
     elif op == "substr":

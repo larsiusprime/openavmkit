@@ -557,7 +557,7 @@ def calc_prb(
 
     left = (ratios - median_ratio) / median_ratio
     right = np.log2(preds / median_ratio + truth)
-    right = sm.add_constant(right)   # adds intercept term
+    right = sm.add_constant(right, has_constant='add')   # adds intercept term
 
     # 4. Fit model + CI -------------------------------------------------------
     with np.errstate(all="ignore"):  # silence harmless internal numpy warnings
@@ -831,7 +831,7 @@ def calc_r2(
             results["coef_sign"].append(float("nan"))
             continue                          # skip ill-posed models
 
-        X = sm.add_constant(data[var].astype(float))
+        X = sm.add_constant(data[var].astype(float), has_constant='add')
         try:
             model = sm.OLS(y, X).fit()
         except MissingDataError as e:
@@ -887,7 +887,7 @@ def calc_p_values_recursive_drop(
     """
 
     X = X.copy()
-    X = sm.add_constant(X)
+    X = sm.add_constant(X, has_constant='add')
     X = X.astype(np.float64)
     model = sm.OLS(y, X).fit()
     first_run = None
@@ -969,7 +969,7 @@ def calc_t_values_recursive_drop(
     """
 
     X = X.copy()
-    X = sm.add_constant(X)
+    X = sm.add_constant(X, has_constant='add')
     X = X.astype(np.float64)
 
     first_run = None
@@ -1134,7 +1134,12 @@ def calc_vif(X: pd.DataFrame) -> pd.DataFrame:
         warnings.warn("Can't calculate VIF for less than 5 samples")
         vif_data["vif"] = [float("nan")] * len(X.columns)
         return vif_data
-
+    
+    if len(X.columns) == 1:
+        warnings.warn("Can't calculate VIF for one column")
+        vif_data["vif"] = [float("nan")] * len(X.columns)
+        return vif_data
+    
     # Calculate VIF for each column
     vif_data["vif"] = [
         variance_inflation_factor(X.values, i) for i in range(X.shape[1])
