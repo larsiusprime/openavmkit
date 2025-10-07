@@ -598,7 +598,7 @@ def generate_basic(
                 bldg_value_per_area_sale = bldg_value_per_area
 
                 # calculate total values:
-                land_value_sale = land_area_area * land_value_per_land_area_sale
+                land_value_sale = land_area * land_value_per_land_area_sale
                 bldg_value_sale = bldg_area_finished_area * bldg_value_per_area_sale
                 total_value_sale = land_value_sale + bldg_value_sale
 
@@ -607,7 +607,7 @@ def generate_basic(
                     1 + np.random.uniform(-noise_sales, noise_sales)
                 )
 
-                sale_price_per_land_area = sale_price / land_area_area
+                sale_price_per_land_area = sale_price / land_area
                 if bldg_area_finished_area > 0:
                     sale_price_per_impr_area = sale_price / bldg_area_finished_area
                 else:
