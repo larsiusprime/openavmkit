@@ -435,6 +435,7 @@ def _mark_sales_scrutiny_clusters(
         location,
         fields_categorical,
         fields_numeric,
+        settings,
         min_cluster_size=5,
         verbose=verbose,
     )

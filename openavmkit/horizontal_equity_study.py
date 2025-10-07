@@ -355,6 +355,7 @@ def mark_horizontal_equity_clusters(
         location,
         fields_categorical,
         fields_numeric,
+        settings,
         verbose=verbose,
         output_folder=output_folder,
     )
