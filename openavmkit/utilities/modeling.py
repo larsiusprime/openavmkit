@@ -1,6 +1,7 @@
 import numpy as np
 from statsmodels.regression.linear_model import RegressionResults
-
+from pygam import LinearGAM, s, te
+import pandas as pd
 
 class GarbageModel:
     """An intentionally bad predictive model, to use as a sort of control. Produces random predictions.
@@ -321,6 +322,98 @@ class GWRModel:
         self.X_train = X_train
         self.y_train = y_train
         self.gwr_bw = gwr_bw
+
+
+class LandSLICEModel:
+
+    """
+    SLICE stands for "Smooth Location w/ Increasing-Concavity Equation."
+    
+    Attributes
+    ----------
+    alpha : float
+    beta : float
+    gam_L : LinearGAM
+    med_size : float
+    size_field : str
+    """
+
+    def __init__(
+        self,
+        alpha: float,
+        beta: float,
+        gam_L: LinearGAM,
+        med_size: float,
+        size_field: str
+    ):
+        """
+        ...
+        
+        Parameters
+        ----------
+        alpha: float
+        beta : float
+        gam_L : LinearGAM
+        med_size : float
+        size_field : str
+        """
+        self.alpha = alpha
+        self.beta = beta
+        self.gam_L = gam_L
+        self.med_size = med_size
+        self.size_field = size_field
+
+
+    def predict_size_factor(size_value: float):
+        return self.alpha * (size_value / self.med_size)**self.beta
+
+    
+    def predict(
+        self,
+        df_in: pd.DataFrame,
+        location_factor: str = "location_factor",
+        size_factor: str = "size_factor",
+        prediction: str = "land_value"
+    ):
+        df = df_in.copy()
+        for field in ["latitude", "longitude", self.size_field]:
+            if field not in df:
+                raise ValueError(f"Required field {field} is missing from dataframe!")
+
+        # Get location factor from Lat & Lon
+        df[location_factor] = np.exp(
+            self.gam_L.predict(df[["latitude", "longitude"]])
+        )
+
+        # Get size factor from power curve
+        df[size_factor] = self.alpha * (np.asarray(df[self.size_field]) / self.med_size)**self.beta
+
+        # Prediction is simply location premium times size factor
+        return df[location_factor] * df[size_factor]
+        
+
+    def predict_df(
+        self,
+        df: pd.DataFrame,
+        location_factor: str = "location_factor",
+        size_factor: str = "size_factor",
+        prediction: str = "land_value"
+    ):
+        for field in ["latitude", "longitude", self.size_field]:
+            if field not in df:
+                raise ValueError(f"Required field {field} is missing from dataframe!")
+
+        # Get location factor from Lat & Lon
+        df[location_factor] = np.exp(
+            self.gam_L.predict(df[["latitude", "longitude"]])
+        )
+
+        # Get size factor from power curve
+        df[size_factor] = self.alpha * (np.asarray(df[self.size_field]) / self.med_size)**self.beta
+
+        # Prediction is simply location premium times size factor
+        df[prediction] = df[location_factor] * df[size_factor]
+        return df
 
 
 class MRAModel:

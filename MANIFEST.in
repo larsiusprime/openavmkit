@@ -1,1 +1,2 @@
 recursive-include openavmkit/resources *.json *.yaml *.yml *.txt
+include CHANGELOG.md

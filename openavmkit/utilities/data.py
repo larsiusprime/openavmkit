@@ -12,6 +12,35 @@ from scipy.spatial._ckdtree import cKDTree
 from openavmkit.utilities.settings import get_model_group_ids
 
 
+def is_column_of_type(df: pd.DataFrame, col: str, type_name: str):
+    series = df[col]
+    if type_name == "str" or type_name == "string":
+        return (
+            pd.api.types.is_string_dtype(series) |
+            pd.api.types.is_object_dtype(series)
+        )
+    if type_name == "num" or type_name == "number":
+        return pd.api.types.is_numeric_dtype(series)
+    if type_name == "int" or type_name == "integer":
+        return (
+            pd.api.types.is_integer_dtype(series) | 
+            pd.api.types.is_int64_dtype(series)
+        )
+    if type_name == "float":
+        return (
+            pd.api.types.is_float_dtype(series)
+        )
+    if type_name == "date" or type_name == "datetime":
+        return (
+            pd.api.types.is_datetime64_any_dtype(series) |
+            pd.api.types.is_datetime64_dtype(series) |
+            pd.api.types.is_datetime64_ns_dtype(series) |
+            pd.api.types.is_datetime64tz_dtype(series)
+        )
+    else:
+        raise ValueError("Unknown type name: {type_name}")
+
+
 def clean_column_names(df: pd.DataFrame):
     """Clean the column names in a DataFrame by replacing forbidden characters with legal
     representations. For one-hot encoded columns (containing '='), ensures clean formatting.
@@ -129,9 +158,10 @@ def div_series_z_safe(
         The result of the division with divide-by-zero cases replaced by ``None``
     """
 
-    if isinstance(numerator, pd.core.arrays.floating.FloatingArray):
+    # Handle both pandas and bodo.pandas array types
+    if hasattr(numerator, 'to_numpy') and not hasattr(numerator, 'index'):
         numerator = pd.Series(numerator)
-    if isinstance(denominator, pd.core.arrays.floating.FloatingArray):
+    if hasattr(denominator, 'to_numpy') and not hasattr(denominator, 'index'):
         denominator = pd.Series(denominator)
 
     # fast path for ndarray
@@ -148,7 +178,7 @@ def div_series_z_safe(
 
         return out
     # ---------- pandas path (preferred for DF math) ----------
-    if isinstance(numerator, pd.Series) and isinstance(denominator, pd.Series):
+    if hasattr(numerator, 'to_numpy') and hasattr(denominator, 'to_numpy'):
         num = numerator
         den = denominator.reindex(num.index)  # preserve num's order; no sorting
 
@@ -160,7 +190,7 @@ def div_series_z_safe(
         
         np.divide(a, b, out=out, where=mask)
         return pd.Series(out, index=num.index, dtype="Float64")
-    raise ValueError(f"Can only operate on pd.Series of np.ndarray, found: {type(numerator), type(denominator)}")
+    raise ValueError(f"Can only operate on Series-like objects or np.ndarray, found: {type(numerator), type(denominator)}")
 
 
 def div_df_z_safe(df: pd.DataFrame, numerator: str, denominator: str):
@@ -600,8 +630,8 @@ def ensure_categories(
         dtype in either DataFrame is not Categorical, both DataFrames are
         returned without modification.
     """
-    if isinstance(df[field].dtype, pd.CategoricalDtype) and isinstance(
-        df_other[field].dtype, pd.CategoricalDtype
+    if hasattr(df[field].dtype, 'categories') and hasattr(
+        df_other[field].dtype, 'categories'
     ):
 
         # union keeps order of appearance in the first operands
@@ -653,11 +683,11 @@ def align_categories(
 
     for col in df_left.columns.union(df_right.columns):
 
-        left_is_cat = isinstance(
-            df_left.get(col, pd.Series(dtype="object")).dtype, pd.CategoricalDtype
+        left_is_cat = hasattr(
+            df_left.get(col, pd.Series(dtype="object")).dtype, 'categories'
         )
-        right_is_cat = isinstance(
-            df_right.get(col, pd.Series(dtype="object")).dtype, pd.CategoricalDtype
+        right_is_cat = hasattr(
+            df_right.get(col, pd.Series(dtype="object")).dtype, 'categories'
         )
 
         # If exactly one side is categorical, convert the other side first
@@ -864,10 +894,11 @@ def load_model_results(
 
         if os.path.exists(fpred):
             df = pd.read_parquet(fpred)
-            if "key_x" in df:
-                # If the DataFrame has a 'key_x' column, rename it to 'key'
-                df.rename(columns={"key_x": "key"}, inplace=True)
-            df = df[["key", "prediction"]].copy()
+            # if "key_x" in df:
+                # # If the DataFrame has a 'key_x' column, rename it to 'key'
+                # df.rename(columns={"key_x": "key"}, inplace=True)
+            fields = [f for f in ["key", "key_sale", "prediction"] if f in df]
+            df = df[fields].copy()
             return df
 
     fpred_results = f"{filepath}/pred_{subset}.pkl"
@@ -878,9 +909,9 @@ def load_model_results(
                 if subset == "universe":
                     df = results.df_universe[["key", "prediction"]].copy()
                 elif subset == "sales":
-                    df = results.df_sales[["key", "prediction"]].copy()
+                    df = results.df_sales[["key", "key_sale", "prediction"]].copy()
                 elif subset == "test":
-                    df = results.df_test[["key", "prediction"]].copy()
+                    df = results.df_test[["key", "key_sale", "prediction"]].copy()
                 return df
 
     return None
@@ -891,7 +922,7 @@ def _left_wins(s1, s2):
     Return a Series that keeps s1’s values wherever they’re non-NA,
     otherwise falls back to s2 – even when both are Categoricals.
     """
-    if isinstance(s1.dtype, pd.CategoricalDtype) and isinstance(s2.dtype, pd.CategoricalDtype):
+    if hasattr(s1.dtype, 'categories') and hasattr(s2.dtype, 'categories'):
         # make both columns share the **union** of their categories
         cats = s1.cat.categories.union(s2.cat.categories)
         s1 = s1.cat.set_categories(cats)

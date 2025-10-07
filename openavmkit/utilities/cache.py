@@ -49,10 +49,10 @@ def write_cache(
         with open(path, "wb") as file:
             pickle.dump(payload, file)
     elif filetype == "df":
-        if isinstance(payload, pd.DataFrame):
-            if isinstance(payload, gpd.GeoDataFrame):
+        if hasattr(payload, 'to_numpy'):
+            if hasattr(payload, 'geometry'):  # GeoDataFrame-like
                 payload.to_parquet(path, engine="pyarrow")
-            else:
+            else:  # DataFrame-like
                 payload.to_parquet(path)
         else:
             raise TypeError("Payload must be a DataFrame for df type.")
@@ -298,7 +298,7 @@ def write_cached_df(
     the_cols = changed_cols
     if key not in the_cols:
         the_cols = [key] + changed_cols
-
+    
     df_diff_cols = df_new[the_cols].copy()
     df_diff_cols = df_diff_cols[~df_diff_cols[key].isin(added_rows)]
     signature = _get_df_signature(df_orig, extra_signature)
@@ -403,7 +403,7 @@ def get_cached_df(
 
             df_merged = df_base.merge(df_diff, how="left", on=key)
 
-            if isinstance(df_diff, gpd.GeoDataFrame):
+            if hasattr(df_diff, 'geometry'):  # GeoDataFrame-like
                 df_merged = gpd.GeoDataFrame(df_merged, geometry="geometry")
                 df_merged = ensure_geometries(df_merged, "geometry", df_diff.crs)
 

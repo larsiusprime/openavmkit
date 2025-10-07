@@ -278,7 +278,7 @@ def kolbe_et_al_estimate(
 
     y_d = diff_series(df["p"])
     X_d = pd.DataFrame({c: diff_series(df[c]) for c in p_area_cols})
-    X_d = sm.add_constant(X_d)
+    X_d = sm.add_constant(X_d, has_constant='add')
 
     # drop rows with NaNs (unsold rows propagate NaN through differences)
     valid = y_d.notna() & X_d.notna().all(axis=1)

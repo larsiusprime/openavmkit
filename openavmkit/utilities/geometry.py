@@ -484,16 +484,20 @@ def ensure_geometries(df, geom_col="geometry", crs=None):
         a brand‑new GeoDataFrame with a _clean_ geometry column.
     """
     # Copy into a plain DataFrame (drops any old GeoDataFrame metadata)
-    data = pd.DataFrame(df).copy()
+    # Handle both pandas and bodo.pandas DataFrames
+    if hasattr(df, 'to_pandas'):
+        data = df.to_pandas().copy()
+    else:
+        data = df.copy()
 
     def _parse(val):
         # 1) Nulls
-        if val is None or (isinstance(val, float) and pd.isna(val)):
+        if val is None or (hasattr(val, '__float__') and pd.isna(val)):
             return None
         # 2) Already Shapely?
         if isinstance(val, BaseGeometry):
             return val
-        # 3) Geo‑interface dicts
+        # 3) Geo-interface dicts
         if hasattr(val, "__geo_interface__"):
             from shapely.geometry import shape
 
@@ -508,11 +512,11 @@ def ensure_geometries(df, geom_col="geometry", crs=None):
             except Exception:
                 raw = binascii.unhexlify(s)
                 return wkb.loads(raw)
-        # 5) Bytes‐like
+        # 5) Bytes-like
         if isinstance(val, (bytes, bytearray, memoryview)):
             raw = val.tobytes() if isinstance(val, memoryview) else val
             return wkb.loads(raw)
-        # 6) numpy bytes_ or other numpy scalar
+        # 6) numpy bytes or other numpy scalar
         if isinstance(val, np.generic):
             try:
                 b = bytes(val)
@@ -557,6 +561,8 @@ def clean_geometry(gdf, ensure_polygon=True, target_crs=None):
     gpd.GeoDataFrame
         A cleaned and fixed GeoDataFrame.
     """
+    
+    gdf = ensure_geometries(gdf)
 
     # Drop null geometries
     warnings.filterwarnings("ignore", "GeoSeries.notna", UserWarning)
