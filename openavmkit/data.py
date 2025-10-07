@@ -2659,7 +2659,7 @@ def _enrich_df_overture(
 
         # Fetch building data
         buildings = overture_service.get_buildings(
-            bbox, use_cache=s_overture.get("cache", True), verbose=verbose
+            bbox, use_cache=s_overture.get("cache", True), unit=unit, verbose=verbose
         )
 
         if not buildings.empty:
