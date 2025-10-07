@@ -26,7 +26,7 @@ from openavmkit.utilities.data import (
     combine_dfs,
 )
 from openavmkit.utilities.excel import write_to_excel
-from openavmkit.utilities.settings import get_fields_categorical, _apply_dd_to_df_cols
+from openavmkit.utilities.settings import get_fields_categorical, _apply_dd_to_df_cols, area_unit
 
 
 class SalesScrutinyStudySummary:
@@ -73,14 +73,9 @@ class SalesScrutinyStudy:
         The model group to investigate
     summaries : dict[str, SalesScrutinyStudySummary]
         Dictionary in which the results are stored
-
+    unit : str
+        The area unit ("sqft" or "sqm")
     """
-
-    df_vacant: pd.DataFrame
-    df_improved: pd.DataFrame
-    settings: dict
-    model_group: str
-    summaries: dict[str, SalesScrutinyStudySummary]
 
     def __init__(self, df: pd.DataFrame, settings: dict, model_group: str):
         """Initialize a SalesScrutinyStudy object
@@ -95,6 +90,8 @@ class SalesScrutinyStudy:
             Model group to analyze
         """
         self.model_group = model_group
+        
+        self.unit = area_unit(settings)
 
         df = df[df["model_group"].eq(model_group)]
         df = _get_sales(df, settings)
@@ -117,16 +114,16 @@ class SalesScrutinyStudy:
             df, cluster_fields = _mark_sales_scrutiny_clusters(df, settings)
             df["ss_id"] = df["ss_id"].astype(str)
             df["ss_id"] = df["model_group"] + "_" + key + "_" + df["ss_id"]
-            per_sqft = ""
+            per_area = ""
             denominator = ""
             if key == "i":
-                per_sqft = "impr_sqft"
-                denominator = "bldg_area_finished_sqft"
+                per_area = f"impr_{self.unit}"
+                denominator = f"bldg_area_finished_{self.unit}"
             elif key == "v":
-                per_sqft = "land_sqft"
-                denominator = "land_area_sqft"
+                per_area = f"land_{self.unit}"
+                denominator = f"land_area_{self.unit}"
 
-            sale_field_per = f"{sale_field}_{per_sqft}"
+            sale_field_per = f"{sale_field}_{per_area}"
             df[sale_field_per] = div_df_z_safe(df, sale_field, denominator)
 
             other_fields = cluster_fields + location_fields + important_fields
@@ -266,10 +263,10 @@ class SalesScrutinyStudy:
             {
                 "sale_price": _curr_0,
                 "sale_price_time_adj": _curr_0,
-                "sale_price_impr_sqft": _curr_2,
-                "sale_price_land_sqft": _curr_2,
-                "sale_price_time_adj_impr_sqft": _curr_2,
-                "sale_price_time_adj_land_sqft": _curr_2,
+                f"sale_price_impr_{self.unit}": _curr_2,
+                f"sale_price_land_{self.unit}": _curr_2,
+                f"sale_price_time_adj_impr_{self.unit}": _curr_2,
+                f"sale_price_time_adj_land_{self.unit}": _curr_2,
                 "Median": _curr_2,
                 "Max": _curr_2,
                 "Min": _curr_2,
@@ -438,6 +435,7 @@ def _mark_sales_scrutiny_clusters(
         location,
         fields_categorical,
         fields_numeric,
+        settings,
         min_cluster_size=5,
         verbose=verbose,
     )
@@ -451,10 +449,12 @@ def _mark_sales_scrutiny_clusters(
 def _run_land_percentiles(sup: SalesUniversePair, settings: dict):
     df_sales = get_hydrated_sales_from_sup(sup)
 
-    df_sales = df_sales[df_sales["vacant_sale"].eq(True)]
+    unit = area_unit(settings)
 
-    df_sales["sale_price_time_adj_land_sqft"] = div_series_z_safe(
-        df_sales["sale_price_time_adj"], df_sales["land_area_sqft"]
+    df_sales = df_sales[df_sales["vacant_sale"].eq(True)]
+    
+    df_sales[f"sale_price_time_adj_land_{unit}"] = div_series_z_safe(
+        df_sales["sale_price_time_adj"], df_sales[f"land_area_{unit}"]
     )
     locations = get_locations(settings, df_sales)
     ss = settings.get("analysis", {}).get("sales_scrutiny", {})
@@ -462,25 +462,25 @@ def _run_land_percentiles(sup: SalesUniversePair, settings: dict):
 
     def _do_run_land_percentiles(df: pd.DataFrame, model_group: str):
         df.sort_values(
-            by="sale_price_time_adj_land_sqft", inplace=True, ascending=False
+            by=f"sale_price_time_adj_land_{unit}", inplace=True, ascending=False
         )
-        df["sale_price_time_adj_land_sqft_percentile"] = df[
-            "sale_price_time_adj_land_sqft"
+        df[f"sale_price_time_adj_land_{unit}_percentile"] = df[
+            f"sale_price_time_adj_land_{unit}"
         ].rank(pct=True)
         cols = [
             "key_sale",
             "sale_date",
             "sale_price",
             "sale_price_time_adj",
-            "sale_price_time_adj_land_sqft",
-            "sale_price_time_adj_land_sqft_percentile",
+            f"sale_price_time_adj_land_{unit}",
+            f"sale_price_time_adj_land_{unit}_percentile",
             "deed_book",
             "deed_page",
             deed_id,
             "sale_year",
             "bldg_year_built",
-            "bldg_area_finished_sqft",
-            "land_area_sqft",
+            f"bldg_area_finished_{unit}",
+            f"land_area_{unit}",
             "valid_sale",
             "vacant_sale",
             "address",
@@ -570,7 +570,7 @@ def run_heuristics(
     """
     ss = settings.get("analysis", {}).get("sales_scrutiny", {})
     deed_id = ss.get("deed_id", None)
-
+    unit = area_unit(settings)
     df_sales = get_hydrated_sales_from_sup(sup)
 
     #### Multi-parcel sales detection heuristics
@@ -655,8 +655,8 @@ def run_heuristics(
                         deed_id,
                         "sale_year",
                         "bldg_year_built",
-                        "bldg_area_finished_sqft",
-                        "land_area_sqft",
+                        f"bldg_area_finished_{unit}",
+                        f"land_area_{unit}",
                         "valid_sale",
                         "vacant_sale",
                         "address",
@@ -686,8 +686,8 @@ def run_heuristics(
                         deed_id: "Deed ID",
                         "sale_year": "Year sold",
                         "bldg_year_built": "Year built",
-                        "bldg_area_finished_sqft": "Impr sqft",
-                        "land_area_sqft": "Land sqft",
+                        f"bldg_area_finished_{unit}": f"Impr {unit}",
+                        f"land_area_{unit}": f"Land {unit}",
                         "valid_sale": "Valid sale",
                         "vacant_sale": "Vacant sale",
                         "flag_dupe_deed_date": "Repeated\ndeed & sale date",
@@ -867,10 +867,14 @@ def _get_ss_renames():
         "count": "# of sales in cluster",
         "sale_price": "Sale price",
         "sale_price_impr_sqft": "Sale price / improved sqft",
+        "sale_price_impr_sqm": "Sale price / improved sqm",
         "sale_price_land_sqft": "Sale price / land sqft",
+        "sale_price_land_sqm": "Sale price / land sqm",
         "sale_price_time_adj": "Sale price (time adjusted)",
         "sale_price_time_adj_impr_sqft": "Sale price / improved sqft (time adjusted)",
+        "sale_price_time_adj_impr_sqm": "Sale price / improved sqm (time adjusted)",
         "sale_price_time_adj_land_sqft": "Sale price / land sqft (time adjusted)",
+        "sale_price_time_adj_land_sqm": "Sale price / land sqm (time adjusted)",
         "median": "Median",
         "chd": "CHD",
         "max": "Max",
@@ -880,11 +884,11 @@ def _get_ss_renames():
         "med_dist_stdevs": "Median distance from median, in std. deviations",
         "flagged": "Flagged",
         "bimodal": "Bimodal cluster",
-        "anomaly_1": "Weird price/sqft & weird sqft",
-        "anomaly_2": "Low price & low price/sqft",
-        "anomaly_3": "High price & high price/sqft",
-        "anomaly_4": "Normal price & high price/sqft",
-        "anomaly_5": "Normal price & low price/sqft",
+        "anomaly_1": "Weird price/area & weird area",
+        "anomaly_2": "Low price & low price/area",
+        "anomaly_3": "High price & high price/area",
+        "anomaly_4": "Normal price & high price/area",
+        "anomaly_5": "Normal price & low price/area",
     }
 
 
@@ -969,32 +973,41 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
             df[field] = False
         return df
 
-    # land or sqft? Check sales_field:
-    sqft = (
-        "land_area_sqft"
-        if "land" in sales_field
-        else "bldg_area_finished_sqft" if "impr" in sales_field else ""
-    )
+    # land or bldg area? Check sales_field:
+    
+    area = ""
+    
+    if "land" in sales_field:
+        if "sqft" in sales_field:
+            area = "land_area_sqft"
+        elif "sqm" in sales_field:
+            area = "land_area_sqm"
+    elif "impr" in sales_field:
+        if "sqft" in sales_field:
+            area = "bldg_area_finished_sqft"
+        elif "sqm" in sales_field:
+            area = "bldg_area_finished_sqm"
+    
     price = "sale_price" if "time_adj" not in sales_field else "sale_price_time_adj"
 
-    if sqft == "":
+    if area == "":
         raise ValueError(
-            "expected `sales_field` to be suffixed with either `_impr_sqft` or `_land_sqft`"
+            "expected `sales_field` to be suffixed with either `_impr_sqft`/`_land_sqft`, or `_impr_sqm`/`_land_sqm`"
         )
 
-    df_sqft = _apply_he_stats(df_sales, "ss_id", sqft)
+    df_area = _apply_he_stats(df_sales, "ss_id", area)
     df_price = _apply_he_stats(df_sales, "ss_id", price)
 
     df_fl = df[df["flagged"].eq(True)]
 
-    df_sqft_fl = df_sqft[df_sqft["key_sale"].isin(df_fl["key_sale"].values)]
+    df_area_fl = df_area[df_area["key_sale"].isin(df_fl["key_sale"].values)]
     df_price_fl = df_price[df_price["key_sale"].isin(df_fl["key_sale"].values)]
 
     # Check for the symptoms
 
-    # price/sqft low/high/in range (already done)
+    # price/area low/high/in range (already done)
     # price low/high/in range
-    # sqft low/high/in range
+    # area low/high/in range
 
     idx_price_low = df_price_fl["relative_ratio"].le(1.0)
     idx_price_high = df_price_fl["relative_ratio"].ge(1.0)
@@ -1012,65 +1025,65 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
         df_price_fl[idx_price_not_high]["key_sale"].values
     )
 
-    idx_sqft_low = df_sqft_fl["med_dist_stdevs"].le(-2.0)
-    idx_sqft_high = df_sqft_fl["med_dist_stdevs"].ge(2.0)
+    idx_area_low = df_area_fl["med_dist_stdevs"].le(-2.0)
+    idx_area_high = df_area_fl["med_dist_stdevs"].ge(2.0)
 
-    idx_sqft_low = df["key_sale"].isin(df_sqft_fl[idx_sqft_low]["key_sale"].values)
-    idx_sqft_high = df["key_sale"].isin(df_sqft_fl[idx_sqft_high]["key_sale"].values)
+    idx_area_low = df["key_sale"].isin(df_area_fl[idx_area_low]["key_sale"].values)
+    idx_area_high = df["key_sale"].isin(df_area_fl[idx_area_high]["key_sale"].values)
 
-    idx_sqft_not_low = df_sqft_fl["med_dist_stdevs"].ge(-1.0)
-    idx_sqft_not_high = df_sqft_fl["med_dist_stdevs"].le(1.0)
+    idx_area_not_low = df_area_fl["med_dist_stdevs"].ge(-1.0)
+    idx_area_not_high = df_area_fl["med_dist_stdevs"].le(1.0)
 
-    idx_sqft_not_low = df["key_sale"].isin(
-        df_sqft_fl[idx_sqft_not_low]["key_sale"].values
+    idx_area_not_low = df["key_sale"].isin(
+        df_area_fl[idx_area_not_low]["key_sale"].values
     )
-    idx_sqft_not_high = df["key_sale"].isin(
-        df_sqft_fl[idx_sqft_not_high]["key_sale"].values
+    idx_area_not_high = df["key_sale"].isin(
+        df_area_fl[idx_area_not_high]["key_sale"].values
     )
 
-    idx_price_sqft_low = df_fl["relative_ratio"].le(1.0)
-    idx_price_sqft_high = df_fl["relative_ratio"].ge(1.0)
+    idx_price_area_low = df_fl["relative_ratio"].le(1.0)
+    idx_price_area_high = df_fl["relative_ratio"].ge(1.0)
 
-    idx_price_sqft_low = df["key_sale"].isin(
-        df_fl[idx_price_sqft_low]["key_sale"].values
+    idx_price_area_low = df["key_sale"].isin(
+        df_fl[idx_price_area_low]["key_sale"].values
     )
-    idx_price_sqft_high = df["key_sale"].isin(
-        df_fl[idx_price_sqft_high]["key_sale"].values
+    idx_price_area_high = df["key_sale"].isin(
+        df_fl[idx_price_area_high]["key_sale"].values
     )
 
     # Check for the five anomalies:
 
-    # 1. Price/sqft is high or low, sqft is high or low:
+    # 1. Price/area is high or low, area is high or low:
     df.loc[
-        (idx_price_sqft_low | idx_price_sqft_high) & (idx_sqft_low | idx_sqft_high),
+        (idx_price_area_low | idx_price_area_high) & (idx_area_low | idx_area_high),
         "anomaly_1",
     ] = True
 
-    # 2. Low price, low price/sqft, sqft is in range
+    # 2. Low price, low price/area, area is in range
     df.loc[
-        idx_price_low & idx_price_sqft_low & (idx_sqft_not_low | idx_sqft_not_high),
+        idx_price_low & idx_price_area_low & (idx_area_not_low | idx_area_not_high),
         "anomaly_2",
     ] = True
 
-    # 3. High price, high price/sqft, sqft is in range
+    # 3. High price, high price/area, area is in range
     df.loc[
-        idx_price_high & idx_price_sqft_high & (idx_sqft_not_low | idx_sqft_not_high),
+        idx_price_high & idx_price_area_high & (idx_area_not_low | idx_area_not_high),
         "anomaly_3",
     ] = True
 
-    # 4. Price in range, high price/sqft
+    # 4. Price in range, high price/area
     df.loc[
         (idx_price_not_low & idx_price_not_high)
-        & idx_price_sqft_high
-        & (idx_sqft_not_low | idx_sqft_not_high),
+        & idx_price_area_high
+        & (idx_area_not_low | idx_area_not_high),
         "anomaly_4",
     ] = True
 
-    # 5. Price in range, low price/sqft
+    # 5. Price in range, low price/area
     df.loc[
         (idx_price_not_low & idx_price_not_high)
-        & idx_price_sqft_low
-        & (idx_sqft_not_low | idx_sqft_not_high),
+        & idx_price_area_low
+        & (idx_area_not_low | idx_area_not_high),
         "anomaly_5",
     ] = True
 

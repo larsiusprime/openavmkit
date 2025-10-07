@@ -6,6 +6,7 @@ import pandas as pd
 
 from openavmkit.data import _get_sales
 from openavmkit.utilities.data import div_df_z_safe
+from openavmkit.utilities.settings import area_unit
 
 
 def calculate_time_adjustment(
@@ -14,7 +15,7 @@ def calculate_time_adjustment(
     """
     Calculate a time adjustment multiplier for sales data.
 
-    Processes sales data to compute a median sale price per sqft over time (at a
+    Processes sales data to compute a median sale price per area unit over time (at a
     resolution determined dynamically), interpolates missing values, and returns a
     DataFrame with daily time adjustment multipliers.
 
@@ -34,7 +35,9 @@ def calculate_time_adjustment(
     pandas.DataFrame
         DataFrame with time adjustment values per day.
     """
-
+    
+    unit = area_unit(settings)
+    
     # We assume that all the sales we are presented with are valid sales, and for a single modeling group
 
     # We need at least 5 sales in a given time period to make a valid time adjustment
@@ -47,8 +50,8 @@ def calculate_time_adjustment(
         "sale_month",
         "sale_quarter",
         "sale_price",
-        "bldg_area_finished_sqft",
-        "land_area_sqft",
+        f"bldg_area_finished_{unit}",
+        f"land_area_{unit}",
     ]
     for field in essential_fields:
         if field not in df_sales_in:
@@ -64,16 +67,16 @@ def calculate_time_adjustment(
             + df_sales["sale_quarter"].astype(str)
         )
 
-    df_sales["sale_price_per_impr_sqft"] = div_df_z_safe(
-        df_sales, "sale_price", "bldg_area_finished_sqft"
+    df_sales[f"sale_price_per_impr_{unit}"] = div_df_z_safe(
+        df_sales, "sale_price", f"bldg_area_finished_{unit}"
     )
-    df_sales["sale_price_per_land_sqft"] = div_df_z_safe(
-        df_sales, "sale_price", "land_area_sqft"
+    df_sales[f"sale_price_per_land_{unit}"] = div_df_z_safe(
+        df_sales, "sale_price", f"land_area_{unit}"
     )
 
     # Determine whether land or improvement drives value the modeling group:
     per = _determine_value_driver(df_sales, settings)
-    sale_field = f"sale_price_per_{per}_sqft"
+    sale_field = f"sale_price_per_{per}_{unit}"
 
     df_per = df_sales[df_sales[sale_field].gt(0)]
 
@@ -116,6 +119,9 @@ def apply_time_adjustment(
     pandas.DataFrame
         Sales DataFrame with an added `sale_price_time_adj` column.
     """
+    
+    unit = area_unit(settings)
+    
     df_sales = df_sales_in.copy()
     df_time = calculate_time_adjustment(df_sales_in, settings, period, verbose)
 
@@ -154,13 +160,13 @@ def apply_time_adjustment(
     # we drop the time adjustment column
     df_sales = df_sales.drop(columns=["time_adjustment"])
 
-    if "sale_price_per_impr_sqft" in df_sales:
-        df_sales["sale_price_time_adj_per_impr_sqft"] = div_df_z_safe(
-            df_sales, "sale_price_time_adj", "bldg_area_finished_sqft"
+    if f"sale_price_per_impr_{unit}" in df_sales:
+        df_sales[f"sale_price_time_adj_per_impr_{unit}"] = div_df_z_safe(
+            df_sales, "sale_price_time_adj", f"bldg_area_finished_{unit}"
         )
-    if "sale_price_per_land_sqft" in df_sales:
-        df_sales["sale_price_time_adj_per_land_sqft"] = div_df_z_safe(
-            df_sales, "sale_price_time_adj", "land_area_sqft"
+    if f"sale_price_per_land_{unit}" in df_sales:
+        df_sales[f"sale_price_time_adj_per_land_{unit}"] = div_df_z_safe(
+            df_sales, "sale_price_time_adj", f"land_area_{unit}"
         )
 
     return df_sales
@@ -365,7 +371,7 @@ def _interpolate_missing_periods(periods_expected, periods_actual, df_median):
 def _crunch_time_adjustment(
     df_in: pd.DataFrame, field: str, period: str = "M", min_count: int = 5
 ):
-    """Crunch sales data by computing median sale price per sqft over specified time
+    """Crunch sales data by computing median sale price per area unit over specified time
     periods.
 
     Groups the sales data by period (Year, Quarter, or Month) and computes the median
@@ -417,27 +423,30 @@ def _crunch_time_adjustment(
 def _determine_value_driver(df_in: pd.DataFrame, settings: dict):
     """Determine whether land or improvement drives the value in the modeling group.
 
-    Compares median sale prices per sqft for improved and land properties and returns
+    Compares median sale prices per area unit for improved and land properties and returns
     "land" if the relative difference is small and a significant portion of sales are
     land; otherwise returns "impr".
     """
+    
+    unit = area_unit(settings)
+    
     df = df_in.copy()
 
     df = _get_sales(df, settings)
 
-    df_impr = df[df["bldg_area_finished_sqft"].gt(0)]
-    df_land = df[df["land_area_sqft"].gt(0)]
+    df_impr = df[df[f"bldg_area_finished_{unit}"].gt(0)]
+    df_land = df[df[f"land_area_{unit}"].gt(0)]
 
-    df_impr["sale_price_per_impr_sqft"] = div_df_z_safe(
-        df_impr, "sale_price", "bldg_area_finished_sqft"
+    df_impr[f"sale_price_per_impr_{unit}"] = div_df_z_safe(
+        df_impr, "sale_price", f"bldg_area_finished_{unit}"
     )
-    df_land["sale_price_per_land_sqft"] = div_df_z_safe(
-        df_land, "sale_price", "land_area_sqft"
+    df_land[f"sale_price_per_land_{unit}"] = div_df_z_safe(
+        df_land, "sale_price", f"land_area_{unit}"
     )
 
-    # get the median sale price per sqft for both land and improvement
-    median_impr = df_impr["sale_price_per_impr_sqft"].median()
-    median_land = df_land["sale_price_per_land_sqft"].median()
+    # get the median sale price per area unit for both land and improvement
+    median_impr = df_impr[f"sale_price_per_impr_{unit}"].median()
+    median_land = df_land[f"sale_price_per_land_{unit}"].median()
 
     perc_delta = abs(median_impr - median_land) / median_land
 

@@ -78,16 +78,16 @@ class AverageModel:
         self.sales_chase = sales_chase
 
 
-class NaiveSqftModel:
+class NaiveAreaModel:
     """An intentionally bad predictive model, to use as a sort of control. Produces predictions equal to the prevailing
-    average price/sqft of land or building, multiplied by the observed size of the parcel's land or building, depending
+    average price/area of land or building, multiplied by the observed size of the parcel's land or building, depending
     on whether it's vacant or improved.
 
     Attributes
     ----------
-    dep_per_built_sqft: float
+    dep_per_built_area: float
         Dependent variable value divided by improved square footage
-    dep_per_land_sqft: float
+    dep_per_land_area: float
         Dependent variable value divided by land square footage
     sales_chase : float
         Simulates sales chasing. If 0.0, no sales chasing will occur. For any other value, predictions against sold
@@ -96,15 +96,15 @@ class NaiveSqftModel:
         **NOTE**: This is for analytical purposes only, one should not intentionally chase sales when working in actual production.
     """
     def __init__(
-        self, dep_per_built_sqft: float, dep_per_land_sqft: float, sales_chase: float
+        self, dep_per_built_area: float, dep_per_land_area: float, sales_chase: float
     ):
-        """Initialize a NaiveSqftModel
+        """Initialize a NaiveAreaModel
 
         Parameters
         ----------
-        dep_per_built_sqft: float
+        dep_per_built_area: float
             Dependent variable value divided by improved square footage
-        dep_per_land_sqft: float
+        dep_per_land_area: float
             Dependent variable value divided by land square footage
         sales_chase : float
             Simulates sales chasing. If 0.0, no sales chasing will occur. For any other value, predictions against sold
@@ -112,22 +112,22 @@ class NaiveSqftModel:
             ``sales_chase``. So ``sales_chase=0.05`` will copy each sale price with 5% random noise.
             **NOTE**: This is for analytical purposes only, one should not intentionally chase sales when working in actual production.
         """
-        self.dep_per_built_sqft = dep_per_built_sqft
-        self.dep_per_land_sqft = dep_per_land_sqft
+        self.dep_per_built_area = dep_per_built_area
+        self.dep_per_land_area = dep_per_land_area
         self.sales_chase = sales_chase
 
 
-class LocalSqftModel:
-    """Produces predictions equal to the localized average price/sqft of land or building, multiplied by the observed
+class LocalAreaModel:
+    """Produces predictions equal to the localized average price/area of land or building, multiplied by the observed
     size of the parcel's land or building, depending on whether it's vacant or improved.
 
-    Unlike ``NaiveSqftModel``, this model is sensitive to location, based on user-specified locations, and might
+    Unlike ``NaiveAreaModel``, this model is sensitive to location, based on user-specified locations, and might
     actually result in decent predictions.
 
     Attributes
     ----------
     loc_map : dict[str : tuple[DataFrame, DataFrame]
-        A dictionary that maps location field names to localized per-sqft values. The dictionary itself is keyed by the
+        A dictionary that maps location field names to localized per-area values. The dictionary itself is keyed by the
         names of the location fields themselves (e.g. "neighborhood", "market_region", "census_tract", etc.) or whatever
         the user specifies.
 
@@ -138,13 +138,13 @@ class LocalSqftModel:
 
         Each DataFrame is keyed by the unique *values* for the given location. (e.g. "River heights", "Meadowbrook",
         etc., if the location field in question is "neighborhood") The other field in each DataFrame will be
-        ``{location_field}_per_impr_sqft`` or ``{location_field}_per_land_sqft``
+        ``{location_field}_per_impr_{unit}`` or ``{location_field}_per_land_{unit}``
     location_fields : list
         List of location fields used (e.g. "neighborhood", "market_region", "census_tract", etc.)
-    overall_per_impr_sqft : float
+    overall_per_impr_area : float
         Fallback value per improved square foot, to use for parcels of unspecified location. Based on the
         overall average value for the dataset.
-    overall_per_land_sqft : float
+    overall_per_land_area : float
         Fallback value per land square foot, to use for parcels of unspecified location. Based on the overall average
         value for the dataset.
     sales_chase : float
@@ -158,16 +158,16 @@ class LocalSqftModel:
         self,
         loc_map: dict,
         location_fields: list,
-        overall_per_impr_sqft: float,
-        overall_per_land_sqft: float,
+        overall_per_impr_area: float,
+        overall_per_land_area: float,
         sales_chase: float,
     ):
-        """Initialize a LocalSqftModel
+        """Initialize a LocalAreaModel
 
         Parameters
         ----------
         loc_map : dict[str : tuple[DataFrame, DataFrame]
-            A dictionary that maps location field names to localized per-sqft values. The dictionary itself is keyed by the
+            A dictionary that maps location field names to localized per-area values. The dictionary itself is keyed by the
             names of the location fields themselves (e.g. "neighborhood", "market_region", "census_tract", etc.) or whatever
             the user specifies.
 
@@ -178,13 +178,13 @@ class LocalSqftModel:
 
             Each DataFrame is keyed by the unique *values* for the given location. (e.g. "River heights", "Meadowbrook",
             etc., if the location field in question is "neighborhood") The other field in each DataFrame will be
-            ``{location_field}_per_impr_sqft`` or ``{location_field}_per_land_sqft``
+            ``{location_field}_per_impr_{unit}`` or ``{location_field}_per_land_{unit}``
         location_fields : list
             List of location fields used (e.g. "neighborhood", "market_region", "census_tract", etc.)
-        overall_per_impr_sqft : float
+        overall_per_impr_area : float
             Fallback value per improved square foot, to use for parcels of unspecified location. Based on the
             overall average value for the dataset.
-        overall_per_land_sqft : float
+        overall_per_land_area : float
             Fallback value per land square foot, to use for parcels of unspecified location. Based on the overall average
             value for the dataset.
         sales_chase : float
@@ -195,8 +195,8 @@ class LocalSqftModel:
         """
         self.loc_map = loc_map
         self.location_fields = location_fields
-        self.overall_per_impr_sqft = overall_per_impr_sqft
-        self.overall_per_land_sqft = overall_per_land_sqft
+        self.overall_per_impr_area = overall_per_impr_area
+        self.overall_per_land_area = overall_per_land_area
         self.sales_chase = sales_chase
 
 
@@ -230,19 +230,19 @@ class SpatialLagModel:
 
     Attributes
     ----------
-    per_sqft : bool
-        If True, normalize by square foot. If False, use the direct value of the spatial lag field.
+    per_area : bool
+        If True, normalize by area unit. If False, use the direct value of the spatial lag field.
 
     """
-    def __init__(self, per_sqft: bool):
+    def __init__(self, per_area: bool):
         """Initialize a SpatialLagModel
 
         Parameters
         ----------
-        per_sqft : bool
+        per_area : bool
             If True, normalize by square foot. If False, use the direct value of the spatial lag field.
         """
-        self.per_sqft = per_sqft
+        self.per_area = per_area
 
 
 class PassThroughModel:

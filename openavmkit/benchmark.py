@@ -35,14 +35,14 @@ from openavmkit.modeling import (
     SingleModelResults,
     run_garbage,
     run_average,
-    run_naive_sqft,
+    run_naive_area,
     predict_garbage,
     run_kernel,
-    run_local_sqft,
+    run_local_area,
     run_pass_through,
     predict_average,
-    predict_naive_sqft,
-    predict_local_sqft,
+    predict_naive_area,
+    predict_local_area,
     predict_pass_through,
     predict_kernel,
     predict_gwr,
@@ -69,8 +69,8 @@ from openavmkit.utilities.data import (
 )
 from openavmkit.utilities.format import fancy_format, dig2_fancy_format
 from openavmkit.utilities.modeling import (
-    NaiveSqftModel,
-    LocalSqftModel,
+    NaiveAreaModel,
+    LocalAreaModel,
     PassThroughModel,
     LandSLICEModel,
     GWRModel,
@@ -1052,10 +1052,14 @@ def get_data_split_for(
     DataSplit
         A DataSplit object.
     """
-    if name == "local_sqft":
-        _ind_vars = location_fields + ["bldg_area_finished_sqft", "land_area_sqft"]
+    
+    unit = area_unit(settings)
+    lenunit = length_unit(settings)
+    
+    if name == "local_area":
+        _ind_vars = location_fields + [f"bldg_area_finished_{unit}", f"land_area_{unit}"]
     elif name == "slice":
-        _ind_vars = ["land_area_sqft", "latitude", "longitude"]
+        _ind_vars = [f"land_area_{unit}", "latitude", "longitude"]
     elif name == "assessor":
         _ind_vars = ["assr_land_value"] if hedonic else ["assr_market_value"]
     elif name == "ground_truth":
@@ -1066,13 +1070,13 @@ def get_data_split_for(
         if vacant_only or hedonic:
             field = f"{field}_vacant"
         _ind_vars = [field]
-    elif name == "spatial_lag_sqft":
+    elif name == "spatial_lag_area":
         sale_field = get_sale_field(settings)
         _ind_vars = [
-            f"spatial_lag_{sale_field}_impr_sqft",
-            f"spatial_lag_{sale_field}_land_sqft",
-            "bldg_area_finished_sqft",
-            "land_area_sqft",
+            f"spatial_lag_{sale_field}_impr_{unit}",
+            f"spatial_lag_{sale_field}_land_{unit}",
+            f"bldg_area_finished_{unit}",
+            f"land_area_{unit}",
         ]
     elif name == "catboost":
         df_sales = _clean_categoricals(df_sales, fields_cat, settings)
@@ -1272,10 +1276,10 @@ def run_one_model(
         results = run_average(
             ds, average_type="median", sales_chase=sales_chase, verbose=verbose
         )
-    elif model_name == "naive_sqft":
-        results = run_naive_sqft(ds, sales_chase=sales_chase, verbose=verbose)
-    elif model_name == "local_sqft":
-        results = run_local_sqft(
+    elif model_name == "naive_area":
+        results = run_naive_area(ds, sales_chase=sales_chase, verbose=verbose)
+    elif model_name == "local_area":
+        results = run_local_area(
             ds,
             location_fields=location_fields,
             sales_chase=sales_chase,
@@ -1286,9 +1290,9 @@ def run_one_model(
     elif model_name == "ground_truth":
         results = run_ground_truth(ds, verbose=verbose)
     elif model_name == "spatial_lag":
-        results = run_spatial_lag(ds, per_sqft=False, verbose=verbose)
-    elif model_name == "spatial_lag_sqft":
-        results = run_spatial_lag(ds, per_sqft=True, verbose=verbose)
+        results = run_spatial_lag(ds, per_area=False, verbose=verbose)
+    elif model_name == "spatial_lag_area":
+        results = run_spatial_lag(ds, per_area=True, verbose=verbose)
     elif model_name == "mra":
         results = run_mra(ds, intercept=intercept, verbose=verbose)
     elif model_name == "kernel":
@@ -1697,19 +1701,19 @@ def _predict_one_model(
     elif model_name == "median":
         median_model: AverageModel = smr.model
         results = predict_average(ds, median_model, timing, verbose)
-    elif model_name == "naive_sqft":
-        sqft_model: NaiveSqftModel = smr.model
-        results = predict_naive_sqft(ds, sqft_model, timing, verbose)
-    elif model_name == "local_sqft":
-        sqft_model: LocalSqftModel = smr.model
-        results = predict_local_sqft(ds, sqft_model, timing, verbose)
+    elif model_name == "naive_area":
+        area_model: NaiveAreaModel = smr.model
+        results = predict_naive_area(ds, area_model, timing, verbose)
+    elif model_name == "local_area":
+        area_model: LocalAreaModel = smr.model
+        results = predict_local_area(ds, area_model, timing, verbose)
     elif model_name == "assessor":
         assr_model: PassThroughModel = smr.model
         results = predict_pass_through(ds, assr_model, timing, verbose)
     elif model_name == "ground_truth":
         ground_truth_model: GroundTruthModel = smr.model
         results = predict_ground_truth(ds, ground_truth_model, timing, verbose)
-    elif model_name == "spatial_lag" or model_name == "spatial_lag_sqft":
+    elif model_name == "spatial_lag" or model_name == "spatial_lag_area":
         lag_model: SpatialLagModel = smr.model
         results = predict_spatial_lag(ds, lag_model, timing, verbose)
     elif model_name == "mra":
@@ -1924,6 +1928,9 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
     """
     Assemble model results into DataFrames for sales, universe, and test sets.
     """
+    
+    unit = area_unit(settings)
+    
     locations = get_report_locations(settings)
     fields = [
         "key",
@@ -1933,8 +1940,8 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
         "assr_land_value",
         "true_market_value",
         "true_land_value",
-        "bldg_area_finished_sqft",
-        "land_area_sqft",
+        f"bldg_area_finished_{unit}",
+        f"land_area_{unit}",
         "sale_price",
         "sale_price_time_adj",
         "sale_date",
@@ -1951,13 +1958,13 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
         df = dfs[key]
         df["prediction_ratio"] = div_df_z_safe(df, "prediction", "sale_price_time_adj")
 
-        if "bldg_area_finished_sqft" in df:
-            df["prediction_impr_sqft"] = div_df_z_safe(
-                df, "prediction", "bldg_area_finished_sqft"
+        if f"bldg_area_finished_{unit}" in df:
+            df[f"prediction_impr_{unit}"] = div_df_z_safe(
+                df, "prediction", f"bldg_area_finished_{unit}"
             )
-        if "land_area_sqft" in df:
-            df["prediction_land_sqft"] = div_df_z_safe(
-                df, "prediction", "land_area_sqft"
+        if f"land_area_{unit}" in df:
+            df[f"prediction_land_{unit}"] = div_df_z_safe(
+                df, "prediction", f"land_area_{unit}"
             )
 
         if "assr_market_value" in df:

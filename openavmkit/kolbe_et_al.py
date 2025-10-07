@@ -22,6 +22,7 @@ from openavmkit.data import (
     get_sale_field,
 )
 from openavmkit.utilities.data import div_df_z_safe
+from openavmkit.utilities.settings import area_unit
 
 
 def difference_weights(m: int) -> np.ndarray:
@@ -197,7 +198,9 @@ def kolbe_et_al_estimate(
     """
     if params is None:
         params = {}
-
+    
+    unit = area_unit(settings)
+    
     k_neighbors = params.get("k_neighbors", 60)
     diff_order = params.get("diff_order", 10)
     h0 = params.get("pilot_bandwidth", 600.0)
@@ -211,13 +214,15 @@ def kolbe_et_al_estimate(
     df_univ = df_univ[df_univ["model_group"].eq(model_group)].copy()
 
     sale_field = get_sale_field(settings)
-
+    
+    unit = area_unit(settings)
+    
     # ensure we have the columns we need:
     necessary_cols = [
         sale_field,
         "latitude",
         "longitude",
-        "land_area_sqft",
+        f"land_area_{unit}",
     ] + bldg_fields
     for field in necessary_cols:
         if field not in df_sales.columns:
@@ -252,11 +257,11 @@ def kolbe_et_al_estimate(
     # 1. Convert to price-per-area and building-per-area
     # ----------------------------------------------
 
-    df["p"] = div_df_z_safe(df, sale_field, "land_area_sqft")
+    df["p"] = div_df_z_safe(df, sale_field, f"land_area_{unit}")
     p_area_cols: list[str] = []
     for col in bldg_fields:
-        p_area = f"{col}_per_land_sqft"
-        df[p_area] = div_df_z_safe(df, col, "land_area_sqft")
+        p_area = f"{col}_per_land_{unit}"
+        df[p_area] = div_df_z_safe(df, col, f"land_area_{unit}")
         p_area_cols.append(p_area)
 
     # ---------------------------------------------
@@ -267,7 +272,7 @@ def kolbe_et_al_estimate(
     df = df.iloc[order].reset_index(drop=True)
 
     # ----------------------------------------------
-    # 3. Higher‑order differences
+    # 3. Higher-order differences
     # ----------------------------------------------
 
     d = difference_weights(diff_order)
