@@ -1329,7 +1329,7 @@ class SingleModelResults:
             self.pred_test.y_pred = np.exp(self.pred_test.y_pred)
 
         # if it's a area model, we need to further multiply the predictions by the size
-        for suffix in ["_size", f"_land_{self.unit}", f"_impr_{self.unit}"]:
+        for suffix in ["_size", f"_land_{self.ds.unit}", f"_impr_{self.ds.unit}"]:
             if self.dep_var.endswith(suffix):
                 self.pred_sales.y_pred = (
                     self.pred_sales.y_pred * self.ds.df_sales[suffix]
