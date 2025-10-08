@@ -230,19 +230,19 @@ class SpatialLagModel:
 
     Attributes
     ----------
-    per_sqft : bool
-        If True, normalize by square foot. If False, use the direct value of the spatial lag field.
+    per_area : bool
+        If True, normalize by area unit. If False, use the direct value of the spatial lag field.
 
     """
-    def __init__(self, per_sqft: bool):
+    def __init__(self, per_area: bool):
         """Initialize a SpatialLagModel
 
         Parameters
         ----------
-        per_sqft : bool
+        per_area : bool
             If True, normalize by square foot. If False, use the direct value of the spatial lag field.
         """
-        self.per_sqft = per_sqft
+        self.per_area = per_area
 
 
 class PassThroughModel:
