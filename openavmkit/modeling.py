@@ -116,9 +116,10 @@ class LandPredictionResults:
         dep_var: str,
         ind_vars: list[str],
         sup: SalesUniversePair,
-        max_trim: float
+        max_trim: float,
+        unit: str
     ):
-
+        
         necessary_fields = [
             land_prediction_field,
             impr_prediction_field,
@@ -128,8 +129,8 @@ class LandPredictionResults:
             "impr_he_id",
             "he_id",
             "is_vacant",
-            "land_area_sqft",
-            "bldg_area_finished_sqft",
+            f"land_area_{unit}",
+            f"bldg_area_finished_{unit}",
         ]
 
         use_sales_not_univ = False
@@ -263,7 +264,7 @@ class LandPredictionResults:
         # Paired sales analysis tests:
         # Control for location:
         # - Land allocation inversely correlated with floor area ratio
-        # - Land value / sqft decreases as total land size increases
+        # - Land value / area decreases as total land size increases
         # - Land value increases as total land size increases
         # - Within location, control for one at a time: size/quality/condition:
         #   - Condition positively correlated with impr value
