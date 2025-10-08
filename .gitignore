@@ -9,7 +9,6 @@ tests/data/
 notebooks/pipeline/data/
 notebooks/pipeline/out/
 notebooks/pipeline/cache/
-notebooks/.env
 notebooks/cache/
 notebooks/examples/*.gpkg
 notebooks/research/richie_2025/out/
@@ -28,7 +27,7 @@ check_files_encoding.py
 tests/*.csv
 notebooks/examples/debug_local_sqft_univ.csv
 .python-version
-
+.env
 tests/cache/
 
 cache/
