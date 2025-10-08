@@ -11,7 +11,7 @@ def get_unit_ft(
 
     The Somers unit-foot value is defined as the lot's total value divided by the
     product of its frontage in feet and a standard depth of 100 feet:
-    Somers unit‐foot = lot_value / (frontage_ft * 100).
+    Somers unit-foot = lot_value / (frontage_ft * 100).
 
     Parameters
     ----------
