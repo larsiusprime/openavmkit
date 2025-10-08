@@ -496,9 +496,9 @@ def get_variable_interactions(entry: dict, settings: dict, df: pd.DataFrame = No
         Interactions dictionary which maps field names to other field names, indicating variable interactions.
 
         Example:
-        Interacting a categorical field like "neighborhood" with a numeric field like "land_area_sqft" means that
+        Interacting a categorical field like "neighborhood" with a numeric field like "land_area_{unit}" means that
         every one-hot-encoded descendant like "neighborhood=River Heights" will be multiplied against the numeric
-        value of "land_area_sqft", so this is a way to interact neighborhood dummies with land size.
+        value of "land_area_{unit}", so this is a way to interact neighborhood dummies with land size.
     """
     unit = area_unit(settings)
     interactions: dict | None = entry.get("interactions", None)
@@ -1162,7 +1162,7 @@ def _simulate_removed_buildings(
         df.loc[idx_vacant, field] = False
 
     unit = area_unit(settings)
-    # just to be safe, ensure that the "bldg_area_finished_sqft" field is set to 0 for vacant sales
+    # just to be safe, ensure that the "bldg_area_finished_{unit}" field is set to 0 for vacant sales
     # and update "is_vacant" to perfectly match
     # TODO: if we add support for a custom vacancy filter, we will need to adjust this
     if f"bldg_area_finished_{unit}" in df:
