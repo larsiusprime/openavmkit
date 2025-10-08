@@ -3,9 +3,9 @@ venv/
 dockerfile
 .dockerignore
 .gitignore
-.git
 .github
 .idea
 tests/
 signatures/
 docs/
+!/.git

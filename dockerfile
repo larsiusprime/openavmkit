@@ -1,30 +1,69 @@
-FROM python:3.10
+ARG TINI_VERSION v0.6.0
+
+# Stage 1: Build the OpenAVMKit package and install dependencies
+FROM jupyter/base-notebook:python-3.10 AS builder
+
+# Switch to root to install system packages
+USER root
+
+# Install git using apt-get and clean up, so that setuptools_scm will work
+RUN apt-get update && apt-get install -y --no-install-recommends git && \
+    rm -rf /var/lib/apt/lists/*
+
+
+# The user is already root in this image, but we switch to the default 'jovyan' user
+# to install packages in the correct environment.
+USER ${NB_UID}
 
 WORKDIR /app
 
 # Copy all of OpenAVMKit's build files into the container (excluding those in .dockerignore)
-COPY . ./
+COPY --chown=${NB_USER}:${NB_GID} . .
 
-# --no-cache-dir is used to avoid caching packages, shrinking the image size
-RUN pip install --no-cache-dir -r requirements.txt
+# Install local openavmkit package and all dependencies listed in pyproject.toml
+RUN pip install --no-cache-dir .
 
-# Install local openavmkit package
-RUN pip install .
+# ----------------------------------------------------------------------------------------------------------------
 
-# Seperately install jupyter (as specified on openavmkit docs)
-RUN pip install jupyter
+# Stage 2: Move the built/installed packages into a distroless environment
+FROM python:3.10-slim-bookworm AS runner
 
-# Install and register the Python kernel for Jupyter
-# This makes the kernel visible to the Jupyter server.
-RUN python -m ipykernel install --user --name=python3 --display-name="Python 3 (Project)"
+# Install su-exec and tini for the entrypoint script (entrypoint needs gosu to modify perms)
+RUN apt-get update && apt-get install -y --no-install-recommends gosu tini && rm -rf /var/lib/apt/lists/*
+
+# Set workdir for convention purposes, and so that this is the root directory for jupyter in which the 
+# data volume will be mounted and the provided notebooks will be located
+WORKDIR /app
+
+# Create a non-root user and group to run the application
+RUN groupadd -r appgroup && useradd -r -g appgroup -m -s /bin/bash appuser
+
+# Copy installed packages from builder stage
+COPY --from=builder /opt/conda/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+
+# Copy the jupyter binary
+COPY --from=builder /opt/conda/bin /usr/local/bin
+
+# Copy the jupyter lab assets
+COPY --from=builder /opt/conda/share/jupyter/lab /usr/local/share/jupyter/lab
+
+# Copy in the jupyter notebooks
+COPY --from=builder --chown=appuser:appgroup /app/notebooks /app
+
+EXPOSE 8888
+
+# Copy the entrypoint script into a standard executable path and make it executable
+COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/bin/tini", "--", "entrypoint.sh"]
 
 # Expose the notebooks file with jupyter notebook on container start
-# IP 0.0.0.0 sets it to be accessed external to the container
-# Allow root allows it to modify the file structure and volume
+# --ip=0.0.0.0 makes it accessible from outside the container
 # --no-browser avoids opening the browser automatically, as there is not one in the container
-CMD [ "jupyter", "notebook", "--ip", "0.0.0.0", "--allow-root", "--no-browser" ]
+CMD [ "/usr/local/bin/jupyter", "lab", "--ip=0.0.0.0", "--no-browser" ]
 
 LABEL maintainer="Jackson Arnold <jackson.n.arnold@gmail.com>"
 
-# Future updates:
-# - Create all the dependencies in a distro environment, then move it to a distroless with the root file being /notebooks/ (no need for anything outside of that)
+# Add in tini to entrypoint.sh
+# Fix authentication
+# Configure so that it can work behind a proxy
