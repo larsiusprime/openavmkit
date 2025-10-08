@@ -198,7 +198,9 @@ def kolbe_et_al_estimate(
     """
     if params is None:
         params = {}
-
+    
+    unit = area_unit(settings)
+    
     k_neighbors = params.get("k_neighbors", 60)
     diff_order = params.get("diff_order", 10)
     h0 = params.get("pilot_bandwidth", 600.0)
@@ -258,7 +260,7 @@ def kolbe_et_al_estimate(
     df["p"] = div_df_z_safe(df, sale_field, f"land_area_{unit}")
     p_area_cols: list[str] = []
     for col in bldg_fields:
-        p_area = f"{col}_per_land_sqft"
+        p_area = f"{col}_per_land_{unit}"
         df[p_area] = div_df_z_safe(df, col, f"land_area_{unit}")
         p_area_cols.append(p_area)
 
@@ -270,7 +272,7 @@ def kolbe_et_al_estimate(
     df = df.iloc[order].reset_index(drop=True)
 
     # ----------------------------------------------
-    # 3. Higher‑order differences
+    # 3. Higher-order differences
     # ----------------------------------------------
 
     d = difference_weights(diff_order)
