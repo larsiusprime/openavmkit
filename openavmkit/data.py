@@ -3590,7 +3590,6 @@ def _load_dataframe(
     if is_geometry:
         is_geometry = entry.get("geometry", is_geometry)
     
-
     if ext == "parquet":
         try:
             df = gpd.read_parquet(filename, columns=cols_to_load)
@@ -3692,7 +3691,7 @@ def _load_dataframe(
             if mask_non_numeric.sum() > 0:
                 df.loc[mask_non_numeric, col] = np.nan
             df[col] = df[col].astype("Float64")
-
+    
     date_fields = get_fields_date(settings, df)
     time_format_map = {}
     for xkey in extra_map:
@@ -3753,9 +3752,9 @@ def _load_dataframe(
             )
 
     df = _handle_duplicated_rows(df, dupes)
-
+    
     if is_geometry:
-        gdf: gpd.GeoDataFrame = gpd.GeoDataFrame(df, geometry="geometry")
+        gdf: gpd.GeoDataFrame = gpd.GeoDataFrame(df, geometry="geometry", crs=df.crs)
         
         pre_len = len(gdf)
         gdf = clean_geometry(gdf, ensure_polygon=True)
@@ -3766,7 +3765,7 @@ def _load_dataframe(
             warnings.warn(f"Dropped {perc_len:.0%} of rows from dataframe \"{entry_key}\" due to invalid/null geometry. If you don't care about geometry for this dataframe and want to retain all rows, then set '\"geometry\": false' in settings under this dataframe's 'data.load' entry")
         
         df = gdf
-
+    
     drop = entry.get("drop", [])
     if len(drop) > 0:
         df = df.drop(columns=drop, errors="ignore")

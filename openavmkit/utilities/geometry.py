@@ -19,6 +19,14 @@ from openavmkit.utilities.timing import TimingData
 
 geod = Geod(ellps="WGS84")
 
+CRS84_ALIASES = {
+    "OGC:CRS84",
+    "CRS84",
+    "URN:OGC:DEF:CRS:OGC:1.3:CRS84",
+    "HTTP://WWW.OPENGIS.NET/DEF/CRS/OGC/1.3/CRS84",
+    "HTTPS://WWW.OPENGIS.NET/DEF/CRS/OGC/1.3/CRS84",
+}
+
 def get_crs(gdf, projection_type):
     """Returns the appropriate CRS for a GeoDataFrame based on the specified projection
     type.
@@ -135,6 +143,29 @@ def is_likely_epsg4326(gdf: gpd.GeoDataFrame) -> bool:
         if not (-90 <= min_y <= 90 and -90 <= max_y <= 90):
             return False
     return True
+
+
+def safe_normalize_to_4326(crs):
+    """
+    Returns True if .to_crs(4326) is fidelity-safe (datum already WGS84 geographic or projected on WGS84),
+    False otherwise.
+    """
+    crs = CRS.from_user_input(crs)
+    if crs.is_geographic:
+        # Geographic WGS84?
+        name = (crs.name or "").upper()
+        auth = crs.to_authority()
+        if auth == ("EPSG", "4326"):
+            return True
+        if name.find("WGS 84") >= 0 or str(crs).upper().find("OGC:CRS84") >= 0:
+            return True
+        return False
+    else:
+        # Projected: check the base/geodetic CRS
+        base = crs.get_geodetic_crs()
+        if base and "WGS 84" in (base.name or ""):
+            return True   # e.g., Web Mercator on WGS84
+        return False
 
 
 def offset_coordinate_feet(lat, lon, lat_feet, lon_feet) -> (float, float):
@@ -466,7 +497,7 @@ def ensure_geometries(df, geom_col="geometry", crs=None):
       - Shapely geometries
       - WKT strings
       - WKB bytes/bytearray
-      - Hex‐encoded WKB strings (with or without "0x" prefix)
+      - Hex-encoded WKB strings (with or without "0x" prefix)
       - numpy.bytes_ scalars, memoryviews, etc.
 
     Parameters
@@ -481,7 +512,7 @@ def ensure_geometries(df, geom_col="geometry", crs=None):
     Returns
     -------
     gpd.GeoDataFrame
-        a brand‑new GeoDataFrame with a _clean_ geometry column.
+        a brand-new GeoDataFrame with a _clean_ geometry column.
     """
     # Copy into a plain DataFrame (drops any old GeoDataFrame metadata)
     # Handle both pandas and bodo.pandas DataFrames
@@ -489,6 +520,14 @@ def ensure_geometries(df, geom_col="geometry", crs=None):
         data = df.to_pandas().copy()
     else:
         data = df.copy()
+    
+    if crs is None:
+        if "geometry" in df:
+            try:
+                crs = df.crs
+                print(f"ensure_geometries, default crs = {crs}")
+            except AttributeError:
+                crs = None
 
     def _parse(val):
         # 1) Nulls
@@ -562,8 +601,8 @@ def clean_geometry(gdf, ensure_polygon=True, target_crs=None):
         A cleaned and fixed GeoDataFrame.
     """
     
-    gdf = ensure_geometries(gdf)
-
+    gdf = ensure_geometries(gdf, crs=gdf.crs)
+    
     # Drop null geometries
     warnings.filterwarnings("ignore", "GeoSeries.notna", UserWarning)
     gdf = gdf[gdf.geometry.notna()]
@@ -598,11 +637,11 @@ def clean_geometry(gdf, ensure_polygon=True, target_crs=None):
         return False
 
     gdf = gdf[gdf.geometry.apply(valid_polygon)]
-
+    
     # Remove non-polygon geometries if ensure_polygon is True
     if ensure_polygon:
         gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])]
-
+    
     # Ensure the CRS is consistent
     if target_crs:
         gdf = gdf.to_crs(target_crs)
@@ -930,60 +969,88 @@ def geolocate_point_to_polygon(
     return df
 
 
+def _normalize_crs_value(crs_value):
+    # Strings: catch OGC/URN/URL variants of CRS84 and map to EPSG:4326
+    if isinstance(crs_value, str):
+        s = crs_value.strip()
+        if s.upper() in CRS84_ALIASES:
+            return CRS.from_epsg(4326)
+        # Otherwise let pyproj try
+        return CRS.from_user_input(s)
+
+    # Dicts: typically PROJJSON
+    if isinstance(crs_value, dict):
+        try:
+            return CRS.from_user_input(crs_value)
+        except Exception:
+            pass
+
+    # Already a CRS?
+    if isinstance(crs_value, CRS):
+        return crs_value
+
+    # Give pyproj one more chance
+    return CRS.from_user_input(crs_value)
+
+
 def detect_crs_from_parquet(path: str, geom_col: str = "geometry") -> Tuple[Optional[CRS], str]:
     """
     Return (crs, geometry_column_used). crs is a pyproj.CRS or None.
-    Looks only in GeoParquet metadata; does not try to infer from coordinates.
+    Reads only GeoParquet metadata; does not infer from coordinates.
     """
-    # Try schema (GeoParquet stores metadata here)
     pf = pq.ParquetFile(path)
-    schema_md = getattr(pf.schema_arrow, "metadata", None) or {}
 
     def _extract_crs(md: dict) -> Tuple[Optional[CRS], str]:
-        geo_raw = md.get(b"geo")
+        if not md:
+            return None, geom_col
+
+        geo_raw = (md.get(b"geo") if isinstance(md, dict) else None)
         if not geo_raw:
             return None, geom_col
 
         info = json.loads(geo_raw.decode("utf-8"))
-        cols = info.get("columns", {})
+        cols = info.get("columns", {}) or {}
 
         # Find metadata for the requested geometry column, or the first geometry-ish column
         colmeta = cols.get(geom_col)
-        if colmeta is None:
-            for name, cm in (cols.items() if isinstance(cols, dict) else []):
-                if isinstance(cm, dict) and cm.get("encoding", "").upper() in {"WKB", "WKT", "GEOARROW"}:
+        geom_name = geom_col
+        if colmeta is None and isinstance(cols, dict):
+            for name, cm in cols.items():
+                if isinstance(cm, dict) and str(cm.get("encoding", "")).upper() in {"WKB", "WKT", "GEOARROW"}:
                     geom_name = name
                     colmeta = cm
                     break
             else:
-                return None, geom_col
-        else:
-            geom_name = geom_col
+                return None, geom_name
 
-        # Newer spec: "crs" (WKT or PROJJSON or "EPSG:xxxx")
-        # Older files: "crs_wkt"
+        # GeoParquet: "crs" (string/projjson) or legacy "crs_wkt"
         crs_value = colmeta.get("crs") or colmeta.get("crs_wkt")
+
+        # OPTIONAL: treat missing CRS as CRS84 per common GeoParquet convention
+        # (Uncomment if you want this behavior.)
+        # if not crs_value:
+        #     try:
+        #         return CRS.from_epsg(4326), geom_name
+        #     except Exception:
+        #         return None, geom_name
+
         if not crs_value:
             return None, geom_name
 
         try:
-            return CRS.from_user_input(crs_value), geom_name
+            return _normalize_crs_value(crs_value), geom_name
         except Exception:
-            # Sometimes "crs" is a dict (PROJJSON)
-            if isinstance(crs_value, dict):
-                try:
-                    return CRS.from_user_input(crs_value), geom_name
-                except Exception:
-                    pass
             return None, geom_name
 
+    # Schema-level metadata (usual place)
+    schema_md = getattr(pf.schema_arrow, "metadata", None) or {}
     crs, used_geom = _extract_crs(schema_md)
     if crs:
         return crs, used_geom
 
-    # Rarely, some writers stash metadata at the file-level (not per schema)
+    # Fallback: some writers stash geo metadata in file metadata
     file_md = pf.metadata
-    if file_md is not None and file_md.metadata is not None:
+    if file_md and file_md.metadata:
         return _extract_crs(file_md.metadata)
 
     return None, geom_col
