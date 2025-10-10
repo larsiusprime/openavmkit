@@ -1170,6 +1170,8 @@ def _enrich_df_census(
     groups.
     """
     if not census_settings.get("enabled", False):
+        if verbose:
+            print("Census enrichment disabled, skipping...")
         return df_in
 
     if verbose:
@@ -1186,6 +1188,9 @@ def _enrich_df_census(
     # try:
     # Get Census credentials and initialize service
     creds = get_creds_from_env_census()
+    if creds is None:
+        warnings.warn("Failed to get census credentials, skipping census enrichment")
+        return df_in
     census_service = init_service_census(creds)
 
     # Get FIPS code from settings
