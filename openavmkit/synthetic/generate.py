@@ -33,6 +33,7 @@ from openavmkit.modeling import SingleModelResults, LandPredictionResults
 from openavmkit.synthetic.synthetic import make_geo_blocks
 from openavmkit.utilities.data import div_series_z_safe
 from openavmkit.utilities.geometry import get_crs_from_lat_lon
+from openavmkit.utilities.settings import area_unit
 
 
 def trial_simple_plane(params: dict):
@@ -309,6 +310,7 @@ def evaluate_trial_one_land_result(
     sale_field: str,
     ground_truth_land_field: str,
     max_trim: float,
+    unit: str,
     verbose: bool = False,
 ):
     sup = sup.copy()
@@ -331,7 +333,8 @@ def evaluate_trial_one_land_result(
         sale_field,
         land_results.ind_vars,
         sup,
-        max_trim
+        max_trim,
+        unit
     )
 
     scores_truth = LandPredictionResults(
@@ -341,7 +344,8 @@ def evaluate_trial_one_land_result(
         ground_truth_land_field,
         land_results.ind_vars,
         sup,
-        max_trim
+        max_trim,
+        unit
     )
 
     return {
@@ -392,6 +396,8 @@ def evaluate_trial_land_results(
     ground_truth_land_field: str,
     verbose: bool = False,
 ):
+    unit = area_unit(settings)
+    
     main_outpath = f"{outpath}/main/{trial_id}"
     hedonic_outpath = f"{outpath}/hedonic/{trial_id}"
     vacant_outpath = f"{outpath}/vacant/{trial_id}"
@@ -449,7 +455,8 @@ def evaluate_trial_land_results(
                 sale_field,
                 ground_truth_land_field,
                 verbose,
-                max_trim
+                max_trim,
+                area_unit
             )
             rows_v.append(data)
 
@@ -479,6 +486,7 @@ def evaluate_trial_land_results(
                 sale_field,
                 ground_truth_land_field,
                 verbose,
+                area_unit
             )
             rows_h.append(data)
 

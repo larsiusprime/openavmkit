@@ -19,7 +19,7 @@ from openavmkit.modeling import SingleModelResults, plot_value_surface, simple_o
 from openavmkit.quality_control import check_land_values
 from openavmkit.utilities.data import (
     div_series_z_safe,
-    add_sqft_fields,
+    add_area_fields,
 )
 from openavmkit.utilities.plotting import plot_histogram_df
 from openavmkit.utilities.settings import get_model_group_ids
@@ -70,7 +70,7 @@ def finalize_land_values(
                 on="key",
                 how="left",
             )
-            df_values = add_sqft_fields(df_values)
+            df_values = add_area_fields(df_values, settings)
             if df_all_values is None:
                 df_all_values = df_values
             else:
@@ -96,6 +96,8 @@ def _finalize_land_values(
     verbose: bool = False,
 ):
     df = df_in.copy()
+    
+    unit = area_unit(settings)
 
     # Derive the final land values
     df["model_land_value"] = df["model_market_value"] * df["model_land_alloc"]
@@ -104,14 +106,14 @@ def _finalize_land_values(
     # Apply basic sanity check / error correction to land values
     df = check_land_values(df, model_group)
 
-    df["model_land_value_land_sqft"] = div_series_z_safe(
-        df["model_land_value"], df["land_area_sqft"]
+    df[f"model_land_value_land_{unit}"] = div_series_z_safe(
+        df["model_land_value"], df[f"land_area_{unit}"]
     )
-    df["model_market_value_land_sqft"] = div_series_z_safe(
-        df["model_market_value"], df["land_area_sqft"]
+    df[f"model_market_value_land_{unit}"] = div_series_z_safe(
+        df["model_market_value"], df[f"land_area_{unit}"]
     )
-    df["model_market_value_impr_sqft"] = div_series_z_safe(
-        df["model_market_value"], df["bldg_area_finished_sqft"]
+    df[f"model_market_value_impr_{unit}"] = div_series_z_safe(
+        df["model_market_value"], df[f"bldg_area_finished_{unit}"]
     )
 
     # Find variables correlated with land value
@@ -125,17 +127,17 @@ def _finalize_land_values(
                 "key",
                 "model_market_value",
                 "model_land_value",
-                "model_land_value_land_sqft",
+                f"model_land_value_land_{unit}",
             ]
         ],
         on="key",
         how="left",
     )
-    df_sales["model_market_value_impr_sqft"] = div_series_z_safe(
-        df_sales["model_market_value"], df_sales["bldg_area_finished_sqft"]
+    df_sales[f"model_market_value_impr_{unit}"] = div_series_z_safe(
+        df_sales["model_market_value"], df_sales[f"bldg_area_finished_{unit}"]
     )
-    df_sales["model_market_value_land_sqft"] = div_series_z_safe(
-        df_sales["model_market_value"], df_sales["land_area_sqft"]
+    df_sales[f"model_market_value_land_{unit}"] = div_series_z_safe(
+        df_sales["model_market_value"], df_sales[f"land_area_{unit}"]
     )
 
     ind_vars = (
@@ -149,8 +151,8 @@ def _finalize_land_values(
         "assr_market_value",
         "assr_land_value",
         "model_market_value",
-        "model_market_value_land_sqft",
-        "model_market_value_impr_sqft",
+        f"model_market_value_land_{unit}",
+        f"model_market_value_impr_{unit}",
     ]
 
     print("LAND VALUE")
@@ -162,8 +164,8 @@ def _finalize_land_values(
     print("FINAL)")
     display(corrs["final"])
     print("")
-    print("LAND VALUE PER SQFT")
-    X_corr = df_sales[["model_land_value_land_sqft"] + ind_vars]
+    print(f"LAND VALUE PER {unit.upper()}")
+    X_corr = df_sales[[f"model_land_value_land_{unit}"] + ind_vars]
     corrs = calc_correlations(X_corr)
     print("INITIAL")
     display(corrs["initial"])
@@ -171,26 +173,26 @@ def _finalize_land_values(
     print("FINAL)")
     display(corrs["final"])
 
-    # Super tiny slivers of land will have insane $/sqft values
-    df["model_market_value_land_sqft"] = div_series_z_safe(
-        df["model_market_value"], df["land_area_sqft"]
+    # Super tiny slivers of land will have insane $/area values
+    df[f"model_market_value_land_{unit}"] = div_series_z_safe(
+        df["model_market_value"], df[f"land_area_{unit}"]
     )
-    df["model_market_value_impr_sqft"] = div_series_z_safe(
-        df["model_market_value"], df["bldg_area_finished_sqft"]
+    df[f"model_market_value_impr_{unit}"] = div_series_z_safe(
+        df["model_market_value"], df[f"bldg_area_finished_{unit}"]
     )
-    df_not_tiny = df[df["land_area_sqft"].gt(5000)]
+    df_not_tiny = df[df[f"land_area_{unit}"].gt(5000)]
 
     plot_value_surface(
-        "Land value per sqft",
-        df_not_tiny["model_land_value_land_sqft"],
+        f"Land value per {unit}",
+        df_not_tiny[f"model_land_value_land_{unit}"],
         gdf=df,
         cmap="viridis",
         norm="log",
     )
 
     plot_value_surface(
-        "Market value per land sqft",
-        df_not_tiny["model_market_value_land_sqft"],
+        f"Market value per land {unit}",
+        df_not_tiny[f"model_market_value_land_{unit}"],
         gdf=df,
         cmap="viridis",
         norm="log",
@@ -528,8 +530,8 @@ def _run_land_analysis(
                 "geometry",
                 "latitude",
                 "longitude",
-                "land_area_sqft",
-                "bldg_area_finished_sqft",
+                f"land_area_{unit}",
+                f"bldg_area_finished_{unit}",
             ]
         ],
         on="key",
@@ -540,7 +542,7 @@ def _run_land_analysis(
         df_finalize["model_market_value"] * df_finalize["model_land_alloc"]
     )
 
-    df_finalize = add_sqft_fields(df_finalize)
+    df_finalize = add_area_fields(df_finalize, settings)
 
     outpath = f"out/models/{model_group}/land_analysis.csv"
     os.makedirs(os.path.dirname(outpath), exist_ok=True)
@@ -657,7 +659,7 @@ def _convolve_land_analysis(
                 df = pred_main.merge(pred_land, on="key", how="left")
                 df = df.merge(
                     df_universe[
-                        ["key", "latitude", "longitude", "land_area_sqft"]
+                        ["key", "latitude", "longitude", f"land_area_{unit}"]
                     ],
                     on="key",
                     how="left",
@@ -672,20 +674,20 @@ def _convolve_land_analysis(
                 ] = df["prediction"].astype("Float64")
 
                 # Calculate land area per square foot of land
-                df["prediction_land_sqft"] = div_series_z_safe(
-                    df["prediction_land"], df["land_area_sqft"]
+                df[f"prediction_land_{unit}"] = div_series_z_safe(
+                    df["prediction_land"], df[f"land_area_{unit}"]
                 )
 
                 # Calculate the sale price per square foot of land
-                sale_field_land_sqft = f"{sale_field}_land_sqft"
-                dfv[sale_field_land_sqft] = div_series_z_safe(
-                    dfv[sale_field], dfv["land_area_sqft"]
+                sale_field_land_area = f"{sale_field}_land_{unit}"
+                dfv[sale_field_land_area] = div_series_z_safe(
+                    dfv[sale_field], dfv[f"land_area_{unit}"]
                 )
 
                 df["prediction_land_smooth"] = df["prediction_land"]
 
-                df["prediction_land_smooth_sqft"] = div_series_z_safe(
-                    df["prediction_land_smooth"], df["land_area_sqft"]
+                df[f"prediction_land_smooth_{unit}"] = div_series_z_safe(
+                    df["prediction_land_smooth"], df[f"land_area_{unit}"]
                 )
 
                 dfv = dfv.merge(
@@ -693,7 +695,7 @@ def _convolve_land_analysis(
                         [
                             "key",
                             "prediction_land_smooth",
-                            "prediction_land_smooth_sqft",
+                            f"prediction_land_smooth_{unit}",
                         ]
                     ],
                     on="key",
@@ -701,8 +703,8 @@ def _convolve_land_analysis(
                 )
                 dfv = dfv[
                     ~dfv["prediction_land_smooth"].isna()
-                    & ~dfv["prediction_land_smooth_sqft"].isna()
-                    & ~dfv[sale_field_land_sqft].isna()
+                    & ~dfv[f"prediction_land_smooth_{unit}"].isna()
+                    & ~dfv[sale_field_land_area].isna()
                 ]
 
                 if full_or_test == "test":

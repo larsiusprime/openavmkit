@@ -103,10 +103,14 @@ def clean_valid_sales(sup: SalesUniversePair, settings: dict) -> SalesUniversePa
         "sale_year_month",
         "sale_age_days",
         "sale_price_per_land_sqft",
+        "sale_price_per_land_sqm",
         "sale_price_per_impr_sqft",
+        "sale_price_per_impr_sqm",
         "sale_price_time_adj",
         "sale_price_time_adj_per_land_sqft",
+        "sale_price_time_adj_per_land_sqm",
         "sale_price_time_adj_per_impr_sqft",
+        "sale_price_time_adj_per_impr_sqm",
     ]
 
     for field in fields_to_scrub:

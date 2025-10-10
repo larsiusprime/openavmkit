@@ -317,6 +317,7 @@ def generate_basic(
     seed: int = 1337,
     land_inflation: dict = None,
     bldg_inflation: dict = None,
+    unit: str = "sqft"
 ):
     """Build a synthetic real-estate data set of parcels and (optionally) sales.
 
@@ -361,7 +362,9 @@ def generate_basic(
     bldg_inflation : dict or None, optional
         Same as ``land_inflation`` but for building improvements.  Defaults to
         a preset dict with 2 % mean annual inflation and no seasonality.
-
+    unit : str, optional
+        The basic unit of area. Defaults to 'sqft'. Legal values are 'sqft' or 'sqm'.
+    
     Returns
     -------
     SyntheticData
@@ -402,8 +405,8 @@ def generate_basic(
         "key": [],
         "geometry": [],
         "neighborhood": [],
-        "bldg_area_finished_sqft": [],
-        "land_area_sqft": [],
+        f"bldg_area_finished_{unit}": [],
+        f"land_area_{unit}": [],
         "bldg_type": [],
         "bldg_quality_num": [],
         "bldg_condition_num": [],
@@ -425,8 +428,8 @@ def generate_basic(
         "vacant_sale": [],
         "is_vacant": [],
         "sale_price": [],
-        "sale_price_per_impr_sqft": [],
-        "sale_price_per_land_sqft": [],
+        f"sale_price_per_impr_{unit}": [],
+        f"sale_price_per_land_{unit}": [],
         "sale_age_days": [],
         "sale_date": [],
         "sale_year": [],
@@ -513,11 +516,14 @@ def generate_basic(
 
             # base value with exponential falloff from center:
             _base_land_value = base_land_value - 1
-            land_value_per_land_sqft = 1 + (_base_land_value * (1 - dist_center))
+            land_value_per_land_area = 1 + (_base_land_value * (1 - dist_center))
 
             key = f"{x}-{y}"
-            land_area_sqft = np.random.randint(5445, 21780)
-            land_value = land_area_sqft * land_value_per_land_sqft
+            land_area = np.random.randint(5445, 21780)
+            if "unit" == "sqm":
+                land_area /= 10.7639
+                
+            land_value = land_area * land_value_per_land_area
 
             if np.random.rand() < percent_vacant:
                 is_vacant = True
@@ -525,7 +531,9 @@ def generate_basic(
                 is_vacant = False
 
             if not is_vacant:
-                bldg_area_finished_sqft = np.random.randint(1000, 2500)
+                bldg_area_finished_area = np.random.randint(1000, 2500)
+                if "unit" == "sqm":
+                    bldg_area_finished_area /= 10.7639
                 bldg_quality_num = np.clip(np.random.normal(3, 1), 0, 6)
                 bldg_condition_num = np.clip(np.random.normal(3, 1), 0, 6)
                 bldg_age_years = np.clip(np.random.normal(20, 10), 0, 100)
@@ -540,7 +548,7 @@ def generate_basic(
                 elif bldg_type == "C":
                     bldg_type_mult = 2.0
             else:
-                bldg_area_finished_sqft = 0
+                bldg_area_finished_area = 0
                 bldg_quality_num = 0
                 bldg_condition_num = 0
                 bldg_age_years = 0
@@ -548,7 +556,7 @@ def generate_basic(
                 bldg_type = ""
                 bldg_type_mult = 0
 
-            bldg_value_per_sqft = (
+            bldg_value_per_area = (
                 base_bldg_value + (quality_value * bldg_quality_num)
             ) * bldg_type_mult
 
@@ -559,8 +567,8 @@ def generate_basic(
                 depreciation_from_age + depreciation_from_condition
             ) / 2
 
-            bldg_value_per_sqft = bldg_value_per_sqft * (1 - total_depreciation)
-            bldg_value = bldg_area_finished_sqft * bldg_value_per_sqft
+            bldg_value_per_area = bldg_value_per_area * (1 - total_depreciation)
+            bldg_value = bldg_area_finished_area * bldg_value_per_area
 
             total_value = land_value + bldg_value
 
@@ -569,8 +577,8 @@ def generate_basic(
             # younger than at the valuation date
 
             sale_price = 0
-            sale_price_per_land_sqft = 0
-            sale_price_per_impr_sqft = 0
+            sale_price_per_land_area = 0
+            sale_price_per_impr_area = 0
             sale_age_days = 0
 
             sale_date = None
@@ -583,15 +591,15 @@ def generate_basic(
             if valid_sale:
                 # account for time inflation:
                 sale_age_days = np.random.randint(0, days_duration)
-                land_value_per_land_sqft_sale = (
-                    land_value_per_land_sqft * time_land_mult[sale_age_days]
+                land_value_per_land_area_sale = (
+                    land_value_per_land_area * time_land_mult[sale_age_days]
                 )
-                # bldg_value_per_sqft_sale = bldg_value_per_sqft * time_bldg_mult[sale_age_days]
-                bldg_value_per_sqft_sale = bldg_value_per_sqft
+                # bldg_value_per_area_sale = bldg_value_per_area * time_bldg_mult[sale_age_days]
+                bldg_value_per_area_sale = bldg_value_per_area
 
                 # calculate total values:
-                land_value_sale = land_area_sqft * land_value_per_land_sqft_sale
-                bldg_value_sale = bldg_area_finished_sqft * bldg_value_per_sqft_sale
+                land_value_sale = land_area * land_value_per_land_area_sale
+                bldg_value_sale = bldg_area_finished_area * bldg_value_per_area_sale
                 total_value_sale = land_value_sale + bldg_value_sale
 
                 # add some noise
@@ -599,8 +607,11 @@ def generate_basic(
                     1 + np.random.uniform(-noise_sales, noise_sales)
                 )
 
-                sale_price_per_land_sqft = sale_price / land_area_sqft
-                sale_price_per_impr_sqft = sale_price / bldg_area_finished_sqft
+                sale_price_per_land_area = sale_price / land_area
+                if bldg_area_finished_area > 0:
+                    sale_price_per_impr_area = sale_price / bldg_area_finished_area
+                else:
+                    sale_price_per_impr_area = float("nan")
 
                 sale_date = start_date + pd.DateOffset(days=sale_age_days)
                 sale_year = sale_date.year
@@ -615,8 +626,8 @@ def generate_basic(
 
             data["key"].append(str(key))
             data["neighborhood"].append("")
-            data["bldg_area_finished_sqft"].append(bldg_area_finished_sqft)
-            data["land_area_sqft"].append(land_area_sqft)
+            data[f"bldg_area_finished_{unit}"].append(bldg_area_finished_area)
+            data[f"land_area_{unit}"].append(land_area)
             data["bldg_quality_num"].append(bldg_quality_num)
             data["bldg_condition_num"].append(bldg_condition_num)
             data["bldg_age_years"].append(bldg_age_years)
@@ -639,8 +650,8 @@ def generate_basic(
                 data_sales["vacant_sale"].append(vacant_sale)
                 data_sales["is_vacant"].append(vacant_sale)
                 data_sales["sale_price"].append(sale_price)
-                data_sales["sale_price_per_impr_sqft"].append(sale_price_per_impr_sqft)
-                data_sales["sale_price_per_land_sqft"].append(sale_price_per_land_sqft)
+                data_sales[f"sale_price_per_impr_{unit}"].append(sale_price_per_impr_area)
+                data_sales[f"sale_price_per_land_{unit}"].append(sale_price_per_land_area)
                 data_sales["sale_age_days"].append(sale_age_days)
                 data_sales["sale_date"].append(sale_date)
                 data_sales["sale_year"].append(sale_year)
