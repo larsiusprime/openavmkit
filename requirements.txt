@@ -5,7 +5,7 @@ huggingface-hub==0.29.1
 lightgbm==4.6.0
 markdown==3.7
 mgwr==2.2.1
-optuna==4.1.0
+optuna==4.5.0
 osmnx==2.0.1
 paramiko==3.5.1
 pdfkit==1.0.0
