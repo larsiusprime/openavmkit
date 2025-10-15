@@ -1,13 +1,15 @@
 import pandas as pd
 
 from openavmkit.utilities.timing import TimingData
+from openavmkit.utilities.settings import area_unit
 
 
 def make_clusters(
     df_in: pd.DataFrame,
     field_location: str | None,
     fields_categorical: list[str],
-    fields_numeric: list[str | list[str]] = None,
+    fields_numeric: list[str | list[str]],
+    settings: dict,
     min_cluster_size: int = 15,
     verbose: bool = False,
     output_folder: str = "",
@@ -64,8 +66,11 @@ def make_clusters(
     df = df_in.copy()
 
     iteration = 0
+    
+    unit = area_unit(settings)
+    
     # We are assigning a unique id to each cluster
-
+    
     t.start("categoricals")
     # Phase 1: split the data into clusters based on the location:
     if field_location is not None and field_location in df:
@@ -94,8 +99,8 @@ def make_clusters(
     t.start("numerics")
     if fields_numeric is None or len(fields_numeric) == 0:
         fields_numeric = [
-            "land_area_sqft",
-            "bldg_area_finished_sqft",
+            f"land_area_{unit}",
+            f"bldg_area_finished_{unit}",
             "bldg_quality_num",
             [
                 "bldg_effective_age_years",
