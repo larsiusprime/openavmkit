@@ -846,14 +846,17 @@ def _enrich_sup_spatial_lag_for_model_group(
             df_universe[f"spatial_lag_{value_field}"] = 0
             df_sales[f"spatial_lag_{value_field}"] = 0
             continue
-
+        
         df_sub = df_sub[~pd.isna(df_sub["latitude"]) & ~pd.isna(df_sub["longitude"])]
 
         # Choose the number of nearest neighbors to use
         k = 5  # adjust this number as needed
 
         df_sub_train = df_sub.loc[df_sub["key_sale"].isin(train_keys)].copy()
-
+        
+        if len(df_sub_train) <= 0:
+            continue
+        
         # Get the coordinates for the universe parcels
         crs_equal_distance = get_crs(df_universe, "equal_distance")
         df_proj = df_universe.to_crs(crs_equal_distance)
