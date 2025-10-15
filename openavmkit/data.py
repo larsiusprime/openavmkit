@@ -680,7 +680,7 @@ def enrich_df_streets(
     gpd.GeoDataFrame
         Enriched GeoDataFrame with additional columns for street-related metrics.
     """
-    e_streets = settings.get("data",{}).get("process", {}).get("enrich", {})
+    e_streets = settings.get("data",{}).get("process", {}).get("enrich", {}).get("streets", {})
     do_streets = e_streets.get("enabled", False)
     
     if do_streets:

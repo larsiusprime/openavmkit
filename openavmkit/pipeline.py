@@ -747,7 +747,7 @@ def load_dataframes(settings: dict, verbose: bool = False) -> dict:
     return dataframes
 
 
-def load_and_process_data(settings: dict) -> SalesUniversePair:
+def process_dataframes(dataframes: dict[str, pd.DataFrame], settings: dict, verbose: bool = False) -> SalesUniversePair:
     """
     Load and process data according to provided settings.
 
@@ -756,8 +756,12 @@ def load_and_process_data(settings: dict) -> SalesUniversePair:
 
     Parameters
     ----------
+    dataframes : dict[str, pd.DataFrame]
+        Dictionary of DataFrames.
     settings : dict
         A dictionary of settings for data loading and processing.
+    verbose : bool, optional
+        If True, prints detailed logs during data loading. Defaults to False.
 
     Returns
     -------
@@ -765,8 +769,10 @@ def load_and_process_data(settings: dict) -> SalesUniversePair:
         A SalesUniversePair object containing the processed sales and universe data.
     """
 
-    dataframes = load_dataframes(settings)
-    results = process_data(dataframes, settings)
+    results = process_data(dataframes, settings, verbose)
+
+    write_notebook_output_sup(results)
+
     return results
 
 
@@ -1198,7 +1204,7 @@ def write_notebook_output_sup(
     shp : bool, optional
         Whether to write to ESRI shapefile format. Defaults to false.
     """
-    
+
     os.makedirs("out/look", exist_ok=True)
     with open(f"out/{prefix}-sup.pickle", "wb") as file:
         pickle.dump(sup, file)
