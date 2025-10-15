@@ -18,7 +18,7 @@ rich==13.9.4
 seaborn==0.13.2
 statsmodels==0.14.4
 xgboost==2.1.4
-xlsxwriter==3.1.9
+xlsxwriter==3.2.9
 census==0.8.23
 shap==0.47.2
 mpld3==0.5.10
