@@ -1,0 +1,11 @@
+notebooks/pipeline/data/
+venv/
+dockerfile
+.dockerignore
+.gitignore
+.github
+.idea
+tests/
+signatures/
+docs/
+!/.git

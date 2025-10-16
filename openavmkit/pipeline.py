@@ -283,7 +283,7 @@ def examine_df_in_ridiculous_detail(df: pd.DataFrame, s: dict):
             else:
                 uniques = unique_str
 
-        return f"{fit_str(col, 30)} {dtype:^10} {count_non_zero:>10} {p:>5.0%} {count_non_null:>10} {pnn:>5.0%} {uniques:>40}"
+        return f"{fit_str(col, 75)} {dtype:^10} {count_non_zero:>10} {p:>5.0%} {count_non_null:>10} {pnn:>5.0%} {uniques:>40}"
 
     def print_horz_line(char: str):
         print(
@@ -490,7 +490,7 @@ def examine_df(df: pd.DataFrame, s: dict):
             else:
                 uniques = unique_str
 
-        return f"{fit_str(col, 30)} {dtype:^10} {count_non_zero:>10} {p:>5.0%} {count_non_null:>10} {pnn:>5.0%} {uniques:>40}"
+        return f"{fit_str(col, 75)} {dtype:^10} {count_non_zero:>10} {p:>5.0%} {count_non_null:>10} {pnn:>5.0%} {uniques:>40}"
 
     buffer = ""
     lines = 0
@@ -748,7 +748,7 @@ def load_dataframes(settings: dict, verbose: bool = False) -> dict:
     return dataframes
 
 
-def load_and_process_data(settings: dict) -> SalesUniversePair:
+def process_dataframes(dataframes: dict[str, pd.DataFrame], settings: dict, verbose: bool = False) -> SalesUniversePair:
     """
     Load and process data according to provided settings.
 
@@ -757,8 +757,12 @@ def load_and_process_data(settings: dict) -> SalesUniversePair:
 
     Parameters
     ----------
+    dataframes : dict[str, pd.DataFrame]
+        Dictionary of DataFrames.
     settings : dict
         A dictionary of settings for data loading and processing.
+    verbose : bool, optional
+        If True, prints detailed logs during data loading. Defaults to False.
 
     Returns
     -------
@@ -766,8 +770,10 @@ def load_and_process_data(settings: dict) -> SalesUniversePair:
         A SalesUniversePair object containing the processed sales and universe data.
     """
 
-    dataframes = load_dataframes(settings)
-    results = process_data(dataframes, settings)
+    results = process_data(dataframes, settings, verbose)
+
+    write_notebook_output_sup(results)
+
     return results
 
 
@@ -1199,7 +1205,7 @@ def write_notebook_output_sup(
     shp : bool, optional
         Whether to write to ESRI shapefile format. Defaults to false.
     """
-    
+
     os.makedirs("out/look", exist_ok=True)
     with open(f"out/{prefix}-sup.pickle", "wb") as file:
         pickle.dump(sup, file)
@@ -1213,13 +1219,13 @@ def write_notebook_output_sup(
         write_zipped_shapefile(sup["universe"], f"out/look/{prefix}-universe.shp.zip")
     
     # sales
-    if parquet:
-        write_parquet(sup["sales"], f"out/look/{prefix}-sales.parquet")
+    #if parquet:
+        #write_parquet(sup["sales"], f"out/look/{prefix}-sales.parquet")
     
     # sales (hydrated)
     df_hydrated = get_hydrated_sales_from_sup(sup)
-    if parquet:
-        write_parquet(df_hydrated, f"out/look/{prefix}-sales-hydrated.parquet")
+    # if parquet:
+    #     write_parquet(df_hydrated, f"out/look/{prefix}-sales-hydrated.parquet")
     if gpkg:
         write_gpkg(df_hydrated, f"out/look/{prefix}-sales-hydrated.gpkg")
     if shp:
