@@ -1,9 +1,11 @@
 import os
 import json
 import pickle
-
+import numpy as np
 import pandas as pd
 import geopandas as gpd
+
+from openavmkit.utilities.timing import TimingData
 
 from openavmkit.utilities.assertions import (
     objects_are_equal,
@@ -171,6 +173,8 @@ def write_cached_df(
     filename: str,
     key: str = "key",
     extra_signature: dict | str = None,
+    changed_cols: list = None,
+    check_equal: bool = True
 ) -> pd.DataFrame | None:
     """Update an on-disk cache with row- or column-level differences between two
     ``pandas`` DataFrames and return the fully reconstructed, cached DataFrame.
@@ -204,7 +208,11 @@ def write_cached_df(
         Additional entropy to include in the cache signature.  Use this when
         the same data structure can vary by external configuration (e.g.,
         feature flags or environment).
-
+    changed_cols : list[str]
+        (optional) A list of modified columns, if known in advance. Default is None. Supplying this skips potentially costly modification checks.
+    check_equal : bool
+        (optional) Check if the cached result yields the same as the intended result. Default is True.
+    
     Returns
     -------
     pandas.DataFrame or None
@@ -241,6 +249,12 @@ def write_cached_df(
 
     df_new = df_new.copy()
 
+    if changed_cols is None:
+        orig_cols = set(df_orig.columns)
+        new_cols = [c for c in df_new.columns if c not in orig_cols]
+        common = [c for c in df_new.columns if c in orig_cols]
+    else:
+        common = changed_cols
     orig_cols = set(df_orig.columns)
     new_cols = [c for c in df_new.columns if c not in orig_cols]
     common = [c for c in df_new.columns if c in orig_cols]
@@ -263,13 +277,18 @@ def write_cached_df(
         deleted_rows = []
 
     modified = []
-    for c in common:
-        col_new = df_new[c].reset_index(drop=True)
-        col_orig = df_orig[c].reset_index(drop=True)
+    new  = df_new.reindex(columns=common)
+    orig = df_orig.reindex(columns=common, index=new.index)
+    if changed_cols is None:
+        # NA-aware per-column equality without materializing 2D boolean frames
+        col_equal = []
+        for c in common:
+            a1 = new[c].to_numpy(copy=False)
+            a2 = orig[c].to_numpy(copy=False)
 
-        is_different = False
-        if len(col_new) == len(col_orig):
-            values_equal = col_new.values == col_orig.values
+            both_na = pd.isna(a1) & pd.isna(a2)          # treat both-NA as equal
+            if both_na.all():
+                col_equal.append(True)
             na_equal = col_new.isna() & col_orig.isna()
 
             count_na_equal = na_equal.sum()
@@ -290,6 +309,14 @@ def write_cached_df(
             modified.append(c)
             continue
 
+            # Compare only positions not both NA; dtype differences are okay (matches your original logic)
+            nz = ~both_na
+            # np.equal handles mixed dtypes; single vectorized reduction
+            col_equal.append(np.equal(a1[nz], a2[nz]).all())
+        modified = [c for c, ok in zip(common, col_equal) if not ok]
+
+        changed_cols = new_cols + modified
+    
     changed_cols = new_cols + modified
     if not changed_cols:
         # nothing new or modified → no cache update needed
@@ -314,6 +341,7 @@ def write_cached_df(
 
     df_cached = get_cached_df(df_orig, filename, key, extra_signature)
 
+    if check_equal:
     are_equal = dfs_are_equal(df_new, df_cached, allow_weak=True, primary_key=key)
     if not are_equal:
         raise ValueError(f"Cached DataFrame does not match the original DataFrame.")

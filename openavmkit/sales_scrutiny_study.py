@@ -4,6 +4,8 @@ import pandas as pd
 import numpy as np
 from sklearn.mixture import GaussianMixture
 
+from openavmkit.utilities.timing import TimingData
+
 from openavmkit.data import (
   _get_sales,
   get_sale_field,
@@ -113,7 +115,8 @@ class SalesScrutinyStudy:
         for key in stuff:
             df = stuff[key]
             df, cluster_fields = _mark_sales_scrutiny_clusters(df, settings)
-            df["ss_id"] = df["model_group"] + "_" + key + "_" + df["ss_id"].astype(str)
+            df["ss_id"] = df["ss_id"].astype(str)
+            df["ss_id"] = df["model_group"] + "_" + key + "_" + df["ss_id"]
             per_sqft = ""
             denominator = ""
             if key == "i":
@@ -571,9 +574,13 @@ def run_heuristics(
     df_sales = get_hydrated_sales_from_sup(sup)
 
     #### Multi-parcel sales detection heuristics
+    jurisdiction = ss.get("jurisdiction", None)
 
     # 1 -- Flag sales with identical deed IDs AND identical sale dates
     if (deed_id is not None) and (deed_id in df_sales):
+        if jurisdiction != None:
+            df_sales["deed_date"] = df_sales[jurisdiction].astype(str) + "---" + df_sales[deed_id].astype(str)+"---"+df_sales["sale_date"].astype(str)
+        else:
         df_sales["deed_date"] = df_sales[deed_id].astype(str)+"---"+df_sales["sale_date"].astype(str)
         vcs_deed_date = df_sales["deed_date"].value_counts()
         idx_dupe_deed_dates = vcs_deed_date[vcs_deed_date > 1].index.values
@@ -590,6 +597,10 @@ def run_heuristics(
             warnings.warn(f"You provided a `deed_id`: \"{deed_id}\", but it wasn't found in in the sales dataframe, so no deed-based sales validation heuristic can be run")
 
     # 2 -- Flag sales made on the same date for the same price
+    
+    if jurisdiction != None:
+        df_sales["date_price"] = df_sales[jurisdiction].astype(str) + "---" + df_sales["sale_date"].astype(str) + "---" + df_sales["sale_price"].astype(str)
+    else:
     df_sales["date_price"] = df_sales["sale_date"].astype(str) + "---" + df_sales["sale_price"].astype(str)
     vcs_date_price = df_sales["date_price"].value_counts()
     idx_dupe_date_price = vcs_date_price[vcs_date_price > 1].index.values
@@ -597,6 +608,7 @@ def run_heuristics(
         df_sales["date_price"].isin(idx_dupe_date_price),
         "flag_dupe_date_price",
     ] = True
+    
     # drop extraneous column
     df_sales = df_sales.drop(columns="date_price")
 

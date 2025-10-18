@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 
+from openavmkit.utilities.timing import TimingData
 
 def objects_are_equal(a, b, epsilon: float = 1e-6):
     """Test whether two objects are equal

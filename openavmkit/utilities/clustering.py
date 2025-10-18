@@ -1,5 +1,5 @@
 import pandas as pd
-
+import numpy as np
 from openavmkit.utilities.timing import TimingData
 
 
@@ -8,9 +8,11 @@ def make_clusters(
     field_location: str | None,
     fields_categorical: list[str],
     fields_numeric: list[str | list[str]] = None,
+    split_on_vacant: bool = True,
     min_cluster_size: int = 15,
     verbose: bool = False,
     output_folder: str = "",
+    t: TimingData = None
 ):
     """
     Partition a DataFrame into hierarchical clusters based on location, vacancy,
@@ -43,12 +45,16 @@ def make_clusters(
         Numeric fields (or lists of fallbacks) for recursive clustering.  If None,
         a default set is used.  Each entry represents a variable to attempt
         splitting upon, in order.
+    split_on_vacant: bool
+        whether to split on vacant status or not, default True
     min_cluster_size : int, default 15
         Minimum number of rows required to split a cluster on a numeric field.
     verbose : bool, default False
         If True, print progress messages at each phase and sub-cluster iteration.
     output_folder : str, default ""
         Path to save any intermediate outputs (currently unused).
+    t : TimingData, optional
+        TimingData object to record performance metrics.
 
     Returns
     -------
@@ -59,6 +65,7 @@ def make_clusters(
     cluster_labels : pandas.Series
         Hierarchical cluster labels encoding the sequence of splits applied to each row.
     """
+    if t is None:
     t = TimingData()
     t.start("make clusters")
     df = df_in.copy()
@@ -78,7 +85,7 @@ def make_clusters(
     fields_used = {}
 
     # Phase 2: split into vacant and improved:
-    if "is_vacant" in df:
+    if split_on_vacant and "is_vacant" in df:
         df["cluster"] = df["cluster"] + "_" + df["is_vacant"].astype(str)
         if verbose:
             print(f"--> crunching on is_vacant, {len(df['cluster'].unique())} clusters")
