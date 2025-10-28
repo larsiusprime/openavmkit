@@ -72,6 +72,10 @@ class OpenStreetMapService:
             return {
                 "water": ["river", "stream"]
             }
+        elif thing == "lake":
+            return {
+                "water": ["lake"]
+            }
         elif thing == "water":
             return {
                 "natural": ["water", "bay", "strait"],
@@ -79,6 +83,11 @@ class OpenStreetMapService:
             }
         elif thing == "transportation":
             return {"railway": ["rail", "subway", "light_rail", "monorail", "tram"]}
+        elif thing == "airport":
+            return {
+               "airport": ["aerodrome"],
+               "site": ["airport"]
+           }
         elif thing == "educational":
             return {"amenity": ["university", "college"]}
         elif thing == "parks":
