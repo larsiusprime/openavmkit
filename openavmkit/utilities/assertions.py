@@ -155,15 +155,16 @@ def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None, allow_weak
     a = a.copy()
     b = b.copy()
 
+    # If a primary key is provided, preserve original behavior: sort by PK
     if primary_key is not None:
         a = a.sort_values(by=primary_key)
         b = b.sort_values(by=primary_key)
 
-    # sort column names so they're in the same order:
+    # Match original: sort column names so they're in the same order
     a = a.reindex(sorted(a.columns), axis=1)
     b = b.reindex(sorted(b.columns), axis=1)
 
-    # ensure that the two dataframes contain the same information:
+    # Columns must match exactly
     if not a.columns.equals(b.columns):
         print(f"Columns do not match:\nA={a.columns}\nB={b.columns}")
         return False
@@ -171,8 +172,13 @@ def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None, allow_weak
     a_sorted_index = a.index.sort_values()
     b_sorted_index = b.index.sort_values()
 
+    # Precompute primary-key–indexed views only once (may or may not be used later)
+    a_indexed = None
+    b_indexed = None
+
     if not a_sorted_index.equals(b_sorted_index):
         if primary_key is not None:
+            # Same logic: report symmetric key diffs if any; otherwise prepare PK indexing
             a_not_in_b = a[~a[primary_key].isin(b[primary_key])][primary_key].values
             b_not_in_a = b[~b[primary_key].isin(a[primary_key])][primary_key].values
             if len(a_not_in_b) > 0:
@@ -183,7 +189,7 @@ def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None, allow_weak
                 print(f"len(a) = {len(a)} VS len(b) = {len(b)}")
                 return False
             else:
-                # we're going to reindex on primary key and proceed with comparisons on that basis
+                # Prepare PK-indexed views once
                 a_indexed = a.set_index(primary_key)
                 b_indexed = b.set_index(primary_key)
         else:
@@ -192,34 +198,42 @@ def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None, allow_weak
             print("VS")
             print(b_sorted_index)
             return False
+    else:
+        # Indices already match; still prepare PK-indexed views up-front if we may need them later
+        if primary_key is not None and primary_key in a.columns and primary_key in b.columns:
+            a_indexed = a.set_index(primary_key)
+            b_indexed = b.set_index(primary_key)
 
-    for col in a.columns:
-        no_match = False
+    # ===== Hot path: column-wise checks =====
+    cols = a.columns
+
+    # Iterate columns once; reuse precomputed PK-indexed views if needed.
+    for col in cols:
         if col == primary_key:
-            # skip the primary key column:
+            # Same logic: skip the primary key column
             continue
 
+        # First attempt: direct comparison
         if not series_are_equal(a[col], b[col]):
-            # try again using primary key as the index:
+            no_match = False
+
+            # Second attempt (only if PK provided): use prebuilt PK-indexed Series
             if primary_key is not None:
-                # Create temporary indexed versions to avoid modifying original DataFrames
-                a_indexed = a.set_index(primary_key)
-                b_indexed = b.set_index(primary_key)
-                # try again:
+                # a_indexed / b_indexed are guaranteed prepared above when PK is available
+                # Compare the same column after aligning on PK
                 if not series_are_equal(a_indexed[col], b_indexed[col]):
                     no_match = True
             else:
                 no_match = True
 
             if no_match:
-
-                # Use context manager to avoid global state pollution
+                # Keep the original debug/print behavior (including the "weak" case)
                 with pd.option_context('display.max_columns', None):
+                    # (compare a[col] to b[col] directly, using a's mask twice).
                     bad_rows_a = a[~a[col].eq(b[col])]
                     bad_rows_b = b[~a[col].eq(b[col])]
 
                     weak_fail = False
-
                     if len(bad_rows_a) == 0 and len(bad_rows_b) == 0:
                         weak_fail = True
                         if not allow_weak:
@@ -235,12 +249,14 @@ def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None, allow_weak
                         print(bad_rows_b[col])
 
                 if weak_fail and allow_weak:
+                    # Preserve original behavior: tolerate weak mismatch when allowed
                     continue
 
                 print(f"Column '{col}' does not match for some reason.")
                 return False
 
     return True
+
 
 
 def series_are_equal(a: pd.Series, b: pd.Series):
