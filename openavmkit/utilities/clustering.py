@@ -1,5 +1,5 @@
 import pandas as pd
-
+import numpy as np
 from openavmkit.utilities.timing import TimingData
 
 
@@ -8,9 +8,11 @@ def make_clusters(
     field_location: str | None,
     fields_categorical: list[str],
     fields_numeric: list[str | list[str]] = None,
+    split_on_vacant: bool = True,
     min_cluster_size: int = 15,
     verbose: bool = False,
     output_folder: str = "",
+    t: TimingData = None
 ):
     """
     Partition a DataFrame into hierarchical clusters based on location, vacancy,
@@ -43,12 +45,16 @@ def make_clusters(
         Numeric fields (or lists of fallbacks) for recursive clustering.  If None,
         a default set is used.  Each entry represents a variable to attempt
         splitting upon, in order.
+    split_on_vacant: bool
+        whether to split on vacant status or not, default True
     min_cluster_size : int, default 15
         Minimum number of rows required to split a cluster on a numeric field.
     verbose : bool, default False
         If True, print progress messages at each phase and sub-cluster iteration.
     output_folder : str, default ""
         Path to save any intermediate outputs (currently unused).
+    t : TimingData, optional
+        TimingData object to record performance metrics.
 
     Returns
     -------
@@ -59,8 +65,9 @@ def make_clusters(
     cluster_labels : pandas.Series
         Hierarchical cluster labels encoding the sequence of splits applied to each row.
     """
-    t = TimingData()
-    t.start("make clusters")
+    if t is None:
+        t = TimingData()
+    t.start("make_clusters")
     df = df_in.copy()
 
     iteration = 0
@@ -78,7 +85,7 @@ def make_clusters(
     fields_used = {}
 
     # Phase 2: split into vacant and improved:
-    if "is_vacant" in df:
+    if split_on_vacant and "is_vacant" in df:
         df["cluster"] = df["cluster"] + "_" + df["is_vacant"].astype(str)
         if verbose:
             print(f"--> crunching on is_vacant, {len(df['cluster'].unique())} clusters")
@@ -106,69 +113,98 @@ def make_clusters(
 
     # Phase 4: iterate over numeric fields, trying to crunch down whenever possible:
     for entry in fields_numeric:
+        
+        t.start("factorize")
+        # integer codes in first-seen order (same as unique())
+        codes, uniques = pd.factorize(df["cluster"].to_numpy(copy=False), sort=False)
+        t.stop("factorize")
 
-        iteration += 1
-        # get all unique clusters
-        clusters = df["cluster"].unique()
+        t.start("sort")
+        # stable sort to get contiguous blocks per cluster
+        order = codes.argsort(kind="mergesort")           # stable
+        sorted_codes = codes[order]
+        t.stop("sort")
 
-        # store the base for the next iteration as the current cluster
-        df["next_cluster"] = df["cluster"]
+        t.start("block boundaries")
+        # find block boundaries
+        boundaries = 1 + (sorted_codes[1:] != sorted_codes[:-1]).nonzero()[0]
+        starts = np.r_[0, boundaries]
+        ends   = np.r_[boundaries, len(order)]
+        t.stop("block boundaries")
+        
+        t.start("next_cluster copy")
+        next_cluster = df["cluster"].copy()
+        t.stop("next_cluster copy")
 
-        if verbose:
-            print(f"--> crunching on {entry}, {len(clusters)} clusters")
-
-        i = 0
-        # step through each unique cluster:
-        for cluster in clusters:
-
-            # get all the rows in this cluster
-            mask = df["cluster"].eq(cluster)
-            df_sub = df[mask]
-
-            len_sub = mask.sum()
-
+        for i in range(len(starts)):
+            t.start("cluster")
+            block_idx = df.index[order[starts[i]:ends[i]]]   # index labels for this cluster
+            
             # if the cluster is already too small, skip it
-            if len_sub < min_cluster_size:
+            if (ends[i] - starts[i]) < min_cluster_size:
+                t.stop("cluster")
                 continue
-
+            
+            t.start("df_sub loc")
+            df_sub = df.loc[block_idx]
+            t.stop("df_sub loc")
+            
             # get the field to crunch
             field = _get_entry_field(entry, df_sub)
-            if field == "" or field not in df_sub:
+            if not field or field not in df_sub:
+                t.stop("cluster")
                 continue
-
-            # attempt to crunch into smaller clusters
+            
+            t.start("crunch")
             series = _crunch(df_sub, field, min_cluster_size)
-
+            t.stop("crunch")
             if series is not None and len(series) > 0:
                 if verbose:
                     if i % 100 == 0:
+                        ls = len(starts)
                         print(
-                            f"----> {i}/{len(clusters)}, {i/len(clusters):0.0%} clustering on {cluster}, field = {field}, size = {len(series)}"
+                            f"----> {i}/{ls}, {i/ls:0.0%}, field = {field}, size = {len(series)}"
                         )
+                
                 # if we succeeded, update the cluster names with the new breakdowns
-                df.loc[mask, "next_cluster"] = (
-                    df.loc[mask, "next_cluster"] + "_" + series.astype(str)
-                )
-                df.loc[mask, "__temp_series__"] = series.astype(str)
+                t.start("series string")
+                s = series.astype("string")
+                t.stop("series string")
+                t.start("next_cluster loc")
+                next_cluster.loc[block_idx] = next_cluster.loc[block_idx].str.cat(s, sep="_")
+                t.stop("next_cluster loc")
                 fields_used[field] = True
-
-            i += 1
-
-        # update the cluster column with the new cluster names, then iterate on those next
-        df["cluster"] = df["next_cluster"]
+            t.stop("cluster")
+        
+        t.start("next_cluster")
+        df["cluster"] = next_cluster
+        t.stop("next_cluster")
+        
+    if verbose:
+        print("Done clustering")
+    
     t.stop("numerics")
 
+    t.start("cluster id 0")
     # assign a unique ID # to each cluster:
     i = 0
     df["cluster_id"] = "0"
-
-    for cluster in df["cluster"].unique():
-        df.loc[df["cluster"].eq(cluster), "cluster_id"] = str(i)
-        i += 1
+    t.stop("cluster id 0")
+    
+    if verbose:
+        print("Assigning cluster id names")
+    
+    t.start("assign_cluster_id_name")
+    df["cluster_id"] = df.groupby("cluster", sort=False).ngroup().astype(str)
+    t.stop("assign_cluster_id_name")
+    
+    if verbose:
+        print("Finished assigning cluster id names")
 
     list_fields_used = [field for field in fields_used]
-    t.stop("make clusters")
-
+    
+    t.stop("make_clusters")
+    
     # return the new cluster ID's
     return df["cluster_id"], list_fields_used, df["cluster"]
 

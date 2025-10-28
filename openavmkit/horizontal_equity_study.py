@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import warnings
 import openavmkit.utilities.stats as stats
 from openavmkit.data import SalesUniversePair
 from openavmkit.utilities.assertions import dfs_are_equal
@@ -281,6 +282,10 @@ def mark_horizontal_equity_clusters_per_model_group_sup(
         if verbose:
             print("")
             print("Marking LAND horizontal equity clusters...")
+        le = settings.get("analysis", {}).get("land_equity", {})
+        location = le.get("location", None)
+        if location is None:
+            warnings.warn("You are creating land equity clusters, but you haven't defined `data.analysis.land_equity.location`. You should at least provide a location field if you want to use this feature.")
         df_universe = _mark_horizontal_equity_clusters_per_model_group(
             df_universe,
             settings,
@@ -350,13 +355,19 @@ def mark_horizontal_equity_clusters(
     location = he.get("location", None)
     fields_categorical = he.get("fields_categorical", [])
     fields_numeric = he.get("fields_numeric", None)
+    
+    split_on_vacant = True
+    if "land" in id_name:
+        split_on_vacant = False
     df[id_name], _, _ = make_clusters(
         df,
         location,
         fields_categorical,
         fields_numeric,
+        split_on_vacant=split_on_vacant,
         verbose=verbose,
         output_folder=output_folder,
+        t=t
     )
     return df
 
@@ -422,7 +433,7 @@ def _mark_horizontal_equity_clusters_per_model_group(
             "settings_object": settings_object,
             "id_name": id_name,
             "output_folder": output_folder,
-            "t": TimingData,
+            "t": t,
         },
         key="key",
         instructions={"just_stomp_columns": [id_name]},
@@ -431,7 +442,15 @@ def _mark_horizontal_equity_clusters_per_model_group(
 
     if use_cache:
         df_result = write_cached_df(df_in, df_out, id_name, "key", he)
-        assert dfs_are_equal(df_out, df_result, allow_weak=True)
+        df_result = write_cached_df(
+            df_in, 
+            df_out, 
+            id_name, 
+            "key", 
+            he,
+            changed_cols=[id_name],  # we're just writing key + id, no need to guess (speedup)
+            check_equal=False        # skip this check for speed purposes, it's safe
+        )
 
     print("")
     print("TIMING: Mark Horizontal Equity Clusters")
@@ -474,5 +493,6 @@ def _mark_he_ids(
     df = mark_horizontal_equity_clusters(
         df_in, settings, verbose, settings_object, id_name, output_folder, t
     )
-    df.loc[:, id_name] = model_group + "_" + df[id_name].astype(str)
+    df[id_name] = df[id_name].astype("string")
+    df.loc[:, id_name] = model_group + "_" + df[id_name]
     return df

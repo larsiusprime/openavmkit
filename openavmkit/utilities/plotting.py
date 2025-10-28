@@ -121,7 +121,7 @@ def plot_scatterplot(
 
     legend_arr = [None]
 
-    # 5) Optional best‐fit line
+    # 5) Optional best-fit line
     if best_fit_line:
         results = _simple_ols(df, x, y, intercept=False)
         slope, intercept, r2 = results["slope"], results["intercept"], results["r2"]

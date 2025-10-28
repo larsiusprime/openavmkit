@@ -71,19 +71,10 @@
 			]
 		},
 		"land_equity": {
-			"location": "neighborhood",
-			"fields_categorical": [
-				"risk_flood"
-			],
+			"fields_categorical": [],
 			"fields_numeric": [
 				"land_area_sqft",
-				"geom_rectangularity_num",
-				"geom_aspect_ratio",
-				"elevation_mean",
-				"slope_mean",
-				"noise_mean",
-				"is_geom_complex",
-				"is_geom_irregular"
+				"geom_rectangularity_num"
 			]
 		},
 		"impr_equity": {
@@ -372,6 +363,7 @@
 				"warning_vacant_positive_impr_numeric",
 				"warning_vacant_has_impr_categorical",
 				"sale_date",
+				"assr_date",
 				"demo_date",
 				"sale_year_month",
 				"sale_year_quarter",

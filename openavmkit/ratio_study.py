@@ -17,6 +17,7 @@ from openavmkit.utilities.settings import (
     get_model_group_ids,
     _get_max_ratio_study_trim
 )
+from openavmkit.utilities.stats import ConfidenceStat
 
 
 class RatioStudy:
@@ -198,40 +199,82 @@ class RatioStudyBootstrapped:
         iterations : int
             How many bootstrap iterations to perform
         """
+        
+        self.confidence_interval = confidence_interval
+        
         if len(predictions) == 0:
             self.count = 0
             self.count_trim = 0
             self.iterations = 0
-            self.median_ratio = None
-            self.mean_ratio = None
-            self.cod = None
-            self.prd = None
-            self.median_ratio_trim = None
-            self.mean_ratio_trim = None
-            self.cod_trim = None
-            self.prd_trim = None
-        
-        self.count = len(ground_truth)
-        self.iterations = iterations
-        self.confidence_interval = confidence_interval
-        
-        results = stats.calc_ratio_stats_bootstrap(predictions, ground_truth)
-        
-        self.cod = results["cod"]
-        self.median_ratio = results["median_ratio"]
-        self.mean_ratio = results["mean_ratio"]
-        self.prd = results["prd"]
-        
-        trim_predictions, trim_ground_truth = stats.trim_outlier_ratios(predictions, ground_truth, max_trim)
-        
-        self.count_trim = len(trim_ground_truth)
-        
-        results = stats.calc_ratio_stats_bootstrap(trim_predictions, trim_ground_truth)
-        
-        self.cod_trim = results["cod"]
-        self.median_ratio_trim = results["median_ratio"]
-        self.mean_ratio_trim = results["mean_ratio"]
-        self.prd_trim = results["prd"]
+            self.median_ratio = ConfidenceStat(
+                value=float("nan"), 
+                confidence_interval = confidence_interval,
+                low=float("nan"),
+                high=float("nan")
+            )
+            self.mean_ratio = median_ratio = ConfidenceStat(
+                value=float("nan"), 
+                confidence_interval = confidence_interval,
+                low=float("nan"),
+                high=float("nan")
+            )
+            self.cod = ConfidenceStat(
+                value=float("nan"), 
+                confidence_interval = confidence_interval,
+                low=float("nan"),
+                high=float("nan")
+            )
+            self.prd = ConfidenceStat(
+                value=float("nan"), 
+                confidence_interval = confidence_interval,
+                low=float("nan"),
+                high=float("nan")
+            )
+            self.median_ratio_trim = median_ratio = ConfidenceStat(
+                value=float("nan"), 
+                confidence_interval = confidence_interval,
+                low=float("nan"),
+                high=float("nan")
+            )
+            self.mean_ratio_trim = median_ratio = ConfidenceStat(
+                value=float("nan"), 
+                confidence_interval = confidence_interval,
+                low=float("nan"),
+                high=float("nan")
+            )
+            self.cod_trim = ConfidenceStat(
+                value=float("nan"), 
+                confidence_interval = confidence_interval,
+                low=float("nan"),
+                high=float("nan")
+            )
+            self.prd_trim = ConfidenceStat(
+                value=float("nan"), 
+                confidence_interval = confidence_interval,
+                low=float("nan"),
+                high=float("nan")
+            )
+        else:
+            self.count = len(ground_truth)
+            self.iterations = iterations
+            
+            results = stats.calc_ratio_stats_bootstrap(predictions, ground_truth)
+            
+            self.cod = results["cod"]
+            self.median_ratio = results["median_ratio"]
+            self.mean_ratio = results["mean_ratio"]
+            self.prd = results["prd"]
+            
+            trim_predictions, trim_ground_truth = stats.trim_outlier_ratios(predictions, ground_truth, max_trim)
+            
+            self.count_trim = len(trim_ground_truth)
+            
+            results = stats.calc_ratio_stats_bootstrap(trim_predictions, trim_ground_truth)
+            
+            self.cod_trim = results["cod"]
+            self.median_ratio_trim = results["median_ratio"]
+            self.mean_ratio_trim = results["mean_ratio"]
+            self.prd_trim = results["prd"]
         
 
     def summary(self):

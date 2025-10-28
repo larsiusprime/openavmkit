@@ -55,9 +55,7 @@ from openavmkit.modeling import (
     run_ground_truth,
     predict_ground_truth,
     run_spatial_lag,
-    predict_spatial_lag,
-    predict_local_somers,
-    run_local_somers,
+    predict_spatial_lag
 )
 from openavmkit.reports import MarkdownReport, _markdown_to_pdf
 from openavmkit.shap_analysis import compute_shap
@@ -72,7 +70,6 @@ from openavmkit.utilities.format import fancy_format, dig2_fancy_format
 from openavmkit.utilities.modeling import (
     NaiveSqftModel,
     LocalSqftModel,
-    LocalSomersModel,
     PassThroughModel,
     LandSLICEModel,
     GWRModel,
@@ -1053,12 +1050,6 @@ def get_data_split_for(
         _ind_vars = location_fields + ["bldg_area_finished_sqft", "land_area_sqft"]
     elif name == "slice":
         _ind_vars = ["land_area_sqft", "latitude", "longitude"]
-    elif name == "local_somers":
-        _ind_vars = location_fields + [
-            "bldg_area_finished_sqft",
-            "frontage_ft_1",
-            "depth_ft_1",
-        ]
     elif name == "assessor":
         _ind_vars = ["assr_land_value"] if hedonic else ["assr_market_value"]
     elif name == "ground_truth":
@@ -1279,13 +1270,6 @@ def run_one_model(
         results = run_naive_sqft(ds, sales_chase=sales_chase, verbose=verbose)
     elif model_name == "local_sqft":
         results = run_local_sqft(
-            ds,
-            location_fields=location_fields,
-            sales_chase=sales_chase,
-            verbose=verbose,
-        )
-    elif model_name == "local_somers":
-        results = run_local_somers(
             ds,
             location_fields=location_fields,
             sales_chase=sales_chase,
@@ -1713,9 +1697,6 @@ def _predict_one_model(
     elif model_name == "local_sqft":
         sqft_model: LocalSqftModel = smr.model
         results = predict_local_sqft(ds, sqft_model, timing, verbose)
-    elif model_name == "local_somers":
-        somers_model: LocalSomersModel = smr.model
-        results = predict_local_somers(ds, somers_model, timing, verbose)
     elif model_name == "assessor":
         assr_model: PassThroughModel = smr.model
         results = predict_pass_through(ds, assr_model, timing, verbose)
