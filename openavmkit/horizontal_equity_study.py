@@ -493,7 +493,6 @@ def _mark_he_ids(
     df = mark_horizontal_equity_clusters(
         df_in, settings, verbose, settings_object, id_name, output_folder, t
     )
-    df.loc[:, id_name] = model_group + "_" + df[id_name].astype(str)
     df[id_name] = df[id_name].astype("string")
     df.loc[:, id_name] = model_group + "_" + df[id_name]
     return df
