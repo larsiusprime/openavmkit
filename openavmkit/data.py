@@ -146,7 +146,23 @@ class SalesUniversePair:
             self.universe = value
         else:
             raise ValueError(f"Invalid key: {key}")
-
+    
+    
+    def limit_sales_to_keys(self, new_sale_keys: list[str]):
+        """
+        Update the sales DataFrame to only those that match a key in `new_sale_keys`
+        
+        Parameters
+        ----------
+        new_sale_keys : list[str]
+            List of sale keys to filter to
+        """
+        
+        s = self.sales.copy()
+        s = s[s["key_sale"].isin(new_sale_keys)]
+        self.sales = s
+    
+    
     def update_sales(self, new_sales: pd.DataFrame, allow_remove_rows: bool):
         """
         Update the sales DataFrame with new information as an overlay without redundancy.
