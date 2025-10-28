@@ -574,14 +574,15 @@ def run_heuristics(
     df_sales = get_hydrated_sales_from_sup(sup)
 
     #### Multi-parcel sales detection heuristics
+    
     jurisdiction = ss.get("jurisdiction", None)
-
+    
     # 1 -- Flag sales with identical deed IDs AND identical sale dates
     if (deed_id is not None) and (deed_id in df_sales):
         if jurisdiction != None:
             df_sales["deed_date"] = df_sales[jurisdiction].astype(str) + "---" + df_sales[deed_id].astype(str)+"---"+df_sales["sale_date"].astype(str)
         else:
-        df_sales["deed_date"] = df_sales[deed_id].astype(str)+"---"+df_sales["sale_date"].astype(str)
+            df_sales["deed_date"] = df_sales[deed_id].astype(str)+"---"+df_sales["sale_date"].astype(str)
         vcs_deed_date = df_sales["deed_date"].value_counts()
         idx_dupe_deed_dates = vcs_deed_date[vcs_deed_date > 1].index.values
         df_sales.loc[
@@ -601,7 +602,7 @@ def run_heuristics(
     if jurisdiction != None:
         df_sales["date_price"] = df_sales[jurisdiction].astype(str) + "---" + df_sales["sale_date"].astype(str) + "---" + df_sales["sale_price"].astype(str)
     else:
-    df_sales["date_price"] = df_sales["sale_date"].astype(str) + "---" + df_sales["sale_price"].astype(str)
+        df_sales["date_price"] = df_sales["sale_date"].astype(str) + "---" + df_sales["sale_price"].astype(str)
     vcs_date_price = df_sales["date_price"].value_counts()
     idx_dupe_date_price = vcs_date_price[vcs_date_price > 1].index.values
     df_sales.loc[
@@ -1150,3 +1151,53 @@ def _identify_bimodal_clusters(df, sales_field):
         bimodal_clusters.append(cluster_id)
 
     return bimodal_clusters
+
+
+def make_simple_scrutiny_sheet(sup: SalesUniversePair, settings: dict):
+    
+    df = get_hydrated_sales_from_sup(sup)
+    if "geometry" in df:
+        df = df.drop(columns="geometry")
+    
+    sale_field = get_sale_field(settings)
+    
+    df_sales["pplf"] = div_df_z_safe(df_sales, sale_field, "land_area_sqft")
+    df_sales["ppsf"] = div_df_z_safe(df_sales, sale_field, "bldg_area_finished_sqft")
+    
+    ids = ["he_id", "land_he_id", "impr_he_id", "ss_id"]
+    
+    for cluster in ids:
+        if cluster in df_stuff:
+            df_stuff = df_sales.groupby(cluster)[["pplf","ppsf"]].agg("median").reset_index().rename(columns={
+                "pplf": f"{cluster}_pplf",
+                "ppsf": f"{cluster}_ppsf"
+            })
+            df_sales = df_sales.merge(df_stuff, on=cluster, how="left")
+            df_sales[f"{cluster}_pplf_ratio"] = div_df_z_safe(df_sales, "pplf", f"{cluster}_pplf")
+            df_sales[f"{cluster}_ppsf_ratio"] = div_df_z_safe(df_sales, "ppsf", f"{cluster}_ppsf")
+    
+    ss = settings.get("analysis", {}).get("sales_scrutiny", {})
+    location = ss.get("location", "neighborhood")
+    
+    cols = [
+        "key", "key_sale", 
+        "sale_date", "sale_year", "sale_age_days",
+        "sale_price", "sale_price_time_adj", "pplf", "ppsf",
+        "land_area_sqft", "bldg_area_finished_sqft",
+        "bldg_age_years", "bldg_year_built",
+        "model_group", location, 
+        "vacant_sale"
+    ] + [
+        f"{cluster}_pplf" for cluster in ids
+    ] + [
+        f"{cluster}_ppsf" for cluster in ids
+    ] + [
+        f"{cluster}_pplf_ratio" for cluster in ids
+    ] + [
+        f"{cluster}_ppsf_ratio" for cluster in ids
+    ]
+    
+    cols = [col for col in cols if col in df_sales]
+    
+    df_sales = df_sales[cols]
+    return df_sales
