@@ -67,6 +67,7 @@ from openavmkit.utilities.settings import (
     get_long_distance_unit,
     get_valuation_date,
     get_center,
+    get_small_area_unit,
     get_short_distance_unit,
     _get_sales,
     _simulate_removed_buildings,
@@ -2638,22 +2639,48 @@ def _enrich_df_overture(
 
         if not buildings.empty:
             # Calculate building footprints
+            sq_unit = get_small_area_unit(settings)
             s_footprint = s_overture.get("footprint", {})
             footprint_units = s_footprint.get("units", None)
             if footprint_units is None:
                 warnings.warn(
-                    "`process.enrich.overture.footprint.units` not specified, defaulting to 'sqft'"
+                    f"`process.enrich.overture.footprint.units` not specified, defaulting to '{sq_unit}'"
                 )
-                footprint_units = "sqft"
+                footprint_units = sq_unit
             footprint_field = s_footprint.get("field", None)
             if footprint_field is None:
                 warnings.warn(
-                    "`process.enrich.overture.footprint.field` not specified, defaulting to 'bldg_area_footprint_sqft'"
+                    f"`process.enrich.overture.footprint.field` not specified, defaulting to 'bldg_area_footprint_{sq_unit}'"
                 )
-                footprint_field = "bldg_area_footprint_sqft"
-            gdf = overture_service.calculate_building_footprints(
-                gdf, buildings, footprint_units, footprint_field, verbose=verbose
+                footprint_field = f"bldg_area_footprint_{sq_unit}"
+            
+            # Calculate building height
+            len_unit = get_short_distance_unit(settings)
+            s_height = s_overture.get("height", {})
+            height_units = s_height.get("units", None)
+            if height_units is None:
+                warnings.warn(
+                    f"`process.enrich.overture.height.units` not specified, defaulting to {len_unit}'"
+                )
+                height_units = len_unit
+            height_field = s_height.get("field", None)
+            if height_field is None:
+                warnings.warn(
+                    f"`process.enrich.overture.height.field` not specified, defaulting to 'bldg_height_{len_unit}'"
+                )
+                height_field = f"bldg_height_{len_unit}"
+            
+            gdf = overture_service.calculate_building_stats(
+                gdf, 
+                buildings,
+                footprint_units,
+                footprint_field,
+                height_units,
+                height_field,
+                verbose=verbose
             )
+            
+            
         elif verbose:
             print("--> No buildings found in the area")
 
