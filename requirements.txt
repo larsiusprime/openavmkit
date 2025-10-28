@@ -27,7 +27,7 @@ optuna-integration==4.5.0
 
 pygam~=0.10.1
 pandas~=2.3.3
-ipython~=8.12.3
+ipython~=8.37.0
 geopandas~=1.0.1
 matplotlib~=3.10.7
 pyproj~=3.7.1
