@@ -3521,7 +3521,7 @@ def _do_get_calc_cols(df_entry: dict) -> list[str]:
     return fields_in_calc
 
 
-def _load_dataframe(
+def load_dataframe(
     entry: dict,
     settings: dict,
     verbose: bool = False,

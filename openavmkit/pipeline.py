@@ -34,7 +34,7 @@ from dotenv import load_dotenv, find_dotenv
 from openavmkit.cleaning import clean_valid_sales, validate_arms_length_sales
 from openavmkit.cloud import cloud
 from openavmkit.data import (
-    _load_dataframe,
+    load_dataframe,
     process_data,
     SalesUniversePair,
     get_sup_model_group,
@@ -723,7 +723,7 @@ def load_dataframes(settings: dict, verbose: bool = False) -> dict:
 
     for key in s_load:
         entry = s_load[key]
-        df = _load_dataframe(
+        df = load_dataframe(
             entry,
             settings,
             verbose=verbose,
@@ -1205,42 +1205,46 @@ def write_notebook_output_sup(
         Whether to write to ESRI shapefile format. Defaults to false.
     """
 
-    os.makedirs("out/look", exist_ok=True)
-    with open(f"out/{prefix}-sup.pickle", "wb") as file:
-        pickle.dump(sup, file)
-    
-    # universe
-    if parquet:
-        write_parquet(sup["universe"], f"out/look/{prefix}-universe.parquet")
-    if gpkg:
-        write_gpkg(sup["universe"], f"out/look/{prefix}-universe.gpkg")
-    if shp:
-        write_zipped_shapefile(sup["universe"], f"out/look/{prefix}-universe.shp.zip")
-    
-    # sales
-    #if parquet:
-        #write_parquet(sup["sales"], f"out/look/{prefix}-sales.parquet")
-    
-    # sales (hydrated)
-    df_hydrated = get_hydrated_sales_from_sup(sup)
-    # if parquet:
-    #     write_parquet(df_hydrated, f"out/look/{prefix}-sales-hydrated.parquet")
-    if gpkg:
-        write_gpkg(df_hydrated, f"out/look/{prefix}-sales-hydrated.gpkg")
-    if shp:
-        write_zipped_shapefile(df_hydrated, f"out/look/{prefix}-sales-hydrated.shp.zip")
+    try:
+        os.makedirs("out/look", exist_ok=True)
+        with open(f"out/{prefix}-sup.pickle", "wb") as file:
+            pickle.dump(sup, file)
+        
+        # universe
+        if parquet:
+            write_parquet(sup["universe"], f"out/look/{prefix}-universe.parquet")
+        if gpkg:
+            write_gpkg(sup["universe"], f"out/look/{prefix}-universe.gpkg")
+        if shp:
+            write_zipped_shapefile(sup["universe"], f"out/look/{prefix}-universe.shp.zip")
+        
+        # sales
+        if parquet:
+            write_parquet(sup["sales"], f"out/look/{prefix}-sales.parquet")
+        
+        # sales (hydrated)
+        df_hydrated = get_hydrated_sales_from_sup(sup)
+        if parquet:
+            write_parquet(df_hydrated, f"out/look/{prefix}-sales-hydrated.parquet")
+        if gpkg:
+            write_gpkg(df_hydrated, f"out/look/{prefix}-sales-hydrated.gpkg")
+        if shp:
+            write_zipped_shapefile(df_hydrated, f"out/look/{prefix}-sales-hydrated.shp.zip")
 
-    print(f"...out/{prefix}-sup.pickle")
-    if parquet:
-        print(f"...out/look/{prefix}-universe.parquet")
-        print(f"...out/look/{prefix}-sales.parquet")
-        print(f"...out/look/{prefix}-sales-hydrated.parquet")
-    if gpkg:
-        print(f"...out/look/{prefix}-universe.gpkg")
-        print(f"...out/look/{prefix}-sales-hydrated.gpkg")
-    if shp:
-        print(f"...out/look/{prefix}-universe.shp.zip")
-        print(f"...out/look/{prefix}-sales-hydrated.shp.zip")
+        print(f"...out/{prefix}-sup.pickle")
+        if parquet:
+            print(f"...out/look/{prefix}-universe.parquet")
+            print(f"...out/look/{prefix}-sales.parquet")
+            print(f"...out/look/{prefix}-sales-hydrated.parquet")
+        if gpkg:
+            print(f"...out/look/{prefix}-universe.gpkg")
+            print(f"...out/look/{prefix}-sales-hydrated.gpkg")
+        if shp:
+            print(f"...out/look/{prefix}-universe.shp.zip")
+            print(f"...out/look/{prefix}-sales-hydrated.shp.zip")
+    except Exception as e:
+        warnings.warn(f"Failed to output sup: {str(e)}")
+
 
 
 def cloud_sync(

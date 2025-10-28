@@ -562,7 +562,7 @@ def clean_geometry(gdf, ensure_polygon=True, target_crs=None):
         A cleaned and fixed GeoDataFrame.
     """
     
-    gdf = ensure_geometries(gdf)
+    gdf = ensure_geometries(gdf, crs=gdf.crs)
 
     # Drop null geometries
     warnings.filterwarnings("ignore", "GeoSeries.notna", UserWarning)
