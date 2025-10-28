@@ -2181,6 +2181,14 @@ def _enrich_sale_age_days(df: pd.DataFrame, settings: dict) -> pd.DataFrame:
     sale_date_as_datetime = pd.to_datetime(
         df["sale_date"], format="%Y-%m-%d", errors="coerce"
     )
+    
+    if "assr_date" in df:
+        df["assr_date_age_days"] = None
+        df["assr_date_age_days"] = df["assr_date_age_days"].astype("Int64")
+        sale_date_as_datetime = pd.to_datetime(
+            df["sale_date"], format="%Y-%m-%d", errors="coerce"
+        )
+    
     df.loc[~sale_date_as_datetime.isna(), "sale_age_days"] = (
         val_date - sale_date_as_datetime
     ).dt.days
