@@ -31,7 +31,7 @@ import openavmkit.cleaning
 
 from dotenv import load_dotenv, find_dotenv
 
-from openavmkit.cleaning import clean_valid_sales, validate_arms_length_sales
+from openavmkit.cleaning import clean_valid_sales, filter_invalid_sales
 from openavmkit.cloud import cloud
 from openavmkit.data import (
     load_dataframe,
@@ -831,8 +831,8 @@ def process_sales(
 
     print(f"len before validate = {len(sup['sales'])}")
 
-    # validate arms length sales using filters
-    sup = validate_arms_length_sales(sup, settings, verbose)
+    # validate sales using filters
+    sup = filter_invalid_sales(sup, settings, verbose)
 
     print(f"len after validate = {len(sup['sales'])}")
 

@@ -171,6 +171,8 @@ def write_cached_df(
     filename: str,
     key: str = "key",
     extra_signature: dict | str = None,
+    changed_cols: list[str] = None,
+    check_equal: bool = True
 ) -> pd.DataFrame | None:
     """Update an on-disk cache with row- or column-level differences between two
     ``pandas`` DataFrames and return the fully reconstructed, cached DataFrame.
@@ -204,6 +206,10 @@ def write_cached_df(
         Additional entropy to include in the cache signature.  Use this when
         the same data structure can vary by external configuration (e.g.,
         feature flags or environment).
+    changed_cols : list[str]
+        (optional) A list of modified columns, if known in advance. Default is None. Supplying this skips potentially costly modification checks.
+    check_equal : bool
+        (optional) Check if the cached result yields the same as the intended result. Default is True.
 
     Returns
     -------
@@ -261,36 +267,38 @@ def write_cached_df(
     else:
         added_rows = []
         deleted_rows = []
+    
+    if not changed_cols:
+        modified = []
+        for c in common:
+            col_new = df_new[c].reset_index(drop=True)
+            col_orig = df_orig[c].reset_index(drop=True)
 
-    modified = []
-    for c in common:
-        col_new = df_new[c].reset_index(drop=True)
-        col_orig = df_orig[c].reset_index(drop=True)
+            is_different = False
+            if len(col_new) == len(col_orig):
+                values_equal = col_new.values == col_orig.values
+                na_equal = col_new.isna() & col_orig.isna()
 
-        is_different = False
-        if len(col_new) == len(col_orig):
-            values_equal = col_new.values == col_orig.values
-            na_equal = col_new.isna() & col_orig.isna()
+                count_na_equal = na_equal.sum()
+                count_values_equal = values_equal.sum()
 
-            count_na_equal = na_equal.sum()
-            count_values_equal = values_equal.sum()
+                count_to_match = len(col_new)
 
-            count_to_match = len(col_new)
-
-            all_equal = (
-                count_na_equal == count_to_match
-                and count_values_equal == count_to_match
-            )
-            if not all_equal:
+                all_equal = (
+                    count_na_equal == count_to_match
+                    and count_values_equal == count_to_match
+                )
+                if not all_equal:
+                    is_different = True
+            else:
                 is_different = True
-        else:
-            is_different = True
 
-        if is_different:
-            modified.append(c)
-            continue
+            if is_different:
+                modified.append(c)
+                continue
 
-    changed_cols = new_cols + modified
+        changed_cols = new_cols + modified
+    
     if not changed_cols:
         # nothing new or modified → no cache update needed
         return df_orig
@@ -313,10 +321,11 @@ def write_cached_df(
             write_cache(f"{filename}.rows", df_diff_rows, signature, df_type)
 
     df_cached = get_cached_df(df_orig, filename, key, extra_signature)
-
-    are_equal = dfs_are_equal(df_new, df_cached, allow_weak=True, primary_key=key)
-    if not are_equal:
-        raise ValueError(f"Cached DataFrame does not match the original DataFrame.")
+    
+    if check_equal:
+        are_equal = dfs_are_equal(df_new, df_cached, allow_weak=True, primary_key=key)
+        if not are_equal:
+            raise ValueError(f"Cached DataFrame does not match the original DataFrame.")
 
     return df_cached
 

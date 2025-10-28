@@ -67,6 +67,7 @@ from openavmkit.utilities.settings import (
     get_long_distance_unit,
     get_valuation_date,
     get_center,
+    get_small_area_unit,
     get_short_distance_unit,
     _get_sales,
     _simulate_removed_buildings,
@@ -145,7 +146,23 @@ class SalesUniversePair:
             self.universe = value
         else:
             raise ValueError(f"Invalid key: {key}")
-
+    
+    
+    def limit_sales_to_keys(self, new_sale_keys: list[str]):
+        """
+        Update the sales DataFrame to only those that match a key in `new_sale_keys`
+        
+        Parameters
+        ----------
+        new_sale_keys : list[str]
+            List of sale keys to filter to
+        """
+        
+        s = self.sales.copy()
+        s = s[s["key_sale"].isin(new_sale_keys)]
+        self.sales = s
+    
+    
     def update_sales(self, new_sales: pd.DataFrame, allow_remove_rows: bool):
         """
         Update the sales DataFrame with new information as an overlay without redundancy.
@@ -846,14 +863,17 @@ def _enrich_sup_spatial_lag_for_model_group(
             df_universe[f"spatial_lag_{value_field}"] = 0
             df_sales[f"spatial_lag_{value_field}"] = 0
             continue
-
+        
         df_sub = df_sub[~pd.isna(df_sub["latitude"]) & ~pd.isna(df_sub["longitude"])]
 
         # Choose the number of nearest neighbors to use
         k = 5  # adjust this number as needed
 
         df_sub_train = df_sub.loc[df_sub["key_sale"].isin(train_keys)].copy()
-
+        
+        if len(df_sub_train) <= 0:
+            continue
+        
         # Get the coordinates for the universe parcels
         crs_equal_distance = get_crs(df_universe, "equal_distance")
         df_proj = df_universe.to_crs(crs_equal_distance)
@@ -1170,6 +1190,8 @@ def _enrich_df_census(
     groups.
     """
     if not census_settings.get("enabled", False):
+        if verbose:
+            print("Census enrichment disabled, skipping...")
         return df_in
 
     if verbose:
@@ -1186,6 +1208,9 @@ def _enrich_df_census(
     # try:
     # Get Census credentials and initialize service
     creds = get_creds_from_env_census()
+    if creds is None:
+        warnings.warn("Failed to get census credentials, skipping census enrichment")
+        return df_in
     census_service = init_service_census(creds)
 
     # Get FIPS code from settings
@@ -2173,6 +2198,14 @@ def _enrich_sale_age_days(df: pd.DataFrame, settings: dict) -> pd.DataFrame:
     sale_date_as_datetime = pd.to_datetime(
         df["sale_date"], format="%Y-%m-%d", errors="coerce"
     )
+    
+    if "assr_date" in df:
+        df["assr_date_age_days"] = None
+        df["assr_date_age_days"] = df["assr_date_age_days"].astype("Int64")
+        sale_date_as_datetime = pd.to_datetime(
+            df["sale_date"], format="%Y-%m-%d", errors="coerce"
+        )
+    
     df.loc[~sale_date_as_datetime.isna(), "sale_age_days"] = (
         val_date - sale_date_as_datetime
     ).dt.days
@@ -2622,22 +2655,48 @@ def _enrich_df_overture(
 
         if not buildings.empty:
             # Calculate building footprints
+            sq_unit = get_small_area_unit(settings)
             s_footprint = s_overture.get("footprint", {})
             footprint_units = s_footprint.get("units", None)
             if footprint_units is None:
                 warnings.warn(
-                    "`process.enrich.overture.footprint.units` not specified, defaulting to 'sqft'"
+                    f"`process.enrich.overture.footprint.units` not specified, defaulting to '{sq_unit}'"
                 )
-                footprint_units = "sqft"
+                footprint_units = sq_unit
             footprint_field = s_footprint.get("field", None)
             if footprint_field is None:
                 warnings.warn(
-                    "`process.enrich.overture.footprint.field` not specified, defaulting to 'bldg_area_footprint_sqft'"
+                    f"`process.enrich.overture.footprint.field` not specified, defaulting to 'bldg_area_footprint_{sq_unit}'"
                 )
-                footprint_field = "bldg_area_footprint_sqft"
-            gdf = overture_service.calculate_building_footprints(
-                gdf, buildings, footprint_units, footprint_field, verbose=verbose
+                footprint_field = f"bldg_area_footprint_{sq_unit}"
+            
+            # Calculate building height
+            len_unit = get_short_distance_unit(settings)
+            s_height = s_overture.get("height", {})
+            height_units = s_height.get("units", None)
+            if height_units is None:
+                warnings.warn(
+                    f"`process.enrich.overture.height.units` not specified, defaulting to {len_unit}'"
+                )
+                height_units = len_unit
+            height_field = s_height.get("field", None)
+            if height_field is None:
+                warnings.warn(
+                    f"`process.enrich.overture.height.field` not specified, defaulting to 'bldg_height_{len_unit}'"
+                )
+                height_field = f"bldg_height_{len_unit}"
+            
+            gdf = overture_service.calculate_building_stats(
+                gdf, 
+                buildings,
+                footprint_units,
+                footprint_field,
+                height_units,
+                height_field,
+                verbose=verbose
             )
+            
+            
         elif verbose:
             print("--> No buildings found in the area")
 
@@ -3533,6 +3592,7 @@ def load_dataframe(
     type adjustments.
     """
     filename = entry.get("filename", "")
+    entry_key = entry.get("key", "")
     if filename == "":
         return None
     filename = f"in/{filename}"
@@ -3589,7 +3649,6 @@ def load_dataframe(
     if is_geometry:
         is_geometry = entry.get("geometry", is_geometry)
     
-
     if ext == "parquet":
         try:
             df = gpd.read_parquet(filename, columns=cols_to_load)
@@ -3691,7 +3750,7 @@ def load_dataframe(
             if mask_non_numeric.sum() > 0:
                 df.loc[mask_non_numeric, col] = np.nan
             df[col] = df[col].astype("Float64")
-
+    
     date_fields = get_fields_date(settings, df)
     time_format_map = {}
     for xkey in extra_map:
@@ -3734,7 +3793,7 @@ def load_dataframe(
             dupes = {"subset": [col], "sort_by": [col, "asc"], "drop": True}
             if dupes_was_none:
                 warnings.warn(
-                    f"'dupes' not found for geo df '{filename}', defaulting to \"{col}\" as de-dedupe key. Set 'dupes:\"auto\" to remove this warning.'"
+                    f"'dupes' not found for geo df '{entry_key}', defaulting to \"{col}\" as de-dedupe key. Set 'dupes:\"auto\" to remove this warning.'"
                 )
         else:
             keys = ["key", "key2", "key3"]
@@ -3748,13 +3807,13 @@ def load_dataframe(
         subset = dupes.get("subset", [])
         if dupes is not None and "key_sale" not in subset:
             warnings.warn(
-                f"df '{filename}' contains field 'key_sale', indicating it is likely a sales dataframe. However, it's de-dupe subset is {subset}, which does not contain 'key_sale'. This could result in improper de-duplication of sales transactions."
+                f"df '{entry_key}' contains field 'key_sale', indicating it is likely a sales dataframe. However, it's de-dupe subset is {subset}, which does not contain 'key_sale'. This could result in improper de-duplication of sales transactions."
             )
 
     df = _handle_duplicated_rows(df, dupes)
-
+    
     if is_geometry:
-        gdf: gpd.GeoDataFrame = gpd.GeoDataFrame(df, geometry="geometry")
+        gdf: gpd.GeoDataFrame = gpd.GeoDataFrame(df, geometry="geometry", crs=df.crs)
         
         pre_len = len(gdf)
         gdf = clean_geometry(gdf, ensure_polygon=True)
@@ -3762,10 +3821,10 @@ def load_dataframe(
         
         perc_len = (pre_len-post_len)/pre_len
         if perc_len >= 0.25:
-            warnings.warn(f"Dropped {perc_len:.0%} of rows from dataframe \"{filename}\" due to invalid/null geometry. If you don't care about geometry for this dataframe and want to retain all rows, then set '\"geometry\": false' in settings under this dataframe's 'data.load' entry")
+            warnings.warn(f"Dropped {perc_len:.0%} of rows from dataframe \"{entry_key}\" due to invalid/null geometry. If you don't care about geometry for this dataframe and want to retain all rows, then set '\"geometry\": false' in settings under this dataframe's 'data.load' entry")
         
         df = gdf
-
+    
     drop = entry.get("drop", [])
     if len(drop) > 0:
         df = df.drop(columns=drop, errors="ignore")
@@ -3941,12 +4000,13 @@ def _merge_dict_of_dfs(
             if col not in all_cols:
                 all_cols.append(col)
             else:
-                suffixed = f"{col}_{merge['id']}"
-                suffixes[col] = suffixed
-                if col not in conflicts:
-                    conflicts[col] = []
-                conflicts[col].append(suffixed)
-                all_suffixes.append(suffixed)
+                if how != "append":
+                    suffixed = f"{col}_{merge['id']}"
+                    suffixes[col] = suffixed
+                    if col not in conflicts:
+                        conflicts[col] = []
+                    conflicts[col].append(suffixed)
+                    all_suffixes.append(suffixed)
         df = df.rename(columns=suffixes)
         merge["df"] = df
 
@@ -5248,7 +5308,7 @@ def filter_df_by_date_range(df, start_date, end_date):
     s = pd.to_datetime(df["sale_date"], errors="coerce")
 
     # Strip timezone info if present, preserving local wall time
-    if is_datetime64tz_dtype(s.dtype):
+    if isinstance(s.dtype, pd.DatetimeTZDtype):
         s = s.dt.tz_localize(None)
 
     # Build inclusive range using an exclusive upper bound

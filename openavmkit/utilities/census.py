@@ -393,5 +393,6 @@ def get_creds_from_env_census() -> CensusCredentials:
     """
     api_key = os.getenv("CENSUS_API_KEY")
     if not api_key:
-        raise ValueError("Missing Census API key in environment.")
+        warnings.warn("Missing Census API key in environment.")
+        return None
     return CensusCredentials(api_key)

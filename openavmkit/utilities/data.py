@@ -35,7 +35,7 @@ def is_column_of_type(df: pd.DataFrame, col: str, type_name: str):
             pd.api.types.is_datetime64_any_dtype(series) |
             pd.api.types.is_datetime64_dtype(series) |
             pd.api.types.is_datetime64_ns_dtype(series) |
-            pd.api.types.is_datetime64tz_dtype(series)
+            isinstance(series.dtype, pd.DatetimeTZDtype)
         )
     else:
         raise ValueError("Unknown type name: {type_name}")

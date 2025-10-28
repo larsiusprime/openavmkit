@@ -6,7 +6,7 @@ from openavmkit.income import calculate_noi, calculate_noi_growth, calculate_cap
 from openavmkit.projection import project_trend
 from openavmkit.synthetic.basic import generate_income_sales
 from openavmkit.utilities.assertions import dfs_are_equal, lists_are_equal
-from IPython.core.display import display
+from IPython.display import display
 
 def test_noi():
   print("")

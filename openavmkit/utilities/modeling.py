@@ -200,22 +200,6 @@ class LocalSqftModel:
         self.sales_chase = sales_chase
 
 
-class LocalSomersModel:
-    def __init__(
-        self,
-        loc_map: dict,
-        location_fields: list,
-        overall_per_impr_sqft: float,
-        overall_land_unit_ft: float,
-        sales_chase: float,
-    ):
-        self.loc_map = loc_map
-        self.location_fields = location_fields
-        self.overall_per_impr_sqft = overall_per_impr_sqft
-        self.overall_land_unit_ft = overall_land_unit_ft
-        self.sales_chase = sales_chase
-
-
 class GroundTruthModel:
     """Mostly only used in Synthetic models, where you want to compare against simulation ``ground_truth`` instead of
     observed sale price, which you can never do in real life.

@@ -1,6 +1,6 @@
 import pandas as pd
 
-from openavmkit.data import SalesUniversePair
+from openavmkit.data import SalesUniversePair, get_hydrated_sales_from_sup
 from openavmkit.utilities.data import ensure_categories, align_categories
 from openavmkit.utilities.settings import (
   get_valuation_date,
@@ -221,10 +221,10 @@ def fill_unknown_values_sup(
     return sup
 
 
-def validate_arms_length_sales(
+def filter_invalid_sales(
     sup: SalesUniversePair, settings: dict, verbose: bool = False
 ) -> SalesUniversePair:
-    """Validate arms-length sales using based on configurable filter conditions.
+    """Validate arms-length sales based on configurable filter conditions.
 
     Parameters
     ----------
@@ -242,27 +242,29 @@ def validate_arms_length_sales(
     """
     s_data = settings.get("data", {})
     s_process = s_data.get("process", {})
-    s_validation = s_process.get("arms_length_validation", {})
-
+    s_validation = s_process.get("invalid_sales", {})
+    
     if not s_validation.get("enabled", False):
         if verbose:
-            print("Arms length validation disabled, skipping...")
+            print("Invalid sales validation filter disabled, skipping...")
         return sup
+        
+    if verbose:
+        print("Filtering out invalid sales...")
 
     # Get sales data
-    df_sales = sup["sales"].copy()
+    df_sales = get_hydrated_sales_from_sup(sup)
     total_sales = len(df_sales)
     excluded_sales = []
     total_excluded = 0
 
     # Identify sales by filter
-    filter_settings = s_validation.get("filter", {})
-    if filter_settings.get("enabled", False):
+    filter_conditions = s_validation.get("filter", [])
+    if s_validation.get("enabled", False):
         if verbose:
             print("\nApplying filter method...")
 
         # Get filter conditions from settings
-        filter_conditions = filter_settings.get("conditions", [])
         if not filter_conditions:
             raise ValueError("No filter conditions defined in settings")
 
@@ -305,9 +307,12 @@ def validate_arms_length_sales(
         }
         write_cache("arms_length_validation", cache_data, cache_data, "dict")
 
-    # Filter out invalid sales and update the SalesUniversePair
+    # Filter out invalid sales
     df_sales = df_sales[df_sales["valid_sale"].eq(True)].copy()
-    sup.set("sales", df_sales)
+    
+    # Update the SalesUniversePair to match
+    sup.limit_sales_to_keys(df_sales["key_sale"].values)
+    
     return sup
 
 
