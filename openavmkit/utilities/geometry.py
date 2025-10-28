@@ -835,20 +835,20 @@ def identify_irregular_parcels(
     if verbose:
         _t = t.get("complex")
         print(f"----> identified complex geometry...({_t:.2f}s)")
-
+    
     t.start("long")
     gdf["is_geom_elongated"] = gdf["geom_aspect_ratio"].ge(elongation_threshold)
     t.stop("long")
     if verbose:
         _t = t.get("long")
         print(f"----> identified elongated parcels...({_t:.2f}s)")
-
+    
     t.start("finish")
     # Combine criteria for irregular lots
     gdf["is_geom_irregular"] = (
         gdf["is_geom_complex"] | gdf["is_geom_elongated"] | gdf["is_geom_triangular"]
     )
-
+    
     # Fill any NA values with false:
     for field in [
         "is_geom_complex",
