@@ -686,7 +686,6 @@ def examine_df(df: pd.DataFrame, s: dict):
 
 # Data loading & processing stuff
 
-
 def load_dataframes(settings: dict, verbose: bool = False) -> dict:
     """
     Load dataframes based on the provided settings and return them in a dictionary.
