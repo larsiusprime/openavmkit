@@ -72,7 +72,7 @@ jobs:
           fi
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: dist
           path: dist/*
@@ -90,7 +90,7 @@ jobs:
       id-token: write   # required for PyPI Trusted Publishing (OIDC)
       contents: read
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v6
         with:
           name: dist
           path: dist
