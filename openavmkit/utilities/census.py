@@ -3,6 +3,7 @@ from typing import Tuple
 import pandas as pd
 import geopandas as gpd
 import requests
+import warnings
 from census import Census
 from openavmkit.utilities.geometry import get_crs
 
