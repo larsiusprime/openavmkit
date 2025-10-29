@@ -210,9 +210,7 @@ In the second cell, edit it so that it reads `locality = "us-nc-guilford"`
 
 ![](../assets/images/jupyter_04.png)
 
-This tells the notebook two things: what locality we're using, and what cloud service (huggingface) we should connect to in order to look for its data if we've never downloaded it before. The second line is only used if you have never downloaded that particularl locality before, if you already have one on disk, it will use the local settings file instead (more on that later).
-
-With that all properly configured, run all the cells from the top, up to and including the one that reads `init_notebook(locality)`:
+This tells the notebook what locality we're using. With that properly configured, run all the cells from the top, up to and including the one that reads `init_notebook(locality)`:
 
 ![](../assets/images/jupyter_05.png)
 
