@@ -1,6 +1,13 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## [0.4.3] - 2025-10-29
+- Allow anoynmous read-only access to public Azure repositories
+- Add "cloud.json" workflow
+- Remove "bootstrap_cloud" notebook variable
+- Move public data test repository to Azure
+- Update documentation to reflect the change
+
 ## [0.4.2] - 2025-10-28
 - Add "make_simple_scrutiny_sheet" function
 - Rename "validate_arms_length_sales" to "filter_invalid_sales" and update its functionality
