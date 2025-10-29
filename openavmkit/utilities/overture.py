@@ -186,9 +186,9 @@ class OvertureService:
                     for batch in batches:
                         if batch.num_rows > 0:
                             try:
-                            # Convert batch to GeoDataFrame with proper geometry handling
+                                # Convert batch to GeoDataFrame with proper geometry handling
                                 df = self._batch_to_geodataframe(batch)
-                                if not df.empty:
+                                if (not df.empty):
                                     df = self._derive_height_and_floors(df, typical_floor_height_m)
                                     dfs.append(df)
                                     buildings_found += len(df)
