@@ -269,20 +269,23 @@ YET_ANOTHER_KEY=oranges
 Here is a short specification of supported key/value pairs in the `.env` file for cloud sync purposes:
 
 Azure:
-`AZURE_ACCESS`: `read_only` or `read_write`
-`AZURE_STORAGE_CONNECTION_STRING`: a string
+
+`AZURE_ACCESS`: `read_only` or `read_write`  
+`AZURE_STORAGE_CONNECTION_STRING`: a string  
 
 HuggingFace:
-`HF_ACCESS`: `read_only` or `read_write`
-`HF_REPO_ID`: a string
-`HF_TOKEN`: a string
+
+`HF_ACCESS`: `read_only` or `read_write`  
+`HF_REPO_ID`: a string  
+`HF_TOKEN`: a string  
 
 SFTP:
-`SFTP_ACCESS`: `read_only` or `read_write`
-`SFTP_HOSTNAME`: a string
-`SFTP_PORT`: an integer
-`SFTP_USERNAME`: a string
-`SFTP_PASSWORD`: a string
+
+`SFTP_ACCESS`: `read_only` or `read_write`  
+`SFTP_HOSTNAME`: a string  
+`SFTP_PORT`: an integer  
+`SFTP_USERNAME`: a string  
+`SFTP_PASSWORD`: a string  
 
 Save the file and make sure it's located at `notebooks/.env` in your openavmkit repository. 
 
@@ -293,17 +296,20 @@ Here is a short specification of the `cloud.json` file:
 `"type":` `"azure"`, `"huggingface"`, or `"sftp"`
 
 Azure:
-`"azure_storage_container_url"`: a string, representing a public Azure container endpoint
-`"azure_storage_container_name"`: a string, representing a non-public Azure container name
+
+`"azure_storage_container_url"`: a string, representing a public Azure container endpoint  
+`"azure_storage_container_name"`: a string, representing a non-public Azure container name  
 
 *NOTE: if you have a public Azure container configured, make sure the access level is set to 'Container' and not 'Blob'. The former supports list access, which is necessary for OpenAVMKit to use it.*
 
 HuggingFace:
-`"hf_repo_id"`: a string, representing the identifier of the HuggingFace repository
-`"hf_revision"`: a string, representing the revision (kinda like a "branch") of the HuggingFace repository
+
+`"hf_repo_id"`: a string, representing the identifier of the HuggingFace repository  
+`"hf_revision"`: a string, representing the revision (kinda like a "branch") of the HuggingFace repository  
 
 SFTP:
-*For now, all SFTP settings, other than setting the type to "sftp", must be configured through the .env file*
+
+*For now, all SFTP settings, other than setting the type to "sftp", must be configured through the .env file*  
 
 Instructions on how to setup up accounts/credentials on these services is beyond the scope of this documentation. See those platform's official documentation for up to date details.
 
