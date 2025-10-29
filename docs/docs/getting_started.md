@@ -173,81 +173,40 @@ First, you need to download an example dataset to work with. The Center for Land
 
 Here's a quick high level explanation:
 
-- The example data is stored on a service called [HuggingFace](https://huggingface.co/)
-- You'll create an account there and generate a "token"
-- You'll store your token in a special file that OpenAVMKit will use to login to HuggingFace
-- OpenAVMKit can then download the public example dataset for you
-- Once you set it up once, you can mostly forget about it
+- The example data is stored on [Azure](https://azure.microsoft.com), Microsoft's cloud data service.
+- You'll set up a settings file locally that points to our public data repository on Azure
+- OpenAVMKit will read that file and use it to download the public example dataset for you
 
-Let's go through it one by one.
+Crucially, you do NOT have to create an account or login credentials to connect to our public data repository.
 
-### 1. Create your `.env` file
+Let's go through the steps one by one.
 
-Create a plain text file in which to store your connection credentials. This file should be named `.env` and should be placed inside the `notebooks/` directory within the openavmkit directory.
+### 1. Create locality folder and cloud.json file
 
-**Notes**: 
+- Navigate to the directory you installed openavmkit to and find the `notebooks/pipeline/data` path.  
+- Create a folder with the name `us-nc-guilford`  
+- Inside that folder, create a new text file, name it `cloud.json`
 
-1. The file goes in `notebooks/.env`, *not* inside any individual folder inside `notebooks/`! 
-2. Make sure you **don't commit your `.env` file** to your repository or share it with anyone else, as it will contain your sensitive login information! (We've already set up a `.gitignore` rule to exclude this file from being accidentally uploaded anywhere, but make sure you don't override that).
+This folder will eventually contain all the data for the test locality. The `cloud.json` tells OpenAVMKit how to connect to the cloud service.
 
-As for the content of your `.env` file, it should look exactly like this; copy and paste the following into a plain text editor:
-```
-HF_ACCESS=read_only
-HF_REPO_ID=landeconomics/localities-public
-```
+### 2. Fill out cloud.json
 
-Save the file and make sure it's located at `notebooks/.env` in your openavmkit repository. 
+Open `cloud.json` in a text editor and paste the following text into it exactly:
 
-Now, the file is not done yet. It will need one more line, which will be unique to you. That line will contain your HuggingFace token, a kind of password. But before you can do that, you have to go and get a HuggingFace token. Let's do that next.
-
-### 2. Get your HuggingFace token
-
-Create a free account on [HuggingFace](https://huggingface.co/), or login to your existing account if you have one already. (HuggingFace is basically Github for Machine Learning models, and is a great place to store big datasets).
-
-Now that you have an account, let's generate a token. Click on your profile:
-
-![](../assets/images/hf_0.png)
-
-Next, click on "settings":
-
-![](../assets/images/hf_1.png)
-
-Then, click on "access tokens", and on the right hand side, "Create new token":
-
-![](../assets/images/hf_2.png)
-
-Select "Read" for a read-only token. 
-
-**Note:** 
-*When you use this token, you will be able to download from other people's repositories (such as the one we set up for you). A "read-write" token will allow you to also upload a dataset you created yourself to your own HuggingFace account. For the sake of this example where you're just going to download something public, either kind of token should work.*
-
-Add a name for your token and click "Create token":
-
-![](../assets/images/hf_3.png)
-
-This creates a popup with your token (I've redacted mine, but you should see text here). 
-
-![](../assets/images/hf_4.png)
-
-Copy this token and add it to your `notebooks/.env` file:
-
-```
-HF_ACCESS=read_only
-HF_REPO_ID=landeconomics/localities-public
-HF_TOKEN=<YOUR_TOKEN_GOES_HERE>
+```json
+{
+	"type": "azure",
+	"azure_storage_container_url": "https://landeconomics.blob.core.windows.net/localities-public"
+}
 ```
 
-`<YOUR_TOKEN_GOES_HERE>` should be replaced with the contents of your actual token, which should look like a big string of random characters. Save the file.
-
-Assuming you did it correctly, you should have all the configuration you need for OpenAVMKit to be able to download data from HuggingFace, including the example dataset.
+We'll explain the full specification for this file later, but you don't need to worry about that just to download the expample dateset. For now just do the above.
 
 ### 3. Downloading the data
 
-Now that we have your credentials set up, we are ready to download the locality dataset. We will do this in the jupyter environment.
-
 Go ahead and launch the jupyter environment, and navigate to the first notebook.
 
-In the second cell, edit it so that it reads `locality = "us-nc-guilford"`, and the line below that to read `bootstrap_cloud = "huggingface"`:
+In the second cell, edit it so that it reads `locality = "us-nc-guilford"`
 
 ![](../assets/images/jupyter_04.png)
 
@@ -273,3 +232,95 @@ Now you have everything you need to run the basic notebooks on the test data! Fr
 You can create your own locality datasets by creating a unique folder for them with a settings file and input data. This is regardless of whether you are syncing that data to a cloud service or not.
 
 You can switch between localities by editing the name of the locality variable at the top of each notebook. If you do this, be sure to reset and clear the notebook after changing the locality.
+
+
+## Advanced cloud settings
+
+
+You can use the cloud settings to not just download data from public repositories, but also upload to cloud service containers that you control.
+
+Three cloud service types are supported currently:
+
+- Azure
+- HuggingFace
+- SFTP
+
+Here is a high level overview of what you must do to connect to your own cloud service:
+
+- Create a file to store your login credentials in
+- Add your service-specific credentials to the file
+- Point your `cloud.json` file at the appropriate service and container
+
+
+### 1. Create your `.env` file
+
+Create a plain text file in which to store your connection credentials. This file should be named `.env` and should be placed inside the `notebooks/` directory within the openavmkit directory.
+
+**Notes**: 
+
+1. The file goes in `notebooks/.env`, *not* inside any individual folder inside `notebooks/`! 
+2. Make sure you **don't commit your `.env` file** to your repository or share it with anyone else, as it will contain your sensitive login information! (We've already set up a `.gitignore` rule to exclude this file from being accidentally uploaded anywhere, but make sure you don't override that).
+
+The .env file should consist of key/value pairs, encoded in this kind of format:
+```
+KEY=something
+ANOTHER_KEY=apples
+YET_ANOTHER_KEY=oranges
+```
+
+Here is a short specification of supported key/value pairs in the `.env` file for cloud sync purposes:
+
+Azure:
+`AZURE_ACCESS`: `read_only` or `read_write`
+`AZURE_STORAGE_CONNECTION_STRING`: a string
+
+HuggingFace:
+`HF_ACCESS`: `read_only` or `read_write`
+`HF_REPO_ID`: a string
+`HF_TOKEN`: a string
+
+SFTP:
+`SFTP_ACCESS`: `read_only` or `read_write`
+`SFTP_HOSTNAME`: a string
+`SFTP_PORT`: an integer
+`SFTP_USERNAME`: a string
+`SFTP_PASSWORD`: a string
+
+Save the file and make sure it's located at `notebooks/.env` in your openavmkit repository. 
+
+### 2. Write your `cloud.json` file
+
+Here is a short specification of the `cloud.json` file:
+
+`"type":` `"azure"`, `"huggingface"`, or `"sftp"`
+
+Azure:
+`"azure_storage_container_url"`: a string, representing a public Azure container endpoint
+`"azure_storage_container_name"`: a string, representing a non-public Azure container name
+
+*NOTE: if you have a public Azure container configured, make sure the access level is set to 'Container' and not 'Blob'. The former supports list access, which is necessary for OpenAVMKit to use it.*
+
+HuggingFace:
+`"hf_repo_id"`: a string, representing the identifier of the HuggingFace repository
+`"hf_revision"`: a string, representing the revision (kinda like a "branch") of the HuggingFace repository
+
+SFTP:
+*For now, all SFTP settings, other than setting the type to "sftp", must be configured through the .env file*
+
+Instructions on how to setup up accounts/credentials on these services is beyond the scope of this documentation. See those platform's official documentation for up to date details.
+
+### 3. Syncing the data
+
+Downloading data from a cloud service you control works exactly the same way as downloading from the public test repository that we provide. 
+The main difference is that if you have your access set to `read_write`, you will also be able to upload data. To upload data, simply run the
+same `cloud_sync` function in the notebook.
+
+The synchronization function is very simple:
+
+- Files on your local disk not present on the cloud will be uploaded
+- Files on the cloud not present on your local disk will be downloaded
+- Files on your local disk more recently modified than those on the cloud will be uploaded
+- Files on the cloud more recently modified than those on your local disk will be downloaded
+
+That's it. Note that this doesn't handle the case where you've deleted files you no longer need. 
+Deletions will not be synced, so you may need to manually remove files from both locations in order to keep them from coming back next time you sync.
