@@ -6,7 +6,7 @@ from openavmkit.cloud.base import (
     CloudFile,
     CloudAccess,
 )
-from azure.storage.blob import BlobServiceClient
+from azure.storage.blob import BlobServiceClient, ContainerClient
 
 
 class AzureCredentials(CloudCredentials):
@@ -38,7 +38,10 @@ class AzureService(CloudService):
     """
 
     def __init__(
-        self, credentials: AzureCredentials, container_name: str, access: CloudAccess
+        self, 
+        credentials: AzureCredentials, 
+        container_name: str, 
+        access: CloudAccess
     ):
         """Initialize AzureService object
 
@@ -52,13 +55,18 @@ class AzureService(CloudService):
             What kind of access/permission ("read_only", "read_write")
         """
         super().__init__("azure", credentials, access)
-        self.connection_string = credentials.connection_string
-        self.blob_service_client = BlobServiceClient.from_connection_string(
-            credentials.connection_string
-        )
-        self.container_client = self.blob_service_client.get_container_client(
-            container_name
-        )
+        if credentials is not None:
+            self.connection_string = credentials.connection_string
+            self.blob_service_client = BlobServiceClient.from_connection_string(
+                credentials.connection_string
+            )
+            self.container_client = self.blob_service_client.get_container_client(
+                container_name
+            )
+        else:
+            self.connection_string = None
+            self.blob_service_client = None
+            self.container_client = None
 
     def list_files(self, remote_path: str) -> list[CloudFile]:
         """List all the files at the given path on Azure
@@ -113,8 +121,69 @@ class AzureService(CloudService):
             blob_client.upload_blob(f, overwrite=True)
 
 
+class AzureAnonymousService(AzureService):
+    """Azure-specific CloudService object.
+
+    Attributes
+    ----------
+    connection_string : str
+        Your Azure connection string
+    blob_service_client : BlobServiceClient
+        Azure Blob Service Client
+    container_client : ContainerClient
+        Azure Container Client
+    """
+
+    def __init__(
+        self, 
+        container_url: str,
+        access: CloudAccess
+    ):
+        """Initialize AzureService object
+
+        Attributes
+        ----------
+        container_url : str
+            The url of a publicly accessible Azure container
+        access : CloudAccess
+            What kind of access/permission ("read_only", "read_write")
+        """
+        
+        super().__init__(credentials=None, container_name=None, access=access)
+        
+        if access != "read_only":
+            raise ValueError("AzureAnonymousService only supports 'read_only' access")
+        
+        self.connection_string = None
+        self.blob_service_client = None
+        
+        self.container_url = container_url.rstrip("/")
+        self.container_client = ContainerClient.from_container_url(
+            self.container_url,
+            credential=None
+        )
+
+    def upload_file(self, remote_file_path: str, local_file_path: str):
+        """Upload a local file to the Azure service
+
+        Parameters
+        ----------
+        remote_file_path : str
+            The remote path on the Azure service you want to upload your local file to
+        local_file_path : str
+            The local path to the file on your local computer that you want to upload
+        """
+        
+        # No uploading in anonymous mode!
+        
+        return
+
+
+
 def init_service_azure(
-    credentials: AzureCredentials, access: CloudAccess
+    credentials: AzureCredentials, 
+    access: CloudAccess,
+    cloud_settings: dict
 ) -> AzureService:
     """Initializes the Azure service
 
@@ -124,14 +193,31 @@ def init_service_azure(
         The credentials to your Azure account
     access : CloudAccess
         What kind of access/permission ("read_only", "read_write")
+    cloud_settings : dict
+        Local project settings for cloud storage
     """
-    container_name = os.getenv("AZURE_STORAGE_CONTAINER_NAME")
-    if container_name is None:
-        raise ValueError("Missing 'AZURE_STORAGE_CONTAINER_NAME' in environment.")
-    if isinstance(credentials, AzureCredentials):
-        service = AzureService(credentials, container_name, access)
+    
+    container_url = cloud_settings.get("azure_storage_container_url")
+    container_name = cloud_settings.get("azure_storage_container_name")
+    
+    if credentials is None and access == "read_only":
+        # Anonymous mode
+        if container_url is None:
+            if (container_name is not None):
+                raise ValueError("Missing 'azure_storage_container_url' in cloud settings. You have 'azure_storage_container_name', but your access is 'read_only'; you need _url for that, not _name")
+            raise ValueError("Missing 'azure_storage_container_url' in cloud settings.")
+        service = AzureAnonymousService(container_url, access)
     else:
-        raise ValueError("Invalid credentials for Azure service.")
+        # Authenticated mode
+        if isinstance(credentials, AzureCredentials):
+            container_name = cloud_settings.get("azure_storage_container_name")
+            if not container_name:
+                if (container_url is not None):
+                    raise ValueError("Missing 'azure_storage_container_name' in cloud settings. You have 'azure_storage_container_url', but your access is 'read_write'; you need _name for that, not _url")
+                raise ValueError("Missing 'azure_storage_container_name' in cloud settings.")
+            service = AzureService(credentials, container_name, access)
+        else:
+            raise ValueError("Invalid credentials for Azure service.")
     return service
 
 

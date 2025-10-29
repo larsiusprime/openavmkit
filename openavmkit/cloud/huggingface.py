@@ -161,7 +161,11 @@ class HuggingFaceService(CloudService):
         )
 
 
-def init_service_huggingface(credentials: HuggingFaceCredentials, access: CloudAccess):
+def init_service_huggingface(
+    credentials: HuggingFaceCredentials, 
+    access: CloudAccess,
+    cloud_settings: dict
+):
     """
     Initializes the HuggingFace service
 
@@ -171,11 +175,16 @@ def init_service_huggingface(credentials: HuggingFaceCredentials, access: CloudA
         The credentials to your HuggingFace account
     access : CloudAccess
         What kind of access/permission ("read_only", "read_write")
+    cloud_settings : dict
+        Local project settings for cloud storage
     """
-    repo_id = os.getenv("HF_REPO_ID")
+    repo_id = cloud_settings.get("hf_repo_id")
+    
     if repo_id is None:
-        raise ValueError("Missing 'HF_REPO_ID' in environment")
-    revision = os.getenv("HF_REVISION", "main")
+        raise ValueError("Missing 'hf_repo_id' in cloud settings")
+    
+    revision = cloud_settings.get("hf_revision", "main")
+    
     service = HuggingFaceService(credentials, repo_id, access, revision)
     return service
 
