@@ -1241,7 +1241,6 @@ def write_notebook_output_sup(
 def cloud_sync(
     locality: str,
     verbose: bool = False,
-    bootstrap: str = "",
     dry_run: bool = False,
     ignore_paths: list = None,
 ) -> None:
@@ -1256,35 +1255,27 @@ def cloud_sync(
         The locality identifier used to form remote paths.
     verbose : bool, optional
         If True, prints detailed log messages. Defaults to False.
-    bootstrap: str, optional
-        Which cloud service to bootstrap from on an initial run. Defaults to an empty string.
     dry_run : bool, optional
         If True, simulates the sync without performing any changes. Defaults to False.
     ignore_paths : list, optional
         List of file paths or patterns to ignore during sync. Defaults to None.
     """
+    
+    cloud_settings = cloud.load_cloud_settings()
+    
+    if cloud_settings is None:
+        warnings.warn("No cloud.json file found, cannot initialize cloud service.")
+        return
 
-    settings = load_settings(error = False, warning = False)
-    if settings is None:
-        if bootstrap == "":
-            raise ValueError("No settings file found, please specify a cloud service to bootstrap from, or create a settings file from scratch.")
-        else:
-            print(f"No settings.json file found, bootstrapping from cloud service ({bootstrap})...")
-            settings = {
-                "cloud": {
-                    "type": bootstrap
-                }
-            }
-
-    cloud_service = cloud.init(verbose, settings=settings)
+    cloud_service = cloud.init(verbose, cloud_settings=cloud_settings)
     if cloud_service is None:
         print("Cloud service not initialized, skipping...")
         return
 
     if ignore_paths is None:
         ignore_paths = []
-    extra_ignore = settings.get("cloud", {}).get("ignore_paths", [])
-    ignore_paths = ignore_paths + extra_ignore
+    extra_ignore = cloud_settings.get("ignore_paths", [])
+    ignore_paths = ignore_paths + extra_ignore + ["cloud.json"]
 
     print(f"ignore_paths = {ignore_paths}")
 
