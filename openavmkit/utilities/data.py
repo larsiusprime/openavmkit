@@ -1,10 +1,11 @@
 import os
 import pickle
 
-import numpy as np
-import pandas as pd
 import geopandas as gpd
+import numpy as np
 import osmnx as ox
+import pandas as pd
+
 from collections import defaultdict
 
 from scipy.spatial._ckdtree import cKDTree
@@ -12,7 +13,7 @@ from scipy.spatial._ckdtree import cKDTree
 from openavmkit.utilities.settings import get_model_group_ids
 
 
-def is_column_of_type(df: pd.DataFrame, col: str, type_name: str):
+def is_column_of_type(df: pd.DataFrame, col: str, type_name: str) -> bool:
     series = df[col]
     if type_name == "str" or type_name == "string":
         return (
@@ -41,7 +42,7 @@ def is_column_of_type(df: pd.DataFrame, col: str, type_name: str):
         raise ValueError("Unknown type name: {type_name}")
 
 
-def clean_column_names(df: pd.DataFrame):
+def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
     """Clean the column names in a DataFrame by replacing forbidden characters with legal
     representations. For one-hot encoded columns (containing '='), ensures clean formatting.
 
@@ -105,7 +106,7 @@ def clean_column_names(df: pd.DataFrame):
     return df
 
 
-def clean_series(series: pd.Series):
+def clean_series(series: pd.Series) -> pd.Series:
     """Clean the values in a Series by replacing forbidden characters with legal representations.
 
     Parameters
@@ -141,7 +142,7 @@ def clean_series(series: pd.Series):
 
 def div_series_z_safe(
     numerator: pd.Series | np.ndarray, denominator: pd.Series | np.ndarray
-):
+) -> pd.Series | np.ndarray:
     """Perform a divide-by-zero-safe division of two series or arrays, replacing division
     by zero with None.
 
@@ -193,7 +194,7 @@ def div_series_z_safe(
     raise ValueError(f"Can only operate on Series-like objects or np.ndarray, found: {type(numerator), type(denominator)}")
 
 
-def div_df_z_safe(df: pd.DataFrame, numerator: str, denominator: str):
+def div_df_z_safe(df: pd.DataFrame, numerator: str, denominator: str) -> pd.Series:
     """Perform a divide-by-zero-safe division of two columns in a DataFrame, replacing
     division by zero with None.
 
@@ -232,7 +233,7 @@ def div_df_z_safe(df: pd.DataFrame, numerator: str, denominator: str):
     return result
 
 
-def df_to_markdown(df: pd.DataFrame):
+def df_to_markdown(df: pd.DataFrame) -> str:
     """Convert a DataFrame to a markdown-formatted string.
 
     Parameters
@@ -251,12 +252,12 @@ def df_to_markdown(df: pd.DataFrame):
     return f"{header}\n{separator}\n{rows}"
 
 
-def rename_dict(dict, renames):
+def rename_dict(original_dict: dict, renames:dict) -> dict:
     """Rename the keys of a dictionary according to a given rename map.
 
     Parameters
     ----------
-    dict : Dictionary
+    original_dict : Dictionary
         Original dictionary.
 
     renames : Dictionary
@@ -267,9 +268,9 @@ def rename_dict(dict, renames):
     New dictionary with keys renamed
     """
     new_dict = {}
-    for key in dict:
+    for key in original_dict:
         new_key = renames.get(key, key)
-        new_dict[new_key] = dict[key]
+        new_dict[new_key] = original_dict[key]
     return new_dict
 
 
@@ -527,7 +528,7 @@ def combine_dfs(
     return df
 
 
-def add_sqft_fields(df_in: pd.DataFrame):
+def add_sqft_fields(df_in: pd.DataFrame) -> pd.DataFrame:
     """Add per-square-foot fields to the DataFrame for land and improvement values.
 
     This function creates new columns based on existing value fields and area fields.
@@ -570,7 +571,7 @@ def add_sqft_fields(df_in: pd.DataFrame):
 
 def count_values_in_common(
     a: pd.DataFrame, b: pd.DataFrame, a_field: str, b_field: str = None
-):
+) -> tuple[int, int]:
     """Count all the unique values that two columns of two dataframes have in common
 
     Parameters
@@ -841,7 +842,7 @@ def load_model_results(
     model_name: str,
     subset: str = "universe",
     model_type: str = "main",
-):
+) -> pd.DataFrame | None:
     """
     Load model prediction results for a specified subset from disk, if available.
 

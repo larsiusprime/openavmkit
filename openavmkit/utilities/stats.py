@@ -17,7 +17,7 @@ from openavmkit.utilities.data import div_series_z_safe
 from openavmkit.utilities.settings import get_fields_boolean, get_fields_categorical
 
 
-def calc_chds(df_in: pd.DataFrame, field_cluster: str, field_value: str):
+def calc_chds(df_in: pd.DataFrame, field_cluster: str, field_value: str) -> pd.Series:
     """Calculate the Coefficient of Horizontal Dispersion (CHD) for each cluster in a
     DataFrame.
 
@@ -358,7 +358,7 @@ def trim_outlier_ratios(
     ground_truth: np.ndarray,
     max_percent: float = 0.10,
     iqr_factor: float = 1.5
-) -> (np.ndarray, np.ndarray):
+) -> tuple[np.ndarray, np.ndarray]:
     
     ratios = div_series_z_safe(predictions, ground_truth).astype(float)
     trim_mask = trim_outliers_mask(ratios, max_percent, iqr_factor)
