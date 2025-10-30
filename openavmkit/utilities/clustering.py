@@ -1,5 +1,8 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
+
+from typing import Tuple
+
 from openavmkit.utilities.timing import TimingData
 
 
@@ -13,7 +16,7 @@ def make_clusters(
     verbose: bool = False,
     output_folder: str = "",
     t: TimingData = None
-):
+) -> Tuple[pd.Series, list[str], pd.Series]:
     """
     Partition a DataFrame into hierarchical clusters based on location, vacancy,
     categorical, and numeric fields.

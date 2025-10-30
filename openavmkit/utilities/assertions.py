@@ -3,7 +3,7 @@ import pandas as pd
 
 from openavmkit.utilities.timing import TimingData
 
-def objects_are_equal(a, b, epsilon: float = 1e-6):
+def objects_are_equal(a, b, epsilon: float = 1e-6) -> bool:
     """Test whether two objects are equal
 
     Checks strings, dicts, lists, ints, floats, and objects
@@ -73,7 +73,7 @@ def objects_are_equal(a, b, epsilon: float = 1e-6):
         return a == b
 
 
-def lists_are_equal(a: list, b: list):
+def lists_are_equal(a: list, b: list) -> bool:
     """Test whether two lists are equal
 
     Parameters
@@ -105,7 +105,7 @@ def lists_are_equal(a: list, b: list):
     return True
 
 
-def dicts_are_equal(a: dict, b: dict):
+def dicts_are_equal(a: dict, b: dict) -> bool:
     """Test whether two dictionaries are equal
 
     Parameters
@@ -133,7 +133,7 @@ def dicts_are_equal(a: dict, b: dict):
     return True
 
 
-def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None, allow_weak=False):
+def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None, allow_weak=False) -> bool:
     """Test whether two DataFrames are equal
 
     Parameters
@@ -259,7 +259,7 @@ def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None, allow_weak
 
 
 
-def series_are_equal(a: pd.Series, b: pd.Series):
+def series_are_equal(a: pd.Series, b: pd.Series) -> bool:
     """Test whether two series are equal
 
     Parameters

@@ -18,7 +18,7 @@ def write_cache(
     payload: dict | str | pd.DataFrame | gpd.GeoDataFrame | bytes,
     signature: dict | str,
     filetype: str,
-):
+) -> None:
     """Caches the data to disk
 
     Parameters
@@ -74,7 +74,7 @@ def write_cache(
             file.write(signature)
 
 
-def read_cache(filename: str, filetype: str):
+def read_cache(filename: str, filetype: str) -> dict | str | object | pd.DataFrame | gpd.GeoDataFrame | None:
     """Reads cached data from disk
 
     Parameters
@@ -113,7 +113,7 @@ def read_cache(filename: str, filetype: str):
     return None
 
 
-def check_cache(filename: str, signature: dict | str, filetype: str):
+def check_cache(filename: str, signature: dict | str, filetype: str) -> bool:
     """Check if the cached data exists and if the signatures match
 
     Parameters
@@ -139,7 +139,7 @@ def check_cache(filename: str, signature: dict | str, filetype: str):
     return False
 
 
-def clear_cache(filename: str, filetype: str):
+def clear_cache(filename: str, filetype: str) -> None:
     """Clear the specified cache data
 
     Parameters
@@ -446,7 +446,7 @@ def _get_model_group_signature(df: pd.DataFrame)->dict:
     return {}
 
 
-def _get_df_signature(df: pd.DataFrame, extra: dict | str = None):
+def _get_df_signature(df: pd.DataFrame, extra: dict | str = None) -> dict:
     sorted_columns = sorted(df.columns)
     signature = {
         "num_rows": len(df),
@@ -480,7 +480,7 @@ def _match_signature(filename: str, signature: dict | str) -> bool:
     return match
 
 
-def _get_extension(filetype: str):
+def _get_extension(filetype: str) -> str:
     if filetype == "dict":
         return "json"
     elif filetype == "str":

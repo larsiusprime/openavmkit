@@ -4,7 +4,7 @@ from xlsxwriter.format import Format
 from xlsxwriter.worksheet import Worksheet
 
 
-def write_to_excel(df: pd.DataFrame, path: str, metadata: dict):
+def write_to_excel(df: pd.DataFrame, path: str, metadata: dict) -> None:
     """
     Write a DataFrame to an Excel file with custom column formats and conditional formatting.
 
@@ -115,7 +115,7 @@ def write_to_excel(df: pd.DataFrame, path: str, metadata: dict):
             worksheet.conditional_format(1, col_idx, len(df), col_idx, condition)
 
 
-def _clean_formats(formats: dict):
+def _clean_formats(formats: dict) -> dict:
     replaces = {"$": "_dollar_", "%": "_percent_"}
     new_keys = {}
     for key in formats:
