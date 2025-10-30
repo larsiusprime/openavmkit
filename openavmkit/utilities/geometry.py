@@ -603,7 +603,7 @@ def clean_geometry(gdf: gpd.GeoDataFrame, ensure_polygon: bool=True, target_crs:
     """
     
     gdf = ensure_geometries(gdf, crs=gdf.crs)
-    
+
     # Drop null geometries
     warnings.filterwarnings("ignore", "GeoSeries.notna", UserWarning)
     gdf = gdf[gdf.geometry.notna()]
