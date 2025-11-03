@@ -3,7 +3,7 @@ catboost==1.2.8
 numpy==1.26.4
 huggingface-hub==0.29.1
 lightgbm==4.6.0
-markdown==3.7
+markdown==3.9
 mgwr==2.2.1
 optuna==4.5.0
 osmnx==2.0.1
