@@ -6,7 +6,7 @@ lightgbm==4.6.0
 markdown==3.9
 mgwr==2.2.1
 optuna==4.5.0
-osmnx==2.0.1
+osmnx==2.0.6
 paramiko==4.0.0
 pdfkit==1.0.0
 pipreqs==0.5.0
