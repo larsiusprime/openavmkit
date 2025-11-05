@@ -526,7 +526,6 @@ def ensure_geometries(df: pd.DataFrame, geom_col: str="geometry", crs: pyproj.CR
         if "geometry" in df:
             try:
                 crs = df.crs
-                print(f"ensure_geometries, default crs = {crs}")
             except AttributeError:
                 crs = None
 
