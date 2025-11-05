@@ -2489,9 +2489,9 @@ def _enrich_df_basic(
         if word in s_enrich_this:
             warnings.warn(f"Found `word` @ `data.process.enrich.word`, but it should be under `data.process.enrich.sales` or `data.process.enrich.universe`! Nothing will happen!")
     
-    s_ref = s_enrich_this.get(supkey, {}).get("ref_tables", [])
-    s_calc = s_enrich_this.get(supkey, {}).get("calc", {})
-    s_tweak = s_enrich_this.get(supkey, {}).get("tweak", {})
+    s_ref = s_enrich_this.get("ref_tables", {}).get(supkey, [])
+    s_calc = s_enrich_this.get("calc", {}).get(supkey, {})
+    s_tweak = s_enrich_this.get("tweak", {}).get(supkey, {})
 
     # reference tables:
     df = _perform_ref_tables(df, s_ref, dataframes, verbose=verbose)
