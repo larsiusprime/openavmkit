@@ -167,6 +167,10 @@ def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None, allow_weak
     # Columns must match exactly
     if not a.columns.equals(b.columns):
         print(f"Columns do not match:\nA={a.columns}\nB={b.columns}")
+        a_not_in_b = [col for col in a if col not in b]
+        b_not_in_a = [col for col in b if col not in a]
+        print(f"--> Cols in A not in B = {a_not_in_b}")
+        print(f"--> Cols in B not in A = {b_not_in_a}")
         return False
 
     a_sorted_index = a.index.sort_values()

@@ -3846,6 +3846,40 @@ def _snoop_column_names(filename: str) -> list[str]:
     raise ValueError(f'Unsupported file extension: "{ext}"')
 
 
+def _get_sort_by(container: dict, default_value=None):
+    sort_by = container.get("sort_by")
+    if sort_by is None:
+        return default_value
+    # Handle main deduplications:
+    if not isinstance(sort_by, list):
+        raise ValueError(
+            "sort_by must be a list of string pairs of the form [<field_name>, <asc|desc>]"
+        )
+    if len(sort_by) == 2:
+        if isinstance(sort_by[0], str) and isinstance(sort_by[1], str):
+            sort_by = [sort_by]
+    else:
+        for entry in sort_by:
+            if not isinstance(entry, list):
+                raise ValueError(
+                    f"sort_by must be a list of string pairs, but found a non-list entry: {entry}"
+                )
+            elif len(entry) != 2:
+                raise ValueError(
+                    f"sort_by entry has {len(entry)} members: {entry}"
+                )
+            elif not isinstance(entry[0], str) or not isinstance(entry[1], str):
+                raise ValueError(
+                    f"sort_by entry has non-string members: {entry}"
+                )
+    bys = [x[0] for x in sort_by]
+    ascendings = [x[1] == "asc" for x in sort_by]
+    return {
+        "bys": bys,
+        "ascendings": ascendings
+    }
+
+
 def _handle_duplicated_rows(
     df_in: pd.DataFrame, dupes: str | dict, verbose: bool = False
 ) -> pd.DataFrame:
@@ -3863,32 +3897,11 @@ def _handle_duplicated_rows(
     num_dupes = df_in.duplicated(subset=subset).sum()
     orig_len = len(df_in)
     if num_dupes > 0:
-        # Handle main deduplications:
-        sort_by = dupes.get("sort_by", ["key", "asc"])
-        if not isinstance(sort_by, list):
-            raise ValueError(
-                "sort_by must be a list of string pairs of the form [<field_name>, <asc|desc>]"
-            )
-        if len(sort_by) == 2:
-            if isinstance(sort_by[0], str) and isinstance(sort_by[1], str):
-                sort_by = [sort_by]
-        else:
-            for entry in sort_by:
-                if not isinstance(entry, list):
-                    raise ValueError(
-                        f"sort_by must be a list of string pairs, but found a non-list entry: {entry}"
-                    )
-                elif len(entry) != 2:
-                    raise ValueError(
-                        f"sort_by entry has {len(entry)} members: {entry}"
-                    )
-                elif not isinstance(entry[0], str) or not isinstance(entry[1], str):
-                    raise ValueError(
-                        f"sort_by entry has non-string members: {entry}"
-                    )
+        sort_by = _get_sort_by(dupes, {"bys":["key"],"asc":["asc"]})
+        bys = sort_by["bys"]
+        ascendings = sort_by["ascendings"]
+        
         df = df_in.copy()
-        bys = [x[0] for x in sort_by]
-        ascendings = [x[1] == "asc" for x in sort_by]
         df = df.sort_values(by=bys, ascending=ascendings)
         if do_drop:
             if do_drop == "all":
@@ -3903,6 +3916,9 @@ def _handle_duplicated_rows(
         df_deduped = df.reset_index(drop=True)
         
         if agg is not None:
+            
+            df_agg : pd.DataFrame = None
+            
             # Handle aggregations:
             for agg_key in agg:
                 agg_entry = agg[agg_key]
@@ -3910,16 +3926,18 @@ def _handle_duplicated_rows(
                 op = agg_entry.get("op")
                 
                 # Custom sort information per aggregation in case the user is relying on "first"/"last" agg
-                agg_sort = agg_entry.get("sort_by", sort_by)
-                agg_bys = [x[0] for x in sort_by]
-                agg_ascendings = [x[1] == "asc" for x in sort_by]
+                agg_sort_by = _get_sort_by(agg_entry, sort_by)
+                
+                agg_bys = agg_sort_by["bys"]
+                agg_ascendings = agg_sort_by["ascendings"]
                 
                 if field not in df_in:
                     raise ValueError(f"Field '{field}' not found in DataFrame.")
                 
+                df_sorted = df_in.sort_values(by=agg_bys, ascending=agg_ascendings)
+                
                 df_result = (
-                    df_in.groupby(subset)
-                    .sort_values(by=agg_bys, asc=agg_ascendings)  # Sort
+                    df_sorted.groupby(subset)
                     .agg({field: op})
                     .reset_index()
                     .rename(columns={field: agg_key})
@@ -3929,10 +3947,10 @@ def _handle_duplicated_rows(
                 else:
                     df_agg = df_agg.merge(df_result, on=subset, how="outer")
             
-            cols_in_common = [col for col in df_result if col in df_agg]
+            cols_in_common = [col for col in df_deduped if col in df_agg and col not in subset]
             if len(cols_in_common) > 0:
                 df_deduped = df_deduped.drop(columns=cols_in_common)
-                warnings.warn(f"len(cols_in_common) aggregated columns have names that conflict with existing base columns. The base columns have been dropped and overwritten by the aggregated columns.")
+                warnings.warn(f"{len(cols_in_common)} aggregated columns have names that conflict with existing base columns. The base columns have been dropped and overwritten by the aggregated columns.")
             
             # Merge the aggregated results back into the deduped base
             df_result = df_deduped.merge(df_agg, on=subset, how="left")
@@ -3940,7 +3958,17 @@ def _handle_duplicated_rows(
             df_result = df_deduped
     else:
         df_result = df_in
-    return df_result
+    
+    the_key = "key_sale" if "key_sale" in df_result else "key"
+    
+    if the_key in df_result:
+        df_final = df_result.sort_values(by=the_key, ascending=True)
+    else:
+        df_final = df_result
+    
+    df_final = df_final.reset_index(drop=True)
+    
+    return df_final
 
 
 def _merge_dict_of_dfs(
