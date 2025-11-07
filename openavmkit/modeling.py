@@ -1,6 +1,7 @@
 import json
 import os
 import pickle
+import shap
 from datetime import date
 from numpy.linalg import LinAlgError
 import polars as pl
@@ -13,6 +14,7 @@ from pygam.callbacks import CallBack
 from scipy.spatial._ckdtree import cKDTree
 from sklearn.preprocessing import OneHotEncoder
 
+import warnings
 import numpy as np
 import statsmodels.api as sm
 import pandas as pd
@@ -34,6 +36,12 @@ from statsmodels.nonparametric._kernel_base import EstimatorSettings
 from statsmodels.nonparametric.kernel_regression import KernelReg
 from statsmodels.regression.linear_model import RegressionResults
 from xgboost import XGBRegressor
+
+from openavmkit.shap_analysis import (
+    make_shap_table,
+    get_model_shaps,
+    get_full_model_shaps
+)
 
 from openavmkit.data import (
     _get_sales,
@@ -71,6 +79,7 @@ from openavmkit.utilities.modeling import (
 from openavmkit.utilities.data import (
     clean_column_names,
     div_series_z_safe,
+    div_df_z_safe,
     calc_spatial_lag,
     area_unit
 )
@@ -86,12 +95,17 @@ from openavmkit.utilities.timing import TimingData
 
 pd.set_option("future.no_silent_downcasting", True)
 
+TreeBasedModel = Union[
+    XGBRegressor,
+    Booster,
+    CatBoostRegressor
+]
+
 PredictionModel = Union[
     MRAModel,
     XGBRegressor,
     Booster,
     CatBoostRegressor,
-    GWR,
     KernelReg,
     GarbageModel,
     AverageModel,
@@ -462,12 +476,46 @@ class DataSplit:
         Feature matrix for the test data.
     X_univ : pd.DataFrame
         Feature matrix for the universe data.
+    X_sales : pd.DataFrame
+        Feature matrix for the sales data (includes test + train).
     y_train : np.ndarray
         Target array for training.
     y_test : np.ndarray
         Target array for testing.
-    ...
-        Other attributes storing configuration, validation splits, and settings.
+    y_sales : np.ndarray
+        Target array for sales.
+    df_universe_orig : pd.DataFrame
+        An unaltered copy of df_universe as of initialization
+    df_sales_orig : pd.DataFrame
+        An unaltered copy of df_sales as of initialization
+    train_he_ids : np.ndarray
+        Horizontal equity ids from the training set
+    train_land_he_ids : np.ndarray
+        Land horizontal equity ids from the training set
+    train_impr_he_ids : np.ndarray
+        Improvement horizontal equity ids from the training set
+    model_group : str
+        The model group this DataSplit is for
+    dep_var : str
+        The dependent variable (what you are trying to predict)
+    dep_var_test : str
+        The dependent variable for the test set (if different)
+    ind_vars : list[str]
+        The independent variables (the predictors)
+    categorical_vars : list[str]
+        Independent variables that are categorical (i.e., not numeric)
+    interactions : dict
+        Dictionary of interactions -- what fields should interact with what other fields
+    one_hot_descendants : dict
+        Object that maps one-hot encoded fields to the original field they descend from
+    vacant_only : bool
+        Whether this is a vacant-land-only data set
+    hedonic : bool
+        Whether this is a hedonic (land-value-predicting) DataSplit
+    hedonic_test_against_vacant_sales : bool
+        If hedonic, whether it should also test against vacant sales or not
+    days_field : str
+        Name of the field that represents days since sale
     """
 
     counter: int = 0
@@ -1288,8 +1336,7 @@ class SingleModelResults:
                 self.dep_var_test, self.ind_vars, field_prediction, self.df_sales_lookback, max_trim, self.is_land_predictions
             )
             self.df_sales_lookback = self.pred_sales_lookback.df
-            
-
+        
         timing.stop("stats_sales")
 
         self.pred_univ = y_pred_univ
@@ -2373,14 +2420,17 @@ def predict_gwr(
     timing.start("predict_test")
 
     if len(np_coords_test) == 0 or len(X_test) == 0:
+        gwr_result_test = None
         y_pred_test = np.array([])
     else:
         gwr_result_test = gwr.predict(np_coords_test, X_test)
         y_pred_test = gwr_result_test.predictions.flatten()
+        params_test = gwr_result_test.params
     timing.stop("predict_test")
 
     timing.start("predict_sales")
-    y_pred_sales = _run_gwr_prediction(
+    
+    gwr_results_sales = _run_gwr_prediction(
         coords_sales,
         coords_train,
         X_sales,
@@ -2388,21 +2438,54 @@ def predict_gwr(
         gwr_bw,
         y_train,
         intercept=intercept,
-    ).flatten()
+    )
+    y_pred_sales = gwr_results_sales["y_pred"].flatten()
+    params_sales = gwr_results_sales["params"]
     timing.stop("predict_sales")
 
     timing.start("predict_univ")
-    y_pred_univ = _run_gwr_prediction(
+    gwr_results_univ = _run_gwr_prediction(
         coords_univ, coords_train, X_univ, X_train, gwr_bw, y_train, intercept=intercept
-    ).flatten()
+    )
+    y_pred_univ = gwr_results_univ["y_pred"].flatten()
+    params_univ = gwr_results_univ["params"]
     timing.stop("predict_univ")
 
     model_engine = "gwr"
     if diagnostic:
-        model_engine = "diagnostic_gwr"  #TODO: Do we still need this? Probably not
+        model_engine = "diagnostic_gwr"
     
     model_name = ds.name
-
+    
+    # Organize the parameters
+    
+    ## Generate column names, accounting for the intercept
+    cols = (["intercept"] + list(ds.ind_vars)) if intercept else list(ds.ind_vars)
+    
+    ## Get the key/key sale values to accompany each row
+    test_list_key_sale = ds.df_test["key_sale"].values.tolist()
+    test_list_key = ds.df_test["key"].values.tolist()
+    sales_list_key_sale = ds.df_sales["key_sale"].values.tolist()
+    sales_list_key = ds.df_sales["key"].values.tolist()
+    univ_list_key = ds.df_universe["key"].values.tolist()
+    
+    ## Generate dataframes for each set of parameters, and add the keys
+    df_params_test = pd.DataFrame(params_test, columns=cols)
+    df_params_test.insert(0, "key_sale", test_list_key_sale)
+    df_params_test.insert(1, "key", test_list_key)
+    
+    df_params_sales = pd.DataFrame(params_sales, columns=cols)
+    df_params_sales.insert(0, "key_sale", sales_list_key_sale)
+    df_params_sales.insert(1, "key", sales_list_key)
+    
+    df_params_univ = pd.DataFrame(params_univ, columns=cols)
+    df_params_univ.insert(0, "key", univ_list_key)
+    
+    ## Stash these in the model object so they can be written out later
+    gwr_model.params_sales = df_params_sales
+    gwr_model.params_test = df_params_test
+    gwr_model.params_univ = df_params_univ
+    
     results = SingleModelResults(
         ds,
         "prediction",
@@ -4105,8 +4188,7 @@ def _run_gwr_prediction(
     """Run GWR predictions for a set of points."""
     gwr = GWR(coords_train, y_train, X_train, gwr_bw, constant=intercept)
     gwr_results = _gwr_predict(gwr, coords, X)
-    y_pred = gwr_results["y_pred"]
-    return y_pred
+    return gwr_results
 
 
 def _get_params(
@@ -4875,5 +4957,408 @@ def fit_land_SLICE_model(
         med_land_size,
         size_field
     )
+
+
+def write_tree_based_params(model: PredictionModel, df: pd.DataFrame, outpath: str, location: str = None):
+    
+    # model is either XGBoost (XGBRegressor), LightBGM (Booster), or CatBoost (CatBoostRegressor)
+    
+    # phase 1 -- calculate per-parcel global SHAPs based on the trained model
+    
+    # phase 2 -- if location field is not None, calculate *local* SHAPs for each unique value of 'location' as a subset
+    print(f"Pretend we're writing tree based parameters to {outpath}")
+
+
+def write_mra_params(
+    model: MRAModel,
+    outpath: str,
+    xs: dict,
+    dfs: dict,
+    do_plot: bool = False
+):
+    
+    # 1) Coefficients as a clean two-column CSV
+    csv_path = f"{outpath}/params.csv"
+    params = model.fitted_model.params.copy()        # pandas Series
+    params = params.rename(index={"const": "intercept"})  # const -> intercept
+    
+    df_coef = params.to_frame(name="coefficient")
+    df_coef.index.name = "variable"
+    df_coef.to_csv(csv_path)
+
+    # 2) Per-feature contributions with the same columns as X
+    #    (multiply each column by its matching coefficient; 0.0 if missing)
+    # Pull out intercept (if present)
+    intercept = float(params.get("intercept", 0.0))
+
+    # Keep only non-intercept coefficients for column-wise multiplication
+    feature_coefs = params.drop(labels=["intercept"], errors="ignore")
+
+    for subset in xs:
+        X = xs[subset]
+        df = dfs[subset]
+        
+        # Build contributions in X's column order
+        contrib_cols = {}
+        contrib_cols["key"] = df["key"]
+        if "key_sale" in df:
+            contrib_cols["key_sale"] = df["key_sale"]
+        contrib_cols["intercept"] = intercept
+        for col in X.columns:
+            if col == "const":
+                continue
+            if col in feature_coefs.index:
+                contrib_cols[col] = X[col] * feature_coefs[col]
+            else:
+                # No matching coefficient—fill with 0.0
+                contrib_cols[col] = pd.Series(0.0, index=X.index, dtype=float)
+
+        df_contrib = pd.DataFrame(contrib_cols, index=X.index)
+        xcols = [col for col in X.columns.tolist() if col in df_contrib]
+        df_contrib["contribution_sum"] = df_contrib[["intercept"] + xcols].sum(axis=1)
+        
+        df_final = _add_prediction_to_contribution(df, df_contrib)
+        
+        contrib_path = f"{outpath}/contributions_{subset}.csv"
+        df_final.to_csv(contrib_path, index=False)
+
+
+def write_gwr_params(model: GWRModel, outpath: str, dfs: dict, do_plot: bool = False):
+    for subset in ["test", "sales", "universe"]:
+        
+        # Write coefficients
+        csv_path = f"{outpath}/params_{subset}.csv"
+        df_params : pd.DataFrame = None
+        df : pd.DataFrame = None
+        if subset == "test":
+            df_params = model.params_test
+            df = dfs[subset]
+        elif subset == "sales":
+            df_params = model.params_sales
+            df = dfs[subset]
+        elif subset == "universe":
+            df_params = model.params_univ
+            df = dfs[subset]
+        
+        df_params.to_csv(csv_path, index=False)
+    
+        # Write contributions
+        
+        ## Set aside columns that will not be multiplied
+        if "key_sale" in df_params:
+            reserved = ["key", "key_sale", "intercept"]
+        else:
+            reserved = ["key", "intercept"]
+        reserved = [col for col in reserved if col in df_params]
+        
+        ## Merge variable values dataframe into variable coefficients dataframe
+        var_cols = [col for col in df_params.columns if col not in reserved]
+        renames = {col: f"var_{col}" for col in var_cols}
+        the_key = "key_sale" if ("key_sale" in df_params) else "key"
+        df_var_ren = df.rename(columns=renames)
+        
+        ### drop "key" if we're merging on "key_sale" so that we don't dupe
+        if the_key == "key_sale":
+            df_var_ren = df_var_ren.drop(columns="key")
+        
+        df_mult = df_params.merge(df_var_ren, on=the_key, how="left")
+        
+        
+        ## per-row variable contribution = variable value x row's variable coefficient
+        for col in var_cols:
+            df_mult[f"contrib_{col}"] = df_mult[f"var_{col}"] * df_mult[col]
+        
+        ## Throw away everything but the contribution for each variable
+        contrib_cols = [f"contrib_{col}" for col in var_cols]
+        df_mult = df_mult[reserved + contrib_cols]
+        rename_contrib = {f"contrib_{col}":col for col in var_cols}
+        df_contrib = df_mult.rename(columns=rename_contrib)
+        
+        ## Calculate the contribution sum by adding intercept + each variable's contribution
+        df_contrib["contribution_sum"] = df_contrib[["intercept"] + var_cols].sum(axis=1)
+        
+        ## Add on predictions and check deltas
+        df_final = _add_prediction_to_contribution(df, df_contrib)
+        
+        ## Write out the final contributions
+        contrib_path = f"{outpath}/contributions_{subset}.csv"
+        df_final.to_csv(contrib_path, index=False)
+
+
+def write_shaps(
+    model: TreeBasedModel,
+    outpath: str,
+    smr: SingleModelResults,
+    location: str,
+    do_plot: bool = False,
+    verbose: bool = False
+):
+    ind_vars = smr.ds.ind_vars
+    X_train = smr.df_train[ind_vars].copy()
+    X_test = smr.df_test[ind_vars].copy()
+    X_sales = smr.df_sales[ind_vars].copy()
+    X_univ = smr.df_universe[ind_vars].copy()
+    
+    shaps = get_full_model_shaps(
+        model,
+        X_train,
+        X_test,
+        X_sales,
+        X_univ
+    )
+    
+    dfs = {
+        "test": smr.df_test,
+        "train": smr.df_train,
+        "univ": smr.df_universe,
+        "sales": smr.df_sales
+    }
+    
+    do_plot = False
+    
+    for subset in shaps:
+        shap_entry = shaps[subset]
+        df = dfs[subset]
+        _prepare_shap_dfs(
+            model,
+            shap_entry,
+            df,
+            ind_vars,
+            subset,
+            outpath,
+            do_plot=do_plot,
+            verbose=verbose,
+            do_write=True
+        )
+        
+    # TODO: figure out local shaps
+    
+    # print(f"write shaps location = {location}")
+    # if location is not None:
+        # df_univ = dfs["univ"]
+        # df_sales = dfs["sales"]
+        # locs = df_univ[location].unique()
+        # if verbose:
+            # print(f"Performing localized SHAP analysis for location field = '{location}'")
+            # print(f"--> {len(locs)} unique values")
+        # i = 0
+        
+        # df_unit: pd.DataFrame = None
+        # df_contrib: pd.DataFrame = None
+        
+        # for loc in locs:
+            # if verbose and i % 10 == 0:
+                # print(f"----> {i}/{len(locs)} : {loc}")
+            # df_explain = df_univ[df_univ[location].eq(loc)].copy()
+            # df_bkg = df_sales[df_sales[location].eq(loc)].copy()
+            # X_bkg = df_bkg[ind_vars]
+            # X_explain = df_explain[ind_vars]
+            # shap_entry = get_model_shaps(model, X_bkg, X_explain)
+            # df_unit_loc, df_contrib_loc = _prepare_shap_dfs(
+                # model,
+                # shap_entry,
+                # df_explain,
+                # ind_vars,
+                # loc,
+                # outpath,
+                # do_plot=do_plot,
+                # verbose=False,
+                # do_write=False
+            # )
+            # df_unit_loc[f"shap_location"] = loc
+            # df_contrib_loc[f"shap_location"] = loc
+            
+            # if df_unit is None:
+                # df_unit = df_unit_loc
+            # else:
+                # df_unit = pd.concat([df_unit, df_unit_loc], ignore_index=True)
+                
+            # if df_contrib is None:
+                # df_contrib = df_contrib_loc
+            # else:
+                # df_contrib = pd.concat([df_contrib, df_contrib_loc], ignore_index=True)
+            
+            # i += 1
+        
+        # units_path = f"{outpath}/params_local.csv"
+        # contrib_path = f"{outpath}/contributions_local.csv"
+        
+        # df_unit.to_csv(units_path, index=False)
+        # df_contrib.to_csv(contrib_path, index=False)
+
+
+def _prepare_shap_dfs(
+        model: TreeBasedModel,
+        shap_entry: shap.Explanation,
+        df: pd.DataFrame,
+        list_vars: list[str],
+        subset: str,
+        outpath: str,
+        do_plot: bool = False,
+        verbose: bool = False,
+        do_write: bool = True
+    ):
+    
+    # Draw / Save a plot if requested
+    if do_plot:
+        title = f"{model.type}: {subset}"
+        bee_path = f"{outpath}/shap_{subset}.png"
+        plot_full_beeswarm(shap_entry, title, save_path=bee_path)
+    
+    # Unpack the extra columns we need
+    list_keys = df["key"].values
+    list_keys_sale = df["key_sale"].values if "key_sale" in df else None
+    
+    # Pack the shaps + extra columns into a tidy dataframe
+    df_contrib = make_shap_table(
+        shap_entry,
+        list_keys,
+        list_vars,
+        list_keys_sale
+    )
+    
+    # Check for divergent baseline due to approximate shap calculation
+    
+    ## get the same feature matrix used for SHAP (X_to_explain)
+    X_to_explain = df[list_vars].to_numpy()
+
+    ## raw model predictions on those exact rows
+    yhat_raw = model.predict(X_to_explain)
+
+    ## SHAP reconstruction on those rows
+    recon = np.asarray(shap_entry.base_values).ravel() + shap_entry.values.sum(axis=1)
+    
+    deltas = (recon - yhat_raw)
+    delta_mean = float(deltas.mean())
+    delta_mean_perc = abs(delta_mean / float(yhat_raw.mean()))
+    delta_std = float(deltas.std())
+    delta_std_perc = abs(delta_std / float(deltas.mean()))
+    
+    # if there's more than a 0.1% difference between baselines
+    if delta_mean_perc > 0.001:
+        # if there's basically no variation in baseline
+        if delta_std_perc < 0.01:
+            # treat the baseline as a constant adjustment and factor it in
+            df_contrib["base_value"] -= delta_mean
+            df_contrib["contribution_sum"] -= delta_mean
+        else:
+            warnings.warn(f"SHAP values off by a non-constant factor, delta std deviation % = {delta_std_perc:0.2%}")
+    
+    # Back out per-unit values
+    df_unit = _contrib_to_unit_values(df_contrib, df)
+    
+    # Add on predictions and check deltas
+    df_contrib_w_pred = _add_prediction_to_contribution(df, df_contrib)
+    
+    if do_write:
+        # Write params to disk
+        unit_path = f"{outpath}/params_{subset}.csv"
+        if verbose:
+            print(f"writing shap params to {unit_path}")
+        df_unit.to_csv(unit_path, index=False)
+    
+    if do_write:
+        # Write contributions to disk
+        contrib_path = f"{outpath}/contributions_{subset}.csv"
+        if verbose:
+            print(f"writing shap to {contrib_path}")
+        df_contrib_w_pred.to_csv(contrib_path, index=False)
+    
+    return df_unit, df_contrib_w_pred
+
+
+def _contrib_to_unit_values(df_contrib: pd.DataFrame, df_base: pd.DataFrame):
+    # choose join key
+    the_key = "key_sale" if "key_sale" in df_contrib.columns else "key"
+
+    # reserved columns we don't treat as variables
+    reserved = ["key", "key_sale", "base_value"]
+
+    # variables are those present in BOTH, excluding reserved
+    var_names = [
+        c for c in df_contrib.columns
+        if c not in reserved and c in df_base.columns
+    ]
+
+    # rename contrib columns to avoid clashes with base
+    df_contrib_renamed = df_contrib.rename(
+        columns={v: f"{v}_contrib" for v in var_names}
+    )
+
+    # drop non-join reserved from the right frame to avoid suffix collisions
+    drop_from_base = [c for c in reserved if c != the_key and c in df_base.columns]
+    df_base_trim = df_base.drop(columns=drop_from_base)
+
+    # merge
+    df_merged = df_contrib_renamed.merge(df_base_trim, on=the_key, how="left")
+
+    # compute per-unit contributions
+    for v in var_names:
+        df_merged[f"{v}_unit"] = div_df_z_safe(df_merged, f"{v}_contrib", v)
+
+    # build the output with keys
+    keep_cols = [c for c in ["key", "key_sale"] if c in df_merged.columns]
+    # pass through base_value from contrib side if present there
+    if "base_value" in df_contrib.columns:
+        keep_cols.append("base_value")
+
+    unit_cols = [f"{v}_unit" for v in var_names]
+    df_out = df_merged[keep_cols + unit_cols].copy()
+    
+    df_out_renamed = df_out.rename(
+        columns={f"{v}_unit": v for v in var_names}
+    )
+
+    return df_out_renamed
+
+
+def _add_prediction_to_contribution(
+    df: pd.DataFrame,
+    df_contrib: pd.DataFrame
+):
+    the_key = "key_sale" if "key_sale" in df else "key"
+    df_pred = df[[the_key, "prediction"]]
+    df_combined = df_contrib.merge(df_pred, on=the_key, how="left")
+    df_combined["check_delta"] = df_combined["prediction"] - df_combined["contribution_sum"]
+    return df_combined
+
+
+def write_model_parameters(
+    model: PredictionModel,
+    smr: SingleModelResults,
+    location: str,
+    outpath: str,
+    do_plot: bool = False,
+    verbose: bool = False
+):
+    
+    print(f"write model parameters to {outpath}")
+    xs = {
+        "test": smr.ds.X_test,
+        "sales": smr.ds.X_sales,
+        "universe": smr.ds.X_univ,
+    }
+    dfs = {
+        "test": smr.df_test,
+        "train": smr.df_train,
+        "universe": smr.df_universe,
+        "sales": smr.df_sales
+    }
+    if model is None:
+        pass
+    elif isinstance(model, str):
+        pass
+    elif isinstance(model, PassThroughModel):
+        pass
+    elif isinstance(model, MRAModel):
+        write_mra_params(model, outpath, xs, dfs, do_plot)
+    elif isinstance(model, GWRModel):
+        write_gwr_params(model, outpath, dfs, do_plot)
+    elif isinstance(model, TreeBasedModel):
+        write_shaps(model, outpath, smr, location, do_plot, verbose=verbose)
+    # ...and so on
+    else:
+        raise TypeError(f"Unexpected model type: {type(model).__name__}")
+
 
 ##############################
