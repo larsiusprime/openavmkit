@@ -56,10 +56,10 @@ from openavmkit.modeling import (
     run_ground_truth,
     predict_ground_truth,
     run_spatial_lag,
-    predict_spatial_lag
+    predict_spatial_lag,
+    write_model_parameters
 )
 from openavmkit.reports import MarkdownReport, _markdown_to_pdf
-from openavmkit.shap_analysis import compute_shap
 from openavmkit.time_adjustment import enrich_time_adjustment
 from openavmkit.utilities.data import (
     div_df_z_safe,
@@ -76,7 +76,7 @@ from openavmkit.utilities.modeling import (
     GWRModel,
     MRAModel,
     GroundTruthModel,
-    SpatialLagModel,
+    SpatialLagModel
 )
 from openavmkit.utilities.plotting import plot_scatterplot, _simple_ols
 from openavmkit.utilities.settings import (
@@ -108,6 +108,10 @@ from openavmkit.utilities.stats import (
 )
 from openavmkit.utilities.geometry import ensure_geometries
 from openavmkit.utilities.timing import TimingData
+from openavmkit.shap_analysis import (
+    _calc_shap,
+    plot_full_beeswarm
+)
 
 #######################################
 # PUBLIC
@@ -1341,7 +1345,9 @@ def run_one_model(
 
     if save_results:
         t.start("write")
-        _write_model_results(results, outpath, settings, verbose=verbose)
+        main_vacant_hedonic = "hedonic" if hedonic else "vacant" if vacant_only else "main"
+        location = get_model_location(settings, main_vacant_hedonic, model_name)
+        _write_model_results(results, outpath, settings, location, verbose=verbose)
         t.stop("write")
 
     return results
@@ -1709,6 +1715,8 @@ def _predict_one_model(
 
     timing = TimingData()
     timing.start("total")
+    
+    main_vacant_hedonic = "hedonic" if ds.hedonic else "vacant" if ds.vacant_only else "main"
 
     results: SingleModelResults | None = None
 
@@ -1769,7 +1777,15 @@ def _predict_one_model(
         results = _clamp_land_predictions(results, smr.ds.model_group, model_name, outpath, max_trim)
 
     if save_results:
-        _write_model_results(results, outpath, settings, verbose=verbose)
+        
+        mvh = settings.get("modeling", {}).get("models", {}).get(main_vacant_hedonic, {})
+        model_entry = mvh.get("model_name", mvh.get("default", {}))
+        location = model_entry.get("location", None)
+        if location is None:
+            location = get_important_field(settings, "loc_neighborhood")
+        
+        location = get_model_location(settings, main_vacant_hedonic, model_name)
+        _write_model_results(results, outpath, settings, location, verbose=verbose)
 
     return results
 
@@ -2050,10 +2066,13 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
     return dfs
 
 
-def _write_model_results(results: SingleModelResults, outpath: str, settings: dict, verbose:bool = False):
+def _write_model_results(results: SingleModelResults, outpath: str, settings: dict, location: str = None, verbose:bool = False):
     """
     Write model results to disk in parquet and CSV formats.
     """
+    
+    print(f"Write model results to {outpath}")
+    
     dfs = _assemble_model_results(results, settings)
     path = f"{outpath}/{results.model_name}"
     if "*" in path:
@@ -2082,6 +2101,23 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
 
     with open(f"{path}/pred_universe.pkl", "wb") as f:
         pickle.dump(results.pred_univ, f, protocol=pickle.HIGHEST_PROTOCOL)
+    
+    params_path = f"{path}"
+    
+    write_model_parameters(results.model, results, location, params_path, verbose=verbose)
+
+
+def get_model_location(
+    settings: dict,
+    main_vacant_hedonic: str,
+    model_name: str
+):
+    mvh = settings.get("modeling", {}).get("models", {}).get(main_vacant_hedonic, {})
+    model_entry = mvh.get(model_name, mvh.get("default", {}))
+    location = model_entry.get("location", None)
+    if location is None:
+        location = get_important_field(settings, "loc_market_area")
+    return location
 
 
 def _write_ensemble_model_results(
@@ -3298,7 +3334,7 @@ def _model_shaps(model_group: str, all_results: MultiModelResults, title: str):
     for key in all_results.model_results:
         smr: SingleModelResults = all_results.model_results[key]
         _title = f"{title}/{model_group}/{key}"
-        compute_shap(smr, True, _title)
+        _quick_shap(smr, True, _title)
 
 
 def _get_earliest_and_latest_date(df: pd.DataFrame):
@@ -4067,3 +4103,38 @@ def _collect_base_model_predictions(
                 template_ds = smr.ds
 
     return predictions, true_values, template_ds
+
+
+def _quick_shap(
+    smr: SingleModelResults, 
+    plot: bool = False, 
+    title: str = ""
+):
+    """
+    Compute SHAP values for a given model and dataset and optionally plot it.
+
+    Parameters
+    ----------
+    smr : SingleModelResults
+        The SingleModelResults object containing the fitted model and data splits.
+    plot : bool, optional
+        If True, generate and display a SHAP summary plot. Defaults to False.
+    title : str, optional
+        Title to use for the SHAP plot if `plot` is True. Defaults to an empty string.
+
+    Returns
+    -------
+    np.ndarray
+        SHAP values array for the evaluation dataset.
+    """
+
+    if smr.type not in ["xgboost", "catboost", "lightgbm"]:
+        # SHAP is not supported for this model type
+        return
+
+    X_train = smr.ds.X_train
+
+    shaps = _calc_shap(smr.model, X_train, X_train)
+
+    if plot:
+        plot_full_beeswarm(shaps, title=title)

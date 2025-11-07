@@ -803,7 +803,7 @@ def identify_irregular_parcels(
     - The original CRS is preserved in the final output.
     - Triangle detection delegates to :func:`detect_triangular_lots`.
     - Complex shapes satisfy both: vertex count ≥ ``complex_threshold`` AND
-      rectangularity ≤ ``rectangularity_threshold``.
+      rectangularity <= ``rectangularity_threshold``.
     - Elongation is evaluated on the axis-aligned bounding box of each parcel.
     """
     if verbose:

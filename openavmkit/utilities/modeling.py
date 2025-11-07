@@ -285,6 +285,12 @@ class GWRModel:
         1D array of dependent variable's values from the training set
     gwr_bw : float
         Bandwidth for GWR calculation
+    df_params_test : pd.DataFrame
+        Coefficients for the test set
+    df_params_sales : pd.DataFrame
+        Coefficients for the sales set
+    df_params_universe : pd.DataFrame
+        Coefficients for the universe set
 
     """
     def __init__(
@@ -292,7 +298,7 @@ class GWRModel:
         coords_train: list[tuple[float, float]],
         X_train: np.ndarray,
         y_train: np.ndarray,
-        gwr_bw: float,
+        gwr_bw: float
     ):
         """
         Parameters
@@ -310,6 +316,9 @@ class GWRModel:
         self.X_train = X_train
         self.y_train = y_train
         self.gwr_bw = gwr_bw
+        self.df_params_sales = None
+        self.df_params_univ = None
+        self.df_params_test = None
 
 
 class LandSLICEModel:
