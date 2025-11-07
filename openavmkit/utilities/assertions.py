@@ -153,9 +153,6 @@ def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None, allow_weak
     bool
         Whether the two DataFrames are equal or not
     """
-    a = a.copy()
-    b = b.copy()
-    
     a = sanitize_df(a)
     b = sanitize_df(b)
 
