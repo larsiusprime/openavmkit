@@ -3919,7 +3919,7 @@ def _handle_duplicated_rows(
                 
                 df_result = (
                     df_in.groupby(subset)
-                    .sort_values(by=agg_bys, asc=agg_ascendings)  # Sort 
+                    .sort_values(by=agg_bys, asc=agg_ascendings)  # Sort
                     .agg({field: op})
                     .reset_index()
                     .rename(columns={field: agg_key})
@@ -3938,7 +3938,8 @@ def _handle_duplicated_rows(
             df_result = df_deduped.merge(df_agg, on=subset, how="left")
         else:
             df_result = df_deduped
-        
+    else:
+        df_result = df_in
     return df_result
 
 
