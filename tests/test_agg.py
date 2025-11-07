@@ -47,15 +47,6 @@ def test_agg():
     df_expected = get_agg_deduped_csv()
     df_results = _handle_duplicated_rows(df, dupes, True)
     
-    pd.set_option('display.max_columns',None)
-    print("EXPECTED:")
-    print(str(df_expected))
-    print("")
-    print("")
-    print("RESULTS:")
-    print(str(df_results))
-    pd.set_option('display.max_columns',15)
-    
     assert dfs_are_equal(df_results, df_expected, primary_key="key")
 
 
