@@ -85,12 +85,17 @@ from openavmkit.utilities.timing import TimingData
 
 pd.set_option("future.no_silent_downcasting", True)
 
+TreeBasedModel = Union[
+    XGBRegressor,
+    Booster,
+    CatBoostRegressor
+]
+
 PredictionModel = Union[
     MRAModel,
     XGBRegressor,
     Booster,
     CatBoostRegressor,
-    GWR,
     KernelReg,
     GarbageModel,
     AverageModel,
@@ -2343,14 +2348,17 @@ def predict_gwr(
     timing.start("predict_test")
 
     if len(np_coords_test) == 0 or len(X_test) == 0:
+        gwr_result_test = None
         y_pred_test = np.array([])
     else:
         gwr_result_test = gwr.predict(np_coords_test, X_test)
         y_pred_test = gwr_result_test.predictions.flatten()
+        params_test = gwr_result_test.params
     timing.stop("predict_test")
 
     timing.start("predict_sales")
-    y_pred_sales = _run_gwr_prediction(
+    
+    gwr_results_sales = _run_gwr_prediction(
         coords_sales,
         coords_train,
         X_sales,
@@ -2358,19 +2366,52 @@ def predict_gwr(
         gwr_bw,
         y_train,
         intercept=intercept,
-    ).flatten()
+    )
+    y_pred_sales = gwr_results_sales["y_pred"].flatten()
+    params_sales = gwr_results_sales["params"]
     timing.stop("predict_sales")
 
     timing.start("predict_univ")
-    y_pred_univ = _run_gwr_prediction(
+    gwr_results_univ = _run_gwr_prediction(
         coords_univ, coords_train, X_univ, X_train, gwr_bw, y_train, intercept=intercept
-    ).flatten()
+    )
+    y_pred_univ = gwr_results_univ["y_pred"].flatten()
+    params_univ = gwr_results_univ["params"]
     timing.stop("predict_univ")
 
     model_name = "gwr"
     if diagnostic:
         model_name = "diagnostic_gwr"
-
+    
+    # Organize the parameters
+    
+    ## Generate column names, accounting for the intercept
+    cols = (["intercept"] + list(ds.ind_vars)) if intercept else list(ds.ind_vars)
+    
+    ## Get the key/key sale values to accompany each row
+    test_list_key_sale = ds.df_test["key_sale"].values.tolist()
+    test_list_key = ds.df_test["key"].values.tolist()
+    sales_list_key_sale = ds.df_sales["key_sale"].values.tolist()
+    sales_list_key = ds.df_sales["key"].values.tolist()
+    univ_list_key = ds.df_universe["key"].values.tolist()
+    
+    ## Generate dataframes for each set of parameters, and add the keys
+    df_params_test = pd.DataFrame(params_test, columns=cols)
+    df_params_test.insert(0, "key_sale", test_list_key_sale)
+    df_params_test.insert(1, "key", test_list_key)
+    
+    df_params_sales = pd.DataFrame(params_sales, columns=cols)
+    df_params_sales.insert(0, "key_sale", sales_list_key_sale)
+    df_params_sales.insert(1, "key", sales_list_key)
+    
+    df_params_univ = pd.DataFrame(params_univ, columns=cols)
+    df_params_univ.insert(0, "key", univ_list_key)
+    
+    ## Stash these in the model object so they can be written out later
+    gwr_model.params_sales = df_params_sales
+    gwr_model.params_test = df_params_test
+    gwr_model.params_univ = df_params_univ
+    
     results = SingleModelResults(
         ds,
         "prediction",
@@ -4048,8 +4089,7 @@ def _run_gwr_prediction(
     """Run GWR predictions for a set of points."""
     gwr = GWR(coords_train, y_train, X_train, gwr_bw, constant=intercept)
     gwr_results = _gwr_predict(gwr, coords, X)
-    y_pred = gwr_results["y_pred"]
-    return y_pred
+    return gwr_results
 
 
 def _get_params(
@@ -4818,5 +4858,65 @@ def fit_land_SLICE_model(
         med_land_size,
         size_field
     )
+
+
+def write_tree_based_params(model: PredictionModel, df: pd.DataFrame, outpath: str, location: str = None):
+    
+    # model is either XGBoost (XGBRegressor), LightBGM (Booster), or CatBoost (CatBoostRegressor)
+    
+    # phase 1 -- calculate per-parcel global SHAPs based on the trained model
+    
+    # phase 2 -- if location field is not None, calculate *local* SHAPs for each unique value of 'location' as a subset
+    print(f"Pretend we're writing tree based parameters to {outpath}")
+
+
+def write_mra_params(model: MRAModel, outpath: str, subset: str):
+    if subset != "universe":
+        return
+    csv_path = f"{outpath}.csv"
+    params : np.ndarray = model.fitted_model.params
+    params.to_csv(csv_path)
+
+
+def write_gwr_params(model: GWRModel, outpath: str, subset: str):
+    csv_path = f"{outpath}_{subset}.csv"
+    df_params : pd.DataFrame = None
+    if subset == "test":
+        df_params = model.params_test
+    elif subset == "sales":
+        df_params = model.params_sales
+    elif subset == "universe":
+        df_params = model.params_univ
+    else:
+        raise ValueError(f"Unrecognized subset: \"{subset}\"")
+    df_params.to_csv(csv_path, index=False)
+
+
+def write_shaps(model: TreeBasedModel, smr: SingleModelResults, outpath: str, subset: str):
+    if isinstance(model, XGBRegressor):
+        shap_model: XGBRegressor = model
+
+    return
+
+def write_model_parameters(model: PredictionModel, smr: SingleModelResults, outpath: str, subset: str):
+    
+    print(f"write model parameters to {outpath}")
+    
+    if model is None:
+        pass
+    elif isinstance(model, str):
+        pass
+    elif isinstance(model, PassThroughModel):
+        pass
+    elif isinstance(model, MRAModel):
+        write_mra_params(model, outpath)
+    elif isinstance(model, GWRModel):
+        write_gwr_params(model, outpath, subset)
+    elif isinstance(model, TreeBasedModel):
+        write_shaps(model, smr, outpath, subset)
+    # ...and so on
+    else:
+        raise TypeError(f"Unexpected model type: {type(model).__name__}")
+
 
 ##############################

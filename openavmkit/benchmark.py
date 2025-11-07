@@ -56,10 +56,11 @@ from openavmkit.modeling import (
     run_ground_truth,
     predict_ground_truth,
     run_spatial_lag,
-    predict_spatial_lag
+    predict_spatial_lag,
+    write_model_parameters
 )
 from openavmkit.reports import MarkdownReport, _markdown_to_pdf
-from openavmkit.shap_analysis import compute_shap
+from openavmkit.shap_analysis import quick_shap
 from openavmkit.time_adjustment import enrich_time_adjustment
 from openavmkit.utilities.data import (
     div_df_z_safe,
@@ -76,7 +77,7 @@ from openavmkit.utilities.modeling import (
     GWRModel,
     MRAModel,
     GroundTruthModel,
-    SpatialLagModel,
+    SpatialLagModel
 )
 from openavmkit.utilities.plotting import plot_scatterplot, _simple_ols
 from openavmkit.utilities.settings import (
@@ -2019,6 +2020,9 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
     """
     Write model results to disk in parquet and CSV formats.
     """
+    
+    print(f"Write model results to {outpath}")
+    
     dfs = _assemble_model_results(results, settings)
     path = f"{outpath}/{results.type}"
     if "*" in path:
@@ -2047,6 +2051,12 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
 
     with open(f"{path}/pred_universe.pkl", "wb") as f:
         pickle.dump(results.pred_univ, f, protocol=pickle.HIGHEST_PROTOCOL)
+    
+    params_path = f"{path}/params"
+    
+    write_model_parameters(results.model, results, params_path, "test")
+    write_model_parameters(results.model, results, params_path, "sales")
+    write_model_parameters(results.model, results, params_path, "universe")
 
 
 def _write_ensemble_model_results(
@@ -3296,7 +3306,7 @@ def _model_shaps(model_group: str, all_results: MultiModelResults, title: str):
     for key in all_results.model_results:
         smr: SingleModelResults = all_results.model_results[key]
         _title = f"{title}/{model_group}/{key}"
-        compute_shap(smr, True, _title)
+        quick_shap(smr, True, _title)
 
 
 def _get_earliest_and_latest_date(df: pd.DataFrame):
