@@ -1,6 +1,11 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## [0.4.5] - 2025-11-07
+- Fix aggregation logic
+- Fix duplicate handling
+- Fix depencency issue
+
 ## [0.4.4] - 2025-11-06
 - Fix broken geometry in _write_model_results
 - Fix enrichment regression
