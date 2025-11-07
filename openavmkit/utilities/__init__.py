@@ -11,5 +11,8 @@ Functions that should be accessed from all utilities go in _utils.py
 
 """
 
-from ._utils import to_parquet_safe  # re-export at package top-level
-__all__ = ["to_parquet_safe"]
+from ._utils import (
+    to_parquet_safe,
+    sanitize_df
+)
+__all__ = ["to_parquet_safe", "sanitize_df"]

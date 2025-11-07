@@ -17,7 +17,7 @@ def to_parquet_safe(df : pd.DataFrame, path: str, geometry_col : str | None = No
     geometry_col : str
         The name of the geometry column. Default is None
     """
-    df_san = _sanitize_for_parquet(df, geometry_col = geometry_col)
+    df_san = sanitize_df(df, geometry_col = geometry_col)
     if hasattr(df_san, 'to_numpy'):
         if hasattr(df_san, 'geometry'):  # GeoDataFrame-like
             df_san.to_parquet(path, engine="pyarrow")
@@ -27,8 +27,12 @@ def to_parquet_safe(df : pd.DataFrame, path: str, geometry_col : str | None = No
         raise TypeError("df must be a DataFrame.")
 
 
-def _sanitize_for_parquet(df : pd.DataFrame, geometry_col: str | None = None):
+def sanitize_df(df : pd.DataFrame, geometry_col: str | None = None):
     df = df.copy()
+    
+    if geometry_col is None and "geometry" in df:
+        geometry_col = "geometry"
+    
     for col in df.columns:
         if geometry_col and col == geometry_col:
             continue
