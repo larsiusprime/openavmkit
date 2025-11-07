@@ -11,7 +11,7 @@ from openavmkit.utilities.assertions import (
     dfs_are_equal,
 )
 from openavmkit.utilities.geometry import ensure_geometries
-
+from . import to_parquet_safe
 
 def write_cache(
     filename: str,
@@ -49,13 +49,7 @@ def write_cache(
         with open(path, "wb") as file:
             pickle.dump(payload, file)
     elif filetype == "df":
-        if hasattr(payload, 'to_numpy'):
-            if hasattr(payload, 'geometry'):  # GeoDataFrame-like
-                payload.to_parquet(path, engine="pyarrow")
-            else:  # DataFrame-like
-                payload.to_parquet(path)
-        else:
-            raise TypeError("Payload must be a DataFrame for df type.")
+        to_parquet_safe(payload, path)
 
     if type(signature) is dict:
         sig_ext = "json"

@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 
 from openavmkit.utilities.timing import TimingData
+from . import sanitize_df
 
 def objects_are_equal(a, b, epsilon: float = 1e-6) -> bool:
     """Test whether two objects are equal
@@ -152,8 +153,8 @@ def dfs_are_equal(a: pd.DataFrame, b: pd.DataFrame, primary_key=None, allow_weak
     bool
         Whether the two DataFrames are equal or not
     """
-    a = a.copy()
-    b = b.copy()
+    a = sanitize_df(a)
+    b = sanitize_df(b)
 
     # If a primary key is provided, preserve original behavior: sort by PK
     if primary_key is not None:
