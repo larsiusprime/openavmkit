@@ -3608,7 +3608,18 @@ def load_dataframe(
         if "calc" in key or "tweak" in key:  # Match any key containing calc or tweak
             op_type = "calc" if "calc" in key else "tweak"
             operation_order.append({"type": op_type, "operations": entry[key]})
-
+    
+    # Get all fields used in aggregation operations
+    dupes = entry.get("dupes", {})
+    agg = dupes.get("agg", {})
+    agg_fields = []
+    for agg_key in agg:
+        agg_entry = agg[agg_key]
+        agg_field = agg_entry.get("field", "")
+        if agg_field != "" and agg_field not in agg_fields:
+            agg_fields.append(agg_field)
+    
+    
     if verbose:
         print(f'Loading "{filename}"...')
 
@@ -3640,6 +3651,11 @@ def load_dataframe(
             fields_in_calc.extend(_crawl_calc_dict_for_fields(operation["operations"]))
     fields_in_calc = [f for f in fields_in_calc if f in column_names]
     cols_to_load += fields_in_calc
+    
+    # Only include fields from aggs that exist in the source data
+    fields_in_agg = [f for f in agg_fields if f in column_names]
+    cols_to_load += fields_in_agg
+    
     cols_to_load = list(set(cols_to_load))
     
     is_geometry = False
