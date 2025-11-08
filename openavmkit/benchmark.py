@@ -106,6 +106,10 @@ from openavmkit.utilities.stats import (
 )
 from openavmkit.utilities.geometry import ensure_geometries
 from openavmkit.utilities.timing import TimingData
+from openavmkit.shap_analysis import (
+    _calc_shap,
+    plot_full_beeswarm
+)
 
 #######################################
 # PUBLIC

@@ -4954,12 +4954,13 @@ def write_mra_params(
                 contrib_cols[col] = pd.Series(0.0, index=X.index, dtype=float)
 
         df_contrib = pd.DataFrame(contrib_cols, index=X.index)
-        df_contrib["contribution_sum"] = df_contrib[["intercept"] + X.columns.tolist()].sum(axis=1)
+        xcols = [col for col in X.columns.tolist() if col in df_contrib]
+        df_contrib["contribution_sum"] = df_contrib[["intercept"] + xcols].sum(axis=1)
         
         df_final = _add_prediction_to_contribution(df, df_contrib)
         
         contrib_path = f"{outpath}/contributions_{subset}.csv"
-        df_final.to_csv(contrib_path)
+        df_final.to_csv(contrib_path, index=False)
 
 
 def write_gwr_params(model: GWRModel, outpath: str, xs: dict, dfs: dict, do_plot: bool = False):
@@ -4998,13 +4999,14 @@ def write_gwr_params(model: GWRModel, outpath: str, xs: dict, dfs: dict, do_plot
                 contrib_cols[col] = pd.Series(0.0, index=df_params.index, dtype=float)
             
         df_contrib = pd.DataFrame(contrib_cols)
-        df_contrib["contribution_sum"] = df_contrib[["intercept"] + X.columns.tolist()].sum(axis=1)
+        xcols = [col for col in X.columns.tolist() if col in df_contrib]
+        df_contrib["contribution_sum"] = df_contrib[["intercept"] + xcols].sum(axis=1)
         
         # Add on predictions and check deltas
         df_final = _add_prediction_to_contribution(df, df_contrib)
         
         contrib_path = f"{outpath}/contributions_{subset}.csv"
-        df_final.to_csv(contrib_path)
+        df_final.to_csv(contrib_path, index=False)
 
 
 def write_shaps(
@@ -5025,10 +5027,10 @@ def write_shaps(
     print(f"shaps = {shaps}")
     
     dfs = {
-        "test": smr.ds.df_test,
-        "train": smr.ds.df_train,
-        "univ": smr.ds.df_universe,
-        "sales": smr.ds.df_sales
+        "test": smr.df_test,
+        "train": smr.df_train,
+        "univ": smr.df_universe,
+        "sales": smr.df_sales
     }
     
     for subset in shaps:
@@ -5125,7 +5127,7 @@ def _add_prediction_to_contribution(
 ):
     the_key = "key_sale" if "key_sale" in df else "key"
     df_pred = df[[the_key, "prediction"]]
-    df_combined = df_contrib.merge(on=the_key, how="left")
+    df_combined = df_contrib.merge(df_pred, on=the_key, how="left")
     df_combined["check_delta"] = df_combined["prediction"] - df_combined["contribution_sum"]
     return df_combined
 
@@ -5145,10 +5147,10 @@ def write_model_parameters(
         "universe": smr.ds.X_univ,
     }
     dfs = {
-        "test": smr.ds.df_test,
-        "train": smr.ds.df_train,
-        "univ": smr.ds.df_universe,
-        "sales": smr.ds.df_sales
+        "test": smr.df_test,
+        "train": smr.df_train,
+        "universe": smr.df_universe,
+        "sales": smr.df_sales
     }
     if model is None:
         pass
