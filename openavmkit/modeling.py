@@ -35,6 +35,11 @@ from statsmodels.nonparametric.kernel_regression import KernelReg
 from statsmodels.regression.linear_model import RegressionResults
 from xgboost import XGBRegressor
 
+from openavmkit.shap_analysis import (
+    make_shap_table,
+    get_model_shaps
+)
+
 from openavmkit.data import (
     _get_sales,
     _simulate_removed_buildings,
@@ -463,12 +468,46 @@ class DataSplit:
         Feature matrix for the test data.
     X_univ : pd.DataFrame
         Feature matrix for the universe data.
+    X_sales : pd.DataFrame
+        Feature matrix for the sales data (includes test + train).
     y_train : np.ndarray
         Target array for training.
     y_test : np.ndarray
         Target array for testing.
-    ...
-        Other attributes storing configuration, validation splits, and settings.
+    y_sales : np.ndarray
+        Target array for sales.
+    self.df_universe_orig : pd.DataFrame
+        An unaltered copy of df_universe as of initialization
+    self.df_sales_orig : pd.DataFrame
+        An unaltered copy of df_sales as of initialization
+    self.train_he_ids : np.ndarray
+        Horizontal equity ids from the training set
+    self.train_land_he_ids : np.ndarray
+        Land horizontal equity ids from the training set
+    self.train_impr_he_ids : np.ndarray
+        Improvement horizontal equity ids from the training set
+    self.model_group : str
+        The model group this DataSplit is for
+    self.dep_var : str
+        The dependent variable (what you are trying to predict)
+    self.dep_var_test : str
+        The dependent variable for the test set (if different)
+    self.ind_vars : list[str]
+        The independent variables (the predictors)
+    self.categorical_vars : list[str]
+        Independent variables that are categorical (i.e., not numeric)
+    self.interactions : dict
+        Dictionary of interactions -- what fields should interact with what other fields
+    self.one_hot_descendants : dict
+        Object that maps one-hot encoded fields to the original field they descend from
+    self.vacant_only : bool
+        Whether this is a vacant-land-only data set
+    self.hedonic : bool
+        Whether this is a hedonic (land-value-predicting) DataSplit
+    self.hedonic_test_against_vacant_sales : bool
+        If hedonic, whether it should also test against vacant sales or not
+    self.days_field : str
+        Name of the field that represents days since sale
     """
 
     counter: int = 0
@@ -4870,38 +4909,247 @@ def write_tree_based_params(model: PredictionModel, df: pd.DataFrame, outpath: s
     print(f"Pretend we're writing tree based parameters to {outpath}")
 
 
-def write_mra_params(model: MRAModel, outpath: str, subset: str):
-    if subset != "universe":
-        return
-    csv_path = f"{outpath}.csv"
-    params : np.ndarray = model.fitted_model.params
-    params.to_csv(csv_path)
+def write_mra_params(
+    model: MRAModel,
+    outpath: str,
+    xs: dict,
+    dfs: dict,
+    do_plot: bool = False
+):
+    
+    # 1) Coefficients as a clean two-column CSV
+    csv_path = f"{outpath}/params.csv"
+    params = model.fitted_model.params.copy()        # pandas Series
+    params = params.rename(index={"const": "intercept"})  # const -> intercept
+    
+    df_coef = params.to_frame(name="coefficient")
+    df_coef.index.name = "variable"
+    df_coef.to_csv(csv_path)
+
+    # 2) Per-feature contributions with the same columns as X
+    #    (multiply each column by its matching coefficient; 0.0 if missing)
+    # Pull out intercept (if present)
+    intercept = float(params.get("intercept", 0.0))
+
+    # Keep only non-intercept coefficients for column-wise multiplication
+    feature_coefs = params.drop(labels=["intercept"], errors="ignore")
+
+    for subset in xs:
+        X = xs[subset]
+        df = dfs[subset]
+        
+        # Build contributions in X's column order
+        contrib_cols = {}
+        contrib_cols["key"] = df["key"]
+        if "key_sale" in df:
+            contrib_cols["key_sale"] = df["key_sale"]
+        contrib_cols["intercept"] = intercept
+        for col in X.columns:
+            if col == "const":
+                continue
+            if col in feature_coefs.index:
+                contrib_cols[col] = X[col] * feature_coefs[col]
+            else:
+                # No matching coefficient—fill with 0.0
+                contrib_cols[col] = pd.Series(0.0, index=X.index, dtype=float)
+
+        df_contrib = pd.DataFrame(contrib_cols, index=X.index)
+        df_contrib["contribution_sum"] = df_contrib[["intercept"] + X.columns.tolist()].sum(axis=1)
+        
+        df_final = _add_prediction_to_contribution(df, df_contrib)
+        
+        contrib_path = f"{outpath}/contributions_{subset}.csv"
+        df_final.to_csv(contrib_path)
 
 
-def write_gwr_params(model: GWRModel, outpath: str, subset: str):
-    csv_path = f"{outpath}_{subset}.csv"
-    df_params : pd.DataFrame = None
-    if subset == "test":
-        df_params = model.params_test
-    elif subset == "sales":
-        df_params = model.params_sales
-    elif subset == "universe":
-        df_params = model.params_univ
-    else:
-        raise ValueError(f"Unrecognized subset: \"{subset}\"")
-    df_params.to_csv(csv_path, index=False)
+def write_gwr_params(model: GWRModel, outpath: str, xs: dict, dfs: dict, do_plot: bool = False):
+    for subset in ["test", "sales", "universe"]:
+        # Write coefficients
+        csv_path = f"{outpath}/params_{subset}.csv"
+        df_params : pd.DataFrame = None
+        df : pd.DataFrame = None
+        if subset == "test":
+            df_params = model.params_test
+            X = xs[subset]
+            df = dfs[subset]
+        elif subset == "sales":
+            df_params = model.params_sales
+            X = xs[subset]
+            df = dfs[subset]
+        elif subset == "universe":
+            df_params = model.params_univ
+            X = xs[subset]
+            df = dfs[subset]
+        
+        df_params.to_csv(csv_path, index=False)
+    
+        # Write contributions
+        contrib_cols = {}
+        contrib_cols["key"] = df_params["key"]
+        if "key_sale" in df_params:
+            contrib_cols["key_sale"] = df_params["key_sale"]
+        
+        contrib_cols["intercept"] = df_params["intercept"]
+        for col in X.columns:
+            if col in df_params.columns:
+                contrib_cols[col] = X[col] * df_params[col]
+            else:
+                # No matching coefficient-fill with 0.0
+                contrib_cols[col] = pd.Series(0.0, index=df_params.index, dtype=float)
+            
+        df_contrib = pd.DataFrame(contrib_cols)
+        df_contrib["contribution_sum"] = df_contrib[["intercept"] + X.columns.tolist()].sum(axis=1)
+        
+        # Add on predictions and check deltas
+        df_final = _add_prediction_to_contribution(df, df_contrib)
+        
+        contrib_path = f"{outpath}/contributions_{subset}.csv"
+        df_final.to_csv(contrib_path)
 
 
-def write_shaps(model: TreeBasedModel, smr: SingleModelResults, outpath: str, subset: str):
-    if isinstance(model, XGBRegressor):
-        shap_model: XGBRegressor = model
+def write_shaps(
+    model: TreeBasedModel, 
+    outpath: str,
+    smr: SingleModelResults, 
+    do_plot: bool = False
+):
+    print(f"WRITE SHAPS")
+    shaps = get_model_shaps(
+        model,
+        smr.ds.X_train,
+        smr.ds.X_test,
+        smr.ds.X_sales,
+        smr.ds.X_univ
+    )
+    
+    print(f"shaps = {shaps}")
+    
+    dfs = {
+        "test": smr.ds.df_test,
+        "train": smr.ds.df_train,
+        "univ": smr.ds.df_universe,
+        "sales": smr.ds.df_sales
+    }
+    
+    for subset in shaps:
+        print(f"-->{subset}")
+        shap_entry = shaps[subset]
+        
+        # Draw / Save a plot if requested
+        if do_plot:
+            title = f"{model.type}: {subset}"
+            bee_path = f"{outpath}/shap_{subset}.png"
+            plot_full_beeswarm(shap_entry, title, save_path=bee_path)
+        
+        # Get the right dataframe
+        df = dfs[subset]
+        
+        # Unpack the extra columns we need
+        list_keys = df["key"].values
+        list_vars = smr.ds.ind_vars
+        list_keys_sale = df["key_sale"].values if "key_sale" in df else None
+        
+        # Pack the shaps + extra columns into a tidy dataframe
+        df_contrib = make_shap_table(
+            shap_entry, 
+            list_keys, 
+            list_vars, 
+            list_keys_sale
+        )
+        
+        # Back out per-unit values
+        df_unit = _contrib_to_unit_values(df_contrib, df)
+        
+        # Write params to disk
+        unit_path = f"{outpath}/params_{subset}.csv"
+        print(f"writing shap params to {unit_path}")
+        df_unit.to_csv(unit_path, index=False)
+        
+        # Add on predictions and check deltas
+        df_contrib_w_pred = _add_prediction_to_contribution(df, df_contrib)
+        
+        # Write contributions to disk
+        contrib_path = f"{outpath}/contributions_{subset}.csv"
+        print(f"writing shap to {contrib_path}")
+        df_contrib_w_pred.to_csv(contrib_path, index=False)
 
-    return
 
-def write_model_parameters(model: PredictionModel, smr: SingleModelResults, outpath: str, subset: str):
+def _contrib_to_unit_values(df_contrib: pd.DataFrame, df_base: pd.DataFrame):
+    # choose join key
+    the_key = "key_sale" if "key_sale" in df_contrib.columns else "key"
+
+    # reserved columns we don't treat as variables
+    reserved = ["key", "key_sale", "base_value"]
+
+    # variables are those present in BOTH, excluding reserved
+    var_names = [
+        c for c in df_contrib.columns
+        if c not in reserved and c in df_base.columns
+    ]
+
+    # rename contrib columns to avoid clashes with base
+    df_contrib_renamed = df_contrib.rename(
+        columns={v: f"{v}_contrib" for v in var_names}
+    )
+
+    # drop non-join reserved from the right frame to avoid suffix collisions
+    drop_from_base = [c for c in reserved if c != the_key and c in df_base.columns]
+    df_base_trim = df_base.drop(columns=drop_from_base)
+
+    # merge
+    df_merged = df_contrib_renamed.merge(df_base_trim, on=the_key, how="left")
+
+    # compute per-unit contributions
+    for v in var_names:
+        df_merged[f"{v}_unit"] = div_df_z_safe(df_merged, f"{v}_contrib", v)
+
+    # build the output with keys
+    keep_cols = [c for c in ["key", "key_sale"] if c in df_merged.columns]
+    # pass through base_value from contrib side if present there
+    if "base_value" in df_contrib.columns:
+        keep_cols.append("base_value")
+
+    unit_cols = [f"{v}_unit" for v in var_names]
+    df_out = df_merged[keep_cols + unit_cols].copy()
+    
+    df_out_renamed = df_out.rename(
+        columns={f"{v}_unit": v for v in var_names}
+    )
+
+    return df_out_renamed
+
+
+def _add_prediction_to_contribution(
+    df: pd.DataFrame,
+    df_contrib: pd.DataFrame
+):
+    the_key = "key_sale" if "key_sale" in df else "key"
+    df_pred = df[[the_key, "prediction"]]
+    df_combined = df_contrib.merge(on=the_key, how="left")
+    df_combined["check_delta"] = df_combined["prediction"] - df_combined["contribution_sum"]
+    return df_combined
+
+
+
+def write_model_parameters(
+    model: PredictionModel,
+    smr: SingleModelResults,
+    outpath: str,
+    do_plot: bool = False
+):
     
     print(f"write model parameters to {outpath}")
-    
+    xs = {
+        "test": smr.ds.X_test,
+        "sales": smr.ds.X_sales,
+        "universe": smr.ds.X_univ,
+    }
+    dfs = {
+        "test": smr.ds.df_test,
+        "train": smr.ds.df_train,
+        "univ": smr.ds.df_universe,
+        "sales": smr.ds.df_sales
+    }
     if model is None:
         pass
     elif isinstance(model, str):
@@ -4909,11 +5157,11 @@ def write_model_parameters(model: PredictionModel, smr: SingleModelResults, outp
     elif isinstance(model, PassThroughModel):
         pass
     elif isinstance(model, MRAModel):
-        write_mra_params(model, outpath)
+        write_mra_params(model, outpath, xs, dfs, do_plot)
     elif isinstance(model, GWRModel):
-        write_gwr_params(model, outpath, subset)
+        write_gwr_params(model, outpath, xs, dfs, do_plot)
     elif isinstance(model, TreeBasedModel):
-        write_shaps(model, smr, outpath, subset)
+        write_shaps(model, outpath, smr, do_plot)
     # ...and so on
     else:
         raise TypeError(f"Unexpected model type: {type(model).__name__}")
