@@ -9,51 +9,67 @@ import lightgbm as lgb
 import catboost as cb
 import matplotlib.pyplot as plt
 
-from openavmkit.modeling import SingleModelResults
 
-
-def quick_shap(smr: SingleModelResults, plot: bool = False, title: str = ""):
+def get_model_shaps(
+    model: xgb.XGBRegressor | lgb.Booster | cb.CatBoostRegressor, 
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+    X_sales: pd.DataFrame,
+    X_univ: pd.DataFrame
+):
     """
-    Compute SHAP values for a given model and dataset and optionally plot it.
-
+    Calculates shaps for all subsets (test, train, sales, universe) of these SingleModelResults
+    
     Parameters
     ----------
-    smr : SingleModelResults
-        The SingleModelResults object containing the fitted model and data splits.
-    plot : bool, optional
-        If True, generate and display a SHAP summary plot. Defaults to False.
-    title : str, optional
-        Title to use for the SHAP plot if `plot` is True. Defaults to an empty string.
-
+    model: xgboost.XGBRegressor | lightgbm.Booster | catboost.CatBoostRegressor
+        A trained prediction model
+    X_train: pd.DataFrame
+        2D array of independent variables' values from the training set
+    X_test: pd.DataFrame
+        2D array of independent variables' values from the testing set
+    X_sales: pd.DataFrame
+        2D array of independent variables' values from the sales set
+    X_univ: pd.DataFrame
+        2D array of independent variables' values from the universe set
+    
     Returns
     -------
-    np.ndarray
-        SHAP values array for the evaluation dataset.
+    dict
+        A dict containing shap.Explanation objects keyed to "train", "test", "sales", and "univ"
+    
     """
-
-    if smr.type not in ["xgboost", "catboost", "lightgbm"]:
-        # SHAP is not supported for this model type
-        return
-
-    X_train = smr.ds.X_train
-
-    shaps = _calc_shap(smr.model, X_train, X_train)
-
-    if plot:
-        plot_full_beeswarm(shaps, title=title)
-
-
-def get_model_shaps(smr: SingleModelResults):
     
-    X_train = smr.ds.X_train
-    X_test = smr.ds.X_test
-    X_univ = smr.ds.X_univ
+    tree_explainer : shap.TreeExplainer = None
     
-    #shaps = _calc_shap(smr.model, X_train, X_train)
+    if isinstance(model, (xgb.core.Booster, xgb.XGBRegressor)):  # XGBoost
+        tree_explainer = _xgboost_shap(model, X_train)
+    elif isinstance(model, lgb.basic.Booster):                   # LightGBM
+        tree_explainer = _lightgbm_shap(model, X_train)
+    elif isinstance(model, cb.CatBoostRegressor):                # CatBoost
+        raise ValueError("Catboost not supported yet!")
+    else:
+        raise ValueError(f"Unsupported model type : {model.type}")
+    
+    shap_train = _shap_explain(tree_explainer, X_train)
+    shap_test = _shap_explain(tree_explainer, X_test)
+    shap_sales = _shap_explain(tree_explainer, X_sales)
+    shap_univ = _shap_explain(tree_explainer, X_univ)
+    
+    return {
+        "train": shap_train,
+        "test": shap_test,
+        "sales": shap_sales,
+        "univ": shap_univ
+    }
 
 
 def plot_full_beeswarm(
-    explanation: shap.Explanation, title: str = "SHAP Beeswarm", wrap_width: int = 20
+    explanation: shap.Explanation, 
+    title: str = "SHAP Beeswarm", 
+    save_path: str | None = None,
+    save_kwargs: dict | None = None,
+    wrap_width: int = 20
 ) -> None:
     """
     Plot a full SHAP beeswarm for a tree-based model with wrapped feature names.
@@ -69,8 +85,16 @@ def plot_full_beeswarm(
         Title of the plot. Defaults to "SHAP Beeswarm".
     wrap_width : int, optional
         Maximum character width for feature name wrapping. Defaults to 20.
+    save_path : str, optional
+        If provided, save the figure to this path (format inferred from extension).
+        e.g., 'beeswarm.png', 'beeswarm.pdf', 'figs/beeswarm.svg'.
+    save_kwargs : dict, optional
+        Extra kwargs passed to `fig.savefig` (e.g., {'dpi': 300, 'bbox_inches': 'tight',
+        'transparent': True}).
     """
-
+    if save_kwargs is None:
+        save_kwargs = {"dpi": 300, "bbox_inches": "tight"}
+    
     # Wrap feature names
     wrapped_names = [
         "\n".join(textwrap.wrap(fn, width=wrap_width))
@@ -96,10 +120,14 @@ def plot_full_beeswarm(
     ax.set_title(title)
     plt.setp(ax.get_yticklabels(), rotation=0, ha="right", fontsize=8)
 
+    # Save if requested
+    if save_path is not None:
+        fig.savefig(save_path, **save_kwargs)
+
     plt.show()
 
 
-def _make_shap_table(
+def make_shap_table(
     expl: shap.Explanation,
     list_keys: list[str],
     list_vars: list[str],
@@ -107,9 +135,8 @@ def _make_shap_table(
     include_pred: bool = True
 ) -> pd.DataFrame:
     """
-    Build a wide SHAP table:
-      [<key cols> ... , base_value, <feature_1> ... <feature_n>, (optional) pred_reconstructed]
-
+    Convert a shap explanation into a dataframe breaking down the full contribution to value
+    
     Parameters
     ----------
     expl : shap.Explanation
@@ -118,7 +145,7 @@ def _make_shap_table(
         Primary keys in the same row order as X_to_explain
     list_vars : list[str]
         Feature names in the order used for training (your canonical order).
-    list_keys_sale : list[str]
+    list_keys_sale : list[str] | None
         Optional. Transaction keys in the same row order as X_to_explain. Default is None.
     include_pred : bool
         Optional. Add a column that reconstructs the model output on the explained scale:
@@ -185,7 +212,7 @@ def _make_shap_table(
     # (raw margin for classifiers unless you used model_output="probability")
     if include_pred:
         pred = base_arr + df_features.sum(axis=1).to_numpy()
-        df_pred = pd.DataFrame({"pred_reconstructed": pred})
+        df_pred = pd.DataFrame({"contribution_sum": pred})
         df = pd.concat([df_keys, df_base, df_features, df_pred], axis=1)
     else:
         df = pd.concat([df_keys, df_base, df_features], axis=1)
@@ -228,8 +255,7 @@ def _calc_shap(
 def _xgboost_shap(
     model: xgb.core.Booster | xgb.XGBRegressor,
     X_train: pd.DataFrame,
-    X_to_explain: pd.DataFrame,
-    background_size: int,
+    background_size: int = 100,
     approximate: bool = True,
     check_additivity: bool = False
 )-> shap.TreeExplainer :
@@ -246,26 +272,10 @@ def _xgboost_shap(
     )
 
 
-def _xgboost_explain(
-    te : shap.TreeExplainer,
-    X_to_explain: pd.DataFrame,
-)-> shap.Explanation:
-    # explain your rows, again as a float32 array
-    X_arr = X_to_explain.to_numpy(dtype=np.float32)
-    vals = te.shap_values(X_arr, approximate=approximate, check_additivity=check_additivity)  # shape (n_samples, n_features)
-
-    # wrap into an Explanation for downstream plotting
-    return shap.Explanation(
-        values=vals,
-        base_values=te.expected_value,
-        data=X_arr,
-        feature_names=list(X_to_explain.columns),
-    )
-
-
 def _lightgbm_shap(
     model: lgb.basic.Booster,
     X_train: pd.DataFrame,
+    background_size: int = 100,
     approximate: bool = True,
     check_additivity: bool = False
 )-> shap.TreeExplainer:
@@ -278,17 +288,21 @@ def _lightgbm_shap(
     )
 
 
-def _lightgbm_explain(
-    te: shap.TreeExplainer,
-    X_to_explain: pd.DataFrame
+def _shap_explain(
+    te : shap.TreeExplainer,
+    X_to_explain: pd.DataFrame,
+    approximate: bool = True,
+    check_additivity: bool = False
 )-> shap.Explanation:
-    
-    vals = te.shap_values(X_to_explain, approximate=approximate, check_additivity=check_additivity)
+    # explain your rows, again as a float32 array
+    X_arr = X_to_explain.to_numpy(dtype=np.float32)
+    vals = te.shap_values(X_arr, approximate=approximate, check_additivity=check_additivity)  # shape (n_samples, n_features)
 
+    # wrap into an Explanation for downstream plotting
     return shap.Explanation(
         values=vals,
         base_values=te.expected_value,
-        data=X_to_explain.to_numpy(),
+        data=X_arr,
         feature_names=list(X_to_explain.columns),
     )
 
