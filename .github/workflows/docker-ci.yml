@@ -74,6 +74,7 @@ jobs:
 
   test-image:
     runs-on: ubuntu-latest
+    needs: build-and-push-image
     steps:
       # Test the image and notebooks on us-nc-guilford using the simple-entrypoint.sh script, failing if any of the notebooks return an error
       # The RUN environment variable is set to 'test' to trigger the test mode in the simple-entrypoint.sh script
