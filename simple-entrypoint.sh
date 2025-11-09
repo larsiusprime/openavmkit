@@ -23,6 +23,12 @@ if [ "$RUN" = "test" ]; then
     
     echo "Running: 03-model.ipynb"
     jupyter execute notebooks/pipeline/03-model.ipynb
+
+    echo "Running: 04-land.ipynb"
+    jupyter execute notebooks/pipeline/04-land.ipynb
+
+    echo "Running: 05-deploy.ipynb"
+    jupyter execute notebooks/pipeline/05-deploy.ipynb
     
     echo "--- All notebooks ran successfully ---"
 else
