@@ -4963,48 +4963,64 @@ def write_mra_params(
         df_final.to_csv(contrib_path, index=False)
 
 
-def write_gwr_params(model: GWRModel, outpath: str, xs: dict, dfs: dict, do_plot: bool = False):
+def write_gwr_params(model: GWRModel, outpath: str, dfs: dict, do_plot: bool = False):
     for subset in ["test", "sales", "universe"]:
+        
         # Write coefficients
         csv_path = f"{outpath}/params_{subset}.csv"
         df_params : pd.DataFrame = None
         df : pd.DataFrame = None
         if subset == "test":
             df_params = model.params_test
-            X = xs[subset]
             df = dfs[subset]
         elif subset == "sales":
             df_params = model.params_sales
-            X = xs[subset]
             df = dfs[subset]
         elif subset == "universe":
             df_params = model.params_univ
-            X = xs[subset]
             df = dfs[subset]
         
         df_params.to_csv(csv_path, index=False)
     
         # Write contributions
-        contrib_cols = {}
-        contrib_cols["key"] = df_params["key"]
+        
+        ## Set aside columns that will not be multiplied
         if "key_sale" in df_params:
-            contrib_cols["key_sale"] = df_params["key_sale"]
+            reserved = ["key", "key_sale", "intercept"]
+        else:
+            reserved = ["key", "intercept"]
+        reserved = [col for col in reserved if col in df_params]
         
-        contrib_cols["intercept"] = df_params["intercept"]
-        for col in X.columns:
-            if col in df_params.columns:
-                contrib_cols[col] = X[col] * df_params[col]
-            else:
-                # No matching coefficient-fill with 0.0
-                contrib_cols[col] = pd.Series(0.0, index=df_params.index, dtype=float)
-            
-        df_contrib = pd.DataFrame(contrib_cols)
-        xcols = [col for col in X.columns.tolist() if col in df_contrib]
-        df_contrib["contribution_sum"] = df_contrib[["intercept"] + xcols].sum(axis=1)
+        ## Merge variable values dataframe into variable coefficients dataframe
+        var_cols = [col for col in df_params.columns if col not in reserved]
+        renames = {col: f"var_{col}" for col in var_cols}
+        the_key = "key_sale" if ("key_sale" in df_params) else "key"
+        df_var_ren = df.rename(columns=renames)
         
-        # Add on predictions and check deltas
+        ### drop "key" if we're merging on "key_sale" so that we don't dupe
+        if the_key == "key_sale":
+            df_var_ren = df_var_ren.drop(columns="key")
+        
+        df_mult = df_params.merge(df_var_ren, on=the_key, how="left")
+        
+        
+        ## per-row variable contribution = variable value x row's variable coefficient
+        for col in var_cols:
+            df_mult[f"contrib_{col}"] = df_mult[f"var_{col}"] * df_mult[col]
+        
+        ## Throw away everything but the contribution for each variable
+        contrib_cols = [f"contrib_{col}" for col in var_cols]
+        df_mult = df_mult[reserved + contrib_cols]
+        rename_contrib = {f"contrib_{col}":col for col in var_cols}
+        df_contrib = df_mult.rename(columns=rename_contrib)
+        
+        ## Calculate the contribution sum by adding intercept + each variable's contribution
+        df_contrib["contribution_sum"] = df_contrib[["intercept"] + var_cols].sum(axis=1)
+        
+        ## Add on predictions and check deltas
         df_final = _add_prediction_to_contribution(df, df_contrib)
         
+        ## Write out the final contributions
         contrib_path = f"{outpath}/contributions_{subset}.csv"
         df_final.to_csv(contrib_path, index=False)
 
@@ -5161,7 +5177,7 @@ def write_model_parameters(
     elif isinstance(model, MRAModel):
         write_mra_params(model, outpath, xs, dfs, do_plot)
     elif isinstance(model, GWRModel):
-        write_gwr_params(model, outpath, xs, dfs, do_plot)
+        write_gwr_params(model, outpath, dfs, do_plot)
     elif isinstance(model, TreeBasedModel):
         write_shaps(model, outpath, smr, do_plot)
     # ...and so on
