@@ -72,4 +72,12 @@ jobs:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
-      
+
+      # Test the image and notebooks on us-nc-guilford using the simple-entrypoint.sh script, failing if any of the notebooks return an error
+      # The RUN environment variable is set to 'test' to trigger the test mode in the simple-entrypoint.sh script
+      - name: Test the image and notebooks
+        run: |
+          docker run --rm -e RUN=test ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+
+
