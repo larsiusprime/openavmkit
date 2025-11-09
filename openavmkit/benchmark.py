@@ -5,6 +5,7 @@ import math
 
 from matplotlib import pyplot as plt
 import pandas as pd
+import geopandas as gpd
 from catboost import CatBoostRegressor
 from lightgbm import Booster
 from sklearn.linear_model import Ridge
@@ -103,6 +104,7 @@ from openavmkit.utilities.stats import (
     calc_mse,
     trim_outliers_mask,
 )
+from openavmkit.utilities.geometry import ensure_geometries
 from openavmkit.utilities.timing import TimingData
 
 #######################################
@@ -2024,6 +2026,11 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
     os.makedirs(path, exist_ok=True)
     for key in dfs:
         df = dfs[key]
+        
+        if "geometry" in df.columns:
+            df = gpd.GeoDataFrame(df, geometry="geometry", crs=getattr(df, "crs", None))
+            df = ensure_geometries(df)
+        
         df.to_parquet(f"{path}/pred_{key}.parquet")
         if "geometry" in df:
             df = df.drop(columns=["geometry"])

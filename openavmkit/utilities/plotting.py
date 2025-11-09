@@ -6,6 +6,7 @@ import numpy as np
 import colorsys
 import mpld3
 import statsmodels.api as sm
+from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter, ScalarFormatter
 from mpld3 import plugins
 
@@ -66,7 +67,7 @@ def plot_scatterplot(
     best_fit_line: bool = False,
     perfect_fit_line: bool = False,
     metadata_field: str = None,
-):
+) -> Figure:
     """Scatterplot with inline mpld3 tooltips showing df[metadata_field].
 
     Parameters
@@ -180,7 +181,7 @@ def plot_bar(
     title: str = "",
     out_file: str = None,
     style: dict = None,
-):
+) -> None:
     """
     Plots a simple bar graph
 
@@ -230,7 +231,7 @@ def plot_histogram_df(
     bins=500,
     x_lim=None,
     out_file: str = None,
-):
+) -> None:
     """
     Plots an overlaid histogram of one or more sets of values
 
@@ -294,7 +295,7 @@ def _plot_histogram_mult(
     bins: int | None = 500,
     x_lim=None,
     out_file: str | None = None,
-):
+) -> None:
     plt.close("all")
 
     plt.ticklabel_format(axis="x", style="plain")          # no sci‑notation
@@ -346,7 +347,7 @@ def _get_color_by(df: pd.DataFrame, style: dict):
 
 def _simple_ols(
     df_in: pd.DataFrame, ind_var: str, dep_var: str, intercept: bool = True
-):
+) -> dict:
 
     # check for nans/nulls in y:
     df = df_in[~df_in[dep_var].isna() & ~df_in[ind_var].isna()].copy()

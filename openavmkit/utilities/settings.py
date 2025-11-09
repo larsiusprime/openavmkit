@@ -10,7 +10,7 @@ from datetime import datetime
 
 def load_settings(
     settings_file: str = "in/settings.json", settings_object: dict = None, error:bool=True, warning:bool=True
-):
+) -> dict | None:
     """
     Load settings file from disk
 
@@ -63,7 +63,7 @@ def load_settings(
     return settings
 
 
-def get_model_group(s: dict, key: str):
+def get_model_group(s: dict, key: str) -> dict:
     """
     Get a model group definition object from the settings dictionary
 
@@ -82,7 +82,7 @@ def get_model_group(s: dict, key: str):
     return s.get("modeling", {}).get("model_groups", {}).get(key, {})
 
 
-def get_valuation_date(s: dict):
+def get_valuation_date(s: dict) -> datetime:
     """
     Get the valuation date from the settings dictionary
 
@@ -153,7 +153,7 @@ def get_center(s: dict, gdf: gpd.GeoDataFrame = None) -> tuple[float, float]:
         raise ValueError("Could not find locality.center in settings!")
 
 
-def get_fields_land(s: dict, df: pd.DataFrame = None):
+def get_fields_land(s: dict, df: pd.DataFrame = None) -> dict:
     """
     Get all fields in the given dataframe that are classified in settings as pertaining to land.
 
@@ -187,7 +187,7 @@ def get_fields_land(s: dict, df: pd.DataFrame = None):
     return fields_land
 
 
-def get_fields_land_as_list(s: dict, df: pd.DataFrame = None):
+def get_fields_land_as_list(s: dict, df: pd.DataFrame = None) -> list[str]:
     """
     Get all fields in the given dataframe that are classified in settings as pertaining to land.
 
@@ -211,7 +211,7 @@ def get_fields_land_as_list(s: dict, df: pd.DataFrame = None):
     )
 
 
-def get_fields_impr(s: dict, df: pd.DataFrame = None):
+def get_fields_impr(s: dict, df: pd.DataFrame = None) -> dict:
     """
     Get all fields in the given dataframe that are classified in settings as pertaining to buildings/improvements.
 
@@ -234,7 +234,7 @@ def get_fields_impr(s: dict, df: pd.DataFrame = None):
     return _get_fields(s, "impr", df)
 
 
-def get_fields_impr_as_list(s: dict, df: pd.DataFrame = None):
+def get_fields_impr_as_list(s: dict, df: pd.DataFrame = None) -> list[str]:
     """
     Get all fields in the given dataframe that are classified in settings as pertaining to buildings/improvements.
 
@@ -258,7 +258,7 @@ def get_fields_impr_as_list(s: dict, df: pd.DataFrame = None):
     )
 
 
-def get_fields_other(s: dict, df: pd.DataFrame = None):
+def get_fields_other(s: dict, df: pd.DataFrame = None) -> dict:
     """
     Get all fields in the given dataframe that are classified in settings as pertaining to neither land nor
     buildings/improvements.
@@ -283,7 +283,7 @@ def get_fields_other(s: dict, df: pd.DataFrame = None):
     return _get_fields(s, "other", df)
 
 
-def get_fields_other_as_list(s: dict, df: pd.DataFrame = None):
+def get_fields_other_as_list(s: dict, df: pd.DataFrame = None) -> list[str]:
     """
     Get all fields in the given dataframe that are classified in settings as pertaining to neither land nor to
     buildings/improvements.
@@ -382,7 +382,7 @@ def get_fields_categorical(
     df: pd.DataFrame = None,
     include_boolean: bool = False,
     types: list[str] = None,
-):
+) -> list[str]:
     """
     Retrieve categorical field names based on settings and optional filters.
 
@@ -433,7 +433,7 @@ def get_fields_numeric(
     df: pd.DataFrame = None,
     include_boolean: bool = False,
     types: list[str] = None,
-):
+) -> list[str]:
     """
      Retrieve numeric field names based on settings and optional filters.
 
@@ -477,7 +477,7 @@ def get_fields_numeric(
     return nums
 
 
-def get_variable_interactions(entry: dict, settings: dict, df: pd.DataFrame = None):
+def get_variable_interactions(entry: dict, settings: dict, df: pd.DataFrame = None) -> dict:
     """
     Get variable interaction information from a dictionary object
 
@@ -492,7 +492,7 @@ def get_variable_interactions(entry: dict, settings: dict, df: pd.DataFrame = No
 
     Returns
     -------
-    dict | None
+    dict
         Interactions dictionary which maps field names to other field names, indicating variable interactions.
 
         Example:
@@ -521,7 +521,7 @@ def get_variable_interactions(entry: dict, settings: dict, df: pd.DataFrame = No
         return interactions.get("fields", {})
 
 
-def get_data_dictionary(settings: dict):
+def get_data_dictionary(settings: dict) -> dict:
     """
     Get the data dictionary object
 
@@ -568,7 +568,7 @@ def get_grouped_fields_from_data_dictionary(
     return result
 
 
-def get_model_group_ids(settings: dict, df: pd.DataFrame = None):
+def get_model_group_ids(settings: dict, df: pd.DataFrame = None) -> list[str]:
     """
     Get all model group ids specified in settings, in the preferred order specified by the user
 
@@ -607,7 +607,7 @@ def get_model_group_ids(settings: dict, df: pd.DataFrame = None):
     return ordered_ids
 
 
-def get_small_area_unit(settings: dict):
+def get_small_area_unit(settings: dict) -> str|None:
     """
     Get the designated "small" area unit (square feet or square meters)
 
@@ -618,8 +618,9 @@ def get_small_area_unit(settings: dict):
 
     Returns
     -------
-    str
+    str|None
         "sqft" if units are imperial and "sqm" if units are metric
+        None otherwise
     """
     base_units = settings.get("locality", {}).get("units", "imperial")
     if base_units == "imperial":
@@ -628,7 +629,7 @@ def get_small_area_unit(settings: dict):
         return "sqm"
 
 
-def get_large_area_unit(settings: dict):
+def get_large_area_unit(settings: dict)-> str|None:
     """
     Get the designated "large" area unit (acre or hectare)
 
@@ -639,8 +640,9 @@ def get_large_area_unit(settings: dict):
 
     Returns
     -------
-    str
+    str|None
         "acre" if units are imperial and "ha" if units are metric
+        None otherwise
     """
     base_units = settings.get("locality", {}).get("units", "imperial")
     if base_units == "imperial":
@@ -649,7 +651,7 @@ def get_large_area_unit(settings: dict):
         return "ha"  # hectare
 
 
-def get_short_distance_unit(settings: dict):
+def get_short_distance_unit(settings: dict) -> str|None:
     """
     Get the designated "short" distance unit (foot or meter)
 
@@ -660,8 +662,9 @@ def get_short_distance_unit(settings: dict):
 
     Returns
     -------
-    str
+    str|None
         "ft" if units are imperial and "m" if units are metric
+        None otherwise
     """
     base_units = settings.get("locality", {}).get("units", "imperial")
     if base_units == "imperial":
@@ -670,7 +673,7 @@ def get_short_distance_unit(settings: dict):
         return "m"
 
 
-def get_long_distance_unit(settings: dict):
+def get_long_distance_unit(settings: dict) -> str|None:
     """
     Get the designated "long" distance unit (mile or kilometer)
 
@@ -681,8 +684,9 @@ def get_long_distance_unit(settings: dict):
 
     Returns
     -------
-    str
+    str|None
         "mile" if units are imperial and "km" if units are metric
+        None otherwise
     """
     base_units = settings.get("locality", {}).get("units", "imperial")
     if base_units == "imperial":
@@ -765,7 +769,7 @@ def _get_unclassified_fields(s: dict, df: pd.DataFrame = None):
     return all
 
 
-def _get_fields(s: dict, type: str, df: pd.DataFrame = None):
+def _get_fields(s: dict, type: str, df: pd.DataFrame = None) -> dict:
     cats = s.get("field_classification", {}).get(type, {}).get("categorical", [])
     nums = s.get("field_classification", {}).get(type, {}).get("numeric", [])
     bools = s.get("field_classification", {}).get(type, {}).get("boolean", [])
@@ -778,8 +782,8 @@ def _get_fields(s: dict, type: str, df: pd.DataFrame = None):
     return {"categorical": cats, "numeric": nums, "boolean": bools}
 
 
-def _get_base_dir(s: dict):
-    slug = s.get("locality", {}).get("slug", None)
+def _get_base_dir(s: dict) -> str:
+    slug: str|None = s.get("locality", {}).get("slug", None)
     if slug is None:
         raise ValueError("Could not find settings.locality.slug!")
     return slug
@@ -797,7 +801,7 @@ def _process_settings(settings: dict):
     return s
 
 
-def _remove_comments_from_settings(s: dict):
+def _remove_comments_from_settings(s: dict) -> dict:
     comment_token = "__"
     keys_to_remove = []
     for key in s:
@@ -811,7 +815,7 @@ def _remove_comments_from_settings(s: dict):
     return s
 
 
-def _replace_variables(settings: dict):
+def _replace_variables(settings: dict) -> dict:
 
     result = settings.copy()
     failsafe = 999
@@ -826,7 +830,7 @@ def _replace_variables(settings: dict):
 
 def _do_replace_variables(
     node: dict | list | str, settings: dict, var_token: str = "$$"
-):
+) -> tuple[dict|list|str, int]:
     # For each key-value pair, search for values that are strings prefixed with $$, and replace them accordingly
 
     changes = 0
@@ -907,7 +911,7 @@ def _load_settings_template():
     return settings
 
 
-def _is_key_in(object: dict, key: str):
+def _is_key_in(object: dict, key: str) -> tuple[bool, str]:
     flags = ["+", "!"]
     for flag in ["+", "!", ""]:
         if f"{flag}{key}" in object:
@@ -915,7 +919,7 @@ def _is_key_in(object: dict, key: str):
     return False, ""
 
 
-def _strip_flags(settings: dict | list):
+def _strip_flags(settings: dict | list) -> dict | list:
     flags = ["+", "!"]
 
     if isinstance(settings, list):
@@ -1080,7 +1084,7 @@ def _get_max_ratio_study_trim(settings: dict, model_group: str)->float:
 
 def _simulate_removed_buildings(
     df: pd.DataFrame, settings: dict, idx_vacant: pd.Series = None
-):
+) -> pd.DataFrame:
     """Simulate removed buildings by changing improvement fields to values that reflect
     the absence of a building.
 

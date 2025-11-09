@@ -5,6 +5,7 @@ import warnings
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import pyproj
 import shapely
 import json
 
@@ -27,7 +28,7 @@ CRS84_ALIASES = {
     "HTTPS://WWW.OPENGIS.NET/DEF/CRS/OGC/1.3/CRS84",
 }
 
-def get_crs(gdf, projection_type):
+def get_crs(gdf: gpd.GeoDataFrame, projection_type: str) -> pyproj.CRS:
     """Returns the appropriate CRS for a GeoDataFrame based on the specified projection
     type.
 
@@ -59,7 +60,7 @@ def get_crs(gdf, projection_type):
 
 def get_crs_from_lat_lon(
     lat: float, lon: float, projection_type: str, units: str = "m"
-):
+) -> pyproj.CRS:
     """Return a Coordinate Reference System (CRS) suitable for the requested projection type at the given
     latitude/longitude location.
 
@@ -168,7 +169,7 @@ def safe_normalize_to_4326(crs):
         return False
 
 
-def offset_coordinate_feet(lat, lon, lat_feet, lon_feet) -> (float, float):
+def offset_coordinate_feet(lat: float, lon: float, lat_feet: float, lon_feet: float) -> tuple[float, float]:
     """Offset a lat/long coordinate by the designated number of feet
 
     Parameters
@@ -192,7 +193,7 @@ def offset_coordinate_feet(lat, lon, lat_feet, lon_feet) -> (float, float):
     return offset_coordinate_km(lat, lon, lat_km, lon_km)
 
 
-def offset_coordinate_miles(lat, lon, lat_miles, lon_miles) -> (float, float):
+def offset_coordinate_miles(lat, lon, lat_miles, lon_miles) -> tuple[float, float]:
     """Offset a lat/long coordinate by the designated number of miles
 
     Parameters
@@ -216,7 +217,7 @@ def offset_coordinate_miles(lat, lon, lat_miles, lon_miles) -> (float, float):
     return offset_coordinate_km(lat, lon, lat_km, lon_km)
 
 
-def offset_coordinate_m(lat, lon, lat_m, lon_m) -> (float, float):
+def offset_coordinate_m(lat: float, lon: float, lat_m: float, lon_m: float) -> tuple[float, float]:
     """Offset a lat/long coordinate by the designated number of meters
 
     Parameters
@@ -241,7 +242,7 @@ def offset_coordinate_m(lat, lon, lat_m, lon_m) -> (float, float):
 
 
 
-def offset_coordinate_km(lat, lon, lat_km, lon_km):
+def offset_coordinate_km(lat: float, lon: float, lat_km: float, lon_km: float) -> tuple[float, float]:
   # shift north/south
   lon_ns, lat_ns, _ = geod.fwd(
     lon, lat,
@@ -263,7 +264,7 @@ def offset_coordinate_km(lat, lon, lat_km, lon_km):
 
 
 
-def distance_km(lat1, lon1, lat2, lon2):
+def distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
   """
   Calculates the distance in kilometers between two latitude/longitude points.
   :param lat1: Latitude of the first point.
@@ -277,7 +278,7 @@ def distance_km(lat1, lon1, lat2, lon2):
 
 
 
-def create_geo_circle(lat, lon, crs, radius_km, num_points=100):
+def create_geo_circle(lat: float, lon: float, crs: pyproj.CRS, radius_km: float, num_points: int=100) -> gpd.GeoDataFrame:
     """Creates a GeoDataFrame containing a circle centered at the specified latitude and
     longitude.
 
@@ -316,7 +317,7 @@ def create_geo_circle(lat, lon, crs, radius_km, num_points=100):
     return gdf
 
 
-def create_geo_rect_shape_deg(lat, lon, width_deg, height_deg, anchor_point="center"):
+def create_geo_rect_shape_deg(lat: float, lon: float, width_deg: float, height_deg: float, anchor_point: str="center") -> Polygon:
     """Creates a GeoDataFrame containing a rectangle centered at the specified latitude
     and longitude.
 
@@ -335,8 +336,8 @@ def create_geo_rect_shape_deg(lat, lon, width_deg, height_deg, anchor_point="cen
 
     Returns
     -------
-    gpd.GeoDataFrame
-        A GeoDataFrame containing the rectangle.
+    Polygon
+        A shapely Polygon object representing the rectangle.
     """
 
     if anchor_point == "center":
@@ -386,7 +387,7 @@ def create_geo_rect_shape_deg(lat, lon, width_deg, height_deg, anchor_point="cen
     return polygon
 
 
-def create_geo_rect_shape_km(lat, lon, width_km, height_km, anchor_point="center"):
+def create_geo_rect_shape_km(lat: float, lon: float, width_km: float, height_km: float, anchor_point: str="center") -> Polygon:
     """Creates a GeoDataFrame containing a rectangle centered at the specified latitude
     and longitude.
 
@@ -405,8 +406,8 @@ def create_geo_rect_shape_km(lat, lon, width_km, height_km, anchor_point="center
 
     Returns
     -------
-    gpd.GeoDataFrame
-        A GeoDataFrame containing the rectangle.
+    Polygon
+        A polygon representing a rectangle.
     """
 
     if anchor_point == "center":
@@ -456,7 +457,7 @@ def create_geo_rect_shape_km(lat, lon, width_km, height_km, anchor_point="center
     return polygon
 
 
-def create_geo_rect(lat, lon, crs, width_km, height_km, anchor_point="center"):
+def create_geo_rect(lat: float, lon: float, crs: pyproj.CRS, width_km: float, height_km: float, anchor_point: str="center") -> gpd.GeoDataFrame:
     """Creates a GeoDataFrame containing a rectangle centered at the specified latitude
     and longitude.
 
@@ -491,7 +492,7 @@ def create_geo_rect(lat, lon, crs, width_km, height_km, anchor_point="center"):
     return gdf
 
 
-def ensure_geometries(df, geom_col="geometry", crs=None):
+def ensure_geometries(df: pd.DataFrame, geom_col: str="geometry", crs: pyproj.CRS=None) -> gpd.GeoDataFrame:
     """Parse a DataFrame whose `geom_col` may be:
 
       - Shapely geometries
@@ -525,7 +526,6 @@ def ensure_geometries(df, geom_col="geometry", crs=None):
         if "geometry" in df:
             try:
                 crs = df.crs
-                print(f"ensure_geometries, default crs = {crs}")
             except AttributeError:
                 crs = None
 
@@ -583,7 +583,7 @@ def ensure_geometries(df, geom_col="geometry", crs=None):
     return gpd.GeoDataFrame(df_clean, geometry=geom_series, crs=crs)
 
 
-def clean_geometry(gdf, ensure_polygon=True, target_crs=None):
+def clean_geometry(gdf: gpd.GeoDataFrame, ensure_polygon: bool=True, target_crs: str|int=None):
     """Preprocess a GeoDataFrame by diagnosing and fixing common geometry issues.
 
     Parameters
@@ -650,8 +650,8 @@ def clean_geometry(gdf, ensure_polygon=True, target_crs=None):
 
 
 def detect_triangular_lots(
-    geom, compactness_threshold=0.85, angle_tolerance=10, min_aspect=0.5, max_aspect=2.0
-):
+    geom: shapely.geometry.base.BaseGeometry, compactness_threshold: float=0.85, angle_tolerance: float=10, min_aspect: float=0.5, max_aspect: float=2.0
+) -> bool:
     """
     Determine if a geometry is approximately triangular based on compactness,
     hull vertex angles, and bounding box aspect ratio.
@@ -720,7 +720,7 @@ def detect_triangular_lots(
     return True
 
 
-def get_exterior_coords(geom):
+def get_exterior_coords(geom: Polygon) -> list | None:
     """Gets a list of all the exterior coordinates, regardless of whether the Geometry is a Polygon or MultiPolygon
 
     Parameters
@@ -743,13 +743,13 @@ def get_exterior_coords(geom):
 
 
 def identify_irregular_parcels(
-    gdf,
-    verbose=False,
-    tolerance=10,
-    complex_threshold=12,
-    rectangularity_threshold=0.75,
-    elongation_threshold=5,
-):
+    gdf: gpd.GeoDataFrame,
+    verbose: bool=False,
+    tolerance: int=10,
+    complex_threshold: int=12,
+    rectangularity_threshold: float=0.75,
+    elongation_threshold: float=5,
+) -> gpd.GeoDataFrame:
     """
     Detect and flag irregular parcel geometries based on shape metrics.
 
@@ -969,7 +969,7 @@ def geolocate_point_to_polygon(
     return df
 
 
-def _normalize_crs_value(crs_value):
+def _normalize_crs_value(crs_value) -> CRS:
     # Strings: catch OGC/URN/URL variants of CRS84 and map to EPSG:4326
     if isinstance(crs_value, str):
         s = crs_value.strip()
