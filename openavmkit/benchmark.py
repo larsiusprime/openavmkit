@@ -2057,7 +2057,7 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
     
     params_path = f"{path}"
     
-    write_model_parameters(results.model, results, params_path)
+    write_model_parameters(results.model, results, params_path, verbose=verbose)
 
 
 def _write_ensemble_model_results(
