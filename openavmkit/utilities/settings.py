@@ -1133,3 +1133,32 @@ def _simulate_removed_buildings(
         df.loc[idx_vacant, "is_vacant"] = True
 
     return df
+
+
+def get_dupes(entry: dict, df: pd.DataFrame = None, is_geometry: bool = False):
+    dupes = entry.get("dupes", None)
+    dupes_was_none = dupes is None
+    if dupes is None:
+        if is_geometry:
+            dupes = "auto"
+        else:
+            dupes = {}
+    if dupes == "auto":
+        if df is not None:
+            if is_geometry:
+                cols = [col for col in df.columns.values if col != "geometry"]
+                col = cols[0]
+                dupes = {"subset": [col], "sort_by": [col, "asc"], "drop": True}
+                if dupes_was_none:
+                    warnings.warn(
+                        f"'dupes' not found for geo df '{entry_key}', defaulting to \"{col}\" as de-dedupe key. Set 'dupes:\"auto\" to remove this warning.'"
+                    )
+            else:
+                keys = ["key_sale", "key", "key2", "key3"]
+                for key in keys:
+                    if key in df:
+                        dupes = {"subset": [key], "sort_by": [key, "asc"], "drop": True}
+                        break
+        else:
+            dupes = {"subset": ["key"], "sort_by": ["key", "asc"], "drop": True}
+    return dupes
