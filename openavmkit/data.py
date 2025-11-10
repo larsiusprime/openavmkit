@@ -2549,6 +2549,7 @@ def _enrich_vacant(df_in: pd.DataFrame, settings: dict) -> pd.DataFrame:
         df = _simulate_removed_buildings(df, settings, idx_vacant)
 
     else:
+        warnings.warn("You do not have a 'bldg_area_finished_sqft' field -- you really should!")
         df = df_in
 
     return df
