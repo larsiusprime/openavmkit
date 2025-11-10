@@ -16,14 +16,16 @@ if [ "$RUN" = "test" ]; then
     # Run all finished notebooks to test them on (currently) guilford
     # nbconvert is being used instead of execute because only it has
     # the flag to specify a kernel
-    # Flags ensure that the notebook runs on an existing kernel, and
-    # that they don't have output that clutters the source directory
+    # Flags ensure that the notebook runs on an existing kernel, nbconvert
+    # executes the notebook before conversion and
+    # that it doesn't produce output that clutters the source directory
     echo "--- Starting Notebook Test Run ---"
     
     echo "Running: 01-assemble.ipynb"
     jupyter nbconvert \
         --to notebook \
         --inplace \
+        --execute \
         --ExecutePreprocessor.kernel_name=python3 \
         notebooks/pipeline/01-assemble.ipynb
     
@@ -31,6 +33,7 @@ if [ "$RUN" = "test" ]; then
     jupyter nbconvert \
         --to notebook \
         --inplace \
+        --execute \
         --ExecutePreprocessor.kernel_name=python3 \
         notebooks/pipeline/02-clean.ipynb
     
@@ -38,6 +41,7 @@ if [ "$RUN" = "test" ]; then
     jupyter nbconvert \
         --to notebook \
         --inplace \
+        --execute \
         --ExecutePreprocessor.kernel_name=python3 \
         notebooks/pipeline/03-model.ipynb
 
@@ -47,6 +51,7 @@ if [ "$RUN" = "test" ]; then
     jupyter nbconvert \
         --to notebook \
         --inplace \
+        --execute \
         --ExecutePreprocessor.kernel_name=python3 \
         notebooks/pipeline/assessment-quality.ipynb
     
