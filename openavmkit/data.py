@@ -4677,7 +4677,10 @@ def _tag_model_groups_sup(
 
     df_univ["model_group"] = None
     df_sales_hydrated["model_group"] = None
-
+    
+    if not mg:
+        raise ValueError("You must define at least one model group!")
+    
     for mg_id in mg:
         # only apply model groups to parcels that don't already have one
         idx_no_model_group = df_univ["model_group"].isnull()
