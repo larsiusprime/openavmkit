@@ -13,6 +13,7 @@ from pygam.callbacks import CallBack
 from scipy.spatial._ckdtree import cKDTree
 from sklearn.preprocessing import OneHotEncoder
 
+import warnings
 import numpy as np
 import statsmodels.api as sm
 import pandas as pd
@@ -76,6 +77,7 @@ from openavmkit.utilities.modeling import (
 from openavmkit.utilities.data import (
     clean_column_names,
     div_series_z_safe,
+    div_df_z_safe,
     calc_spatial_lag,
 )
 from openavmkit.utilities.settings import get_valuation_date, _get_max_ratio_study_trim, get_look_back_dates
@@ -5031,16 +5033,19 @@ def write_shaps(
     smr: SingleModelResults, 
     do_plot: bool = False
 ):
-    print(f"WRITE SHAPS")
+    ind_vars = smr.ds.ind_vars
+    X_train = smr.df_train[ind_vars].copy()
+    X_test = smr.df_test[ind_vars].copy()
+    X_sales = smr.df_sales[ind_vars].copy()
+    X_univ = smr.df_universe[ind_vars].copy()
+    
     shaps = get_model_shaps(
         model,
-        smr.ds.X_train,
-        smr.ds.X_test,
-        smr.ds.X_sales,
-        smr.ds.X_univ
+        X_train,
+        X_test,
+        X_sales,
+        X_univ
     )
-    
-    print(f"shaps = {shaps}")
     
     dfs = {
         "test": smr.df_test,
@@ -5069,11 +5074,39 @@ def write_shaps(
         
         # Pack the shaps + extra columns into a tidy dataframe
         df_contrib = make_shap_table(
-            shap_entry, 
-            list_keys, 
-            list_vars, 
+            shap_entry,
+            list_keys,
+            list_vars,
             list_keys_sale
         )
+        
+        # Check for divergent baseline due to approximate shap calculation
+        
+        ## get the same feature matrix used for SHAP (X_to_explain)
+        X_to_explain = df[list_vars].to_numpy()
+
+        ## raw model predictions on those exact rows
+        yhat_raw = model.predict(X_to_explain)
+
+        ## SHAP reconstruction on those rows
+        recon = np.asarray(shap_entry.base_values).ravel() + shap_entry.values.sum(axis=1)
+        
+        deltas = (recon - yhat_raw)
+        delta_mean = float(deltas.mean())
+        delta_mean_perc = abs(delta_mean / float(yhat_raw.mean()))
+        delta_std = float(deltas.std())
+        delta_std_perc = abs(delta_std / float(deltas.mean()))
+        
+        # if there's more than a 0.1% difference between baselines
+        if delta_mean_perc > 0.001:
+            # if there's basically no variation in baseline
+            if delta_std_perc < 0.01:
+                # treat the baseline as a constant adjustment and factor it in
+                df_contrib["base_value"] -= delta_mean
+                df_contrib["contribution_sum"] -= delta_mean
+            else:
+                warnings.warn(f"SHAP values off by a non-constant factor, delta std deviation % = {delta_std_perc:0.2%}")
+        
         
         # Back out per-unit values
         df_unit = _contrib_to_unit_values(df_contrib, df)
@@ -5146,7 +5179,6 @@ def _add_prediction_to_contribution(
     df_combined = df_contrib.merge(df_pred, on=the_key, how="left")
     df_combined["check_delta"] = df_combined["prediction"] - df_combined["contribution_sum"]
     return df_combined
-
 
 
 def write_model_parameters(

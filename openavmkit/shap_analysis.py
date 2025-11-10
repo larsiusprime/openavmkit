@@ -193,7 +193,7 @@ def make_shap_table(
 
     df_features = pd.DataFrame(vals, columns=expl.feature_names)
     df_features = df_features[feature_cols]  # reorder
-
+    
     # 4) Keys up front (robust expansion)
     if len(list_keys) != n:
         raise ValueError(f"list_keys length {len(list_keys)} != number of rows {n}")
@@ -294,8 +294,7 @@ def _shap_explain(
     approximate: bool = True,
     check_additivity: bool = False
 )-> shap.Explanation:
-    # explain your rows, again as a float32 array
-    X_arr = X_to_explain.to_numpy(dtype=np.float32)
+    X_arr = X_to_explain.to_numpy(dtype=np.float64)
     vals = te.shap_values(X_arr, approximate=approximate, check_additivity=check_additivity)  # shape (n_samples, n_features)
 
     # wrap into an Explanation for downstream plotting
