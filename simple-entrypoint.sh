@@ -16,18 +16,18 @@ if [ "$RUN" = "test" ]; then
     echo "--- Starting Notebook Test Run ---"
     
     echo "Running: 01-assemble.ipynb"
-    jupyter execute notebooks/pipeline/01-assemble.ipynb
+    jupyter execute notebooks/pipeline/01-assemble.ipynb --kernel python3
     
     echo "Running: 02-clean.ipynb"
-    jupyter execute notebooks/pipeline/02-clean.ipynb
+    jupyter execute notebooks/pipeline/02-clean.ipynb --kernel python3
     
     echo "Running: 03-model.ipynb"
-    jupyter execute notebooks/pipeline/03-model.ipynb
+    jupyter execute notebooks/pipeline/03-model.ipynb --kernel python3
 
     # Notebooks 04 and 05 to be added when they are complete
 
     echo "Running: assessment-quality.ipynb"
-    jupyter execute notebooks/pipeline/assessment-quality.ipynb
+    jupyter execute notebooks/pipeline/assessment-quality.ipynb --kernel python3
     
     echo "--- All notebooks ran successfully ---"
 else
