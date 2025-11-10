@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 
-def dig2_fancy_format(num):
+def dig2_fancy_format(num: float | int) -> str:
     """Fancy-formats a number, and if the absolute value of the number is less than 100, shows it with two digits
 
     Parameters
@@ -23,7 +23,7 @@ def dig2_fancy_format(num):
         return fancy_format(num)
 
 
-def fancy_format(num):
+def fancy_format(num: float | int) -> str:
     """Formats a number in a pleasing and efficient way
 
     Parameters

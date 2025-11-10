@@ -1,6 +1,21 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## [0.4.5] - 2025-11-07
+- Fix aggregation logic
+- Fix duplicate handling
+- Fix depencency issue
+
+## [0.4.4] - 2025-11-06
+- Fix broken geometry in _write_model_results
+- Fix enrichment regression
+- Version bumps for dependencies
+- Updated documentation to explain pipeline module
+- Updates to default dockerfile
+- Modify pipeline to handle dataframe loading better in 01-assemble
+- Cleanup + type annotations for utilities
+- Fixed missing imports
+
 ## [0.4.3] - 2025-10-29
 - Allow anoynmous read-only access to public Azure repositories
 - Add "cloud.json" workflow

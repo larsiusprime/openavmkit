@@ -181,6 +181,9 @@ The portion of the sale set (typically 20%) that we set aside to evaluate our mo
 **Universe set**  
 The full set of parcels in the jurisdiction, regardless of whether the parcels have sold or not. This is the data set we will generate predictions for.
 
+**SalesUniversePair set**
+
+In any OpenAVMKit model, this refers to a data set created by merging together "Sales" set and the "Universe" set. We use this data structure to make sure that both the "sales" and "universe" data set are processed together in a consistent manner.
 
 ### Modeling
 

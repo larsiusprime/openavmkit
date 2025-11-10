@@ -382,7 +382,7 @@ class LandSLICEModel:
         location_factor: str = "location_factor",
         size_factor: str = "size_factor",
         prediction: str = "land_value"
-    ):
+    ) -> pd.DataFrame:
         for field in ["latitude", "longitude", self.size_field]:
             if field not in df:
                 raise ValueError(f"Required field {field} is missing from dataframe!")
