@@ -1,6 +1,7 @@
 import json
 import os
 import pickle
+import shap
 from datetime import date
 from numpy.linalg import LinAlgError
 import polars as pl
@@ -5031,7 +5032,8 @@ def write_shaps(
     model: TreeBasedModel, 
     outpath: str,
     smr: SingleModelResults, 
-    do_plot: bool = False
+    do_plot: bool = False,
+    verbose: bool = False
 ):
     ind_vars = smr.ds.ind_vars
     X_train = smr.df_train[ind_vars].copy()
@@ -5054,75 +5056,98 @@ def write_shaps(
         "sales": smr.df_sales
     }
     
+    do_plot = False
+    
     for subset in shaps:
-        print(f"-->{subset}")
         shap_entry = shaps[subset]
-        
-        # Draw / Save a plot if requested
-        if do_plot:
-            title = f"{model.type}: {subset}"
-            bee_path = f"{outpath}/shap_{subset}.png"
-            plot_full_beeswarm(shap_entry, title, save_path=bee_path)
-        
-        # Get the right dataframe
         df = dfs[subset]
-        
-        # Unpack the extra columns we need
-        list_keys = df["key"].values
-        list_vars = smr.ds.ind_vars
-        list_keys_sale = df["key_sale"].values if "key_sale" in df else None
-        
-        # Pack the shaps + extra columns into a tidy dataframe
-        df_contrib = make_shap_table(
+        _do_write_shap(
+            model,
             shap_entry,
-            list_keys,
-            list_vars,
-            list_keys_sale
+            df,
+            ind_vars,
+            subset,
+            outpath,
+            prefix="",
+            do_plot=do_plot,
+            verbose=verbose
         )
-        
-        # Check for divergent baseline due to approximate shap calculation
-        
-        ## get the same feature matrix used for SHAP (X_to_explain)
-        X_to_explain = df[list_vars].to_numpy()
 
-        ## raw model predictions on those exact rows
-        yhat_raw = model.predict(X_to_explain)
 
-        ## SHAP reconstruction on those rows
-        recon = np.asarray(shap_entry.base_values).ravel() + shap_entry.values.sum(axis=1)
-        
-        deltas = (recon - yhat_raw)
-        delta_mean = float(deltas.mean())
-        delta_mean_perc = abs(delta_mean / float(yhat_raw.mean()))
-        delta_std = float(deltas.std())
-        delta_std_perc = abs(delta_std / float(deltas.mean()))
-        
-        # if there's more than a 0.1% difference between baselines
-        if delta_mean_perc > 0.001:
-            # if there's basically no variation in baseline
-            if delta_std_perc < 0.01:
-                # treat the baseline as a constant adjustment and factor it in
-                df_contrib["base_value"] -= delta_mean
-                df_contrib["contribution_sum"] -= delta_mean
-            else:
-                warnings.warn(f"SHAP values off by a non-constant factor, delta std deviation % = {delta_std_perc:0.2%}")
-        
-        
-        # Back out per-unit values
-        df_unit = _contrib_to_unit_values(df_contrib, df)
-        
-        # Write params to disk
-        unit_path = f"{outpath}/params_{subset}.csv"
+def _do_write_shap(
+        model: TreeBasedModel,
+        shap_entry: shap.Explanation,
+        df: pd.DataFrame,
+        list_vars: list[str],
+        subset: str,
+        outpath: str,
+        prefix: str = "",
+        do_plot: bool = False,
+        verbose: bool = False
+    ):
+    
+    # Draw / Save a plot if requested
+    if do_plot:
+        title = f"{model.type}: {subset}"
+        bee_path = f"{outpath}/shap_{subset}.png"
+        plot_full_beeswarm(shap_entry, title, save_path=bee_path)
+    
+    # Unpack the extra columns we need
+    list_keys = df["key"].values
+    list_keys_sale = df["key_sale"].values if "key_sale" in df else None
+    
+    # Pack the shaps + extra columns into a tidy dataframe
+    df_contrib = make_shap_table(
+        shap_entry,
+        list_keys,
+        list_vars,
+        list_keys_sale
+    )
+    
+    # Check for divergent baseline due to approximate shap calculation
+    
+    ## get the same feature matrix used for SHAP (X_to_explain)
+    X_to_explain = df[list_vars].to_numpy()
+
+    ## raw model predictions on those exact rows
+    yhat_raw = model.predict(X_to_explain)
+
+    ## SHAP reconstruction on those rows
+    recon = np.asarray(shap_entry.base_values).ravel() + shap_entry.values.sum(axis=1)
+    
+    deltas = (recon - yhat_raw)
+    delta_mean = float(deltas.mean())
+    delta_mean_perc = abs(delta_mean / float(yhat_raw.mean()))
+    delta_std = float(deltas.std())
+    delta_std_perc = abs(delta_std / float(deltas.mean()))
+    
+    # if there's more than a 0.1% difference between baselines
+    if delta_mean_perc > 0.001:
+        # if there's basically no variation in baseline
+        if delta_std_perc < 0.01:
+            # treat the baseline as a constant adjustment and factor it in
+            df_contrib["base_value"] -= delta_mean
+            df_contrib["contribution_sum"] -= delta_mean
+        else:
+            warnings.warn(f"SHAP values off by a non-constant factor, delta std deviation % = {delta_std_perc:0.2%}")
+    
+    # Back out per-unit values
+    df_unit = _contrib_to_unit_values(df_contrib, df)
+    
+    # Write params to disk
+    unit_path = f"{outpath}/{prefix}params_{subset}.csv"
+    if verbose:
         print(f"writing shap params to {unit_path}")
-        df_unit.to_csv(unit_path, index=False)
-        
-        # Add on predictions and check deltas
-        df_contrib_w_pred = _add_prediction_to_contribution(df, df_contrib)
-        
-        # Write contributions to disk
-        contrib_path = f"{outpath}/contributions_{subset}.csv"
+    df_unit.to_csv(unit_path, index=False)
+    
+    # Add on predictions and check deltas
+    df_contrib_w_pred = _add_prediction_to_contribution(df, df_contrib)
+    
+    # Write contributions to disk
+    contrib_path = f"{outpath}/{prefix}contributions_{subset}.csv"
+    if verbose:
         print(f"writing shap to {contrib_path}")
-        df_contrib_w_pred.to_csv(contrib_path, index=False)
+    df_contrib_w_pred.to_csv(contrib_path, index=False)
 
 
 def _contrib_to_unit_values(df_contrib: pd.DataFrame, df_base: pd.DataFrame):
@@ -5185,7 +5210,8 @@ def write_model_parameters(
     model: PredictionModel,
     smr: SingleModelResults,
     outpath: str,
-    do_plot: bool = False
+    do_plot: bool = False,
+    verbose: bool = False
 ):
     
     print(f"write model parameters to {outpath}")
@@ -5211,7 +5237,7 @@ def write_model_parameters(
     elif isinstance(model, GWRModel):
         write_gwr_params(model, outpath, dfs, do_plot)
     elif isinstance(model, TreeBasedModel):
-        write_shaps(model, outpath, smr, do_plot)
+        write_shaps(model, outpath, smr, do_plot, verbose=verbose)
     # ...and so on
     else:
         raise TypeError(f"Unexpected model type: {type(model).__name__}")
