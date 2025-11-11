@@ -1513,79 +1513,80 @@ def identify_outliers(
                 dfm["prediction"] = dfm[the_field]
                 dfm["prediction_ratio"] = div_df_z_safe(dfm, "prediction", "sale_price")
             
-            if mtype != "main":
-                # it's a land model, only look at vacant sales:
-                dfm = dfm[dfm["vacant_sale"].eq(True)]
+            if dfm is not None:
+                if mtype != "main":
+                    # it's a land model, only look at vacant sales:
+                    dfm = dfm[dfm["vacant_sale"].eq(True)]
             
-            if dfm is not None and "prediction" in dfm:
-                print("")
-                print("----------------------")
-                value_fields = ["sale_price", "prediction", "assr_market_value", "assr_land_value", "assr_impr_value"]
-                for v in value_fields:
-                    if "impr" not in v:
-                        dfm[f"{v}_land_sqft"] = div_series_z_safe(dfm[v], dfm["land_area_sqft"])
-                    if "land" not in v:
-                        dfm[f"{v}_impr_sqft"] = div_series_z_safe(dfm[v], dfm["bldg_area_finished_sqft"])
-                
-                dfm_i = dfm[dfm["vacant_sale"].eq(False)]
-                dfm_v = dfm[dfm["vacant_sale"].eq(True)]
+                if dfm "prediction" in dfm:
+                    print("")
+                    print("----------------------")
+                    value_fields = ["sale_price", "prediction", "assr_market_value", "assr_land_value", "assr_impr_value"]
+                    for v in value_fields:
+                        if "impr" not in v:
+                            dfm[f"{v}_land_sqft"] = div_series_z_safe(dfm[v], dfm["land_area_sqft"])
+                        if "land" not in v:
+                            dfm[f"{v}_impr_sqft"] = div_series_z_safe(dfm[v], dfm["bldg_area_finished_sqft"])
+                    
+                    dfm_i = dfm[dfm["vacant_sale"].eq(False)]
+                    dfm_v = dfm[dfm["vacant_sale"].eq(True)]
 
-                
-                df_loc_price_i = dfm_i.groupby(location)["sale_price"].agg(["count","median"]).reset_index().rename(columns={
-                    "count":"local_impr_sales",
-                    "median":"local_impr_price"
-                })
-                df_loc_price_is = dfm_i.groupby(location)["sale_price_impr_sqft"].agg(["median"]).reset_index().rename(columns={
-                    "median":"local_impr_price_sqft"
-                })
-                
-                df_loc_price_v = dfm_v.groupby(location)["sale_price"].agg(["count","median"]).reset_index().rename(columns={
-                    "count":"local_land_sales",
-                    "median":"local_land_price"
-                })
-                df_loc_price_vs = dfm_v.groupby(location)["sale_price_land_sqft"].agg(["median"]).reset_index().rename(columns={
-                    "median":"local_land_price_sqft"
-                })
-                
-                if mtype == "main":
-                    dfm = dfm.merge(df_loc_price_i, on=location, how="left")
-                    dfm = dfm.merge(df_loc_price_is, on=location, how="left")
-                
-                dfm = dfm.merge(df_loc_price_v, on=location, how="left")
-                dfm = dfm.merge(df_loc_price_vs, on=location, how="left")
-                
-                #Re-arrange columns in a massively opinionated way
-                cols = dfm.columns.tolist()
-                put_at_front = ["key_sale", deed_id, "address", "prediction_ratio", "prediction", "sale_price"]
-                if mtype == "main":
-                    put_at_front += ["prediction_impr_sqft", "sale_price_impr_sqft", "local_impr_price_sqft", "local_impr_sales"]
-                put_at_front += ["prediction_land_sqft", "sale_price_land_sqft", "local_land_price_sqft", "local_land_sales"]
-                put_at_end = ["address", location]
-                
-                cols = [col for col in cols if col not in put_at_front and col not in put_at_end]
-                cols = put_at_front + cols + put_at_end
-                
-                dfm = dfm[cols]
-                
-                os.makedirs(outdir, exist_ok=True)
-                
-                dfm.to_csv(outpath, index=False)
-                
-                print("")
-                print("Top 10 UNDER-predictions:")
-                print("")
-                dfm = dfm.sort_values(by="prediction_ratio", ascending=True)
-                display(dfm.head(n=10))
-                
-                print("")
-                print("Top 10 OVER-predictions:")
-                print("")
-                dfm = dfm.sort_values(by="prediction_ratio", ascending=False)
-                display(dfm.head(n=10))
-                
-                
-                
-                print("")
+                    
+                    df_loc_price_i = dfm_i.groupby(location)["sale_price"].agg(["count","median"]).reset_index().rename(columns={
+                        "count":"local_impr_sales",
+                        "median":"local_impr_price"
+                    })
+                    df_loc_price_is = dfm_i.groupby(location)["sale_price_impr_sqft"].agg(["median"]).reset_index().rename(columns={
+                        "median":"local_impr_price_sqft"
+                    })
+                    
+                    df_loc_price_v = dfm_v.groupby(location)["sale_price"].agg(["count","median"]).reset_index().rename(columns={
+                        "count":"local_land_sales",
+                        "median":"local_land_price"
+                    })
+                    df_loc_price_vs = dfm_v.groupby(location)["sale_price_land_sqft"].agg(["median"]).reset_index().rename(columns={
+                        "median":"local_land_price_sqft"
+                    })
+                    
+                    if mtype == "main":
+                        dfm = dfm.merge(df_loc_price_i, on=location, how="left")
+                        dfm = dfm.merge(df_loc_price_is, on=location, how="left")
+                    
+                    dfm = dfm.merge(df_loc_price_v, on=location, how="left")
+                    dfm = dfm.merge(df_loc_price_vs, on=location, how="left")
+                    
+                    #Re-arrange columns in a massively opinionated way
+                    cols = dfm.columns.tolist()
+                    put_at_front = ["key_sale", deed_id, "address", "prediction_ratio", "prediction", "sale_price"]
+                    if mtype == "main":
+                        put_at_front += ["prediction_impr_sqft", "sale_price_impr_sqft", "local_impr_price_sqft", "local_impr_sales"]
+                    put_at_front += ["prediction_land_sqft", "sale_price_land_sqft", "local_land_price_sqft", "local_land_sales"]
+                    put_at_end = ["address", location]
+                    
+                    cols = [col for col in cols if col not in put_at_front and col not in put_at_end]
+                    cols = put_at_front + cols + put_at_end
+                    
+                    dfm = dfm[cols]
+                    
+                    os.makedirs(outdir, exist_ok=True)
+                    
+                    dfm.to_csv(outpath, index=False)
+                    
+                    print("")
+                    print("Top 10 UNDER-predictions:")
+                    print("")
+                    dfm = dfm.sort_values(by="prediction_ratio", ascending=True)
+                    display(dfm.head(n=10))
+                    
+                    print("")
+                    print("Top 10 OVER-predictions:")
+                    print("")
+                    dfm = dfm.sort_values(by="prediction_ratio", ascending=False)
+                    display(dfm.head(n=10))
+                    
+                    
+                    
+                    print("")
         
 
 
