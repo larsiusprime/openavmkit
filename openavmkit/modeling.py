@@ -39,7 +39,8 @@ from xgboost import XGBRegressor
 
 from openavmkit.shap_analysis import (
     make_shap_table,
-    get_model_shaps
+    get_model_shaps,
+    get_full_model_shaps
 )
 
 from openavmkit.data import (
@@ -479,37 +480,37 @@ class DataSplit:
         Target array for testing.
     y_sales : np.ndarray
         Target array for sales.
-    self.df_universe_orig : pd.DataFrame
+    df_universe_orig : pd.DataFrame
         An unaltered copy of df_universe as of initialization
-    self.df_sales_orig : pd.DataFrame
+    df_sales_orig : pd.DataFrame
         An unaltered copy of df_sales as of initialization
-    self.train_he_ids : np.ndarray
+    train_he_ids : np.ndarray
         Horizontal equity ids from the training set
-    self.train_land_he_ids : np.ndarray
+    train_land_he_ids : np.ndarray
         Land horizontal equity ids from the training set
-    self.train_impr_he_ids : np.ndarray
+    train_impr_he_ids : np.ndarray
         Improvement horizontal equity ids from the training set
-    self.model_group : str
+    model_group : str
         The model group this DataSplit is for
-    self.dep_var : str
+    dep_var : str
         The dependent variable (what you are trying to predict)
-    self.dep_var_test : str
+    dep_var_test : str
         The dependent variable for the test set (if different)
-    self.ind_vars : list[str]
+    ind_vars : list[str]
         The independent variables (the predictors)
-    self.categorical_vars : list[str]
+    categorical_vars : list[str]
         Independent variables that are categorical (i.e., not numeric)
-    self.interactions : dict
+    interactions : dict
         Dictionary of interactions -- what fields should interact with what other fields
-    self.one_hot_descendants : dict
+    one_hot_descendants : dict
         Object that maps one-hot encoded fields to the original field they descend from
-    self.vacant_only : bool
+    vacant_only : bool
         Whether this is a vacant-land-only data set
-    self.hedonic : bool
+    hedonic : bool
         Whether this is a hedonic (land-value-predicting) DataSplit
-    self.hedonic_test_against_vacant_sales : bool
+    hedonic_test_against_vacant_sales : bool
         If hedonic, whether it should also test against vacant sales or not
-    self.days_field : str
+    days_field : str
         Name of the field that represents days since sale
     """
 
@@ -1322,8 +1323,7 @@ class SingleModelResults:
                 self.dep_var_test, self.ind_vars, field_prediction, self.df_sales_lookback, max_trim, self.is_land_predictions
             )
             self.df_sales_lookback = self.pred_sales_lookback.df
-            
-
+        
         timing.stop("stats_sales")
 
         self.pred_univ = y_pred_univ
@@ -5029,9 +5029,10 @@ def write_gwr_params(model: GWRModel, outpath: str, dfs: dict, do_plot: bool = F
 
 
 def write_shaps(
-    model: TreeBasedModel, 
+    model: TreeBasedModel,
     outpath: str,
-    smr: SingleModelResults, 
+    smr: SingleModelResults,
+    location: str,
     do_plot: bool = False,
     verbose: bool = False
 ):
@@ -5041,7 +5042,7 @@ def write_shaps(
     X_sales = smr.df_sales[ind_vars].copy()
     X_univ = smr.df_universe[ind_vars].copy()
     
-    shaps = get_model_shaps(
+    shaps = get_full_model_shaps(
         model,
         X_train,
         X_test,
@@ -5061,29 +5062,83 @@ def write_shaps(
     for subset in shaps:
         shap_entry = shaps[subset]
         df = dfs[subset]
-        _do_write_shap(
+        _prepare_shap_dfs(
             model,
             shap_entry,
             df,
             ind_vars,
             subset,
             outpath,
-            prefix="",
             do_plot=do_plot,
-            verbose=verbose
+            verbose=verbose,
+            do_write=True
         )
+        
+    print(f"write shaps location = {location}")
+    
+    if location is not None:
+        df_univ = dfs["univ"]
+        df_sales = dfs["sales"]
+        locs = df_univ[location].unique()
+        if verbose:
+            print(f"Performing localized SHAP analysis for location field = '{location}'")
+            print(f"--> {len(locs)} unique values")
+        i = 0
+        
+        df_unit: pd.DataFrame = None
+        df_contrib: pd.DataFrame = None
+        
+        for loc in locs:
+            if verbose and i % 10 == 0:
+                print(f"----> {i}/{len(locs)} : {loc}")
+            df_explain = df_univ[df_univ[location].eq(loc)].copy()
+            df_bkg = df_sales[df_sales[location].eq(loc)].copy()
+            X_bkg = df_bkg[ind_vars]
+            X_explain = df_explain[ind_vars]
+            shap_entry = get_model_shaps(model, X_bkg, X_explain)
+            df_unit_loc, df_contrib_loc = _prepare_shap_dfs(
+                model,
+                shap_entry,
+                df_explain,
+                ind_vars,
+                loc,
+                outpath,
+                do_plot=do_plot,
+                verbose=False,
+                do_write=False
+            )
+            df_unit_loc[f"shap_location"] = loc
+            df_contrib_loc[f"shap_location"] = loc
+            
+            if df_unit is None:
+                df_unit = df_unit_loc
+            else:
+                df_unit = pd.concat([df_unit, df_unit_loc], ignore_index=True)
+                
+            if df_contrib is None:
+                df_contrib = df_contrib_loc
+            else:
+                df_contrib = pd.concat([df_contrib, df_contrib_loc], ignore_index=True)
+            
+            i += 1
+        
+        units_path = f"{outpath}/params_local.csv"
+        contrib_path = f"{outpath}/contributions_local.csv"
+        
+        df_unit.to_csv(units_path, index=False)
+        df_contrib.to_csv(contrib_path, index=False)
 
 
-def _do_write_shap(
+def _prepare_shap_dfs(
         model: TreeBasedModel,
         shap_entry: shap.Explanation,
         df: pd.DataFrame,
         list_vars: list[str],
         subset: str,
         outpath: str,
-        prefix: str = "",
         do_plot: bool = False,
-        verbose: bool = False
+        verbose: bool = False,
+        do_write: bool = True
     ):
     
     # Draw / Save a plot if requested
@@ -5134,20 +5189,24 @@ def _do_write_shap(
     # Back out per-unit values
     df_unit = _contrib_to_unit_values(df_contrib, df)
     
-    # Write params to disk
-    unit_path = f"{outpath}/{prefix}params_{subset}.csv"
-    if verbose:
-        print(f"writing shap params to {unit_path}")
-    df_unit.to_csv(unit_path, index=False)
-    
     # Add on predictions and check deltas
     df_contrib_w_pred = _add_prediction_to_contribution(df, df_contrib)
     
-    # Write contributions to disk
-    contrib_path = f"{outpath}/{prefix}contributions_{subset}.csv"
-    if verbose:
-        print(f"writing shap to {contrib_path}")
-    df_contrib_w_pred.to_csv(contrib_path, index=False)
+    if do_write:
+        # Write params to disk
+        unit_path = f"{outpath}/params_{subset}.csv"
+        if verbose:
+            print(f"writing shap params to {unit_path}")
+        df_unit.to_csv(unit_path, index=False)
+    
+    if do_write:
+        # Write contributions to disk
+        contrib_path = f"{outpath}/contributions_{subset}.csv"
+        if verbose:
+            print(f"writing shap to {contrib_path}")
+        df_contrib_w_pred.to_csv(contrib_path, index=False)
+    
+    return df_unit, df_contrib_w_pred
 
 
 def _contrib_to_unit_values(df_contrib: pd.DataFrame, df_base: pd.DataFrame):
@@ -5209,6 +5268,7 @@ def _add_prediction_to_contribution(
 def write_model_parameters(
     model: PredictionModel,
     smr: SingleModelResults,
+    location: str,
     outpath: str,
     do_plot: bool = False,
     verbose: bool = False
@@ -5237,7 +5297,7 @@ def write_model_parameters(
     elif isinstance(model, GWRModel):
         write_gwr_params(model, outpath, dfs, do_plot)
     elif isinstance(model, TreeBasedModel):
-        write_shaps(model, outpath, smr, do_plot, verbose=verbose)
+        write_shaps(model, outpath, smr, location, do_plot, verbose=verbose)
     # ...and so on
     else:
         raise TypeError(f"Unexpected model type: {type(model).__name__}")

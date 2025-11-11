@@ -12,13 +12,50 @@ import matplotlib.pyplot as plt
 
 def get_model_shaps(
     model: xgb.XGBRegressor | lgb.Booster | cb.CatBoostRegressor, 
+    X_bkg: pd.DataFrame,
+    X_to_explain: pd.DataFrame
+)-> shap.Explanation:
+    """
+    Calculates shaps for a single background/explanation set
+    
+    Parameters
+    ----------
+    model: xgboost.XGBRegressor | lightgbm.Booster | catboost.CatBoostRegressor
+        A trained prediction model
+    X_bkg: pd.DataFrame
+        2D array of independent variables' values from the background set
+    X_to_explain: pd.DataFrame
+        2D array of independent variables' values you wish to explain
+    
+    Returns
+    -------
+    shap.Explanation
+    """
+    
+    tree_explainer : shap.TreeExplainer = None
+    
+    if isinstance(model, (xgb.core.Booster, xgb.XGBRegressor)):  # XGBoost
+        tree_explainer = _xgboost_shap(model, X_bkg)
+    elif isinstance(model, lgb.basic.Booster):                   # LightGBM
+        tree_explainer = _lightgbm_shap(model, X_bkg)
+    elif isinstance(model, cb.CatBoostRegressor):                # CatBoost
+        raise ValueError("Catboost not supported yet!")
+    else:
+        raise ValueError(f"Unsupported model type : {model.type}")
+    
+    shap = _shap_explain(tree_explainer, X_to_explain)
+    return shap
+
+
+def get_full_model_shaps(
+    model: xgb.XGBRegressor | lgb.Booster | cb.CatBoostRegressor, 
     X_train: pd.DataFrame,
     X_test: pd.DataFrame,
     X_sales: pd.DataFrame,
     X_univ: pd.DataFrame
 ):
     """
-    Calculates shaps for all subsets (test, train, sales, universe) of these SingleModelResults
+    Calculates shaps for all subsets (test, train, sales, universe) of one model run
     
     Parameters
     ----------

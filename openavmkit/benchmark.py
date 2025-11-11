@@ -1323,7 +1323,9 @@ def run_one_model(
 
     if save_results:
         t.start("write")
-        _write_model_results(results, outpath, settings, verbose=verbose)
+        main_vacant_hedonic = "hedonic" if hedonic else "vacant" if vacant_only else "main"
+        location = get_model_location(settings, main_vacant_hedonic, model_name)
+        _write_model_results(results, outpath, settings, location, verbose=verbose)
         t.stop("write")
 
     return results
@@ -1682,6 +1684,8 @@ def _predict_one_model(
 
     timing = TimingData()
     timing.start("total")
+    
+    main_vacant_hedonic = "hedonic" if ds.hedonic else "vacant" if ds.vacant_only else "main"
 
     results: SingleModelResults | None = None
 
@@ -1742,7 +1746,15 @@ def _predict_one_model(
         results = _clamp_land_predictions(results, smr.ds.model_group, model_name, outpath, max_trim)
 
     if save_results:
-        _write_model_results(results, outpath, settings, verbose=verbose)
+        
+        mvh = settings.get("modeling", {}).get("models", {}).get(main_vacant_hedonic, {})
+        model_entry = mvh.get("model_name", mvh.get("default", {}))
+        location = model_entry.get("location", None)
+        if location is None:
+            location = get_important_field(settings, "loc_neighborhood")
+        
+        location = get_model_location(settings, main_vacant_hedonic, model_name)
+        _write_model_results(results, outpath, settings, location, verbose=verbose)
 
     return results
 
@@ -2019,7 +2031,7 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
     return dfs
 
 
-def _write_model_results(results: SingleModelResults, outpath: str, settings: dict, verbose:bool = False):
+def _write_model_results(results: SingleModelResults, outpath: str, settings: dict, location: str = None, verbose:bool = False):
     """
     Write model results to disk in parquet and CSV formats.
     """
@@ -2057,7 +2069,20 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
     
     params_path = f"{path}"
     
-    write_model_parameters(results.model, results, params_path, verbose=verbose)
+    write_model_parameters(results.model, results, location, params_path, verbose=verbose)
+
+
+def get_model_location(
+    settings: dict,
+    main_vacant_hedonic: str,
+    model_name: str
+):
+    mvh = settings.get("modeling", {}).get("models", {}).get(main_vacant_hedonic, {})
+    model_entry = mvh.get(model_name, mvh.get("default", {}))
+    location = model_entry.get("location", None)
+    if location is None:
+        location = get_important_field(settings, "loc_market_area")
+    return location
 
 
 def _write_ensemble_model_results(
