@@ -1518,7 +1518,7 @@ def identify_outliers(
                     # it's a land model, only look at vacant sales:
                     dfm = dfm[dfm["vacant_sale"].eq(True)]
             
-                if dfm "prediction" in dfm:
+                if "prediction" in dfm:
                     print("")
                     print("----------------------")
                     value_fields = ["sale_price", "prediction", "assr_market_value", "assr_land_value", "assr_impr_value"]
