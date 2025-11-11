@@ -67,6 +67,7 @@ from openavmkit.utilities.settings import (
     get_long_distance_unit,
     get_valuation_date,
     get_center,
+    get_dupes,
     get_small_area_unit,
     get_short_distance_unit,
     _get_sales,
@@ -2549,6 +2550,7 @@ def _enrich_vacant(df_in: pd.DataFrame, settings: dict) -> pd.DataFrame:
         df = _simulate_removed_buildings(df, settings, idx_vacant)
 
     else:
+        warnings.warn("You do not have a 'bldg_area_finished_sqft' field -- you really should!")
         df = df_in
 
     return df
@@ -3610,8 +3612,10 @@ def load_dataframe(
             operation_order.append({"type": op_type, "operations": entry[key]})
     
     # Get all fields used in aggregation operations
-    dupes = entry.get("dupes", {})
+    dupes = get_dupes(entry, None, "geometry" in column_names)
+    
     agg = dupes.get("agg", {})
+    
     agg_fields = []
     for agg_key in agg:
         agg_entry = agg[agg_key]
@@ -3794,29 +3798,8 @@ def load_dataframe(
             df[dkey] = pd.to_datetime(ymd, format="%Y-%m-%d", errors="coerce")
             
     df = enrich_time(df, time_format_map, settings)
-
-    dupes = entry.get("dupes", None)
-    dupes_was_none = dupes is None
-    if dupes is None:
-        if is_geometry:
-            dupes = "auto"
-        else:
-            dupes = {}
-    if dupes == "auto":
-        if is_geometry:
-            cols = [col for col in df.columns.values if col != "geometry"]
-            col = cols[0]
-            dupes = {"subset": [col], "sort_by": [col, "asc"], "drop": True}
-            if dupes_was_none:
-                warnings.warn(
-                    f"'dupes' not found for geo df '{entry_key}', defaulting to \"{col}\" as de-dedupe key. Set 'dupes:\"auto\" to remove this warning.'"
-                )
-        else:
-            keys = ["key", "key2", "key3"]
-            for key in keys:
-                if key in df:
-                    dupes = {"subset": [key], "sort_by": [key, "asc"], "drop": True}
-                    break
+    
+    dupes = get_dupes(entry, df, is_geometry)
     
     # If it's a sales dataframe, and we're not deduplicating on key_sale, something is probably wrong:
     if "key_sale" in df.columns.values:
@@ -4676,7 +4659,10 @@ def _tag_model_groups_sup(
 
     df_univ["model_group"] = None
     df_sales_hydrated["model_group"] = None
-
+    
+    if not mg:
+        raise ValueError("You must define at least one model group in settings.modeling.model_groups!")
+    
     for mg_id in mg:
         # only apply model groups to parcels that don't already have one
         idx_no_model_group = df_univ["model_group"].isnull()

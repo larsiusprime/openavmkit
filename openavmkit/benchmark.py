@@ -476,7 +476,7 @@ def get_variable_recommendations(
     if variables_to_use is None:
         variables_to_use: list | None = entry.get("ind_vars", None)
     
-    if len(variables_to_use) == 0 or variables_to_use is None:
+    if variables_to_use is None or len(variables_to_use) == 0:
         raise ValueError("No independent variables provided! Please define some!")
     
     cats = get_fields_categorical(settings, df_sales, include_boolean=False)
@@ -1319,7 +1319,7 @@ def run_one_model(
 
     if save_results:
         t.start("write")
-        _write_model_results(results, outpath, settings)
+        _write_model_results(results, outpath, settings, verbose=verbose)
         t.stop("write")
 
     return results
@@ -1738,7 +1738,7 @@ def _predict_one_model(
         results = _clamp_land_predictions(results, smr.ds.model_group, model_name, outpath, max_trim)
 
     if save_results:
-        _write_model_results(results, outpath, settings)
+        _write_model_results(results, outpath, settings, verbose=verbose)
 
     return results
 
@@ -2015,7 +2015,7 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
     return dfs
 
 
-def _write_model_results(results: SingleModelResults, outpath: str, settings: dict):
+def _write_model_results(results: SingleModelResults, outpath: str, settings: dict, verbose:bool = False):
     """
     Write model results to disk in parquet and CSV formats.
     """

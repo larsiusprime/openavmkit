@@ -650,71 +650,77 @@ def clean_geometry(gdf: gpd.GeoDataFrame, ensure_polygon: bool=True, target_crs:
 
 
 def detect_triangular_lots(
-    geom: shapely.geometry.base.BaseGeometry, compactness_threshold: float=0.85, angle_tolerance: float=10, min_aspect: float=0.5, max_aspect: float=2.0
+    geom: BaseGeometry,
+    compactness_threshold: float = 0.85,
+    angle_tolerance: float = 10.0,
+    min_aspect: float = 0.5,
+    max_aspect: float = 2.0,
 ) -> bool:
-    """
-    Determine if a geometry is approximately triangular based on compactness,
-    hull vertex angles, and bounding box aspect ratio.
-
-    This function evaluates a shape by:
-
-    1. Computing the ratio of its area to its convex hull area (compactness).
-    2. Checking that the convex hull has at most three non-nearly-180° angles within
-       the specified tolerance, indicating a triangle-like hull.
-    3. Verifying the bounding box aspect ratio is within [min_aspect, max_aspect].
-
-    Parameters
-    ----------
-    geom : shapely.geometry.base.BaseGeometry
-        Input polygonal geometry to test (must have an 'area' and 'convex_hull').
-    compactness_threshold : float, default 0.85
-        Minimum allowed ratio of geom.area to its convex_hull.area.
-        Shapes with more concave boundaries (lower ratios) are rejected.
-    angle_tolerance : float, default 10
-        Degrees of tolerance from 180° for hull vertex angles.
-    min_aspect : float, default 0.5
-        Minimum width/height ratio of the geometry's bounding box.
-    max_aspect : float, default 2.0
-        Maximum width/height ratio of the geometry's bounding box.
-
-    Returns
-    -------
-    bool
-        True if geom passes all triangularity checks; False otherwise.
-
-    """
-    hull = geom.convex_hull
-    area_ratio = geom.area / hull.area
-    if area_ratio < compactness_threshold:
+    # Basic guards
+    if geom is None or geom.is_empty:
         return False
 
-    # Check approximate triangular shape
-    coords = list(hull.exterior.coords[:-1])
+    hull = geom.convex_hull
+    # If hull isn't polygonal (rare but possible with degenerate input), bail out
+    if not hasattr(hull, "area") or hull.area == 0:
+        return False
+
+    area_ratio = geom.area / hull.area
+    if not np.isfinite(area_ratio) or area_ratio < float(compactness_threshold):
+        return False
+
+    # Build hull edges
+    if not hasattr(hull, "exterior") or hull.exterior is None:
+        return False
+    coords = list(hull.exterior.coords[:-1])  # drop closing coord
+    if len(coords) < 3:
+        return False
+
     edges = [
         LineString([coords[i], coords[(i + 1) % len(coords)]])
         for i in range(len(coords))
     ]
 
-    # Calculate angles
-    def edge_angle(edge1, edge2):
-        vec1 = np.array(edge1.coords[1]) - np.array(edge1.coords[0])
-        vec2 = np.array(edge2.coords[1]) - np.array(edge2.coords[0])
-        angle = np.arctan2(np.cross(vec1, vec2), np.dot(vec1, vec2))
-        return np.degrees(abs(angle))
+    def edge_angle(edge1, edge2) -> float:
+        # Use only XY so this works for 2D or 3D coordinates
+        p10 = np.asarray(edge1.coords[0], dtype=float)[:2]
+        p11 = np.asarray(edge1.coords[1], dtype=float)[:2]
+        p20 = np.asarray(edge2.coords[0], dtype=float)[:2]
+        p21 = np.asarray(edge2.coords[1], dtype=float)[:2]
 
-    angles = [
-        edge_angle(edges[i], edges[(i + 1) % len(edges)]) for i in range(len(edges))
-    ]
-    near_180 = sum(abs(180 - angle) < angle_tolerance for angle in angles)
-    if len(edges) - near_180 > 3:
+        v1 = p11 - p10
+        v2 = p21 - p20
+
+        # Guard against zero-length edges
+        if not np.any(v1) or not np.any(v2):
+            return 180.0
+
+        # 2D cross "z" and dot are scalars
+        cross_z = v1[0]*v2[1] - v1[1]*v2[0]
+        dot = v1[0]*v2[0] + v1[1]*v2[1]
+
+        ang = np.degrees(np.arctan2(cross_z, dot))
+        return abs(float(ang))
+
+    # Angles as plain floats
+    angles = [edge_angle(edges[i], edges[(i + 1) % len(edges)]) for i in range(len(edges))]
+
+    # Count how many vertices are ~ straight (near 180°)
+    near_180 = int(sum((abs(180.0 - a) < float(angle_tolerance)) for a in angles))
+
+    # Now guaranteed scalar comparison
+    if (len(edges) - near_180) > 3:
         return False
 
-    # Check bounding box aspect ratio
-    bounds = geom.bounds
-    width = bounds[2] - bounds[0]
-    height = bounds[3] - bounds[1]
+    # Bounding box aspect ratio
+    minx, miny, maxx, maxy = geom.bounds
+    width = float(maxx - minx)
+    height = float(maxy - miny)
+    # Avoid division by zero / inf
+    if height == 0.0 or width == 0.0:
+        return False
     aspect_ratio = width / height
-    if not (min_aspect <= aspect_ratio <= max_aspect):
+    if not (float(min_aspect) <= aspect_ratio <= float(max_aspect)):
         return False
 
     return True

@@ -318,7 +318,17 @@ def do_per_model_group(
 
     model_groups = get_model_group_ids(settings, df_in)
     verbose = params.get("verbose", verbose)
-
+    
+    if not model_groups:
+        raise ValueError("You must define at least one model group in settings.modeling.model_groups! Re-tag model groups before returning here.")
+    
+    if "model_group" not in df:
+        raise ValueError(f"Column '{model_group}' not defined in your dataframe. Please define at least one model group in settings.modeling.model_groups.  Re-tag model groups before returning here.")
+    
+    model_group_values = df["model_group"].unique().tolist()
+    if not model_group_values:
+        raise ValueError(f"Column '{model_group}' has no values defined. Please define at least one model group in settings.modeling.model_groups.  Re-tag model groups before returning here.")
+    
     for model_group in model_groups:
         if pd.isna(model_group):
             continue
