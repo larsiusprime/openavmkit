@@ -7,7 +7,7 @@ if [ "$RUN" = "test" ]; then
     # Create /app/notebooks/pipeline/data/us-nc-guilford/ directory
     mkdir -p /app/notebooks/pipeline/data/$LOCALITY/
 
-    # Create the cloud.json file in the /app/notebooks/pipeline/data/us-nc-guilford/ directory
+    # Create the cloud.json file in the chosen directory
     echo '{
         "type": "azure",
         "azure_storage_container_url": "https://landeconomics.blob.core.windows.net/localities-public"
