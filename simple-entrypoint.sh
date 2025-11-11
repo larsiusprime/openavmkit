@@ -19,7 +19,7 @@ if [ "$RUN" = "test" ]; then
     # Flags ensure that the notebook runs on an existing kernel, nbconvert
     # executes the notebook before conversion and
     # that it doesn't produce output that clutters the source directory
-    echo "--- Starting Notebook Test Run ---"
+    echo "--- Starting Notebook Test Run on $LOCALITY ---"
     
     echo "Running: 01-assemble.ipynb"
     jupyter nbconvert \

@@ -80,7 +80,7 @@ jobs:
       # The RUN environment variable is set to 'test' to trigger the test mode in the simple-entrypoint.sh script
       - name: Test the image and notebooks
         run: |
-          docker run --rm -e RUN=test ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          docker run --rm -e RUN=test -e LOCALITY=us-nc-guilford ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
 
 
 
