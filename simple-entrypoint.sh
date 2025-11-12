@@ -5,13 +5,13 @@ set -e
 
 if [ "$RUN" = "test" ]; then
     # Create /app/notebooks/pipeline/data/us-nc-guilford/ directory
-    mkdir -p /app/notebooks/pipeline/data/us-nc-guilford/
+    mkdir -p /app/notebooks/pipeline/data/$LOCALITY/
 
-    # Create the cloud.json file in the /app/notebooks/pipeline/data/us-nc-guilford/ directory
+    # Create the cloud.json file in the chosen directory
     echo '{
         "type": "azure",
         "azure_storage_container_url": "https://landeconomics.blob.core.windows.net/localities-public"
-    }' > /app/notebooks/pipeline/data/us-nc-guilford/cloud.json
+    }' > /app/notebooks/pipeline/data/$LOCALITY/cloud.json
 
     # Run all finished notebooks to test them on (currently) guilford
     # nbconvert is being used instead of execute because only it has
@@ -19,7 +19,7 @@ if [ "$RUN" = "test" ]; then
     # Flags ensure that the notebook runs on an existing kernel, nbconvert
     # executes the notebook before conversion and
     # that it doesn't produce output that clutters the source directory
-    echo "--- Starting Notebook Test Run ---"
+    echo "--- Starting Notebook Test Run on $LOCALITY ---"
     
     echo "Running: 01-assemble.ipynb"
     jupyter nbconvert \

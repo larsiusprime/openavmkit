@@ -28,6 +28,9 @@ tests/*.csv
 notebooks/examples/debug_local_sqft_univ.csv
 .python-version
 .env
+docker-compose.yml
+.dockerignore
+
 tests/cache/
 
 cache/
