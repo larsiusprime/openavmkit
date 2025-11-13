@@ -47,7 +47,7 @@ if [ "$RUN" = "test" ]; then
 
     # Notebooks 04 and 05 to be added when they are complete
 
-    echo "Running: assessment-quality.ipynb"
+    echo "Running: assessment_quality.ipynb"
     jupyter nbconvert \
         --to notebook \
         --inplace \
