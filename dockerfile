@@ -19,8 +19,8 @@ RUN pip install .
 RUN pip install jupyter
 
 # Stage 2: Muve the built/installed packages into a distroless environment
-# Install and register the Python kernel for Jupyter
-# This makes the kernel visible to the Jupyter server.
+
+# Install and register a standard Python kernel for Jupyter
 RUN python -m ipykernel install --user --name=python3 --display-name="Python 3 (Project)"
 
 ENTRYPOINT ["./simple-entrypoint.sh"]

@@ -47,13 +47,13 @@ if [ "$RUN" = "test" ]; then
 
     # Notebooks 04 and 05 to be added when they are complete
 
-    echo "Running: assessment-quality.ipynb"
+    echo "Running: assessment_quality.ipynb"
     jupyter nbconvert \
         --to notebook \
         --inplace \
         --execute \
         --ExecutePreprocessor.kernel_name=python3 \
-        notebooks/pipeline/assessment-quality.ipynb
+        notebooks/pipeline/assessment_quality.ipynb
     
     echo "--- All notebooks ran successfully ---"
 else
