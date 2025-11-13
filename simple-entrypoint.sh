@@ -53,7 +53,7 @@ if [ "$RUN" = "test" ]; then
         --inplace \
         --execute \
         --ExecutePreprocessor.kernel_name=python3 \
-        notebooks/pipeline/assessment-quality.ipynb
+        notebooks/pipeline/assessment_quality.ipynb
     
     echo "--- All notebooks ran successfully ---"
 else
