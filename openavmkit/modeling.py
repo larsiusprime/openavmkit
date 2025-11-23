@@ -2466,8 +2466,17 @@ def run_gwr(
         bw_max = len(y_train)
 
         try:
-            gwr_selector = Sel_BW(coords_train, y_train, X_train)
-            gwr_bw = gwr_selector.search(bw_max=bw_max)
+            if len(coords_train) > 20000:
+                n_sample = 20000
+                warnings.warn(
+                    f"{len(coords_train)} is too many samples. Subsampling down to {n_sample} samples for bandwidth selection.")
+                idx = np.random.choice(len(coords_train), n_sample, replace=False)
+                coords_s, y_s, X_s = coords_train[idx], y_train[idx], X_train[idx]
+                gwr_selector = Sel_BW(coords_s, y_s, X_s)
+                gwr_bw = gwr_selector.search(bw_max=bw_max)
+            else:
+                gwr_selector = Sel_BW(coords_train, y_train, X_train)
+                gwr_bw = gwr_selector.search(bw_max=bw_max)
         except ValueError:
             if len(y_train) < 100:
                 # Set n_jobs to 1 in case the # of cores exceeds the number of rows
