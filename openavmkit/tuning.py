@@ -3,7 +3,7 @@ import lightgbm as lgb
 import numpy as np
 import optuna
 import pandas as pd
-from catboost import Pool, CatBoostRegressor
+from catboost import Pool, CatBoostRegressor, cv
 
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_absolute_percentage_error
@@ -184,62 +184,65 @@ def _tune_catboost(
     n_splits=5,
     random_state=42,
 ):
-    # 1) Pre‐split once, build Pools
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-    cv_pools = []
-    for train_idx, val_idx in kf.split(X):
-        X_tr, X_va = X.iloc[train_idx], X.iloc[val_idx]
-        y_tr, y_va = y.iloc[train_idx], y.iloc[val_idx]
-        cat_feats = [c for c in cat_vars if c in X.columns]
-        cv_pools.append(
-            (
-                Pool(X_tr, y_tr, cat_features=cat_feats),
-                Pool(X_va, y_va, cat_features=cat_feats),
-            )
-        )
+
+    # Pre-build a single Pool for CV
+    cat_feats = [c for c in (cat_vars or []) if c in X.columns]
+    full_pool = Pool(X, y, cat_features=cat_feats)
 
     def objective(trial):
-        # 2) Only valid constructor params here:
         params = {
-            "loss_function": "MAPE", "eval_metric": "MAPE",
-              "iterations": trial.suggest_int("iterations", 300, 1000),
-              "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-              "depth": trial.suggest_int("depth", 4, 10), "border_count": trial.suggest_int("border_count", 32, 64),
-              "random_strength": trial.suggest_float("random_strength", 0, 10),
-              "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 10, log=True), "bootstrap_type": "Bayesian",
-              "bagging_temperature": trial.suggest_float("bagging_temperature", 0, 10), "boosting_type": "Plain",
-              "task_type": "CPU", "thread_count": -1, "random_seed": random_state, "verbose": False,
-              "grow_policy": trial.suggest_categorical(
+            "loss_function": "MAPE",
+            "eval_metric": "MAPE",
+            "iterations": trial.suggest_int("iterations", 300, 1000),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            "depth": trial.suggest_int("depth", 4, 10),
+            "border_count": trial.suggest_int("border_count", 32, 64),
+            "random_strength": trial.suggest_float("random_strength", 0, 10),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 10, log=True),
+            "bootstrap_type": "Bayesian",
+            "bagging_temperature": trial.suggest_float("bagging_temperature", 0, 10),
+            "boosting_type": "Plain",
+            "task_type": "GPU",
+            "random_seed": random_state,
+            "verbose": False,
+            "grow_policy": trial.suggest_categorical(
                 "grow_policy", ["SymmetricTree", "Depthwise", "Lossguide"]
-              )
+            ),
         }
+
+        # Additional param only for Lossguide
         if params["grow_policy"] == "Lossguide":
-            params["max_leaves"] = trial.suggest_int("max_leaves", 31, 256)
+            params["max_leaves"] = trial.suggest_int("max_leaves", 31, 128)
 
-        pruning_cb = CatBoostPruningCallback(trial, "MAPE")
-        mapes = []
-        # 3) Loop folds, pass early_stopping & pruning into fit()
-        for train_pool, val_pool in cv_pools:
-            model = CatBoostRegressor(**params)
-            model.fit(
-                train_pool,
-                eval_set=val_pool,
-                early_stopping_rounds=100,
-                callbacks=[pruning_cb],
-                verbose=False,
-            )
-            pruning_cb.check_pruned()
-            mapes.append(mean_absolute_percentage_error(val_pool.get_label(), model.predict(val_pool)))
+        # Use CatBoost's built-in CV (MUCH faster)
+        cv_results = cv(
+            full_pool,
+            params,
+            fold_count=n_splits,
+            partition_random_seed=random_state,
+            early_stopping_rounds=100,
+            verbose=False,
+        )
 
-        return sum(mapes) / len(mapes)
+        # Optuna Pruner: report learning curve as it trains
+        # Extract the test MAPE curve
+        mape_curve = cv_results["test-MAPE-mean"]
+        for i, v in enumerate(mape_curve):
+            trial.report(v, step=i)
+            if trial.should_prune():
+                raise optuna.exceptions.TrialPruned()
+
+        # Objective = final CV MAPE
+        return mape_curve.iloc[-1]
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = optuna.create_study(
         direction="minimize",
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=15,
-            n_warmup_steps=100,
-            interval_steps=10)
+        pruner=optuna.pruners.MedianPruner(
+            n_startup_trials=15, n_warmup_steps=100, interval_steps=10
+        ),
     )
+
     study.optimize(objective, n_trials=n_trials, n_jobs=1)
 
     if verbose:
