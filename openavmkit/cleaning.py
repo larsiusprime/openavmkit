@@ -352,7 +352,10 @@ def _fill_thing(df: pd.DataFrame, field: str | dict, fill_method: str):
     elif fill_method == "none":
         df = _fill_with(df, field, "NONE")
     elif fill_method == "false":
-        df = _fill_with(df, field, False)
+        if "str" in str(df[field].dtype).lower():
+            df = _fill_with(df, field, "False")
+        else:
+            df = _fill_with(df, field, False)
     elif fill_method == "mode":
         modal_values = df[~df[field].isna()][field].mode()
         if len(modal_values) > 0:
