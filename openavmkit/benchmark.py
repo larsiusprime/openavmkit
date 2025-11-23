@@ -3655,6 +3655,7 @@ def _run_models(
         verbose=True,
     )
     best_variables = var_recs["variables"]
+    del var_recs # Delete var_recs to drop the results dataframe it holds since we don't need it
 
     any_results = False
 
