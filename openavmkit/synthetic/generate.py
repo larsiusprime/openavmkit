@@ -665,13 +665,13 @@ def run_one_trial(sup: SalesUniversePair, params: dict):
                     hedonic_results[model] = results
 
     all_results = MultiModelResults(
-        model_results=model_results, benchmark=_calc_benchmark(model_results)
+        model_results=model_results, benchmark=_calc_benchmark(model_results), df_univ=df_univ, df_sales=df_sales
     )
 
     all_hedonic_results = None
     if hedonic_results is not None:
         all_hedonic_results = MultiModelResults(
-            model_results=hedonic_results, benchmark=_calc_benchmark(hedonic_results)
+            model_results=hedonic_results, benchmark=_calc_benchmark(hedonic_results), df_univ=df_univ, df_sales=df_sales
         )
 
     return all_results, all_hedonic_results
