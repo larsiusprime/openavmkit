@@ -545,10 +545,6 @@ class DataSplit:
 
         self.settings = settings.copy()
 
-        # An *unmodified* copy of the original model group universe/sales, that will remain unmodified
-        self.df_universe_orig = df_universe.copy()
-        self.df_sales_orig = df_sales.copy()
-
         # The working copy of the model group universe, that *will* be modified
         self.df_universe = df_universe.copy()
 
@@ -641,8 +637,6 @@ class DataSplit:
         ds.model_group = self.model_group
         ds.df_sales = self.df_sales.copy()
         ds.df_universe = self.df_universe.copy()
-        ds.df_universe_orig = self.df_universe_orig.copy()
-        ds.df_sales_orig = self.df_sales_orig.copy()
         ds._df_sales = self._df_sales.copy()
         ds.df_train = self.df_train.copy()
         ds.df_test = self.df_test.copy()

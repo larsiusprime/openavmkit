@@ -209,9 +209,11 @@ class MultiModelResults:
 
     model_results: dict[str, SingleModelResults]
     benchmark: BenchmarkResults
+    df_univ_orig: pd.DataFrame
+    df_sales_orig: pd.DataFrame
 
     def __init__(
-        self, model_results: dict[str, SingleModelResults], benchmark: BenchmarkResults
+        self, model_results: dict[str, SingleModelResults], benchmark: BenchmarkResults, df_univ: pd.DataFrame, df_sales: pd.DataFrame
     ):
         """Initialize a MultiModelResults instance.
 
@@ -224,6 +226,8 @@ class MultiModelResults:
         """
         self.model_results = model_results
         self.benchmark = benchmark
+        self.df_univ_orig = df_univ
+        self.df_sales_orig = df_sales
 
     def add_model(self, model: str, results: SingleModelResults):
         """Add a new model's results and update the benchmark.
@@ -2103,9 +2107,8 @@ def _optimize_ensemble_allocation(
     timing.start("setup")
 
     if df_sales is None:
-        first_key = list(all_results.model_results.keys())[0]
-        df_universe = all_results.model_results[first_key].ds.df_universe_orig
-        df_sales = all_results.model_results[first_key].ds.df_sales_orig
+        df_universe = all_results.df_univ_orig
+        df_sales = all_results.df_sales_orig
 
     test_keys, train_keys = _read_split_keys(model_group)
 
@@ -2278,8 +2281,8 @@ def _optimize_ensemble(
     train_keys = all_results.model_results[first_key].ds.train_keys
 
     if df_sales is None:
-        df_universe = all_results.model_results[first_key].ds.df_universe_orig
-        df_sales = all_results.model_results[first_key].ds.df_sales_orig
+        df_universe = all_results.df_univ_orig
+        df_sales = all_results.df_sales_orig
 
     ds = DataSplit(
         df_sales,
@@ -3703,7 +3706,7 @@ def _run_models(
     t.start("calc benchmarks")
     # Calculate initial results (ensemble will use them)
     all_results = MultiModelResults(
-        model_results=model_results, benchmark=_calc_benchmark(model_results)
+        model_results=model_results, benchmark=_calc_benchmark(model_results), df_univ=df_univ, df_sales=df_sales
     )
     t.stop("calc benchmarks")
 
@@ -3856,7 +3859,7 @@ def _get_post_valuation_mmr(m: MultiModelResults):
 
     benchmark = _calc_benchmark(new_results)
 
-    return MultiModelResults(model_results=new_results, benchmark=benchmark)
+    return MultiModelResults(model_results=new_results, benchmark=benchmark, df_sales=m.df_sales_orig, df_univ=m.df_univ_orig)
 
 
 def _get_post_valuation_smr(smr: SingleModelResults, verbose: bool = False):
