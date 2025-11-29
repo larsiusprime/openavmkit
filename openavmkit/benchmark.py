@@ -91,7 +91,8 @@ from openavmkit.utilities.settings import (
     _simulate_removed_buildings,
     _get_max_ratio_study_trim,
     get_look_back_dates,
-    area_unit
+    area_unit,
+    length_unit
 )
 from openavmkit.utilities.stats import (
     calc_vif_recursive_drop,
