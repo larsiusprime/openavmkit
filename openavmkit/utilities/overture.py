@@ -85,8 +85,8 @@ class OvertureService:
         self, 
         bbox, 
         columns: list[str] | None = None,
-        unit:str,
-        use_cache=True, 
+        unit:str="sqft",
+        use_cache=True,
         verbose=False
     ):
         """Fetch building data from Overture within the specified bounding box.
