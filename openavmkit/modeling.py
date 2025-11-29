@@ -446,6 +446,8 @@ class DataSplit:
 
     Attributes
     ----------
+    name : str
+        Unique identifier for the model associated with this
     df_sales : pd.DataFrame
         Sales data after processing.
     df_universe : pd.DataFrame
@@ -472,6 +474,7 @@ class DataSplit:
 
     def __init__(
         self,
+        name: str | None,
         df_sales: pd.DataFrame | None,
         df_universe: pd.DataFrame | None,
         model_group: str,
@@ -503,6 +506,8 @@ class DataSplit:
 
         Parameters
         ----------
+        name : str or None
+            Unique identifier for the model associated with this
         df_sales : pandas.DataFrame or None
             Sales DataFrame.
         df_universe : pandas.DataFrame or None
@@ -544,6 +549,8 @@ class DataSplit:
 
         if not init:
             return
+        
+        self.name = name
 
         self.settings = settings.copy()
         
@@ -634,9 +641,10 @@ class DataSplit:
             A deep copy of the current DataSplit.
         """
         ds = DataSplit(
-            None, None, "", {}, "", "", [], [], {}, [], [], False, False, "", init=False
+            None, None, None, "", {}, "", "", [], [], {}, [], [], False, False, "", init=False
         )
         # manually copy every field:
+        ds.name = self.name
         ds.settings = self.settings.copy()
         ds.unit = self.unit
         ds.model_group = self.model_group
@@ -1114,8 +1122,10 @@ class SingleModelResults:
         Test DataFrame.
     df_sales : pd.DataFrame, optional
         Sales DataFrame.
-    type : str
-        Model type identifier.
+    model_name : str
+        Model name (unique identifier)
+    model_engine : str
+        Model engine ("xgboost", "mra", etc.)
     dep_var : str
         Independent variable name.
     ind_vars : list[str]
@@ -1147,7 +1157,8 @@ class SingleModelResults:
         ds: DataSplit,
         field_prediction: str,
         field_horizontal_equity_id: str,
-        type: str,
+        model_name: str,
+        model_engine: str,
         model: PredictionModel,
         y_pred_test: np.ndarray,
         y_pred_sales: np.ndarray | None,
@@ -1167,8 +1178,10 @@ class SingleModelResults:
             The field name for predictions.
         field_horizontal_equity_id : str
             The field name for the horizontal equity ID.
-        type : str
-            Model type identifier.
+        model_name: str
+            Model name (unique identifier)
+        model_engine : str
+            Model engine ("xboost", "mra", etc.)
         model : PredictionModel
             The model used.
         y_pred_test : numpy.ndarray
@@ -1222,7 +1235,8 @@ class SingleModelResults:
             df_sales[field_prediction] = y_pred_sales
             self.df_sales = df_sales
 
-        self.type = type
+        self.model_name = model_name
+        self.model_engine = model_engine
         self.dep_var = ds.dep_var
         self.dep_var_test = ds.dep_var_test
         self.ind_vars = ds.ind_vars.copy()
@@ -1279,7 +1293,6 @@ class SingleModelResults:
         timing.stop("stats_sales")
 
         self.pred_univ = y_pred_univ
-
         self._deal_with_log_and_area()
 
         timing.start("chd")
@@ -1346,7 +1359,8 @@ class SingleModelResults:
         """
 
         str = ""
-        str += f"Model type: {self.type}\n"
+        str += f"Model name:   {self.model_name}\n"
+        str += f"Model engine: {self.model_engine}\n"
         # Print the # of rows in test & all sales set
         # Print the MSE, RMSE, R2, and Adj R2 for test & all sales set
         str += f"-->Test set, rows: {len(self.pred_test.y)}\n"
@@ -1603,12 +1617,15 @@ def predict_mra(
 
     timing.stop("total")
     
+    model_name = ds.name
+    model_engine = "mra"
+    
     results = SingleModelResults(
         ds,
         "prediction",
         "he_id",
-        "mra",
-        model,
+        model_name,
+        model_engine,
         y_pred_test,
         y_pred_sales,
         y_pred_univ,
@@ -1732,12 +1749,16 @@ def predict_ground_truth(
     ds = ds.copy()
     ds.dep_var = ground_truth_field
     ds.dep_var_test = ground_truth_field
-
+    
+    model_name = ds.name
+    model_engine = "ground_truth"
+    
     results = SingleModelResults(
         ds,
         "prediction",
         "he_id",
         model_name,
+        model_engine,
         ground_truth_model,
         y_pred_test,
         y_pred_sales,
@@ -1869,15 +1890,18 @@ def predict_spatial_lag(
 
     timing.stop("total")
 
-    name = "spatial_lag"
+    model_engine = "spatial_lag"
     if model.per_area:
-        name = "spatial_lag_area"
-
+        model_engine = "spatial_lag_area"
+    
+    model_name = ds.name
+    
     results = SingleModelResults(
         ds,
         "prediction",
         "he_id",
-        name,
+        model_name,
+        model_engine,
         model,
         y_pred_test,
         y_pred_sales,
@@ -1917,9 +1941,6 @@ def predict_pass_through(
 
     field = model.field
 
-    # TODO: genericize this to take any field name and label
-    model_name = "assessor"
-
     if ds.hedonic:
         field = ds.ind_vars[0]
 
@@ -1939,12 +1960,16 @@ def predict_pass_through(
     timing.stop("predict_univ")
 
     timing.stop("total")
-
+    
+    model_name = ds.name
+    model_engine = "assessor" #TODO: genericize
+    
     results = SingleModelResults(
         ds,
         "prediction",
         "he_id",
         model_name,
+        model_engine,
         model,
         y_pred_test,
         y_pred_sales,
@@ -2153,12 +2178,16 @@ def predict_kernel(
     timing.stop("predict_univ")
 
     timing.stop("total")
-
+    
+    model_name = ds.name
+    model_engine = "kernel"
+    
     results = SingleModelResults(
         ds,
         "prediction",
         "he_id",
-        "kernel",
+        model_name,
+        model_engine,
         kr,
         y_pred_test,
         y_pred_sales,
@@ -2366,15 +2395,18 @@ def predict_gwr(
     ).flatten()
     timing.stop("predict_univ")
 
-    model_name = "gwr"
+    model_engine = "gwr"
     if diagnostic:
-        model_name = "diagnostic_gwr"
+        model_engine = "diagnostic_gwr"  #TODO: Do we still need this? Probably not
+    
+    model_name = ds.name
 
     results = SingleModelResults(
         ds,
         "prediction",
         "he_id",
         model_name,
+        model_engine,
         gwr_model,
         y_pred_test,
         y_pred_sales,
@@ -2445,9 +2477,11 @@ def run_gwr(
 
     timing.stop("setup")
 
-    model_name = "gwr"
+    model_engine = "gwr"
     if diagnostic:
-        model_name = "diagnostic_gwr"
+        model_engine = "diagnostic_gwr"  #TODO: Probably don't need this
+    
+    model_name = ds.name
 
     timing.start("parameter_search")
     gwr_bw = -1.0
@@ -2533,12 +2567,16 @@ def predict_xgboost(
     timing.stop("predict_univ")
 
     timing.stop("total")
-
+    
+    model_name = ds.name
+    model_engine = "xgboost"
+    
     results = SingleModelResults(
         ds,
         "prediction",
         "he_id",
-        "xgboost",
+        model_name,
+        model_engine,
         xgboost_model,
         y_pred_test,
         y_pred_sales,
@@ -2672,12 +2710,16 @@ def predict_lightgbm(
     timing.stop("predict_univ")
 
     timing.stop("total")
-
+    
+    model_name = ds.name
+    model_engine = "lightgbm"
+    
     results = SingleModelResults(
         ds,
         "prediction",
         "he_id",
-        "lightgbm",
+        model_name,
+        model_engine,
         gbm,
         y_pred_test,
         y_pred_sales,
@@ -2863,12 +2905,16 @@ def predict_catboost(
     timing.stop("predict_univ")
 
     timing.stop("total")
+    
+    model_name = ds.name
+    model_engine = "catboost"
 
     results = SingleModelResults(
         ds,
         "prediction",
         "he_id",
-        "catboost",
+        model_name,
+        model_engine,
         catboost_model,
         y_pred_test,
         y_pred_sales,
@@ -2980,12 +3026,16 @@ def predict_slice(
     timing.stop("predict_univ")
 
     timing.stop("total")
-
+    
+    model_name = ds.name
+    model_engine = "slice"
+    
     results = SingleModelResults(
         ds,
         "prediction",
         "he_id",
-        "catboost",
+        model_name,
+        model_engine,
         slice_model,
         y_pred_test,
         y_pred_sales,
@@ -3106,17 +3156,18 @@ def predict_garbage(
             [1 - sales_chase, 1 + sales_chase], len(y_pred_univ)
         )
 
-    name = "garbage"
+    model_engine = "garbage"
     if normal:
-        name = "garbage_normal"
+        model_engine = "garbage_normal"
     if sales_chase:
-        name += "*"
+        model_engine += "*"
 
     results = SingleModelResults(
         ds,
         "prediction",
         "he_id",
-        name,
+        model_name,
+        model_engine,
         garbage_model,
         y_pred_test,
         y_pred_sales,
@@ -3242,17 +3293,19 @@ def predict_average(
             [1 - sales_chase, 1 + sales_chase], len(y_pred_univ)
         )
 
-    name = "mean"
+    model_engine = "mean"
     if type == "median":
-        name = "median"
+        model_engine = "median"
     if sales_chase:
-        name += "*"
+        model_engine += "*"
+    model_name = ds.name
 
     results = SingleModelResults(
         ds,
         "prediction",
         "he_id",
-        name,
+        model_name,
+        model_engine,
         average_model,
         y_pred_test,
         y_pred_sales,
@@ -3416,15 +3469,17 @@ def predict_naive_area(
             [1 - sales_chase, 1 + sales_chase], len(y_pred_univ)
         )
 
-    name = "naive_area"
+    model_engine = "naive_area"
     if sales_chase:
-        name += "*"
+        model_engine += "*"
+    model_name = ds.name
 
     results = SingleModelResults(
         ds,
         "prediction",
         "he_id",
-        name,
+        model_name,
+        model_engine,
         area_model,
         y_pred_test,
         y_pred_sales,
@@ -3766,16 +3821,17 @@ def predict_local_area(
             [1 - sales_chase, 1 + sales_chase], len(y_pred_univ)
         )
 
-    name = "local_area"
-
+    model_engine = "local_area"
     if sales_chase:
-        name += "*"
-
+        model_engine += "*"
+    model_name = ds.name
+    
     results = SingleModelResults(
         ds,
         "prediction",
         "he_id",
-        name,
+        model_name,
+        model_engine,
         area_model,
         y_pred_test,
         y_pred_sales,

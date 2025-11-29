@@ -992,7 +992,8 @@ def write_out_all_results(sup: SalesUniversePair, all_results: dict):
 
 
 def get_data_split_for(
-    name: str,
+    model_name: str,
+    model_engine: str,
     model_group: str,
     location_fields: list[str] | None,
     ind_vars: list[str],
@@ -1014,8 +1015,10 @@ def get_data_split_for(
 
     Parameters
     ----------
-    name : str
-        Model name.
+    model_name: str,
+        Model unique identifier
+    model_engine : str
+        Model engine ("xgboost", "mra", etc.)
     model_group : str
         The model group identifier.
     location_fields : list[str] or None
@@ -1056,21 +1059,21 @@ def get_data_split_for(
     unit = area_unit(settings)
     lenunit = length_unit(settings)
     
-    if name == "local_area":
+    if model_engine == "local_area":
         _ind_vars = location_fields + [f"bldg_area_finished_{unit}", f"land_area_{unit}"]
-    elif name == "slice":
+    elif model_engine == "slice":
         _ind_vars = [f"land_area_{unit}", "latitude", "longitude"]
-    elif name == "assessor":
+    elif model_engine == "assessor":
         _ind_vars = ["assr_land_value"] if hedonic else ["assr_market_value"]
-    elif name == "ground_truth":
+    elif model_engine == "ground_truth":
         _ind_vars = ["true_land_value"] if hedonic else ["true_market_value"]
-    elif name == "spatial_lag":
+    elif model_engine == "spatial_lag":
         sale_field = get_sale_field(settings)
         field = f"spatial_lag_{sale_field}"
         if vacant_only or hedonic:
             field = f"{field}_vacant"
         _ind_vars = [field]
-    elif name == "spatial_lag_area":
+    elif model_engine == "spatial_lag_area":
         sale_field = get_sale_field(settings)
         _ind_vars = [
             f"spatial_lag_{sale_field}_impr_{unit}",
@@ -1078,17 +1081,18 @@ def get_data_split_for(
             f"bldg_area_finished_{unit}",
             f"land_area_{unit}",
         ]
-    elif name == "catboost":
+    elif model_engine == "catboost":
         df_sales = _clean_categoricals(df_sales, fields_cat, settings)
         df_universe = _clean_categoricals(df_universe, fields_cat, settings)
         _ind_vars = ind_vars
     else:
         _ind_vars = ind_vars
-        if name == "gwr" or name == "kernel":
+        if model_engine == "gwr" or model_engine == "kernel":
             exclude_vars = ["latitude", "longitude", "latitude_norm", "longitude_norm"]
             _ind_vars = [var for var in _ind_vars if var not in exclude_vars]
 
     return DataSplit(
+        model_name,
         df_sales,
         df_universe,
         model_group,
@@ -1111,7 +1115,7 @@ def run_one_model(
     df_universe: pd.DataFrame,
     vacant_only: bool,
     model_group: str,
-    model: str,
+    model_name: str,
     model_entries: dict,
     settings: dict,
     dep_var: str,
@@ -1140,8 +1144,8 @@ def run_one_model(
         Whether to use only vacant sales.
     model_group : str
         Model group identifier.
-    model : str
-        Model name.
+    model_name : str
+        Model's unique identifier.
     model_entries : dict
         Dictionary of model configuration entries.
     settings : dict
@@ -1180,9 +1184,11 @@ def run_one_model(
     t = TimingData()
 
     t.start("setup")
-    model_name = model
-
+    
     entry: dict | None = model_entries.get(model, None)
+    
+    model_engine = entry.get("model", model_name)
+    
     default_entry: dict | None = model_entries.get("default", {})
     if entry is None:
         entry = default_entry
@@ -1191,22 +1197,22 @@ def run_one_model(
                 f"Model entry for {model} not found, and there is no default entry!"
             )
 
-    if "*" in model:
+    if "*" in model_engine:
         sales_chase = 0.01
-        model_name = model.replace("*", "")
+        model_engine = model_engine.replace("*", "")
     else:
         sales_chase = False
 
     if verbose:
         print(f"------------------------------------------------")
-        print(f"Running model {model} on {len(df_sales)} rows...")
+        print(f"Running model {model_name} on {len(df_sales)} rows...")
 
     are_ind_vars_default = entry.get("ind_vars", None) is None
     ind_vars: list | None = entry.get("ind_vars", default_entry.get("ind_vars", None))
     
     if vacant_only or hedonic:
         default_value = True
-        if model_name == "assessor":
+        if model_engine == "assessor":
             default_value = False
         do_clamp = entry.get("do_clamp", default_value)
     
@@ -1232,7 +1238,8 @@ def run_one_model(
 
     t.start("data split")
     ds = get_data_split_for(
-        name=model_name,
+        model_name=model_name,
+        model_engine=model_engine,
         model_group=model_group,
         location_fields=location_fields,
         ind_vars=ind_vars,
@@ -1262,61 +1269,61 @@ def run_one_model(
     t.stop("setup")
 
     t.start("run")
-    if model_name == "garbage":
+    if model_engine == "garbage":
         results = run_garbage(
             ds, normal=False, sales_chase=sales_chase, verbose=verbose
         )
-    elif model_name == "garbage_normal":
+    elif model_engine == "garbage_normal":
         results = run_garbage(ds, normal=True, sales_chase=sales_chase, verbose=verbose)
-    elif model_name == "mean":
+    elif model_engine == "mean":
         results = run_average(
             ds, average_type="mean", sales_chase=sales_chase, verbose=verbose
         )
-    elif model_name == "median":
+    elif model_engine == "median":
         results = run_average(
             ds, average_type="median", sales_chase=sales_chase, verbose=verbose
         )
-    elif model_name == "naive_area":
+    elif model_engine == "naive_area":
         results = run_naive_area(ds, sales_chase=sales_chase, verbose=verbose)
-    elif model_name == "local_area":
+    elif model_engine == "local_area":
         results = run_local_area(
             ds,
             location_fields=location_fields,
             sales_chase=sales_chase,
             verbose=verbose,
         )
-    elif model_name == "assessor":
+    elif model_engine == "assessor":
         results = run_pass_through(ds, verbose=verbose)
-    elif model_name == "ground_truth":
+    elif model_engine == "ground_truth":
         results = run_ground_truth(ds, verbose=verbose)
-    elif model_name == "spatial_lag":
+    elif model_engine == "spatial_lag":
         results = run_spatial_lag(ds, per_area=False, verbose=verbose)
-    elif model_name == "spatial_lag_area":
+    elif model_engine == "spatial_lag_area":
         results = run_spatial_lag(ds, per_area=True, verbose=verbose)
-    elif model_name == "mra":
+    elif model_engine == "mra":
         results = run_mra(ds, intercept=intercept, verbose=verbose)
-    elif model_name == "kernel":
+    elif model_engine == "kernel":
         results = run_kernel(
             ds, outpath, save_params, use_saved_params, verbose=verbose
         )
-    elif model_name == "gwr":
+    elif model_engine == "gwr":
         results = run_gwr(ds, outpath, save_params, use_saved_params, verbose=verbose)
-    elif model_name == "xgboost":
+    elif model_engine == "xgboost":
         results = run_xgboost(
             ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
-    elif model_name == "lightgbm":
+    elif model_engine == "lightgbm":
         results = run_lightgbm(
             ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
-    elif model_name == "catboost":
+    elif model_engine == "catboost":
         results = run_catboost(
             ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
-    elif model_name == "slice":
+    elif model_engine == "slice":
         results = run_slice(ds, verbose=verbose)
     else:
-        raise ValueError(f"Model {model_name} not found!")
+        raise ValueError(f"Model {model_engine} not found!")
     t.stop("run")
 
     if ds.vacant_only or ds.hedonic:
@@ -1337,7 +1344,8 @@ def run_one_hedonic_model(
     df_sales: pd.DataFrame,
     df_univ: pd.DataFrame,
     settings: dict,
-    model: str,
+    model_name: str,
+    model_engine: str,
     smr: SingleModelResults,
     model_group: str,
     dep_var: str,
@@ -1360,8 +1368,10 @@ def run_one_hedonic_model(
         Universe DataFrame.
     settings : dict
         Settings dictionary.
-    model : str
-        Model name.
+    model_name : str
+        Model unique identifier.
+    model_engine : str
+        Model engine ("xgboost", "mra", etc.)
     smr : SingleModelResults
         SingleModelResults object containing initial model results.
     model_group : str
@@ -1395,7 +1405,8 @@ def run_one_hedonic_model(
     location_fields = [location_field_neighborhood, location_field_market_area]
 
     ds = get_data_split_for(
-        name=model,
+        model_name=model_name,
+        model_engine=model_engine,
         model_group=model_group,
         location_fields=location_fields,
         ind_vars=smr.ind_vars,
@@ -1420,7 +1431,8 @@ def run_one_hedonic_model(
     smr.ds = ds
     results = _predict_one_model(
         smr=smr,
-        model=model,
+        model_name=model_name,
+        model_engine=model_engine,
         outpath=outpath,
         settings=settings,
         save_results=save_results,
@@ -1672,7 +1684,8 @@ def _format_benchmark_df(df: pd.DataFrame, transpose: bool = True):
 
 def _predict_one_model(
     smr: SingleModelResults,
-    model: str,
+    model_name: str,
+    model_engine: str,
     outpath: str,
     settings: dict,
     save_results: bool = False,
@@ -1681,7 +1694,6 @@ def _predict_one_model(
     """
     Predict results for one model, using saved results if available.
     """
-    model_name = model
     ds = smr.ds
 
     timing = TimingData()
@@ -1689,54 +1701,54 @@ def _predict_one_model(
 
     results: SingleModelResults | None = None
 
-    if model_name == "garbage":
+    if model_engine == "garbage":
         garbage_model: GarbageModel = smr.model
         results = predict_garbage(ds, garbage_model, timing, verbose)
-    elif model_name == "garbage_normal":
+    elif model_engine == "garbage_normal":
         garbage_model: GarbageModel = smr.model
         results = predict_garbage(ds, garbage_model, timing, verbose)
-    elif model_name == "mean":
+    elif model_engine == "mean":
         mean_model: AverageModel = smr.model
         results = predict_average(ds, mean_model, timing, verbose)
-    elif model_name == "median":
+    elif model_engine == "median":
         median_model: AverageModel = smr.model
         results = predict_average(ds, median_model, timing, verbose)
-    elif model_name == "naive_area":
+    elif model_engine == "naive_area":
         area_model: NaiveAreaModel = smr.model
         results = predict_naive_area(ds, area_model, timing, verbose)
-    elif model_name == "local_area":
+    elif model_engine == "local_area":
         area_model: LocalAreaModel = smr.model
         results = predict_local_area(ds, area_model, timing, verbose)
-    elif model_name == "assessor":
+    elif model_engine == "assessor":
         assr_model: PassThroughModel = smr.model
         results = predict_pass_through(ds, assr_model, timing, verbose)
-    elif model_name == "ground_truth":
+    elif model_engine == "ground_truth":
         ground_truth_model: GroundTruthModel = smr.model
         results = predict_ground_truth(ds, ground_truth_model, timing, verbose)
-    elif model_name == "spatial_lag" or model_name == "spatial_lag_area":
+    elif model_engine == "spatial_lag" or model_engine == "spatial_lag_area":
         lag_model: SpatialLagModel = smr.model
         results = predict_spatial_lag(ds, lag_model, timing, verbose)
-    elif model_name == "mra":
+    elif model_engine == "mra":
         # MRA is a special case where we have to call run_ instead of predict_, because there's delicate state mangling.
         # We pass the pretrained `model` object to run_mra() to get it to skip training and move straight to prediction
         model: MRAModel = smr.model
         results = run_mra(ds, model.intercept, verbose, model)
-    elif model_name == "kernel":
+    elif model_engine == "kernel":
         kernel_reg: KernelReg = smr.model
         results = predict_kernel(ds, kernel_reg, timing, verbose)
-    elif model_name == "gwr":
+    elif model_engine == "gwr":
         gwr_model: GWRModel = smr.model
         results = predict_gwr(ds, gwr_model, timing, verbose)
-    elif model_name == "xgboost":
+    elif model_engine == "xgboost":
         xgb_regressor: XGBRegressor = smr.model
         results = predict_xgboost(ds, xgb_regressor, timing, verbose)
-    elif model_name == "lightgbm":
+    elif model_engine == "lightgbm":
         lightgbm_regressor: Booster = smr.model
         results = predict_lightgbm(ds, lightgbm_regressor, timing, verbose)
-    elif model_name == "catboost":
+    elif model_engine == "catboost":
         catboost_regressor: CatBoostRegressor = smr.model
         results = predict_catboost(ds, catboost_regressor, timing, verbose)
-    elif model_name == "slice":
+    elif model_engine == "slice":
         slice_model: LandSLICEModel = smr.model
         results = predict_slice(ds, slice_model, timing, verbose)
     
@@ -1866,6 +1878,7 @@ def _clamp_land_predictions(
         field_pred,
         results.field_horizontal_equity_id,
         model_name,
+        model_engine,
         results.model,
         y_pred_test,
         y_pred_sales,
@@ -2031,7 +2044,7 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
     Write model results to disk in parquet and CSV formats.
     """
     dfs = _assemble_model_results(results, settings)
-    path = f"{outpath}/{results.type}"
+    path = f"{outpath}/{results.model_name}"
     if "*" in path:
         path = path.replace("*", "_star")
     os.makedirs(path, exist_ok=True)
@@ -2071,7 +2084,7 @@ def _write_ensemble_model_results(
     Write ensemble model results to disk.
     """
     dfs_basic = _assemble_model_results(results, settings)
-    path = f"{outpath}/{results.type}"
+    path = f"{outpath}/{results.model_name}"
     os.makedirs(path, exist_ok=True)
     for key in dfs_basic:
         prim_keys = ["key"]
@@ -2120,6 +2133,7 @@ def _optimize_ensemble_allocation(
     test_keys, train_keys = _read_split_keys(model_group)
 
     ds = DataSplit(
+        "ensemble,
         df_sales,
         df_universe,
         model_group,
@@ -2225,7 +2239,8 @@ def _optimize_ensemble_allocation_iteration(
         "prediction",
         "he_id",
         "ensemble",
-        model="ensemble",
+        model_name="ensemble",
+        model_engine="ensemble",
         y_pred_test=y_pred_test_ensemble.to_numpy(),
         y_pred_sales=y_pred_sales_ensemble.to_numpy(),
         y_pred_univ=y_pred_univ_ensemble.to_numpy(),
@@ -2292,6 +2307,7 @@ def _optimize_ensemble(
         df_sales = all_results.df_sales_orig
 
     ds = DataSplit(
+        "ensemble",
         df_sales,
         df_universe,
         model_group,
@@ -2410,8 +2426,8 @@ def _optimize_ensemble_iteration(
         ds,
         "prediction",
         "he_id",
-        "ensemble",
-        model="ensemble",
+        model_name="ensemble",
+        model_engine="ensemble",
         y_pred_test=y_pred_test_ensemble.to_numpy(),
         y_pred_sales=y_pred_sales_ensemble.to_numpy(),
         y_pred_univ=y_pred_univ_ensemble.to_numpy(),
@@ -2472,33 +2488,6 @@ def _run_ensemble(
     verbose: bool = False,
 ):
     """Run the ensemble model based on the given ensemble list and write results.
-
-    :param df_sales: Sales DataFrame.
-    :type df_sales: pandas.DataFrame
-    :param df_universe: Universe DataFrame.
-    :type df_universe: pandas.DataFrame
-    :param model_group: Model group identifier.
-    :type model_group: str
-    :param vacant_only: Whether it is a vacant-only model.
-    :type vacant_only: bool
-    :param hedonic: Whether it is a hedonic model.
-    :type hedonic: bool
-    :param dep_var: Dependent variable for training.
-    :type dep_var: str
-    :param dep_var_test: Dependent variable for testing.
-    :type dep_var_test: str
-    :param outpath: Output path for results.
-    :type outpath: str
-    :param ensemble_list: List of models to include in the ensemble.
-    :type ensemble_list: list[str]
-    :param all_results: MultiModelResults containing model results.
-    :type all_results: MultiModelResults
-    :param settings: Settings dictionary.
-    :type settings: dict
-    :param verbose: If True, prints additional information.
-    :type verbose: bool, optional
-    :returns: SingleModelResults for the ensemble.
-    :rtype: SingleModelResults
     """
     timing = TimingData()
     timing.start("total")
@@ -2509,6 +2498,7 @@ def _run_ensemble(
     train_keys = all_results.model_results[first_key].ds.train_keys
 
     ds = DataSplit(
+        "ensemble",
         df_sales,
         df_universe,
         model_group,
@@ -2576,8 +2566,8 @@ def _run_ensemble(
         ds,
         "prediction",
         "he_id",
-        "ensemble",
-        model="ensemble",
+        model_name="ensemble",
+        model_engine="ensemble",
         y_pred_test=y_pred_test_ensemble.to_numpy(),
         y_pred_sales=y_pred_sales_ensemble.to_numpy(),
         y_pred_univ=y_pred_univ_ensemble.to_numpy(),
@@ -2598,6 +2588,7 @@ def _run_ensemble(
 
 
 def _prepare_ds(
+    name: str,
     df_sales: pd.DataFrame,
     df_universe: pd.DataFrame,
     model_group: str,
@@ -2606,13 +2597,7 @@ def _prepare_ds(
     ind_vars: list[str] | None = None,
 ):
     """Prepare a DataSplit object for modeling.
-
-    :param df_sales: Sales DataFrame. :type df_sales: pandas.DataFrame :param df_universe:
-    Universe DataFrame. :type df_universe: pandas.DataFrame :param model_group: Model
-    group identifier. :type model_group: str :param vacant_only: Whether to use only
-    vacant sales. :type vacant_only: bool :param settings: Settings dictionary. :type
-    settings: dict :param ind_vars: List of independent variables (optional) :type
-    ind_vars: list[str] | None :returns: A DataSplit object. :rtype: DataSplit
+    
     """
     s = settings
     s_model = s.get("modeling", {})
@@ -2668,6 +2653,7 @@ def _prepare_ds(
     test_keys, train_keys = _read_split_keys(model_group)
 
     ds = DataSplit(
+        name=name,
         df_sales=df_sales,
         df_universe=df_universe,
         model_group=model_group,
@@ -3086,12 +3072,14 @@ def _run_hedonic_models(
     location_fields = [location_field_neighborhood, location_field_market_area]
 
     # Re-run the models one by one and stash the results
-    for model in models_to_run:
-        if model not in all_results.model_results:
+    for model_name in models_to_run:
+        if model_name not in all_results.model_results:
             continue
-        smr = all_results.model_results[model]
+        smr = all_results.model_results[model_name]
+        model_engine = smr.model_engine
         ds = get_data_split_for(
-            name=model,
+            model_name=model_name,
+            model_engine=model_engine,
             model_group=model_group,
             location_fields=location_fields,
             ind_vars=smr.ind_vars,
@@ -3659,11 +3647,13 @@ def _run_models(
 
     # Run the models one by one and stash the results
     t.start("run_models")
-    for model in models_to_run:
-
+    for model_name in models_to_run:
+        model_entry = model_entries[model_name]
+        model_engine = model_entry.get("engine", model_name)
+        
         model_variables = best_variables
         # For tree-based models, we don't perform variable reduction
-        if model in ["xgboost", "lightgbm", "catboost"]:
+        if model_engine in ["xgboost", "lightgbm", "catboost"]:
             model_variables = None
 
         results = run_one_model(
@@ -3671,7 +3661,7 @@ def _run_models(
             df_universe=df_univ,
             vacant_only=vacant_only,
             model_group=model_group,
-            model=model,
+            model_name=model_name,
             model_entries=model_entries,
             settings=settings,
             dep_var=dep_var,
@@ -3685,10 +3675,10 @@ def _run_models(
             verbose=verbose,
         )
         if results is not None:
-            model_results[model] = results
+            model_results[model_name] = results
             any_results = True
         else:
-            print(f"Could not generate results for model: {model}")
+            print(f"Could not generate results for model: {model_name}")
 
     if not any_results:
         print(
@@ -3854,7 +3844,8 @@ def _get_post_valuation_smr(smr: SingleModelResults, verbose: bool = False):
         smr.ds.copy(),
         smr.field_prediction,
         smr.field_horizontal_equity_id,
-        smr.type,
+        smr.model_name,
+        smr.model_engine,
         smr.model,
         y_pred_test,
         y_pred_sales,
