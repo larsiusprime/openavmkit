@@ -421,6 +421,8 @@ def _mark_sales_scrutiny_clusters(
     fields_categorical = ss.get("fields_categorical", [])
     fields_numeric = ss.get("fields_numeric", None)
 
+    unit = area_unit(settings)
+
     # check if this is a vacant dataset:
     if df_sales["is_vacant"].eq(1).all():
         # if so remove all improved categoricals
@@ -437,6 +439,7 @@ def _mark_sales_scrutiny_clusters(
         fields_numeric,
         settings,
         min_cluster_size=5,
+        unit=unit,
         verbose=verbose,
     )
 

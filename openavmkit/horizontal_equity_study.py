@@ -355,6 +355,7 @@ def mark_horizontal_equity_clusters(
     location = he.get("location", None)
     fields_categorical = he.get("fields_categorical", [])
     fields_numeric = he.get("fields_numeric", None)
+    unit = area_unit(settings)
     
     split_on_vacant = True
     if "land" in id_name:
@@ -367,6 +368,7 @@ def mark_horizontal_equity_clusters(
         split_on_vacant=split_on_vacant,
         verbose=verbose,
         output_folder=output_folder,
+        unit=unit,
         t=t
     )
     return df

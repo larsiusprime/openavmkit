@@ -14,6 +14,7 @@ def make_clusters(
     fields_numeric: list[str | list[str]] = None,
     split_on_vacant: bool = True,
     min_cluster_size: int = 15,
+    unit: str = "sqft",
     verbose: bool = False,
     output_folder: str = "",
     t: TimingData = None
@@ -53,6 +54,8 @@ def make_clusters(
         whether to split on vacant status or not, default True
     min_cluster_size : int, default 15
         Minimum number of rows required to split a cluster on a numeric field.
+    unit : str, default "sqft"
+        What unit you are using for area. "sqft" or "sqm"
     verbose : bool, default False
         If True, print progress messages at each phase and sub-cluster iteration.
     output_folder : str, default ""
@@ -75,8 +78,6 @@ def make_clusters(
     df = df_in.copy()
 
     iteration = 0
-    
-    unit = area_unit(settings)
     
     # We are assigning a unique id to each cluster
     
