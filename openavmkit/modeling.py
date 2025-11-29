@@ -5130,61 +5130,6 @@ def write_shaps(
             verbose=verbose,
             do_write=True
         )
-        
-    # TODO: figure out local shaps
-    
-    # print(f"write shaps location = {location}")
-    # if location is not None:
-        # df_univ = dfs["univ"]
-        # df_sales = dfs["sales"]
-        # locs = df_univ[location].unique()
-        # if verbose:
-            # print(f"Performing localized SHAP analysis for location field = '{location}'")
-            # print(f"--> {len(locs)} unique values")
-        # i = 0
-        
-        # df_unit: pd.DataFrame = None
-        # df_contrib: pd.DataFrame = None
-        
-        # for loc in locs:
-            # if verbose and i % 10 == 0:
-                # print(f"----> {i}/{len(locs)} : {loc}")
-            # df_explain = df_univ[df_univ[location].eq(loc)].copy()
-            # df_bkg = df_sales[df_sales[location].eq(loc)].copy()
-            # X_bkg = df_bkg[ind_vars]
-            # X_explain = df_explain[ind_vars]
-            # shap_entry = get_model_shaps(model, X_bkg, X_explain)
-            # df_unit_loc, df_contrib_loc = _prepare_shap_dfs(
-                # model,
-                # shap_entry,
-                # df_explain,
-                # ind_vars,
-                # loc,
-                # outpath,
-                # do_plot=do_plot,
-                # verbose=False,
-                # do_write=False
-            # )
-            # df_unit_loc[f"shap_location"] = loc
-            # df_contrib_loc[f"shap_location"] = loc
-            
-            # if df_unit is None:
-                # df_unit = df_unit_loc
-            # else:
-                # df_unit = pd.concat([df_unit, df_unit_loc], ignore_index=True)
-                
-            # if df_contrib is None:
-                # df_contrib = df_contrib_loc
-            # else:
-                # df_contrib = pd.concat([df_contrib, df_contrib_loc], ignore_index=True)
-            
-            # i += 1
-        
-        # units_path = f"{outpath}/params_local.csv"
-        # contrib_path = f"{outpath}/contributions_local.csv"
-        
-        # df_unit.to_csv(units_path, index=False)
-        # df_contrib.to_csv(contrib_path, index=False)
 
 
 def _prepare_shap_dfs(
