@@ -79,8 +79,6 @@ def make_clusters(
 
     iteration = 0
     
-    unit = area_unit(settings)
-    
     # We are assigning a unique id to each cluster
     
     t.start("categoricals")
