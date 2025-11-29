@@ -8,6 +8,7 @@ from openavmkit.utilities.cache import get_cached_df, write_cached_df
 from openavmkit.utilities.clustering import make_clusters
 from openavmkit.utilities.data import do_per_model_group
 from openavmkit.utilities.timing import TimingData
+from openavmkit.utilities.settings import area_unit
 
 
 class HorizontalEquitySummary:
