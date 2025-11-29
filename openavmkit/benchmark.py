@@ -543,7 +543,7 @@ def get_variable_recommendations(
         df_universe = df_universe.loc[:, ~df_universe.columns.duplicated()]
 
     ds = _prepare_ds(
-        df_sales, df_universe, model_group, vacant_only, settings, variables_to_use
+        "var_recs", df_sales, df_universe, model_group, vacant_only, settings, variables_to_use
     )
     ds = ds.encode_categoricals_with_one_hot()
 
@@ -1185,10 +1185,7 @@ def run_one_model(
 
     t.start("setup")
     
-    entry: dict | None = model_entries.get(model, None)
-    
-    model_engine = entry.get("model", model_name)
-    
+    entry: dict | None = model_entries.get(model_name, None)
     default_entry: dict | None = model_entries.get("default", {})
     if entry is None:
         entry = default_entry
@@ -1196,7 +1193,8 @@ def run_one_model(
             raise ValueError(
                 f"Model entry for {model} not found, and there is no default entry!"
             )
-
+    model_engine = entry.get("model", model_name)
+    
     if "*" in model_engine:
         sales_chase = 0.01
         model_engine = model_engine.replace("*", "")
@@ -2133,7 +2131,7 @@ def _optimize_ensemble_allocation(
     test_keys, train_keys = _read_split_keys(model_group)
 
     ds = DataSplit(
-        "ensemble,
+        "ensemble",
         df_sales,
         df_universe,
         model_group,
@@ -3648,7 +3646,7 @@ def _run_models(
     # Run the models one by one and stash the results
     t.start("run_models")
     for model_name in models_to_run:
-        model_entry = model_entries[model_name]
+        model_entry = model_entries.get(model_name, model_entries.get("default", {}))
         model_engine = model_entry.get("engine", model_name)
         
         model_variables = best_variables
