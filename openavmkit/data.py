@@ -68,7 +68,6 @@ from openavmkit.utilities.settings import (
     get_valuation_date,
     get_center,
     get_dupes,
-    get_small_area_unit,
     get_short_distance_unit,
     area_unit,
     _get_sales,
@@ -2664,7 +2663,7 @@ def _enrich_df_overture(
 
         if not buildings.empty:
             # Calculate building footprints
-            sq_unit = get_small_area_unit(settings)
+            sq_unit = area_unit(settings)
             s_footprint = s_overture.get("footprint", {})
             footprint_units = s_footprint.get("units", None)
             if footprint_units is None:
