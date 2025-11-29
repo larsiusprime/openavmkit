@@ -10,7 +10,7 @@ from collections import defaultdict
 
 from scipy.spatial._ckdtree import cKDTree
 
-from openavmkit.utilities.settings import get_model_group_ids
+from openavmkit.utilities.settings import get_model_group_ids, area_unit
 
 
 def is_column_of_type(df: pd.DataFrame, col: str, type_name: str) -> bool:
@@ -538,7 +538,7 @@ def combine_dfs(
     return df
 
 
-def add_sqft_fields(df_in: pd.DataFrame) -> pd.DataFrame:
+def add_area_fields(df_in: pd.DataFrame, settings: dict) -> pd.DataFrame:
     """Add per-square-foot fields to the DataFrame for land and improvement values.
 
     This function creates new columns based on existing value fields and area fields.
@@ -547,34 +547,37 @@ def add_sqft_fields(df_in: pd.DataFrame) -> pd.DataFrame:
     ----------
     df_in : pd.DataFrame
         Input DataFrame
+    settings : dict
+        The settings dictionary
 
     Returns
     -------
     pd.DataFrame
         DataFrame with additional per-square-foot-fields
     """
+    unit = area_unit(settings)
     df = df_in.copy()
-    land_sqft = [
+    land_area = [
         "model_market_value",
         "model_land_value",
         "assr_market_value",
         "assr_land_value",
     ]
-    impr_sqft = [
+    impr_area = [
         "model_market_value",
         "model_impr_value",
         "assr_market_value",
         "assr_impr_value",
     ]
-    for field in land_sqft:
+    for field in land_area:
         if field in df:
-            df[field + "_land_sqft"] = div_series_z_safe(
-                df[field], df["land_area_sqft"]
+            df[field + f"_land_{unit}"] = div_series_z_safe(
+                df[field], df[f"land_area_{unit}"]
             )
-    for field in impr_sqft:
+    for field in impr_area:
         if field in df:
-            df[field + "_impr_sqft"] = div_series_z_safe(
-                df[field], df["bldg_area_finished_sqft"]
+            df[field + f"_impr_{unit}"] = div_series_z_safe(
+                df[field], df[f"bldg_area_finished_{unit}"]
             )
     return df
 
@@ -1024,3 +1027,17 @@ def _encode_city_blocks(place: str):
 
     # Done!
     print(edges[["u", "v", "road_name", "cross_w", "cross_e", "name_loc"]].head())
+
+
+def get_bldg_land_area_fields(df:pd.DataFrame):
+    bldg_area_field = ""
+    land_area_field = ""
+    for field in df:
+        if (field.endswith("_sqft") or field.endswith("_sqm")):
+            if field.startswith("bldg_area_finished_"):
+                if field in ["bldg_area_finished_sqft","bldg_area_land_sqm"]:
+                    bldg_area_field = field
+            if field.startswith("land_area_"):
+                if field in ["land_area_sqft","land_area_sqm"]:
+                    land_area_field = field
+    return bldg_area_field, land_area_field

@@ -4,6 +4,7 @@ import pandas as pd
 from typing import Tuple
 
 from openavmkit.utilities.timing import TimingData
+from openavmkit.utilities.settings import area_unit
 
 
 def make_clusters(
@@ -13,6 +14,7 @@ def make_clusters(
     fields_numeric: list[str | list[str]] = None,
     split_on_vacant: bool = True,
     min_cluster_size: int = 15,
+    unit: str = "sqft",
     verbose: bool = False,
     output_folder: str = "",
     t: TimingData = None
@@ -52,6 +54,8 @@ def make_clusters(
         whether to split on vacant status or not, default True
     min_cluster_size : int, default 15
         Minimum number of rows required to split a cluster on a numeric field.
+    unit : str, default "sqft"
+        What unit you are using for area. "sqft" or "sqm"
     verbose : bool, default False
         If True, print progress messages at each phase and sub-cluster iteration.
     output_folder : str, default ""
@@ -74,8 +78,9 @@ def make_clusters(
     df = df_in.copy()
 
     iteration = 0
+    
     # We are assigning a unique id to each cluster
-
+    
     t.start("categoricals")
     # Phase 1: split the data into clusters based on the location:
     if field_location is not None and field_location in df:
@@ -104,8 +109,8 @@ def make_clusters(
     t.start("numerics")
     if fields_numeric is None or len(fields_numeric) == 0:
         fields_numeric = [
-            "land_area_sqft",
-            "bldg_area_finished_sqft",
+            f"land_area_{unit}",
+            f"bldg_area_finished_{unit}",
             "bldg_quality_num",
             [
                 "bldg_effective_age_years",

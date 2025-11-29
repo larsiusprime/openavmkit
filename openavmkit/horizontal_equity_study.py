@@ -8,6 +8,7 @@ from openavmkit.utilities.cache import get_cached_df, write_cached_df
 from openavmkit.utilities.clustering import make_clusters
 from openavmkit.utilities.data import do_per_model_group
 from openavmkit.utilities.timing import TimingData
+from openavmkit.utilities.settings import area_unit
 
 
 class HorizontalEquitySummary:
@@ -355,6 +356,7 @@ def mark_horizontal_equity_clusters(
     location = he.get("location", None)
     fields_categorical = he.get("fields_categorical", [])
     fields_numeric = he.get("fields_numeric", None)
+    unit = area_unit(settings)
     
     split_on_vacant = True
     if "land" in id_name:
@@ -367,6 +369,7 @@ def mark_horizontal_equity_clusters(
         split_on_vacant=split_on_vacant,
         verbose=verbose,
         output_folder=output_folder,
+        unit=unit,
         t=t
     )
     return df

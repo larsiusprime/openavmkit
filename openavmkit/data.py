@@ -68,8 +68,8 @@ from openavmkit.utilities.settings import (
     get_valuation_date,
     get_center,
     get_dupes,
-    get_small_area_unit,
     get_short_distance_unit,
+    area_unit,
     _get_sales,
     _simulate_removed_buildings,
 )
@@ -783,7 +783,8 @@ def _enrich_sup_spatial_lag_for_model_group(
     model_group: str,
     verbose: bool = False
 ) -> SalesUniversePair:
-
+    
+    unit = area_unit(settings)
     s_sl = (
         settings.get("data", {})
         .get("process", {})
@@ -822,22 +823,22 @@ def _enrich_sup_spatial_lag_for_model_group(
     sale_field = get_sale_field(settings)
     sale_field_vacant = f"{sale_field}_vacant"
 
-    per_land_field = f"{sale_field}_land_sqft"
-    per_impr_field = f"{sale_field}_impr_sqft"
+    per_land_field = f"{sale_field}_land_{unit}"
+    per_impr_field = f"{sale_field}_impr_{unit}"
 
     if per_land_field not in df_hydrated:
         df_hydrated[per_land_field] = div_series_z_safe(
-            df_hydrated[sale_field], df_hydrated["land_area_sqft"]
+            df_hydrated[sale_field], df_hydrated[f"land_area_{unit}"]
         )
     if per_impr_field not in df_hydrated:
         df_hydrated[per_impr_field] = div_series_z_safe(
-            df_hydrated[sale_field], df_hydrated["bldg_area_finished_sqft"]
+            df_hydrated[sale_field], df_hydrated[f"bldg_area_finished_{unit}"]
         )
     if sale_field_vacant not in df_hydrated:
         df_hydrated[sale_field_vacant] = None
         df_hydrated[sale_field_vacant] = df_hydrated[sale_field].where(
-            df_hydrated["bldg_area_finished_sqft"].le(0)
-            & df_hydrated["land_area_sqft"].gt(0)
+            df_hydrated[f"bldg_area_finished_{unit}"].le(0)
+            & df_hydrated[f"land_area_{unit}"].gt(0)
         )
 
     value_fields = [sale_field, sale_field_vacant, per_land_field, per_impr_field]
@@ -850,12 +851,12 @@ def _enrich_sup_spatial_lag_for_model_group(
             df_sub = df_hydrated.loc[
                 df_hydrated["valid_sale"].eq(True)
                 & df_hydrated["vacant_sale"].eq(True)
-                & df_hydrated["land_area_sqft"].gt(0)
+                & df_hydrated[f"land_area_{unit}"].gt(0)
             ].copy()
         elif value_field == per_impr_field:
             df_sub = df_hydrated.loc[
                 df_hydrated["valid_sale"].eq(True)
-                & df_hydrated["bldg_area_finished_sqft"].gt(0)
+                & df_hydrated[f"bldg_area_finished_{unit}"].gt(0)
             ].copy()
         else:
             raise ValueError(f"Unknown value field: {value_field}")
@@ -2375,18 +2376,19 @@ def _enrich_universe_spatial_lag(
     sample_from_mgs : list[str],
     settings: dict
 ) -> pd.DataFrame:
-
+    
+    unit = area_unit(settings)
     df = df_univ_in.copy()
 
     s_sl = settings.get("data", {}).get("process", {}).get("enrich", {}).get("spatial_lag", {})
 
     if "floor_area_ratio" not in df:
         df["floor_area_ratio"] = div_series_z_safe(
-            df["bldg_area_finished_sqft"], df["land_area_sqft"]
+            df[f"bldg_area_finished_{unit}"], df[f"land_area_{unit}"]
         )
     if "bedroom_density" not in df and "bldg_rooms_bed" in df:
         df["bedroom_density"] = div_series_z_safe(
-            df["bldg_rooms_bed"], df["land_area_sqft"]
+            df["bldg_rooms_bed"], df[f"land_area_{unit}"]
         )
     
     # only include samples not in the test set
@@ -2403,8 +2405,8 @@ def _enrich_universe_spatial_lag(
         "bedroom_density": 5,
         "bldg_age_years": 5,
         "bldg_effective_age_years": 5,
-        "bldg_area_finished_sqft": 5,
-        "land_area_sqft": 5,
+        f"bldg_area_finished_{unit}": 5,
+        f"land_area_{unit}": 5,
         "bldg_quality_num": 5,
         "bldg_condition_num": 5,
     }
@@ -2537,12 +2539,13 @@ def _enrich_vacant(df_in: pd.DataFrame, settings: dict) -> pd.DataFrame:
     """
 
     df = df_in.copy()
+    unit = area_unit(settings)
 
-    if "bldg_area_finished_sqft" in df_in:
+    if f"bldg_area_finished_{unit}" in df_in:
         df["is_vacant"] = False
 
-        df.loc[pd.isna(df["bldg_area_finished_sqft"]), "bldg_area_finished_sqft"] = 0
-        df.loc[df["bldg_area_finished_sqft"].eq(0), "is_vacant"] = True
+        df.loc[pd.isna(df[f"bldg_area_finished_{unit}"]), f"bldg_area_finished_{unit}"] = 0
+        df.loc[df[f"bldg_area_finished_{unit}"].eq(0), "is_vacant"] = True
 
         idx_vacant = df["is_vacant"].eq(True)
 
@@ -2626,6 +2629,9 @@ def _enrich_df_overture(
     settings: dict,
     verbose: bool = False,
 ) -> gpd.GeoDataFrame:
+    
+    unit = area_unit(settings)
+    
     gdf_out = get_cached_df(gdf_in, "geom/overture", "key", s_enrich_this)
     if gdf_out is not None:
         if verbose:
@@ -2652,25 +2658,25 @@ def _enrich_df_overture(
 
         # Fetch building data
         buildings = overture_service.get_buildings(
-            bbox, use_cache=s_overture.get("cache", True), verbose=verbose
+            bbox, use_cache=s_overture.get("cache", True), unit=unit, verbose=verbose
         )
 
         if not buildings.empty:
             # Calculate building footprints
-            sq_unit = get_small_area_unit(settings)
+            sq_unit = area_unit(settings)
             s_footprint = s_overture.get("footprint", {})
             footprint_units = s_footprint.get("units", None)
             if footprint_units is None:
                 warnings.warn(
-                    f"`process.enrich.overture.footprint.units` not specified, defaulting to '{sq_unit}'"
+                    f"`process.enrich.overture.footprint.units` not specified, defaulting to '{unit}'"
                 )
-                footprint_units = sq_unit
+                footprint_units = unit
             footprint_field = s_footprint.get("field", None)
             if footprint_field is None:
                 warnings.warn(
-                    f"`process.enrich.overture.footprint.field` not specified, defaulting to 'bldg_area_footprint_{sq_unit}'"
+                    f"`process.enrich.overture.footprint.field` not specified, defaulting to 'bldg_area_footprint_{footprint_units}'"
                 )
-                footprint_field = f"bldg_area_footprint_{sq_unit}"
+                footprint_field = f"bldg_area_footprint_{footprint_units}"
             
             # Calculate building height
             len_unit = get_short_distance_unit(settings)
@@ -2816,6 +2822,7 @@ def _basic_geo_enrichment(
     """Perform basic geometric enrichment on a GeoDataFrame by adding spatial features."""
     t = TimingData()
     
+    unit = area_unit(settings)
     s_basic = s_enrich.get("basic", {})
     
     do_anything = s_basic.get("enabled", True)
@@ -2836,7 +2843,7 @@ def _basic_geo_enrichment(
         if verbose:
             print("--> found cached data...")
 
-        parcels_with_no_land = gdf_out["land_area_sqft"].isna().sum()
+        parcels_with_no_land = gdf_out[f"land_area_{unit}"].isna().sum()
         if parcels_with_no_land > 0:
             raise ValueError(
                 f"Found '{parcels_with_no_land}' parcels with no land area in cached data. This should not be able to happen as they should be backfilled with GIS land area. Please check your data."
@@ -2874,32 +2881,35 @@ def _basic_geo_enrichment(
         # we converted to a metric CRS, so we are in meters right now
         area_in_meters = gdf_area.geometry.area
 
-        gdf["land_area_gis_sqft"] = area_in_meters * 10.7639
-
-        if "land_area_sqft" not in gdf:
-            gdf["land_area_sqft"] = gdf["land_area_gis_sqft"]
+        if unit == "sqft":
+            gdf["land_area_gis_sqft"] = area_in_meters * 10.7639
         else:
-            gdf["land_area_given_sqft"] = gdf["land_area_sqft"]
+            gdf["land_area_gis_sqm"] = area_in_meters
+
+        if f"land_area_{unit}" not in gdf:
+            gdf[f"land_area_{unit}"] = gdf[f"land_area_gis_{unit}"]
+        else:
+            gdf[f"land_area_given_{unit}"] = gdf[f"land_area_{unit}"]
         
             # Anywhere given land area is 0, negative, or NULL, use GIS area
-            gdf["land_area_sqft"] = gdf["land_area_sqft"].combine_first(
-                gdf["land_area_gis_sqft"]
+            gdf[f"land_area_{unit}"] = gdf[f"land_area_{unit}"].combine_first(
+                gdf[f"land_area_gis_{unit}"]
             )
-            gdf["land_area_sqft"] = np.round(
-                gdf["land_area_sqft"].combine_first(gdf["land_area_gis_sqft"])
+            gdf[f"land_area_{unit}"] = np.round(
+                gdf[f"land_area_{unit}"].combine_first(gdf[f"land_area_gis_{unit}"])
             ).astype(int)
             gdf.loc[
-                gdf["land_area_given_sqft"].le(0) | gdf["land_area_given_sqft"].isna(),
-                "land_area_sqft",
-            ] = gdf["land_area_gis_sqft"]
+                gdf[f"land_area_given_{unit}"].le(0) | gdf[f"land_area_given_{unit}"].isna(),
+                f"land_area_{unit}",
+            ] = gdf[f"land_area_gis_{unit}"]
 
             # Calculate difference
-            gdf["land_area_gis_delta_sqft"] = gdf["land_area_gis_sqft"] - gdf["land_area_sqft"]
+            gdf[f"land_area_gis_delta_{unit}"] = gdf[f"land_area_gis_{unit}"] - gdf[f"land_area_{unit}"]
             gdf["land_area_gis_delta_percent"] = div_series_z_safe(
-                gdf["land_area_gis_delta_sqft"], gdf["land_area_sqft"]
+                gdf[f"land_area_gis_delta_{unit}"], gdf[f"land_area_{unit}"]
             )
 
-        gdf["land_area_sqft_log"] = np.log(gdf["land_area_sqft"])
+        gdf[f"land_area_{unit}_log"] = np.log(gdf[f"land_area_{unit}"])
 
         t.stop("area")
     
@@ -2927,7 +2937,7 @@ def _basic_geo_enrichment(
         if verbose:
             print(f"--> skipping polar coordinates...")
     
-    parcels_with_no_land = gdf["land_area_sqft"].isna().sum()
+    parcels_with_no_land = gdf[f"land_area_{unit}"].isna().sum()
     if parcels_with_no_land > 0:
         raise ValueError(
             f"Found '{parcels_with_no_land}' parcels with no land area. This should not be able to happen as they should be backfilled with GIS land area. Please check your data."

@@ -2,7 +2,7 @@ import warnings
 
 import pandas as pd
 
-from openavmkit.utilities.data import div_series_z_safe
+from openavmkit.utilities.data import div_series_z_safe, get_bldg_land_area_fields
 
 
 def check_land_values(df_in: pd.DataFrame, model_group: str) -> pd.DataFrame:
@@ -109,7 +109,9 @@ def check_land_values(df_in: pd.DataFrame, model_group: str) -> pd.DataFrame:
 
 
 def _perform_land_checks(df: pd.DataFrame, counts: dict, do_remedy: bool) -> dict:
-
+    
+    bldg_area_field, land_area_field = get_bldg_land_area_fields(df)
+    
     # Check 0: market values must be >= 0:
     idx_negative_market = df["model_market_value"].lt(0)
     counts["negative_market"] = idx_negative_market.sum()
@@ -146,10 +148,10 @@ def _perform_land_checks(df: pd.DataFrame, counts: dict, do_remedy: bool) -> dic
     idx_land_gt_market = df["model_land_value"].gt(df["model_market_value"])
     idx_land_gt_market_vacant = df["model_land_value"].gt(
         df["model_market_value"]
-    ) & df["bldg_area_finished_sqft"].eq(0)
+    ) & df[bldg_area_field].eq(0)
     idx_land_gt_market_improved = df["model_land_value"].gt(
         df["model_market_value"]
-    ) & df["bldg_area_finished_sqft"].ge(1)
+    ) & df[bldg_area_field].ge(1)
     counts["land_gt_market"] = idx_land_gt_market.sum()
     counts["land_gt_market_vacant"] = idx_land_gt_market_vacant.sum()
     counts["land_gt_market_improved"] = idx_land_gt_market_improved.sum()
@@ -163,7 +165,7 @@ def _perform_land_checks(df: pd.DataFrame, counts: dict, do_remedy: bool) -> dic
 
     # Check 4: If a building exists...
     # land allocation must not be 1.0:
-    idx_bldg_yes_land_alloc_ge_1 = df["bldg_area_finished_sqft"].ge(1) & df[
+    idx_bldg_yes_land_alloc_ge_1 = df[bldg_area_field].ge(1) & df[
         "model_land_alloc"
     ].ge(1)
     counts["bldg_yes_land_alloc_ge_1"] = idx_bldg_yes_land_alloc_ge_1.sum()
@@ -171,7 +173,7 @@ def _perform_land_checks(df: pd.DataFrame, counts: dict, do_remedy: bool) -> dic
 
     # Check 5: If no building exists:
     # land allocation must be 1.0:
-    idx_bldg_no_land_alloc_ne_1 = df["bldg_area_finished_sqft"].eq(0) & df[
+    idx_bldg_no_land_alloc_ne_1 = df[bldg_area_field].eq(0) & df[
         "model_land_alloc"
     ].ne(1)
     counts["bldg_no_land_alloc_ne_1"] = idx_bldg_no_land_alloc_ne_1.sum()

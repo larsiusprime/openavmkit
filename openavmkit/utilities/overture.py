@@ -85,7 +85,8 @@ class OvertureService:
         self, 
         bbox, 
         columns: list[str] | None = None,
-        use_cache=True, 
+        unit:str="sqft",
+        use_cache=True,
         verbose=False
     ):
         """Fetch building data from Overture within the specified bounding box.
@@ -96,6 +97,8 @@ class OvertureService:
             Tuple of (minx, miny, maxx, maxy) in WGS84 coordinates
         columns : list[str]
             Desired columns to load
+        unit : str
+            What the unit of area is. "sqft" and "sqm" are allowed.
         use_cache : bool, optional
             Whether to use cached data. Default is True.
         verbose : bool, optional
@@ -106,6 +109,10 @@ class OvertureService:
         gpd.GeoDataFrame
             GeoDataFrame with building footprints
         """
+        
+        if unit != "sqft" and unit != "sqm":
+            raise ValueError(f"Illegal unit \"{unit}\" passed to overture.get_buildings(), only \"sqft\" and \"sqm\" are allowed.")
+        
         
         typical_floor_height_m: float = 3.2
         
@@ -212,6 +219,8 @@ class OvertureService:
                     print(f"--> Available columns: {gdf.columns.tolist()}")
 
                 if not gdf.empty:
+                    # Calculate footprint areas
+                    t.start("area")
                     if verbose:
                         print("--> Calculating building footprint areas...")
                     
@@ -219,13 +228,13 @@ class OvertureService:
                     utm_crs = gdf.estimate_utm_crs()
                     if verbose:
                         print(f"--> Using UTM CRS: {utm_crs}")
-                    
-                    # Calculate footprint areas
-                    t.start("area")
-                    gdf["bldg_area_footprint_sqm"] = (
+                    # Convert to UTM and calculate areas
+                    gdf[f"bldg_area_footprint_{unit}"] = (
                         gdf.to_crs(utm_crs).area
                     )
-                    gdf["bldg_area_footprint_sqft"] = gdf["bldg_area_footprint_sqm"] * 10.764  # Convert m² to ft²
+                    if unit == "sqft":
+                        # Convert m² to ft²
+                        gdf[f"bldg_area_footprint_{unit}"] *= 10.764
                     t.stop("area")
                     
                     if use_cache:
@@ -331,7 +340,7 @@ class OvertureService:
         if buildings.empty:
             if verbose:
                 print("--> No buildings found, returning original GeoDataFrame")
-            gdf["bldg_area_footprint_sqft"] = 0
+            gdf[field_name] = 0
             return gdf
 
         # Get appropriate unit conversion
@@ -441,10 +450,10 @@ class OvertureService:
             print(f"--> Finished up...({_t:.2f}s)")
             print(f"--> Added building footprint areas to {len(agg)} parcels")
             print(
-                f"--> Total building footprint area: {gdf[field_name].sum():,.0f} sqft"
+                f"--> Total building footprint area: {gdf[field_name].sum():,.0f} {desired_units}"
             )
             print(
-                f"--> Average building footprint area: {gdf[field_name].mean():,.0f} sqft"
+                f"--> Average building footprint area: {gdf[field_name].mean():,.0f} {desired_units}"
             )
             print(
                 f"--> Number of parcels with buildings: {(gdf[field_name] > 0).sum():,}"

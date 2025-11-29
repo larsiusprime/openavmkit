@@ -174,7 +174,7 @@ def calculate_cap_rate_growth(
     sale_price_growth: np.ndarray, noi_growth: np.ndarray
 ) -> np.ndarray:
     """Calculate the capitalization rate given the annual percentage changes in sale price
-    ($/sqft) and net operating income (NOI).
+    ($/area) and net operating income (NOI).
 
     Given `NOI = Sale Price * Cap Rate`, the cap rate is `NOI / Sale Price`.
     Approximating the percentage change (assuming small changes):
@@ -210,7 +210,7 @@ def calculate_noi_growth(
     sale_price_growth: np.ndarray, cap_rate_growth: np.ndarray
 ) -> np.ndarray:
     """Calculate the annual percentage change in NOI given the annual percentage changes
-    in sale price ($/sqft) and cap rate.
+    in sale price ($/area) and cap rate.
 
     Given `NOI = Sale Price * Cap Rate`, the compounded growth in NOI is:
     `(1 + ΔSale Price) * (1 + ΔCap Rate) - 1`.
