@@ -31,8 +31,8 @@ def compute_shap(smr: SingleModelResults, plot: bool = False, title: str = ""):
         SHAP values array for the evaluation dataset.
     """
 
-    if smr.type not in ["xgboost", "catboost", "lightgbm"]:
-        # SHAP is not supported for this model type
+    if smr.model_engine not in ["xgboost", "catboost", "lightgbm"]:
+        # SHAP is not supported for this model engine
         return
 
     X_train = smr.ds.X_train
