@@ -994,6 +994,7 @@ def write_out_all_results(sup: SalesUniversePair, all_results: dict):
 def get_data_split_for(
     model_name: str,
     model_engine: str,
+    model_entry: dict,
     model_group: str,
     location_fields: list[str] | None,
     ind_vars: list[str],
@@ -1019,6 +1020,8 @@ def get_data_split_for(
         Model unique identifier
     model_engine : str
         Model engine ("xgboost", "mra", etc.)
+    model_entry : dict
+        Model parameters
     model_group : str
         The model group identifier.
     location_fields : list[str] or None
@@ -1065,6 +1068,11 @@ def get_data_split_for(
         _ind_vars = [f"land_area_{unit}", "latitude", "longitude"]
     elif model_engine == "assessor":
         _ind_vars = ["assr_land_value"] if hedonic else ["assr_market_value"]
+    elif model_engine == "pass_through":
+        field = model_entry.get("field")
+        if field is None:
+            raise ValueError("pass_through model \"{model_name}\" has no .field parameter!")
+        _ind_vars = [field]
     elif model_engine == "ground_truth":
         _ind_vars = ["true_land_value"] if hedonic else ["true_market_value"]
     elif model_engine == "spatial_lag":
@@ -1238,6 +1246,7 @@ def run_one_model(
     ds = get_data_split_for(
         model_name=model_name,
         model_engine=model_engine,
+        model_entry=entry,
         model_group=model_group,
         location_fields=location_fields,
         ind_vars=ind_vars,
@@ -1290,8 +1299,8 @@ def run_one_model(
             sales_chase=sales_chase,
             verbose=verbose,
         )
-    elif model_engine == "assessor":
-        results = run_pass_through(ds, verbose=verbose)
+    elif model_engine == "assessor" or model_engine == "pass_through":
+        results = run_pass_through(ds, model_engine, verbose=verbose)
     elif model_engine == "ground_truth":
         results = run_ground_truth(ds, verbose=verbose)
     elif model_engine == "spatial_lag":
@@ -1344,6 +1353,7 @@ def run_one_hedonic_model(
     settings: dict,
     model_name: str,
     model_engine: str,
+    model_entry: dict,
     smr: SingleModelResults,
     model_group: str,
     dep_var: str,
@@ -1370,6 +1380,8 @@ def run_one_hedonic_model(
         Model unique identifier.
     model_engine : str
         Model engine ("xgboost", "mra", etc.)
+    model_entry : dict
+        Model parameters
     smr : SingleModelResults
         SingleModelResults object containing initial model results.
     model_group : str
@@ -1405,6 +1417,7 @@ def run_one_hedonic_model(
     ds = get_data_split_for(
         model_name=model_name,
         model_engine=model_engine,
+        model_entry=model_entry,
         model_group=model_group,
         location_fields=location_fields,
         ind_vars=smr.ind_vars,
@@ -1717,7 +1730,7 @@ def _predict_one_model(
     elif model_engine == "local_area":
         area_model: LocalAreaModel = smr.model
         results = predict_local_area(ds, area_model, timing, verbose)
-    elif model_engine == "assessor":
+    elif model_engine == "assessor" or model_engine == "pass_through":
         assr_model: PassThroughModel = smr.model
         results = predict_pass_through(ds, assr_model, timing, verbose)
     elif model_engine == "ground_truth":
@@ -3040,6 +3053,7 @@ def _run_hedonic_models(
     settings: dict,
     model_group: str,
     models_to_run: list[str],
+    model_entries: dict,
     all_results: MultiModelResults,
     df_sales: pd.DataFrame,
     df_universe: pd.DataFrame,
@@ -3075,9 +3089,11 @@ def _run_hedonic_models(
             continue
         smr = all_results.model_results[model_name]
         model_engine = smr.model_engine
+        model_entry = model_entries.get(model_name, {})
         ds = get_data_split_for(
             model_name=model_name,
             model_engine=model_engine,
+            model_entry=model_entry,
             model_group=model_group,
             location_fields=location_fields,
             ind_vars=smr.ind_vars,

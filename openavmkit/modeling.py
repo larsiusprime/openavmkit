@@ -1962,7 +1962,7 @@ def predict_pass_through(
     timing.stop("total")
     
     model_name = ds.name
-    model_engine = "assessor" #TODO: genericize
+    model_engine = model.engine
     
     results = SingleModelResults(
         ds,
@@ -2057,7 +2057,7 @@ def run_spatial_lag(
     return predict_spatial_lag(ds, model, timing, verbose)
 
 
-def run_pass_through(ds: DataSplit, verbose: bool = False) -> SingleModelResults:
+def run_pass_through(ds: DataSplit, model_engine: str, verbose: bool = False) -> SingleModelResults:
     """
     Run an assessor model by performing data splitting and returning predictions.
 
@@ -2065,6 +2065,8 @@ def run_pass_through(ds: DataSplit, verbose: bool = False) -> SingleModelResults
     ----------
     ds : DataSplit
         DataSplit object.
+    engine : str
+        Model engine ("assessor" or "pass_through")
     verbose : bool, optional
         If True, print verbose output. Defaults to False.
 
@@ -2088,7 +2090,7 @@ def run_pass_through(ds: DataSplit, verbose: bool = False) -> SingleModelResults
     timing.start("train")
     timing.stop("train")
 
-    model = PassThroughModel(ds.ind_vars[0])
+    model = PassThroughModel(ds.ind_vars[0], model_engine)
     return predict_pass_through(ds, model, timing, verbose)
 
 

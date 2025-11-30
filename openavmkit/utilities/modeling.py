@@ -257,6 +257,7 @@ class PassThroughModel:
     def __init__(
         self,
         field: str,
+        engine: str
     ):
         """Initialize a PassThroughModel
 
@@ -264,8 +265,11 @@ class PassThroughModel:
         ----------
         field : str
             The field that holds the values you want to pass through as predictions
+        engine : str
+            The model engine ("assessor" or "pass_through")
         """
         self.field = field
+        self.engine = engine
 
 
 class GWRModel:
