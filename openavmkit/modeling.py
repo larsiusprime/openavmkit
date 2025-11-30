@@ -1303,7 +1303,7 @@ class SingleModelResults:
 
         # convert all category and string[python] types to string:
         for col in df_univ_valid.columns:
-            if df_univ_valid[col].dtype in ["category", "string"]:
+            if df_univ_valid[col].dtype in ["category", "string", "object"]:
                 df_univ_valid[col] = df_univ_valid[col].astype("str")
         pl_df = pl.DataFrame(df_univ_valid)
 

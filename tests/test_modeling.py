@@ -155,6 +155,7 @@ def test_mra_constant():
     train_keys = ["6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"]
     
     ds = DataSplit(
+        "",
         df_sales,
         df_universe,
         "a",
@@ -167,6 +168,8 @@ def test_mra_constant():
         test_keys,
         train_keys
     )
+    
+    
     run_mra(ds, intercept=True)
 
 
