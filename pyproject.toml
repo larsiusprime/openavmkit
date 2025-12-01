@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "openavmkit"
 description = "Open-source automated valuation model (AVM) toolkit"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 # Dual license (AGPLv3 OR commercial).
 license = { file = "LICENSE-AGPLv3" }
 authors = [{ name = "Lars A. Doucet", email = "lars.doucet+openavmkit@gmail.com" }]
@@ -15,7 +15,6 @@ keywords = ["avm", "mass appraisal", "valuation", "gis", "real estate"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Operating System :: OS Independent",
