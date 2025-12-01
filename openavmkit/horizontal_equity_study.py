@@ -286,7 +286,7 @@ def mark_horizontal_equity_clusters_per_model_group_sup(
         le = settings.get("analysis", {}).get("land_equity", {})
         location = le.get("location", None)
         if location is None:
-            warnings.warn("You are creating land equity clusters, but you haven't defined `data.analysis.land_equity.location`. You should at least provide a location field if you want to use this feature.")
+            warnings.warn("You are creating land equity clusters, but you haven't defined `analysis.land_equity.location`. You should at least provide a location field if you want to use this feature.")
         df_universe = _mark_horizontal_equity_clusters_per_model_group(
             df_universe,
             settings,
