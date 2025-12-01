@@ -2579,6 +2579,7 @@ def _run_ensemble(
         "he_id",
         model_name="ensemble",
         model_engine="ensemble",
+        model="ensemble",
         y_pred_test=y_pred_test_ensemble.to_numpy(),
         y_pred_sales=y_pred_sales_ensemble.to_numpy(),
         y_pred_univ=y_pred_univ_ensemble.to_numpy(),
