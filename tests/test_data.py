@@ -119,6 +119,7 @@ def test_split_keys():
 	assert(df_train[df_train["is_vacant"].eq(False)].shape[0] == expected_train_improved)
 
 	ds = DataSplit(
+		name="",
 		df_sales=df_sales,
 		df_universe=df,
 		model_group="residential_sf",
@@ -136,6 +137,7 @@ def test_split_keys():
 	ds.split()
 
 	ds_v = DataSplit(
+		name="",
 		df_sales=df_sales,
 		df_universe=df,
 		model_group="residential_sf",
@@ -153,6 +155,7 @@ def test_split_keys():
 	ds_v.split()
 
 	ds_h = DataSplit(
+		name="",
 		df_sales=df_sales,
 		df_universe=df,
 		model_group="residential_sf",

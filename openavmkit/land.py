@@ -781,8 +781,7 @@ def _convolve_land_analysis(
         )
         df_results_test = df_results_test.drop(columns=["r2_", "slope_"])
         df_results_test = df_results_test.reset_index(drop=True)
-        # df_results_test = df_results_test[df_results_test["model"].astype(str).str.contains("assessor") | (df_results_test.index < 10)]
-
+        
         count = len(df_vacant_sale[df_vacant_sale["key_sale"].isin(test_keys)])
         print("=" * 80)
         print(f"TEST LAND RESULTS, MODEL GROUP : {model_group}, count: {count}")
