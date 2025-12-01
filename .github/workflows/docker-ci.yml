@@ -100,4 +100,5 @@ jobs:
         run: |
           docker run --rm \
             -e RUN=test \
-            -e LOCA
+            -e LOCALITY=us-nc-guilford \
+            "${{ env.SAFE_RUN_TAG }}"
