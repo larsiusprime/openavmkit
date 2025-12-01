@@ -33,10 +33,7 @@ This command will clone the repository to your local machine, store it under a f
 
 If you don't have Python on your machine, you'll need to install it.
 
-OpenAVMKit is tested on **Python 3.10 and 3.11**.
-
-* If you are **developing** or running the repo from source, either version works.
-* If you just want to `pip install openavmkit` from PyPI, you’ll need **≥ 3.11** (that’s the minimum version required by the pre-built wheels).
+OpenAVMKit is tested on **Python 3.11**.
 
 If you already have Python installed, but you're not sure which version of Python you have installed, you can check by running this command:
 
@@ -46,9 +43,8 @@ python --version
 
 If you have Python installed, you should see the version number printed to the console.
 
-If you don't have Python installed, you can get the supported versions here:
+If you don't have Python installed, you can get the supported version here:
 
-- [Download Python 3.10.11](https://www.python.org/downloads/release/python-31011/)  
 - [Download Python 3.11.9](https://www.python.org/downloads/release/python-3119/)  
 
 If you have the wrong version of Python installed, you can download the correct version from one of the links above, and then install it. Be very careful to make sure that the new version of Python is available in your `PATH`. (If you don't know what the means, here is a [handy tutorial on the subject](https://realpython.com/add-python-to-path/)).

@@ -1,5 +1,5 @@
 # Stage 1: Build the OpenAVMKit package and install dependencies
-FROM python:3.10 AS builder
+FROM python:3.11 AS builder
 
 WORKDIR /app
 
