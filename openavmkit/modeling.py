@@ -2065,7 +2065,7 @@ def run_pass_through(ds: DataSplit, model_engine: str, verbose: bool = False) ->
     ----------
     ds : DataSplit
         DataSplit object.
-    engine : str
+    model_engine : str
         Model engine ("assessor" or "pass_through")
     verbose : bool, optional
         If True, print verbose output. Defaults to False.
