@@ -2962,7 +2962,7 @@ def run_gwr(
         print("Tuning GWR: searching for optimal bandwidth...")
 
     if use_saved_params:
-        if os.path.exists(f"{outpath}/gwr_bw.json"):
+        if os.path.exists(f"{outpath}/{model_name}_bw.json"):
             gwr_bw = json.load(open(f"{outpath}/{model_name}_bw.json", "r"))
             if verbose:
                 print(f"--> using saved bandwidth: {gwr_bw:0.2f}")
@@ -3116,7 +3116,7 @@ def run_xgboost(
 
     parameters = _get_params(
         "XGBoost",
-        "xgboost",
+        ds.name,
         ds,
         _tune_xgboost,
         outpath,
@@ -3263,7 +3263,7 @@ def run_lightgbm(
     timing.start("parameter_search")
     params = _get_params(
         "LightGBM",
-        "lightgbm",
+        ds.name,
         ds,
         _tune_lightgbm,
         outpath,
@@ -3442,7 +3442,7 @@ def run_catboost(
     timing.start("parameter_search")
     params = _get_params(
         "CatBoost",
-        "catboost",
+        ds.name,
         ds,
         _tune_catboost,
         outpath,
