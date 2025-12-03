@@ -3405,6 +3405,7 @@ def run_catboost(
     use_saved_params: bool = False,
     n_trials: int = 50,
     verbose: bool = False,
+    use_gpu: bool = True
 ) -> SingleModelResults:
     """
     Run a CatBoost model by tuning parameters, training, and predicting.
@@ -3423,7 +3424,9 @@ def run_catboost(
         How many trials do run during parameter search. Defaults to 50.
     verbose : bool, optional
         If True, print verbose output. Defaults to False.
-
+    use_gpu: bool, optional
+        Whether to train using the GPU or not. Defaults to True.
+    
     Returns
     -------
     SingleModelResults
@@ -3449,7 +3452,8 @@ def run_catboost(
         save_params,
         use_saved_params,
         verbose,
-        n_trials=n_trials
+        n_trials=n_trials,
+        use_gpu=use_gpu
     )
     timing.stop("parameter_search")
 

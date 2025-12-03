@@ -183,12 +183,18 @@ def _tune_catboost(
     n_trials=50,
     n_splits=5,
     random_state=42,
+    use_gpu=True
 ):
 
     # Pre-build a single Pool for CV
     cat_feats = [c for c in (cat_vars or []) if c in X.columns]
     full_pool = Pool(X, y, cat_features=cat_feats)
-
+    
+    task_type = "GPU" if use_gpu else "CPU"
+    
+    if verbose:
+        print(f"Tuning Catboost. n_trials={n_trials}, n_splits={n_splits}, use_gpu={use_gpu}")
+    
     def objective(trial):
         params = {
             "loss_function": "MAPE",
@@ -202,7 +208,7 @@ def _tune_catboost(
             "bootstrap_type": "Bayesian",
             "bagging_temperature": trial.suggest_float("bagging_temperature", 0, 10),
             "boosting_type": "Plain",
-            "task_type": "GPU",
+            "task_type": task_type,
             "random_seed": random_state,
             "verbose": False,
             "grow_policy": trial.suggest_categorical(

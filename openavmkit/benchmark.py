@@ -1282,6 +1282,7 @@ def run_one_model(
 
     intercept = entry.get("intercept", True)
     n_trials = entry.get("n_trials", 50)
+    use_gpu = entry.get("use_gpu", True)
     t.stop("setup")
 
     t.start("run")
@@ -1336,7 +1337,7 @@ def run_one_model(
         )
     elif model_engine == "catboost":
         results = run_catboost(
-            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, use_gpu=use_gpu
         )
     elif model_engine == "slice":
         results = run_slice(ds, verbose=verbose)
