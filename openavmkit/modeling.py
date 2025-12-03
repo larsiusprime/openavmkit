@@ -5648,6 +5648,81 @@ def write_gwr_params(model: GWRModel, outpath: str, dfs: dict, do_plot: bool = F
         df_final.to_csv(contrib_path, index=False)
 
 
+def write_local_area_params(
+    model: LocalAreaModel,
+    smr: SingleModelResults,
+    outpath: str,
+    do_plot: bool = False,
+):
+    """
+    Write parameter table for a LocalAreaModel.
+
+    Outputs
+    -------
+    - params_local_area.csv:
+        location_field, location_value, per_impr_<unit>, per_land_<unit>
+
+      One row per (location_field, location_value), plus a final "__overall__"
+      row containing the global median improved/land rates.
+    """
+    import os
+    os.makedirs(outpath, exist_ok=True)
+
+    ds = smr.ds
+    unit = ds.unit
+    location_fields = model.location_fields
+    loc_map = model.loc_map
+    overall_per_impr_area = model.overall_per_impr_area
+    overall_per_land_area = model.overall_per_land_area
+
+    per_impr_name = f"per_impr_{unit}"
+    per_land_name = f"per_land_{unit}"
+
+    rows = []
+
+    # Per-location entries from loc_map
+    for location_field in location_fields:
+        field_entry = loc_map.get(location_field)
+        if not field_entry:
+            continue
+
+        df_area_impr, df_area_land = field_entry
+
+        # Expected:
+        #   df_area_impr: [location_field, f"{location_field}_per_impr_{unit}"]
+        #   df_area_land: [location_field, f"{location_field}_per_land_{unit}"]
+        col_impr = f"{location_field}_per_impr_{unit}"
+        col_land = f"{location_field}_per_land_{unit}"
+
+        df_field = df_area_impr.merge(
+            df_area_land, on=location_field, how="outer"
+        )
+
+        for _, row in df_field.iterrows():
+            rows.append(
+                {
+                    "location_field": location_field,
+                    "location_value": row[location_field],
+                    per_impr_name: float(row.get(col_impr, 0.0)),
+                    per_land_name: float(row.get(col_land, 0.0)),
+                }
+            )
+
+    # Optional: add an explicit overall row
+    rows.append(
+        {
+            "location_field": "__overall__",
+            "location_value": "__overall__",
+            per_impr_name: float(overall_per_impr_area),
+            per_land_name: float(overall_per_land_area),
+        }
+    )
+
+    df_params = pd.DataFrame(rows)
+    params_path = f"{outpath}/params_local_area.csv"
+    df_params.to_csv(params_path, index=False)
+
+
 def write_shaps(
     model: TreeBasedModel,
     outpath: str,
@@ -5866,6 +5941,8 @@ def write_model_parameters(
         write_gwr_params(model, outpath, dfs, do_plot)
     elif isinstance(model, TreeBasedModel):
         write_shaps(model, outpath, smr, location, do_plot, verbose=verbose)
+    elif isinstance(model, LocalAreaModel):
+        write_local_area_params(model, smr, outpath, do_plot)
     # ...and so on
     else:
         raise TypeError(f"Unexpected model type: {type(model).__name__}")
