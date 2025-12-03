@@ -1773,27 +1773,28 @@ def run_multi_mra(
     SingleModelResults
         Prediction results from the Multi-MRA model.
     """
-    multi_model, timing = _run_multi_mra(
+    ds_prepped, multi_model, timing = _run_multi_mra(
         ds,
         location_fields=location_fields,
         min_sample_size=min_sample_size,
         intercept=intercept,
         verbose=verbose,
     )
-    return predict_multi_mra(ds, multi_model, timing, verbose=verbose)
+    # IMPORTANT: use ds_prepped, not the original ds
+    return predict_multi_mra(ds_prepped, multi_model, timing, verbose=verbose)
 
 
 def _run_multi_mra(
     ds: DataSplit,
     location_fields: list[str],
-    min_sample_size: int = 15,
+    min_sample_size: int = 30,
     intercept: bool = True,
     verbose: bool = False,
-) -> tuple[MultiMRAModel, TimingData]:
+) -> tuple[DataSplit, MultiMRAModel, TimingData]:
     """
     Internal training routine for Multi-MRA.
 
-    Returns a fitted MultiMRAModel and the TimingData object.
+    Returns the prepared DataSplit, a fitted MultiMRAModel, and the TimingData.
     """
     timing = TimingData()
     timing.start("total")
@@ -1805,24 +1806,25 @@ def _run_multi_mra(
 
     # One-hot encode categoricals, but DO NOT encode the location fields
     # so that they remain available as raw columns for hierarchical sampling.
-    ds = ds.encode_categoricals_with_one_hot(exceptions=location_fields)
+    # NOTE that this returns a new, separate DS object
+    ds_prepped = ds.encode_categoricals_with_one_hot(exceptions=location_fields)
 
     # Re-split after encoding to refresh X_* and y_*
-    ds.split()
+    ds_prepped.split()
 
     # Add intercept column (constant) consistently across all X matrices
     if intercept:
-        ds.X_train = sm.add_constant(ds.X_train, has_constant="add")
-        ds.X_test = sm.add_constant(ds.X_test, has_constant="add")
-        ds.X_sales = sm.add_constant(ds.X_sales, has_constant="add")
-        ds.X_univ = sm.add_constant(ds.X_univ, has_constant="add")
+        ds_prepped.X_train = sm.add_constant(ds_prepped.X_train, has_constant="add")
+        ds_prepped.X_test = sm.add_constant(ds_prepped.X_test, has_constant="add")
+        ds_prepped.X_sales = sm.add_constant(ds_prepped.X_sales, has_constant="add")
+        ds_prepped.X_univ = sm.add_constant(ds_prepped.X_univ, has_constant="add")
 
     # Ensure numeric dtypes
-    ds.X_train = ds.X_train.astype(float)
-    ds.y_train = ds.y_train.astype(float)
+    ds_prepped.X_train = ds_prepped.X_train.astype(float)
+    ds_prepped.y_train = ds_prepped.y_train.astype(float)
 
     # Record the consistent feature order used for ALL regressions
-    feature_names = list(ds.X_train.columns)
+    feature_names = list(ds_prepped.X_train.columns)
 
     timing.stop("setup")
 
@@ -1831,8 +1833,8 @@ def _run_multi_mra(
     # ------------------------------------------------------------------
     timing.start("train")
 
-    X_train = ds.X_train
-    y_train = ds.y_train
+    X_train = ds_prepped.X_train
+    y_train = ds_prepped.y_train
 
     # ------------------------
     # Global OLS (fallback)
@@ -1848,10 +1850,9 @@ def _run_multi_mra(
     # Local OLS per location
     # ------------------------
     coef_map: Dict[str, Dict[Any, np.ndarray]] = {}
+    df_train = ds_prepped.df_train
 
-    df_train = ds.df_train
-
-    # Basic alignment safety checks
+    # Alignment safety checks
     if len(df_train) != len(X_train):
         raise ValueError(
             f"[Multi-MRA] Length mismatch between df_train ({len(df_train)}) "
@@ -1871,16 +1872,19 @@ def _run_multi_mra(
     for location_field in location_fields:
         if location_field not in df_train.columns:
             if verbose:
-                print(f"[Multi-MRA] Warning: location field '{location_field}' not found in df_train; skipping.")
+                print(
+                    f"[Multi-MRA] Warning: location field '{location_field}' not found in df_train; skipping."
+                )
             continue
 
         field_map: Dict[Any, np.ndarray] = {}
         unique_locs = df_train[location_field].unique()
 
         if verbose:
-            print(f"[Multi-MRA] Training local OLS for field '{location_field}' "
-                  f"with {len(unique_locs)} distinct values "
-                  f"(min_sample_size={effective_min_sample_size}).")
+            print(
+                f"[Multi-MRA] Training local OLS for field '{location_field}' "
+                f"with {len(unique_locs)} distinct values (min_sample_size={effective_min_sample_size})."
+            )
 
         for loc in unique_locs:
             # Build mask for this specific location value
@@ -1912,8 +1916,10 @@ def _run_multi_mra(
         coef_map[location_field] = field_map
 
         if verbose:
-            print(f"[Multi-MRA] Field '{location_field}': "
-                  f"trained local models for {len(field_map)} of {len(unique_locs)} locations.")
+            print(
+                f"[Multi-MRA] Field '{location_field}': "
+                f"trained local models for {len(field_map)} of {len(unique_locs)} locations."
+            )
 
     timing.stop("train")
     timing.stop("total")
@@ -1927,7 +1933,8 @@ def _run_multi_mra(
         min_sample_size=effective_min_sample_size,
     )
 
-    return multi_model, timing
+    return ds_prepped, multi_model, timing
+
 
 
 # ----------------------------------------------------------------------
