@@ -27,19 +27,23 @@ from openavmkit.data import (
 )
 from openavmkit.modeling import (
     run_mra,
+    run_multi_mra,
     run_gwr,
     run_xgboost,
     run_lightgbm,
     run_catboost,
     run_slice,
-    SingleModelResults,
     run_garbage,
     run_average,
     run_naive_area,
-    predict_garbage,
     run_kernel,
     run_local_area,
     run_pass_through,
+    run_ground_truth,
+    run_spatial_lag,
+    SingleModelResults,
+    predict_multi_mra,
+    predict_garbage,
     predict_average,
     predict_naive_area,
     predict_local_area,
@@ -50,13 +54,11 @@ from openavmkit.modeling import (
     predict_catboost,
     predict_lightgbm,
     predict_slice,
+    predict_ground_truth,
+    predict_spatial_lag,
     GarbageModel,
     AverageModel,
     DataSplit,
-    run_ground_truth,
-    predict_ground_truth,
-    run_spatial_lag,
-    predict_spatial_lag,
     write_model_parameters
 )
 from openavmkit.reports import MarkdownReport, _markdown_to_pdf
@@ -75,6 +77,7 @@ from openavmkit.utilities.modeling import (
     LandSLICEModel,
     GWRModel,
     MRAModel,
+    MultiMRAModel,
     GroundTruthModel,
     SpatialLagModel
 )
@@ -1068,6 +1071,8 @@ def get_data_split_for(
     
     if model_engine == "local_area":
         _ind_vars = location_fields + [f"bldg_area_finished_{unit}", f"land_area_{unit}"]
+    elif model_engine == "multi_mra":
+        _ind_vars = [v for v in ind_vars if v not in location_fields]
     elif model_engine == "slice":
         _ind_vars = [f"land_area_{unit}", "latitude", "longitude"]
     elif model_engine == "assessor":
@@ -1313,6 +1318,8 @@ def run_one_model(
         results = run_spatial_lag(ds, per_area=True, verbose=verbose)
     elif model_engine == "mra":
         results = run_mra(ds, intercept=intercept, verbose=verbose)
+    elif model_engine == "multi_mra":
+        results = run_multi_mra(ds, location_fields, intercept=intercept, verbose=verbose)
     elif model_engine == "kernel":
         results = run_kernel(
             ds, outpath, save_params, use_saved_params, verbose=verbose
@@ -1750,8 +1757,11 @@ def _predict_one_model(
     elif model_engine == "mra":
         # MRA is a special case where we have to call run_ instead of predict_, because there's delicate state mangling.
         # We pass the pretrained `model` object to run_mra() to get it to skip training and move straight to prediction
-        model: MRAModel = smr.model
-        results = run_mra(ds, model.intercept, verbose, model)
+        mra_model: MRAModel = smr.model
+        results = run_mra(ds, model.intercept, verbose, mra_model)
+    elif model_engine == "multi_mra":
+        multi_mra_model: MultiMRAModel = smr.model
+        results = run_multi_mra(ds, multi_mra_model, timing, verbose)
     elif model_engine == "kernel":
         kernel_reg: KernelReg = smr.model
         results = predict_kernel(ds, kernel_reg, timing, verbose)

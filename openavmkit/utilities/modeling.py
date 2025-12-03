@@ -2,6 +2,7 @@ import numpy as np
 from statsmodels.regression.linear_model import RegressionResults
 from pygam import LinearGAM, s, te
 import pandas as pd
+from typing import Any
 
 class GarbageModel:
     """An intentionally bad predictive model, to use as a sort of control. Produces random predictions.
@@ -428,3 +429,69 @@ class MRAModel:
     def __init__(self, fitted_model: RegressionResults, intercept: bool):
         self.fitted_model = fitted_model
         self.intercept = intercept
+
+
+class MultiMRAModel:
+    """
+    Multi-MRA (hierarchical local OLS) model.
+
+    For each location field (e.g. "block", "neighborhood", ...), and for each
+    distinct value of that field, we fit a separate OLS regression using the
+    same set of independent variables.
+
+    We store:
+      - A global OLS coefficient vector (fallback when no local model applies)
+      - A mapping from (location_field, location_value) -> coefficient vector
+      - The feature_names (column order) used for all regressions
+      - Whether an intercept was used
+      - The location_fields (ordered most specific -> least specific)
+      - The minimum sample size used for local fits
+    
+    Attributes
+    ----------
+    coef_map : dict[str, dict[Any, np.ndarray]]
+        Mapping from location field name to a dict mapping location value -> coefficient vector (aligned with feature_names).
+    global_coef : np.ndarray
+        Coefficient vector for the global OLS regression.
+    feature_names : list[str]
+        Ordered list of feature names used for all regressions.
+    intercept : bool
+        Whether an intercept column was used.
+    location_fields : list[str]
+        Location fields in order from most specific to least specific.
+    min_sample_size : int
+        Minimum number of observations required to fit a local regression.
+    """
+
+    def __init__(
+        self,
+        coef_map: dict[str, dict[Any, np.ndarray]],
+        global_coef: np.ndarray,
+        feature_names: list[str],
+        intercept: bool,
+        location_fields: list[str],
+        min_sample_size: int,
+    ):
+        """
+        Parameters
+        ----------
+        coef_map : dict[str, dict[Any, np.ndarray]]
+            Mapping from location field name to a dict mapping
+            location value -> coefficient vector (aligned with feature_names).
+        global_coef : np.ndarray
+            Coefficient vector for the global OLS regression.
+        feature_names : list[str]
+            Ordered list of feature names used for all regressions.
+        intercept : bool
+            Whether an intercept column was used.
+        location_fields : list[str]
+            Location fields in order from most specific to least specific.
+        min_sample_size : int
+            Minimum number of observations required to fit a local regression.
+        """
+        self.coef_map = coef_map
+        self.global_coef = global_coef
+        self.feature_names = feature_names
+        self.intercept = intercept
+        self.location_fields = location_fields
+        self.min_sample_size = min_sample_size
