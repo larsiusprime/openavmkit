@@ -5403,6 +5403,189 @@ def write_mra_params(
         df_final.to_csv(contrib_path, index=False)
 
 
+def write_multi_mra_params(
+    model: MultiMRAModel,
+    outpath: str,
+    xs: dict[str, pd.DataFrame],
+    dfs: dict[str, pd.DataFrame],
+    do_plot: bool = False,
+):
+    """
+    Write parameters and per-parcel contributions for a Multi-MRA model.
+
+    Outputs:
+      - Global coefficients: params_global.csv
+      - Local coefficients per location field:
+          params_<location_field>.csv
+      - Per-parcel contributions for each subset (test, sales, universe):
+          contributions_<subset>.csv
+
+    Parameters
+    ----------
+    model : MultiMRAModel
+        Fitted hierarchical Multi-MRA model.
+    outpath : str
+        Base output directory.
+    xs : dict[str, pd.DataFrame]
+        Mapping of subset name -> X matrix (e.g. {"test": ds.X_test, ...}).
+        Should use the same feature columns/order as model.feature_names.
+    dfs : dict[str, pd.DataFrame]
+        Mapping of subset name -> base dataframe (e.g. {"test": df_test, ...})
+        containing "key" and "prediction" (and "key_sale" if applicable).
+    do_plot : bool, optional
+        Currently unused, reserved for future extensions. Defaults to False.
+    """
+
+    import os
+    os.makedirs(outpath, exist_ok=True)
+
+    feature_names = model.feature_names
+    location_fields = model.location_fields
+    coef_map = model.coef_map
+    global_coef = model.global_coef
+
+    # --------------------------------------------------------------
+    # 1) GLOBAL COEFFICIENTS (similar to write_mra_params)
+    # --------------------------------------------------------------
+    params_global = pd.Series(global_coef, index=feature_names)
+    params_global = params_global.rename(index={"const": "intercept"})
+    df_global = params_global.to_frame(name="coefficient")
+    df_global.index.name = "variable"
+
+    csv_path_global = f"{outpath}/params_global.csv"
+    df_global.to_csv(csv_path_global)
+
+    # --------------------------------------------------------------
+    # 2) LOCAL COEFFICIENTS BY LOCATION FIELD
+    #    Wide format: one row per location value, one column per feature.
+    # --------------------------------------------------------------
+    for location_field in location_fields:
+        field_map = coef_map.get(location_field, {})
+        if not field_map:
+            continue  # no local models for this field
+
+        rows = []
+        loc_values = []
+        for loc_val, beta in field_map.items():
+            loc_values.append(loc_val)
+            rows.append(pd.Series(beta, index=feature_names))
+
+        if not rows:
+            continue
+
+        df_field = pd.DataFrame(rows, index=loc_values)
+        df_field.index.name = location_field
+        df_field = df_field.rename(columns={"const": "intercept"})
+
+        csv_path_field = f"{outpath}/params_{location_field}.csv"
+        df_field.to_csv(csv_path_field)
+
+    # --------------------------------------------------------------
+    # 3) PER-PARCEL CONTRIBUTIONS (similar spirit to MRA/GWR)
+    # --------------------------------------------------------------
+
+    def _compute_contributions_for_split(
+        X: pd.DataFrame,
+        df: pd.DataFrame,
+        split_name: str,
+    ) -> pd.DataFrame:
+        """
+        For a given split (test/sales/universe), compute per-parcel contributions.
+
+        Steps:
+          - Build an (n_rows x n_features) coefficient matrix B:
+              * initialize all rows to global_coef
+              * overlay local coefficients hierarchically by location_fields
+          - Compute contrib = X * B (elementwise)
+          - Sum contributions to 'contribution_sum'
+          - Add keys and predictions and check deltas via _add_prediction_to_contribution.
+        """
+
+        # Basic alignment checks
+        if len(X) != len(df):
+            raise ValueError(
+                f"[Multi-MRA] Length mismatch for split '{split_name}': "
+                f"len(X)={len(X)} vs len(df)={len(df)}."
+            )
+        if not X.index.equals(df.index):
+            raise ValueError(
+                f"[Multi-MRA] Index mismatch for split '{split_name}'; "
+                "X and df must have identical indices."
+            )
+
+        # Ensure we have all expected features
+        missing_feats = [f for f in feature_names if f not in X.columns and f != "const"]
+        if missing_feats:
+            raise ValueError(
+                f"[Multi-MRA] Split '{split_name}' missing required features: {missing_feats}"
+            )
+
+        n = len(X)
+        p = len(feature_names)
+
+        # Build coefficient matrix B: start with global coefficients everywhere
+        B = np.tile(global_coef.reshape(1, -1), (n, 1))
+        # Track which rows have been assigned a local model
+        assigned = np.zeros(n, dtype=bool)
+
+        # Hierarchical override: most specific -> least specific
+        for location_field in location_fields:
+            field_map = coef_map.get(location_field, {})
+            if not field_map:
+                continue
+            if location_field not in df.columns:
+                continue
+
+            loc_values = df[location_field].to_numpy()
+
+            for loc_val, beta in field_map.items():
+                # rows not yet assigned and with this location value
+                mask = (~assigned) & (loc_values == loc_val)
+                if not mask.any():
+                    continue
+
+                B[mask, :] = beta
+                assigned[mask] = True
+
+        # Now compute per-feature contributions: elementwise multiply X and B
+        X_mat = X[feature_names].to_numpy(dtype=float)
+        contrib_mat = X_mat * B  # shape (n, p)
+
+        df_contrib = pd.DataFrame(contrib_mat, columns=feature_names, index=X.index)
+        df_contrib = df_contrib.rename(columns={"const": "intercept"})
+
+        # Attach keys
+        df_contrib["key"] = df["key"].values
+        if "key_sale" in df.columns:
+            df_contrib["key_sale"] = df["key_sale"].values
+
+        # Reorder columns: keys first, then contributions
+        key_cols = [c for c in ["key", "key_sale"] if c in df_contrib.columns]
+        contrib_cols = [c for c in df_contrib.columns if c not in key_cols]
+
+        df_contrib = df_contrib[key_cols + contrib_cols]
+
+        # Compute contribution_sum as sum of all contribution columns (including intercept)
+        df_contrib["contribution_sum"] = df_contrib[contrib_cols].sum(axis=1)
+
+        # Add predictions and diagnostic delta
+        df_final = _add_prediction_to_contribution(df, df_contrib)
+
+        return df_final
+
+    # Only mirror what write_mra_params does: test/sales/universe
+    for subset in ["test", "sales", "universe"]:
+        if subset not in xs or subset not in dfs:
+            continue
+
+        X_subset = xs[subset]
+        df_subset = dfs[subset]
+
+        df_final = _compute_contributions_for_split(X_subset, df_subset, subset)
+        contrib_path = f"{outpath}/contributions_{subset}.csv"
+        df_final.to_csv(contrib_path, index=False)
+
+
 def write_gwr_params(model: GWRModel, outpath: str, dfs: dict, do_plot: bool = False):
     for subset in ["test", "sales", "universe"]:
         
@@ -5677,6 +5860,8 @@ def write_model_parameters(
         pass
     elif isinstance(model, MRAModel):
         write_mra_params(model, outpath, xs, dfs, do_plot)
+    elif isinstance(model, MultiMRAModel):
+        write_multi_mra_params(model, outpath, xs, dfs, do_plot)
     elif isinstance(model, GWRModel):
         write_gwr_params(model, outpath, dfs, do_plot)
     elif isinstance(model, TreeBasedModel):
