@@ -1762,7 +1762,7 @@ def _predict_one_model(
         results = run_mra(ds, model.intercept, verbose, mra_model)
     elif model_engine == "multi_mra":
         multi_mra_model: MultiMRAModel = smr.model
-        results = run_multi_mra(ds, multi_mra_model, timing, verbose)
+        results = predict_multi_mra(ds, multi_mra_model, timing, verbose)
     elif model_engine == "kernel":
         kernel_reg: KernelReg = smr.model
         results = predict_kernel(ds, kernel_reg, timing, verbose)
