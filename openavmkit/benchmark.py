@@ -1349,7 +1349,7 @@ def run_one_model(
         # If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
         max_trim = _get_max_ratio_study_trim(settings, results.ds.model_group)
         if do_clamp:
-            results = _clamp_land_predictions(results, results.ds.model_group, model_name, outpath, max_trim)
+            results = _clamp_land_predictions(results, results.ds.model_group, model_name, model_engine, outpath, max_trim)
 
     if save_results:
         t.start("write")
@@ -1785,7 +1785,7 @@ def _predict_one_model(
     if ds.vacant_only or ds.hedonic:
         # If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
         max_trim = _get_max_ratio_study_trim(settings, smr.ds.model_group)
-        results = _clamp_land_predictions(results, smr.ds.model_group, model_name, outpath, max_trim)
+        results = _clamp_land_predictions(results, smr.ds.model_group, model_name, model_engine, outpath, max_trim)
 
     if save_results:
         
@@ -1802,7 +1802,12 @@ def _predict_one_model(
 
 
 def _clamp_land_predictions(
-    results: SingleModelResults, model_group: str, model_name: str, outpath: str, max_trim: float
+    results: SingleModelResults, 
+    model_group: str, 
+    model_name: str, 
+    model_engine: str,
+    outpath: str, 
+    max_trim: float
 ):
     """
     Clamp land value predictions based on the full market value predictions.
