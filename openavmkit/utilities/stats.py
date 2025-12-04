@@ -119,7 +119,7 @@ def calc_cod(values: np.ndarray) -> float:
     """
     if len(values) == 0:
         return float("nan")
-
+    
     median_value = np.median(values)
     abs_delta_values = np.abs(values - median_value)
     avg_abs_deviation = np.sum(abs_delta_values) / len(values)

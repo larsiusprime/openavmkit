@@ -13,6 +13,7 @@ from pygam.callbacks import CallBack
 
 from scipy.spatial._ckdtree import cKDTree
 from sklearn.preprocessing import OneHotEncoder
+from pandas.api.types import is_categorical_dtype
 
 import warnings
 import numpy as np
@@ -1345,14 +1346,19 @@ class SingleModelResults:
 
         timing.start("chd")
         df_univ_valid = df_univ.copy()
-        df_univ_valid = pd.DataFrame(df_univ_valid)  # Ensure it's a Pandas DataFrame
-        # drop problematic columns:
+        df_univ_valid = pd.DataFrame(df_univ_valid)
         df_univ_valid.drop(columns=["geometry"], errors="ignore", inplace=True)
 
-        # convert all category and string[python] types to string:
         for col in df_univ_valid.columns:
-            if df_univ_valid[col].dtype in ["category", "string", "object"]:
-                df_univ_valid[col] = df_univ_valid[col].astype("str")
+            dtype = df_univ_valid[col].dtype
+
+            # Explicit categoricals and pandas string dtype --> string
+            if is_categorical_dtype(dtype) or str(dtype) == "string":
+                df_univ_valid[col] = df_univ_valid[col].astype("string")
+
+            # Heuristic for object columns
+            elif dtype == "object":
+                df_univ_valid[col] = _coerce_object_to_numeric_or_string(df_univ_valid[col])
         pl_df = pl.DataFrame(df_univ_valid)
 
         # TODO: This might need to be changed to be the $/area value rather than the total value
@@ -1433,6 +1439,36 @@ class SingleModelResults:
         str += f"---->CHD    : {self.chd:8.4f}\n"
         str += f"\n"
         return str
+
+
+def _coerce_object_to_numeric_or_string(s: pd.Series,
+                                        numeric_ratio_threshold: float = 0.95
+                                        ) -> pd.Series:
+    """
+    If an object series is 'mostly' numeric (by ratio of values that can be parsed),
+    return it as float; otherwise return it as string.
+    """
+    # Work only on non-null entries for the heuristic
+    s_non_null = s.dropna()
+
+    # If everything is null, just treat it as string to be safe
+    if s_non_null.empty:
+        return s.astype("string")
+
+    # Try to parse as numeric
+    numeric_non_null = pd.to_numeric(s_non_null, errors="coerce")
+
+    # Fraction of non-null entries that successfully parse as numeric
+    good = numeric_non_null.notna().sum()
+    ratio = good / len(s_non_null)
+
+    if ratio >= numeric_ratio_threshold:
+        # Column is "basically numeric": convert full column to numeric
+        # (this will keep NaNs/None as NaN)
+        return pd.to_numeric(s, errors="coerce").astype(float)
+    else:
+        # Treat as categorical/string
+        return s.astype("string")
 
 
 def land_utility_score(land_results: LandPredictionResults) -> float:
@@ -1674,10 +1710,11 @@ def predict_mra(
         "he_id",
         model_name,
         model_engine,
+        model,
         y_pred_test,
         y_pred_sales,
         y_pred_univ,
-        timing,
+        timing=timing,
         verbose=verbose,
     )
 
