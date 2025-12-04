@@ -3210,7 +3210,7 @@ def _run_hedonic_models(
             dep_var_test=dep_var_test,
             outpath=outpath,
             ensemble_list=best_ensemble,
-            all_results=all_results,
+            all_results=all_hedonic_results,
             settings=settings,
             verbose=verbose,
         )
