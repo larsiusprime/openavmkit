@@ -72,6 +72,7 @@ from openavmkit.utilities.modeling import (
     PassThroughModel,
     GWRModel,
     MRAModel,
+    MultiMRAModel,
     GroundTruthModel,
     SpatialLagModel,
     LandSLICEModel
@@ -1740,6 +1741,392 @@ def run_mra(
     return predict_mra(ds, model, timing, verbose)
 
 
+def run_multi_mra(
+    ds: DataSplit,
+    location_fields: list[str],
+    intercept: bool = True,
+    verbose: bool = False,
+    min_sample_size: int = 15
+) -> SingleModelResults:
+    """
+    Train a hierarchical Multi-MRA model and return its prediction results.
+
+    Parameters
+    ----------
+    ds : DataSplit
+        DataSplit object (sales/universe/splits should already be set up).
+    location_fields : list[str]
+        Ordered list of location field names, most specific -> least specific.
+        These fields must exist in ds.df_train / ds.df_test / ds.df_universe.
+    intercept : bool, optional
+        Whether to include an intercept column in the regression.
+        Defaults to True.
+    verbose : bool, optional
+        If True, print verbose output. Defaults to False.
+    min_sample_size : int, optional
+        Minimum number of observations required to fit a local OLS model
+        for a specific (location_field, location_value) combination.
+        Defaults to 15.
+    
+    Returns
+    -------
+    SingleModelResults
+        Prediction results from the Multi-MRA model.
+    """
+    ds_prepped, multi_model, timing = _run_multi_mra(
+        ds,
+        location_fields=location_fields,
+        min_sample_size=min_sample_size,
+        intercept=intercept,
+        verbose=verbose,
+    )
+    # IMPORTANT: use ds_prepped, not the original ds
+    return predict_multi_mra(ds_prepped, multi_model, timing, verbose=verbose)
+
+
+def _run_multi_mra(
+    ds: DataSplit,
+    location_fields: list[str],
+    min_sample_size: int = 30,
+    intercept: bool = True,
+    verbose: bool = False,
+) -> tuple[DataSplit, MultiMRAModel, TimingData]:
+    """
+    Internal training routine for Multi-MRA.
+
+    Returns the prepared DataSplit, a fitted MultiMRAModel, and the TimingData.
+    """
+    timing = TimingData()
+    timing.start("total")
+
+    # ------------------------------------------------------------------
+    # Setup: encoding, splitting, intercept
+    # ------------------------------------------------------------------
+    timing.start("setup")
+
+    # One-hot encode categoricals, but DO NOT encode the location fields
+    # so that they remain available as raw columns for hierarchical sampling.
+    # NOTE that this returns a new, separate DS object
+    ds_prepped = ds.encode_categoricals_with_one_hot(exceptions=location_fields)
+
+    # Re-split after encoding to refresh X_* and y_*
+    ds_prepped.split()
+
+    # Add intercept column (constant) consistently across all X matrices
+    if intercept:
+        ds_prepped.X_train = sm.add_constant(ds_prepped.X_train, has_constant="add")
+        ds_prepped.X_test = sm.add_constant(ds_prepped.X_test, has_constant="add")
+        ds_prepped.X_sales = sm.add_constant(ds_prepped.X_sales, has_constant="add")
+        ds_prepped.X_univ = sm.add_constant(ds_prepped.X_univ, has_constant="add")
+
+    # Ensure numeric dtypes
+    ds_prepped.X_train = ds_prepped.X_train.astype(float)
+    ds_prepped.y_train = ds_prepped.y_train.astype(float)
+
+    # Record the consistent feature order used for ALL regressions
+    feature_names = list(ds_prepped.X_train.columns)
+
+    timing.stop("setup")
+
+    # ------------------------------------------------------------------
+    # Train: global regression + local regressions by location
+    # ------------------------------------------------------------------
+    timing.start("train")
+
+    X_train = ds_prepped.X_train
+    y_train = ds_prepped.y_train
+
+    # ------------------------
+    # Global OLS (fallback)
+    # ------------------------
+    global_model = sm.OLS(y_train, X_train).fit()
+    global_coef = global_model.params.reindex(feature_names).to_numpy()
+
+    if verbose:
+        print(f"[Multi-MRA] Global OLS trained with {len(X_train)} observations.")
+        print(f"[Multi-MRA] Number of features (including intercept if any): {len(feature_names)}")
+
+    # ------------------------
+    # Local OLS per location
+    # ------------------------
+    coef_map: Dict[str, Dict[Any, np.ndarray]] = {}
+    df_train = ds_prepped.df_train
+
+    # Alignment safety checks
+    if len(df_train) != len(X_train):
+        raise ValueError(
+            f"[Multi-MRA] Length mismatch between df_train ({len(df_train)}) "
+            f"and X_train ({len(X_train)})."
+        )
+    if not df_train.index.equals(X_train.index):
+        raise ValueError(
+            "[Multi-MRA] Index mismatch between df_train and X_train; "
+            "cannot safely align local samples."
+        )
+
+    n_features = len(feature_names)
+    # Ensure minimum sample size is at least number of features + 1
+    # (to reduce rank-deficiency issues).
+    effective_min_sample_size = max(min_sample_size, n_features + 1)
+
+    for location_field in location_fields:
+        if location_field not in df_train.columns:
+            if verbose:
+                print(
+                    f"[Multi-MRA] Warning: location field '{location_field}' not found in df_train; skipping."
+                )
+            continue
+
+        field_map: Dict[Any, np.ndarray] = {}
+        unique_locs = df_train[location_field].unique()
+
+        if verbose:
+            print(
+                f"[Multi-MRA] Training local OLS for field '{location_field}' "
+                f"with {len(unique_locs)} distinct values (min_sample_size={effective_min_sample_size})."
+            )
+
+        for loc in unique_locs:
+            # Build mask for this specific location value
+            mask_loc = df_train[location_field].eq(loc)
+
+            # Safety: mask and X_train index alignment is guaranteed above
+            X_loc = X_train.loc[mask_loc, :]
+            y_loc = y_train.loc[mask_loc]
+
+            n_loc = len(X_loc)
+            if n_loc < effective_min_sample_size:
+                # Not enough observations for a stable local regression
+                continue
+
+            # Fit local OLS; catch linear algebra issues
+            try:
+                local_model = sm.OLS(y_loc, X_loc).fit()
+            except np.linalg.LinAlgError:
+                # Singular / ill-conditioned; skip this loc
+                continue
+
+            # Align coefficients to the master feature ordering
+            params = local_model.params.reindex(feature_names)
+            beta = params.to_numpy()
+
+            # Store in field_map
+            field_map[loc] = beta
+
+        coef_map[location_field] = field_map
+
+        if verbose:
+            print(
+                f"[Multi-MRA] Field '{location_field}': "
+                f"trained local models for {len(field_map)} of {len(unique_locs)} locations."
+            )
+
+    timing.stop("train")
+    timing.stop("total")
+
+    multi_model = MultiMRAModel(
+        coef_map=coef_map,
+        global_coef=global_coef,
+        feature_names=feature_names,
+        intercept=intercept,
+        location_fields=location_fields,
+        min_sample_size=effective_min_sample_size,
+    )
+
+    return ds_prepped, multi_model, timing
+
+
+
+# ----------------------------------------------------------------------
+# Prediction: predict_multi_mra
+# ----------------------------------------------------------------------
+
+def predict_multi_mra(
+    ds: DataSplit,
+    multi_model: MultiMRAModel,
+    timing: TimingData,
+    verbose: bool = False,
+) -> SingleModelResults:
+    """
+    Generate predictions using a hierarchical Multi-MRA model.
+
+    For each location field (most specific -> least specific), and for each
+    location value, we apply the corresponding local OLS coefficients to all
+    parcels in that location that have not yet been assigned a prediction.
+
+    Any remaining parcels with no applicable local model fall back to the
+    global OLS coefficients.
+
+    Parameters
+    ----------
+    ds : DataSplit
+        DataSplit containing train/test/sales/universe splits and features.
+    multi_model : MultiMRAModel
+        Fitted Multi-MRA model.
+    timing : TimingData
+        TimingData object tracking performance.
+    verbose : bool, optional
+        If True, print verbose output. Defaults to False.
+
+    Returns
+    -------
+    SingleModelResults
+        Container with predictions and performance metrics.
+    """
+
+    feature_names = multi_model.feature_names
+    location_fields = multi_model.location_fields
+
+    # Convenience reference to location -> coef maps
+    coef_map = multi_model.coef_map
+    global_coef = multi_model.global_coef
+
+    # ------------------------------------------------------------------
+    # Helper: apply hierarchical painting for one split
+    # ------------------------------------------------------------------
+    def _predict_split(X_split: pd.DataFrame, df_split: pd.DataFrame, split_name: str) -> np.ndarray:
+        """
+        Apply hierarchical Multi-MRA prediction to a particular split.
+
+        Parameters
+        ----------
+        X_split : pd.DataFrame
+            Feature matrix for this split.
+        df_split : pd.DataFrame
+            Underlying DataFrame for this split (must contain location_fields).
+        split_name : str
+            Name of the split (for debug messages).
+
+        Returns
+        -------
+        np.ndarray
+            Predictions for this split, in the same order as X_split/df_split.
+        """
+
+        # Safety checks: index and length alignment
+        if len(X_split) != len(df_split):
+            raise ValueError(
+                f"[Multi-MRA] Length mismatch for split '{split_name}': "
+                f"len(X_split)={len(X_split)} vs len(df_split)={len(df_split)}."
+            )
+        if not X_split.index.equals(df_split.index):
+            raise ValueError(
+                f"[Multi-MRA] Index mismatch for split '{split_name}'; "
+                "X_split and df_split must have identical indices."
+            )
+
+        # Ensure all expected features are present
+        missing_features = [f for f in feature_names if f not in X_split.columns and f != "const"]
+        if missing_features:
+            raise ValueError(
+                f"[Multi-MRA] Split '{split_name}' is missing features required for prediction: "
+                f"{missing_features}"
+            )
+
+        # Initialize prediction vector with NaN (meaning "not yet painted")
+        y_pred = np.full(len(X_split), np.nan, dtype="float64")
+
+        # Hierarchical painting: most specific -> least specific
+        for location_field in location_fields:
+            field_map = coef_map.get(location_field, {})
+            if not field_map:
+                # No local models for this field
+                continue
+
+            if location_field not in df_split.columns:
+                # Location field not present in this split; skip
+                continue
+
+            loc_values = df_split[location_field].to_numpy()
+
+            if verbose:
+                print(
+                    f"[Multi-MRA] Split '{split_name}': "
+                    f"painting using location field '{location_field}' "
+                    f"({len(field_map)} trained locations)."
+                )
+
+            # For each trained location value, apply its coefficients
+            for loc, beta in field_map.items():
+                # Mask of rows that:
+                #   - have not been predicted yet (y_pred is NaN), and
+                #   - belong to this location value
+                mask_unpainted = np.isnan(y_pred)
+                if not mask_unpainted.any():
+                    # Everything is already painted; we can stop early
+                    break
+
+                mask_loc = mask_unpainted & (loc_values == loc)
+                if not mask_loc.any():
+                    continue
+
+                # Select the subset of X corresponding to this location
+                X_loc = X_split.loc[mask_loc, feature_names]
+
+                # Compute predictions: X_loc @ beta
+                y_loc = X_loc.to_numpy().dot(beta)
+
+                # Assign to y_pred for these rows
+                y_pred[mask_loc] = y_loc
+
+        # Global fallback for any remaining NaNs
+        mask_global = np.isnan(y_pred)
+        if mask_global.any():
+            X_global = X_split.loc[mask_global, feature_names]
+            y_pred[mask_global] = X_global.to_numpy().dot(global_coef)
+
+        return y_pred
+
+    # ------------------------------------------------------------------
+    # Predict for each split
+    # ------------------------------------------------------------------
+
+    # TEST
+    timing.start("predict_test")
+    X_test = ds.X_test.copy()
+    df_test = ds.df_test.copy()
+    y_pred_test = _predict_split(X_test, df_test, split_name="test")
+    timing.stop("predict_test")
+
+    # SALES
+    timing.start("predict_sales")
+    X_sales = ds.X_sales.copy()
+    df_sales = ds.df_sales.copy()
+    y_pred_sales = _predict_split(X_sales, df_sales, split_name="sales")
+    timing.stop("predict_sales")
+
+    # UNIVERSE
+    timing.start("predict_univ")
+    X_univ = ds.X_univ.copy()
+    df_univ = ds.df_universe.copy()
+    y_pred_univ = _predict_split(X_univ, df_univ, split_name="universe")
+    timing.stop("predict_univ")
+
+    timing.stop("total")
+
+    # ------------------------------------------------------------------
+    # Assemble SingleModelResults
+    # ------------------------------------------------------------------
+    model_name = ds.name
+    model_engine = "multi_mra"
+
+    results = SingleModelResults(
+        ds,
+        "prediction",
+        "he_id",
+        model_name,
+        model_engine,
+        multi_model,      # store the model object for later inspection if desired
+        y_pred_test,
+        y_pred_sales,
+        y_pred_univ,
+        timing,
+        verbose=verbose,
+    )
+
+    return results
+
+
 def predict_ground_truth(
     ds: DataSplit,
     ground_truth_model: GroundTruthModel,
@@ -2575,7 +2962,7 @@ def run_gwr(
         print("Tuning GWR: searching for optimal bandwidth...")
 
     if use_saved_params:
-        if os.path.exists(f"{outpath}/gwr_bw.json"):
+        if os.path.exists(f"{outpath}/{model_name}_bw.json"):
             gwr_bw = json.load(open(f"{outpath}/{model_name}_bw.json", "r"))
             if verbose:
                 print(f"--> using saved bandwidth: {gwr_bw:0.2f}")
@@ -2729,7 +3116,7 @@ def run_xgboost(
 
     parameters = _get_params(
         "XGBoost",
-        "xgboost",
+        ds.name,
         ds,
         _tune_xgboost,
         outpath,
@@ -2876,7 +3263,7 @@ def run_lightgbm(
     timing.start("parameter_search")
     params = _get_params(
         "LightGBM",
-        "lightgbm",
+        ds.name,
         ds,
         _tune_lightgbm,
         outpath,
@@ -3018,6 +3405,7 @@ def run_catboost(
     use_saved_params: bool = False,
     n_trials: int = 50,
     verbose: bool = False,
+    use_gpu: bool = True
 ) -> SingleModelResults:
     """
     Run a CatBoost model by tuning parameters, training, and predicting.
@@ -3036,7 +3424,9 @@ def run_catboost(
         How many trials do run during parameter search. Defaults to 50.
     verbose : bool, optional
         If True, print verbose output. Defaults to False.
-
+    use_gpu: bool, optional
+        Whether to train using the GPU or not. Defaults to True.
+    
     Returns
     -------
     SingleModelResults
@@ -3055,14 +3445,15 @@ def run_catboost(
     timing.start("parameter_search")
     params = _get_params(
         "CatBoost",
-        "catboost",
+        ds.name,
         ds,
         _tune_catboost,
         outpath,
         save_params,
         use_saved_params,
         verbose,
-        n_trials=n_trials
+        n_trials=n_trials,
+        use_gpu=use_gpu
     )
     timing.stop("parameter_search")
 
@@ -5023,6 +5414,210 @@ def write_mra_params(
         df_final.to_csv(contrib_path, index=False)
 
 
+def write_multi_mra_params(
+    model: MultiMRAModel,
+    outpath: str,
+    smr: SingleModelResults,
+    do_plot: bool = False,
+):
+    """
+    Write parameters and per-parcel contributions for a Multi-MRA model.
+
+    Outputs
+    -------
+    - params_global.csv:
+        variable, coefficient
+        (global coefficients, with 'const' renamed to 'intercept')
+
+    - params_<location_field>.csv:
+    
+    Parameters
+    ----------
+    model : MultiMRAModel
+        Fitted hierarchical Multi-MRA model.
+    outpath : str
+        Base output directory.
+    smr : SingleModelResults
+        Model prediction results
+    do_plot : bool, optional
+        Currently unused, reserved for future extensions. Defaults to False.
+    """
+
+    os.makedirs(outpath, exist_ok=True)
+
+    ds = smr.ds
+
+    coef_map = model.coef_map              # dict[location_field -> dict[loc_val -> beta np.ndarray]]
+    global_coef = model.global_coef        # np.ndarray, shape (n_features,)
+    feature_names = list(model.feature_names)
+    location_fields = list(model.location_fields)
+
+    # ------------------------------------------------------------------
+    # 1) GLOBAL COEFFICIENTS
+    # ------------------------------------------------------------------
+    params_global = pd.Series(global_coef, index=feature_names)
+    params_global = params_global.rename(index={"const": "intercept"})
+    df_global = params_global.to_frame(name="coefficient")
+    df_global.index.name = "variable"
+
+    csv_path_global = f"{outpath}/params_global.csv"
+    df_global.to_csv(csv_path_global)
+
+    # ------------------------------------------------------------------
+    # 2) LOCAL COEFFICIENTS BY LOCATION FIELD
+    # ------------------------------------------------------------------
+    for location_field in location_fields:
+        field_map = coef_map.get(location_field, {})
+        if not field_map:
+            continue
+
+        rows = []
+        loc_vals = []
+
+        for loc_val, beta in field_map.items():
+            loc_vals.append(loc_val)
+            rows.append(pd.Series(beta, index=feature_names))
+
+        if not rows:
+            continue
+
+        df_field = pd.DataFrame(rows, index=loc_vals)
+        df_field.index.name = location_field
+        df_field = df_field.rename(columns={"const": "intercept"})
+
+        csv_path_field = f"{outpath}/params_{location_field}.csv"
+        df_field.to_csv(csv_path_field)
+
+    # ------------------------------------------------------------------
+    # 3) PER-PARCEL CONTRIBUTIONS (test / sales / universe)
+    # ------------------------------------------------------------------
+
+    # Use the dfs from SingleModelResults, which already contain "prediction"
+    dfs = {
+        "test": smr.df_test,
+        "sales": smr.df_sales,
+        "universe": smr.df_universe,
+    }
+
+    # Feature matrices from the DataSplit
+    xs = {
+        "test": ds.X_test,
+        "sales": ds.X_sales,
+        "universe": ds.X_univ,
+    }
+
+    def _compute_contributions_for_split(
+        X: pd.DataFrame,
+        df: pd.DataFrame,
+        split_name: str,
+    ) -> pd.DataFrame:
+        """
+        Compute per-parcel contributions for one split.
+
+        Steps:
+          - Align X to df by index (df may be a filtered subset of ds.df_*)
+          - Build coefficient matrix B (n_rows x n_features):
+              * start with global_coef everywhere
+              * override with local betas hierarchically by location_fields
+          - contrib_mat = X * B (elementwise)
+          - contribution_sum = row-wise sum of contributions
+          - Attach keys and predictions and compute check_delta via
+            _add_prediction_to_contribution.
+        """
+
+        # Align X to whatever rows are in df (smr may have filtered df_*)
+        try:
+            X = X.loc[df.index]
+        except KeyError as e:
+            raise ValueError(
+                f"[Multi-MRA] Split '{split_name}': some df indices are not present in X: {e}"
+            )
+
+        # Basic alignment checks (now expected to hold)
+        if len(X) != len(df):
+            raise ValueError(
+                f"[Multi-MRA] Length mismatch for split '{split_name}' after alignment: "
+                f"len(X)={len(X)} vs len(df)={len(df)}."
+            )
+        if not X.index.equals(df.index):
+            raise ValueError(
+                f"[Multi-MRA] Index mismatch for split '{split_name}' after alignment; "
+                "X and df must have identical indices."
+            )
+
+        # Ensure we have all expected features
+        missing_feats = [f for f in feature_names if f not in X.columns]
+        if missing_feats:
+            raise ValueError(
+                f"[Multi-MRA] Split '{split_name}' is missing features required "
+                f"for contributions: {missing_feats}"
+            )
+
+        n = len(X)
+
+        # Coefficient matrix B: initialize with global coefficients
+        B = np.tile(global_coef.reshape(1, -1), (n, 1))
+        assigned = np.zeros(n, dtype=bool)
+
+        # Hierarchical override: most specific -> least specific
+        for location_field in location_fields:
+            field_map = coef_map.get(location_field, {})
+            if not field_map:
+                continue
+            if location_field not in df.columns:
+                continue
+
+            loc_values = df[location_field].to_numpy()
+
+            for loc_val, beta in field_map.items():
+                mask = (~assigned) & (loc_values == loc_val)
+                if not mask.any():
+                    continue
+
+                B[mask, :] = beta
+                assigned[mask] = True
+
+        # Elementwise contributions: X * B
+        X_mat = X[feature_names].to_numpy(dtype=float)
+        contrib_mat = X_mat * B  # shape (n, len(feature_names))
+
+        df_contrib = pd.DataFrame(contrib_mat, columns=feature_names, index=X.index)
+        df_contrib = df_contrib.rename(columns={"const": "intercept"})
+
+        # Attach keys from df
+        df_contrib["key"] = df["key"].values
+        if "key_sale" in df.columns:
+            df_contrib["key_sale"] = df["key_sale"].values
+
+        # Reorder: keys first, then contributions
+        key_cols = [c for c in ["key", "key_sale"] if c in df_contrib.columns]
+        contrib_cols = [c for c in df_contrib.columns if c not in key_cols]
+
+        df_contrib = df_contrib[key_cols + contrib_cols]
+
+        # contribution_sum: sum of all contribution columns (including intercept)
+        df_contrib["contribution_sum"] = df_contrib[contrib_cols].sum(axis=1)
+
+        # Add predictions + check_delta
+        # NOTE: df is expected to already contain "prediction" (set by SingleModelResults)
+        df_final = _add_prediction_to_contribution(df, df_contrib)
+
+        return df_final
+
+    # Write contributions for each subset
+    for subset in ["test", "sales", "universe"]:
+        X_subset = xs.get(subset)
+        df_subset = dfs.get(subset)
+
+        if X_subset is None or df_subset is None or len(df_subset) == 0:
+            continue
+
+        df_final = _compute_contributions_for_split(X_subset, df_subset, subset)
+        contrib_path = f"{outpath}/contributions_{subset}.csv"
+        df_final.to_csv(contrib_path, index=False)
+
+
+
 def write_gwr_params(model: GWRModel, outpath: str, dfs: dict, do_plot: bool = False):
     for subset in ["test", "sales", "universe"]:
         
@@ -5083,6 +5678,81 @@ def write_gwr_params(model: GWRModel, outpath: str, dfs: dict, do_plot: bool = F
         ## Write out the final contributions
         contrib_path = f"{outpath}/contributions_{subset}.csv"
         df_final.to_csv(contrib_path, index=False)
+
+
+def write_local_area_params(
+    model: LocalAreaModel,
+    smr: SingleModelResults,
+    outpath: str,
+    do_plot: bool = False,
+):
+    """
+    Write parameter table for a LocalAreaModel.
+
+    Outputs
+    -------
+    - params_local_area.csv:
+        location_field, location_value, per_impr_<unit>, per_land_<unit>
+
+      One row per (location_field, location_value), plus a final "__overall__"
+      row containing the global median improved/land rates.
+    """
+    import os
+    os.makedirs(outpath, exist_ok=True)
+
+    ds = smr.ds
+    unit = ds.unit
+    location_fields = model.location_fields
+    loc_map = model.loc_map
+    overall_per_impr_area = model.overall_per_impr_area
+    overall_per_land_area = model.overall_per_land_area
+
+    per_impr_name = f"per_impr_{unit}"
+    per_land_name = f"per_land_{unit}"
+
+    rows = []
+
+    # Per-location entries from loc_map
+    for location_field in location_fields:
+        field_entry = loc_map.get(location_field)
+        if not field_entry:
+            continue
+
+        df_area_impr, df_area_land = field_entry
+
+        # Expected:
+        #   df_area_impr: [location_field, f"{location_field}_per_impr_{unit}"]
+        #   df_area_land: [location_field, f"{location_field}_per_land_{unit}"]
+        col_impr = f"{location_field}_per_impr_{unit}"
+        col_land = f"{location_field}_per_land_{unit}"
+
+        df_field = df_area_impr.merge(
+            df_area_land, on=location_field, how="outer"
+        )
+
+        for _, row in df_field.iterrows():
+            rows.append(
+                {
+                    "location_field": location_field,
+                    "location_value": row[location_field],
+                    per_impr_name: float(row.get(col_impr, 0.0)),
+                    per_land_name: float(row.get(col_land, 0.0)),
+                }
+            )
+
+    # Optional: add an explicit overall row
+    rows.append(
+        {
+            "location_field": "__overall__",
+            "location_value": "__overall__",
+            per_impr_name: float(overall_per_impr_area),
+            per_land_name: float(overall_per_land_area),
+        }
+    )
+
+    df_params = pd.DataFrame(rows)
+    params_path = f"{outpath}/params_local_area.csv"
+    df_params.to_csv(params_path, index=False)
 
 
 def write_shaps(
@@ -5297,10 +5967,14 @@ def write_model_parameters(
         pass
     elif isinstance(model, MRAModel):
         write_mra_params(model, outpath, xs, dfs, do_plot)
+    elif isinstance(model, MultiMRAModel):
+        write_multi_mra_params(model, outpath, smr, do_plot)
     elif isinstance(model, GWRModel):
         write_gwr_params(model, outpath, dfs, do_plot)
     elif isinstance(model, TreeBasedModel):
         write_shaps(model, outpath, smr, location, do_plot, verbose=verbose)
+    elif isinstance(model, LocalAreaModel):
+        write_local_area_params(model, smr, outpath, do_plot)
     # ...and so on
     else:
         raise TypeError(f"Unexpected model type: {type(model).__name__}")
