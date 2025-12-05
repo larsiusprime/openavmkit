@@ -1349,7 +1349,7 @@ def run_one_model(
         # If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
         max_trim = _get_max_ratio_study_trim(settings, results.ds.model_group)
         if do_clamp:
-            results = _clamp_land_predictions(results, results.ds.model_group, model_name, outpath, max_trim)
+            results = _clamp_land_predictions(results, results.ds.model_group, model_name, model_engine, outpath, max_trim)
 
     if save_results:
         t.start("write")
@@ -1759,7 +1759,7 @@ def _predict_one_model(
         # MRA is a special case where we have to call run_ instead of predict_, because there's delicate state mangling.
         # We pass the pretrained `model` object to run_mra() to get it to skip training and move straight to prediction
         mra_model: MRAModel = smr.model
-        results = run_mra(ds, model.intercept, verbose, mra_model)
+        results = run_mra(ds, mra_model.intercept, verbose, mra_model)
     elif model_engine == "multi_mra":
         multi_mra_model: MultiMRAModel = smr.model
         results = predict_multi_mra(ds, multi_mra_model, timing, verbose)
@@ -1785,7 +1785,7 @@ def _predict_one_model(
     if ds.vacant_only or ds.hedonic:
         # If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
         max_trim = _get_max_ratio_study_trim(settings, smr.ds.model_group)
-        results = _clamp_land_predictions(results, smr.ds.model_group, model_name, outpath, max_trim)
+        results = _clamp_land_predictions(results, smr.ds.model_group, model_name, model_engine, outpath, max_trim)
 
     if save_results:
         
@@ -1802,7 +1802,12 @@ def _predict_one_model(
 
 
 def _clamp_land_predictions(
-    results: SingleModelResults, model_group: str, model_name: str, outpath: str, max_trim: float
+    results: SingleModelResults, 
+    model_group: str, 
+    model_name: str, 
+    model_engine: str,
+    outpath: str, 
+    max_trim: float
 ):
     """
     Clamp land value predictions based on the full market value predictions.
@@ -3171,19 +3176,21 @@ def _run_hedonic_models(
             )
             return
         smr.ds = ds
+        
         results = _predict_one_model(
             smr=smr,
-            model=model,
+            model_name=model_name,
+            model_engine=model_engine,
             outpath=outpath,
             settings=settings,
             save_results=save_results,
             verbose=verbose,
         )
         if results is not None:
-            hedonic_results[model] = results
+            hedonic_results[model_name] = results
 
     all_hedonic_results = MultiModelResults(
-        model_results=hedonic_results, benchmark=_calc_benchmark(hedonic_results)
+        model_results=hedonic_results, benchmark=_calc_benchmark(hedonic_results), df_univ=df_universe, df_sales=df_sales
     )
 
     if run_ensemble:
@@ -3210,7 +3217,7 @@ def _run_hedonic_models(
             dep_var_test=dep_var_test,
             outpath=outpath,
             ensemble_list=best_ensemble,
-            all_results=all_results,
+            all_results=all_hedonic_results,
             settings=settings,
             verbose=verbose,
         )
@@ -3863,6 +3870,7 @@ def _run_models(
             settings=settings,
             model_group=model_group,
             models_to_run=models_to_run,
+            model_entries=model_entries,
             all_results=all_results,
             df_sales=df_sales,
             df_universe=df_univ,

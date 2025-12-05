@@ -13,6 +13,7 @@ from pygam.callbacks import CallBack
 
 from scipy.spatial._ckdtree import cKDTree
 from sklearn.preprocessing import OneHotEncoder
+from pandas.api.types import is_categorical_dtype
 
 import warnings
 import numpy as np
@@ -1345,14 +1346,19 @@ class SingleModelResults:
 
         timing.start("chd")
         df_univ_valid = df_univ.copy()
-        df_univ_valid = pd.DataFrame(df_univ_valid)  # Ensure it's a Pandas DataFrame
-        # drop problematic columns:
+        df_univ_valid = pd.DataFrame(df_univ_valid)
         df_univ_valid.drop(columns=["geometry"], errors="ignore", inplace=True)
 
-        # convert all category and string[python] types to string:
         for col in df_univ_valid.columns:
-            if df_univ_valid[col].dtype in ["category", "string", "object"]:
-                df_univ_valid[col] = df_univ_valid[col].astype("str")
+            dtype = df_univ_valid[col].dtype
+
+            # Explicit categoricals and pandas string dtype --> string
+            if is_categorical_dtype(dtype) or str(dtype) == "string":
+                df_univ_valid[col] = df_univ_valid[col].astype("string")
+
+            # Heuristic for object columns
+            elif dtype == "object":
+                df_univ_valid[col] = _coerce_object_to_numeric_or_string(df_univ_valid[col])
         pl_df = pl.DataFrame(df_univ_valid)
 
         # TODO: This might need to be changed to be the $/area value rather than the total value
@@ -1433,6 +1439,36 @@ class SingleModelResults:
         str += f"---->CHD    : {self.chd:8.4f}\n"
         str += f"\n"
         return str
+
+
+def _coerce_object_to_numeric_or_string(s: pd.Series,
+                                        numeric_ratio_threshold: float = 0.95
+                                        ) -> pd.Series:
+    """
+    If an object series is 'mostly' numeric (by ratio of values that can be parsed),
+    return it as float; otherwise return it as string.
+    """
+    # Work only on non-null entries for the heuristic
+    s_non_null = s.dropna()
+
+    # If everything is null, just treat it as string to be safe
+    if s_non_null.empty:
+        return s.astype("string")
+
+    # Try to parse as numeric
+    numeric_non_null = pd.to_numeric(s_non_null, errors="coerce")
+
+    # Fraction of non-null entries that successfully parse as numeric
+    good = numeric_non_null.notna().sum()
+    ratio = good / len(s_non_null)
+
+    if ratio >= numeric_ratio_threshold:
+        # Column is "basically numeric": convert full column to numeric
+        # (this will keep NaNs/None as NaN)
+        return pd.to_numeric(s, errors="coerce").astype(float)
+    else:
+        # Treat as categorical/string
+        return s.astype("string")
 
 
 def land_utility_score(land_results: LandPredictionResults) -> float:
@@ -1674,10 +1710,11 @@ def predict_mra(
         "he_id",
         model_name,
         model_engine,
+        model,
         y_pred_test,
         y_pred_sales,
         y_pred_univ,
-        timing,
+        timing=timing,
         verbose=verbose,
     )
 
@@ -2003,6 +2040,11 @@ def predict_multi_mra(
             Predictions for this split, in the same order as X_split/df_split.
         """
 
+        # NEW: ensure intercept column exists if the model was trained with one
+        if "const" in feature_names and "const" not in X_split.columns:
+            X_split = X_split.copy()
+            X_split["const"] = 1.0
+
         # Safety checks: index and length alignment
         if len(X_split) != len(df_split):
             raise ValueError(
@@ -2125,6 +2167,7 @@ def predict_multi_mra(
     )
 
     return results
+
 
 
 def predict_ground_truth(
@@ -5492,59 +5535,100 @@ def write_multi_mra_params(
     # 3) PER-PARCEL CONTRIBUTIONS (test / sales / universe)
     # ------------------------------------------------------------------
 
-    # Use the dfs from SingleModelResults, which already contain "prediction"
-    dfs = {
+    # dfs used for output & prediction (these already contain "prediction")
+    dfs_smr = {
         "test": smr.df_test,
         "sales": smr.df_sales,
         "universe": smr.df_universe,
     }
 
+    # dfs from the DataSplit (canonical alignment with X_*)
+    dfs_ds = {
+        "test": ds.df_test,
+        "sales": ds.df_sales,
+        "universe": ds.df_universe,
+    }
+
     # Feature matrices from the DataSplit
-    xs = {
+    xs_full = {
         "test": ds.X_test,
         "sales": ds.X_sales,
         "universe": ds.X_univ,
     }
 
     def _compute_contributions_for_split(
-        X: pd.DataFrame,
-        df: pd.DataFrame,
+        X_full: pd.DataFrame,
+        df_smr: pd.DataFrame,
+        df_ds: pd.DataFrame,
         split_name: str,
-    ) -> pd.DataFrame:
+    ) -> pd.DataFrame | None:
         """
         Compute per-parcel contributions for one split.
 
-        Steps:
-          - Align X to df by index (df may be a filtered subset of ds.df_*)
-          - Build coefficient matrix B (n_rows x n_features):
-              * start with global_coef everywhere
-              * override with local betas hierarchically by location_fields
-          - contrib_mat = X * B (elementwise)
-          - contribution_sum = row-wise sum of contributions
-          - Attach keys and predictions and compute check_delta via
-            _add_prediction_to_contribution.
+        Alignment strategy:
+          - X_full is row-aligned with df_ds by construction (DataSplit),
+            but their indices may differ.
+          - df_smr is the result dataframe used in SingleModelResults
+            (may be a subset / trimmed / reindexed).
+          - We align df_smr back to X_full via df_ds on primary key
+            (key_sale if present, else key), using row *position* in df_ds
+            to select rows from X_full.
         """
 
-        # Align X to whatever rows are in df (smr may have filtered df_*)
-        try:
-            X = X.loc[df.index]
-        except KeyError as e:
+        if df_smr is None or len(df_smr) == 0:
+            return None
+
+        if X_full is None or df_ds is None:
             raise ValueError(
-                f"[Multi-MRA] Split '{split_name}': some df indices are not present in X: {e}"
+                f"[Multi-MRA] Missing X or ds dataframe for split '{split_name}'."
             )
 
-        # Basic alignment checks (now expected to hold)
-        if len(X) != len(df):
+        # Sanity: X_full and df_ds should have same number of rows
+        if len(X_full) != len(df_ds):
             raise ValueError(
-                f"[Multi-MRA] Length mismatch for split '{split_name}' after alignment: "
-                f"len(X)={len(X)} vs len(df)={len(df)}."
-            )
-        if not X.index.equals(df.index):
-            raise ValueError(
-                f"[Multi-MRA] Index mismatch for split '{split_name}' after alignment; "
-                "X and df must have identical indices."
+                f"[Multi-MRA] DataSplit length mismatch for split '{split_name}': "
+                f"len(X_full)={len(X_full)} vs len(df_ds)={len(df_ds)}."
             )
 
+        # Decide which key to use for alignment
+        if "key_sale" in df_smr.columns and "key_sale" in df_ds.columns:
+            key_col = "key_sale"
+        else:
+            key_col = "key"
+            if key_col not in df_smr.columns or key_col not in df_ds.columns:
+                raise ValueError(
+                    f"[Multi-MRA] Split '{split_name}' missing both 'key_sale' and 'key' "
+                    "for alignment."
+                )
+
+        # Build a map from ds keys -> row *position* in X_full / df_ds
+        df_key = df_ds[[key_col]].copy().reset_index(drop=True)
+        df_key["__row_pos__"] = df_key.index  # 0..n-1, positional index into X_full
+
+        # Merge df_smr with this map to get row_pos into X_full
+        df = df_smr.copy()
+        df = df.merge(df_key, on=key_col, how="left", validate="many_to_one")
+
+        if df["__row_pos__"].isna().any():
+            missing_keys = df.loc[df["__row_pos__"].isna(), key_col].unique()
+            raise ValueError(
+                f"[Multi-MRA] Split '{split_name}': some {key_col} values in smr.df "
+                f"not found in DataSplit df: {missing_keys[:5]}..."
+            )
+
+        row_pos = df["__row_pos__"].to_numpy(dtype=int)
+
+        # Align X rows by *position* (iloc), independent of index labels
+        X = X_full.iloc[row_pos].copy()
+
+        # Drop helper column and reset indices to keep everything clean
+        df = df.drop(columns="__row_pos__").reset_index(drop=True)
+        X = X.reset_index(drop=True)
+        
+        if "const" in feature_names and "const" not in X.columns:
+            X = X.copy()
+            X["const"] = 1.0
+        
         # Ensure we have all expected features
         missing_feats = [f for f in feature_names if f not in X.columns]
         if missing_feats:
@@ -5555,7 +5639,7 @@ def write_multi_mra_params(
 
         n = len(X)
 
-        # Coefficient matrix B: initialize with global coefficients
+        # Coefficient matrix B: initialize with global coefficients everywhere
         B = np.tile(global_coef.reshape(1, -1), (n, 1))
         assigned = np.zeros(n, dtype=bool)
 
@@ -5598,7 +5682,7 @@ def write_multi_mra_params(
         # contribution_sum: sum of all contribution columns (including intercept)
         df_contrib["contribution_sum"] = df_contrib[contrib_cols].sum(axis=1)
 
-        # Add predictions + check_delta
+        # Add predictions + check_delta.
         # NOTE: df is expected to already contain "prediction" (set by SingleModelResults)
         df_final = _add_prediction_to_contribution(df, df_contrib)
 
@@ -5606,13 +5690,17 @@ def write_multi_mra_params(
 
     # Write contributions for each subset
     for subset in ["test", "sales", "universe"]:
-        X_subset = xs.get(subset)
-        df_subset = dfs.get(subset)
+        X_full = xs_full.get(subset)
+        df_smr = dfs_smr.get(subset)
+        df_ds = dfs_ds.get(subset)
 
-        if X_subset is None or df_subset is None or len(df_subset) == 0:
+        if X_full is None or df_smr is None or df_ds is None or len(df_smr) == 0:
             continue
 
-        df_final = _compute_contributions_for_split(X_subset, df_subset, subset)
+        df_final = _compute_contributions_for_split(X_full, df_smr, df_ds, subset)
+        if df_final is None:
+            continue
+
         contrib_path = f"{outpath}/contributions_{subset}.csv"
         df_final.to_csv(contrib_path, index=False)
 
@@ -5740,13 +5828,18 @@ def write_local_area_params(
                 }
             )
 
+    def _to_float_or_nan(x):
+        if pd.isna(x):
+            return np.nan
+        return float(x)
+    
     # Optional: add an explicit overall row
     rows.append(
         {
             "location_field": "__overall__",
             "location_value": "__overall__",
-            per_impr_name: float(overall_per_impr_area),
-            per_land_name: float(overall_per_land_area),
+            per_impr_name: _to_float_or_nan(overall_per_impr_area),
+            per_land_name: _to_float_or_nan(overall_per_land_area),
         }
     )
 
@@ -5959,11 +6052,23 @@ def write_model_parameters(
         "universe": smr.df_universe,
         "sales": smr.df_sales
     }
+    
     if model is None:
         pass
     elif isinstance(model, str):
         pass
-    elif isinstance(model, PassThroughModel):
+    elif isinstance(model, PassThroughModel) or isinstance(model, GroundTruthModel):
+        pass
+    elif isinstance(model, GarbageModel) or \
+         isinstance(model, AverageModel) or \
+         isinstance(model, NaiveAreaModel) or \
+         isinstance(model, SpatialLagModel):
+        pass
+    elif isinstance(model, KernelReg):
+        # TODO
+        pass
+    elif isinstance(model, LandSLICEModel):
+        # TODO
         pass
     elif isinstance(model, MRAModel):
         write_mra_params(model, outpath, xs, dfs, do_plot)
