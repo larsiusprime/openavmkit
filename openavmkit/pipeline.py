@@ -254,6 +254,7 @@ def examine_df_in_ridiculous_detail(df: pd.DataFrame, s: dict):
 
     def fit_str(txt: str, size: int):
         last_bit = ""
+        first_bit = ""
         if len(txt) >= size:
             len_first = int((size - 3) / 2)
             len_last = (size - 3) - len_first
@@ -289,7 +290,7 @@ def examine_df_in_ridiculous_detail(df: pd.DataFrame, s: dict):
             else:
                 uniques = unique_str
         
-        fitted_str, extra_str = fit_str(col, {_ex_name_width})
+        fitted_str, extra_str = fit_str(col, _ex_name_width)
         return f"{fitted_str} {dtype:^10} {count_non_zero:>10} {p:>5.0%} {count_non_null:>10} {pnn:>5.0%} {uniques:>40}{extra_str}"
 
     def print_horz_line(char: str):
