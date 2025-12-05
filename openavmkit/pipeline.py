@@ -251,13 +251,16 @@ def examine_df_in_ridiculous_detail(df: pd.DataFrame, s: dict):
         return text
 
     def fit_str(txt: str, size: int):
+        last_bit = ""
         if len(txt) >= size:
             len_first = int((size - 3) / 2)
             len_last = (size - 3) - len_first
             first_bit = txt[0:len_first]
             last_bit = txt[len(txt) - len_last :]
-            txt = first_bit + "..." + last_bit
-        return f"{txt:{size}}"
+            if len(last_bit) > 0:
+                last_bit = "\n\n"+last_bit
+            txt = first_bit
+        return first_bit, last_bit
 
     def get_num_line(col):
         describe = df[col].describe()
@@ -283,8 +286,9 @@ def examine_df_in_ridiculous_detail(df: pd.DataFrame, s: dict):
                 uniques = f"{len(uniques):,}"
             else:
                 uniques = unique_str
-
-        return f"{fit_str(col, 75)} {dtype:^10} {count_non_zero:>10} {p:>5.0%} {count_non_null:>10} {pnn:>5.0%} {uniques:>40}"
+        
+        fitted_str, extra_str = fit_str(col, {name_width})
+        return f"{fitted_str} {dtype:^10} {count_non_zero:>10} {p:>5.0%} {count_non_null:>10} {pnn:>5.0%} {uniques:>40}{extra_str}"
 
     def print_horz_line(char: str):
         print(
@@ -458,6 +462,8 @@ def examine_df(df: pd.DataFrame, s: dict):
     s : dict
         Settings dictionary.
     """
+    
+    name_width = 60
 
     def fill_str(char: str, size: int):
         text = ""
@@ -466,13 +472,14 @@ def examine_df(df: pd.DataFrame, s: dict):
         return text
 
     def fit_str(txt: str, size: int):
+        last_bit = ""
+        first_bit = txt
         if len(txt) >= size:
-            len_first = int((size - 3) / 2)
-            len_last = (size - 3) - len_first
-            first_bit = txt[0:len_first]
-            last_bit = txt[len(txt) - len_last :]
-            txt = first_bit + "..." + last_bit
-        return f"{txt:{size}}"
+            first_bit = txt[0:size]
+            last_bit = txt[size:]
+            if len(last_bit) > 0:
+                last_bit = "\n" + last_bit
+        return f"{first_bit:{size}}", last_bit
 
     def get_line(
         col, dtype, count_non_zero, p, count_non_null, pnn, uniques: list or str
@@ -490,8 +497,10 @@ def examine_df(df: pd.DataFrame, s: dict):
                 uniques = f"{len(uniques):,}"
             else:
                 uniques = unique_str
-
-        return f"{fit_str(col, 75)} {dtype:^10} {count_non_zero:>10} {p:>5.0%} {count_non_null:>10} {pnn:>5.0%} {uniques:>40}"
+        
+        fitted_str, extra_str = fit_str(col, name_width)
+        
+        return f"{fitted_str} {dtype:^10} {count_non_zero:>10} {p:>5.0%} {count_non_null:>10} {pnn:>5.0%} {uniques:>40}{extra_str}"
 
     buffer = ""
     lines = 0
@@ -503,7 +512,7 @@ def examine_df(df: pd.DataFrame, s: dict):
         if buffer != "":
             buffer += "\n"
         buffer += (
-            fill_str(char, 30)
+            fill_str(char, name_width)
             + " "
             + fill_str(char, 10)
             + " "
@@ -536,7 +545,7 @@ def examine_df(df: pd.DataFrame, s: dict):
             lines = 0
 
     print(
-        f"{'FIELD':^30} {'TYPE':^10} {'NON-ZERO':^10} {'%':^5} {'NON-NULL':^10} {'%':^5} {'UNIQUE':^40}"
+        f"{'FIELD':^{name_width}} {'TYPE':^10} {'NON-ZERO':^10} {'%':^5} {'NON-NULL':^10} {'%':^5} {'UNIQUE':^40}"
     )
 
     fields_land = get_fields_land(s, df)
@@ -569,7 +578,7 @@ def examine_df(df: pd.DataFrame, s: dict):
             print_buffer("")
 
         print_horz_line("=")
-        print_buffer(f"{name:^30}")
+        print_buffer(f"{name:^{name_width}}")
         print_horz_line("=")
 
         nums.sort()
@@ -578,7 +587,7 @@ def examine_df(df: pd.DataFrame, s: dict):
 
         if len(nums) > 0:
             print_horz_line("-")
-            print_buffer(f"{'NUMERIC':^30}")
+            print_buffer(f"{'NUMERIC':^{name_width}}")
             print_horz_line("-")
             for n in nums:
                 fields_noted.append(n)
@@ -601,7 +610,7 @@ def examine_df(df: pd.DataFrame, s: dict):
 
         if len(bools) > 0:
             print_horz_line("-")
-            print_buffer(f"{'BOOLEAN':^30}")
+            print_buffer(f"{'BOOLEAN':^{name_width}}")
             print_horz_line("-")
             for b in bools:
                 fields_noted.append(b)
@@ -631,7 +640,7 @@ def examine_df(df: pd.DataFrame, s: dict):
 
         if len(cats) > 0:
             print_horz_line("-")
-            print_buffer(f"{'CATEGORICAL':^30}")
+            print_buffer(f"{'CATEGORICAL':^{name_width}}")
             print_horz_line("-")
             for c in cats:
                 fields_noted.append(c)
@@ -663,7 +672,7 @@ def examine_df(df: pd.DataFrame, s: dict):
         fields_unclassified.sort()
         print_buffer("")
         print_horz_line("=")
-        print_buffer(f"{'UNCLASSIFIED:':<30}")
+        print_buffer(f"{'UNCLASSIFIED:':<{name_width}}")
         print_horz_line("=")
         for u in fields_unclassified:
             non_zero = (~pd.isna(df[u])).sum()
@@ -1245,6 +1254,20 @@ def write_notebook_output_sup(
     except Exception as e:
         warnings.warn(f"Failed to output sup: {str(e)}")
 
+
+def write_parquet(df: pd.DataFrame, path: str):
+    """
+    Write data to a parquet file.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Data to be written
+    path : str
+        File path for saving the parquet.
+    """
+    
+    openavmkit.data.write_parquet(df, path)
 
 
 def cloud_sync(
