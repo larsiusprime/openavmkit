@@ -822,31 +822,41 @@ def calc_r2(
         DataFrame with columns for variable, R², adjusted R², and coefficient sign.
     """
     results = {"variable": [], "r2": [], "adj_r2": [], "coef_sign": []}
+
     for var in variables:
+        # Build a joint frame so NA rows are dropped consistently for X and y
         data = pd.concat([df[var], y], axis=1).dropna()
+
         if len(data) < 3 or data[var].nunique() < 2:
             results["variable"].append(var)
             results["r2"].append(float("nan"))
             results["adj_r2"].append(float("nan"))
             results["coef_sign"].append(float("nan"))
-            continue                          # skip ill-posed models
+            continue  # skip ill-posed models
 
         X = sm.add_constant(data[var].astype(float), has_constant='add')
+
+        # Align y with X using the same filtered rows
+        if hasattr(y, "name") and y.name in data.columns:
+            y_aligned = data[y.name]
+        else:
+            y_aligned = data.iloc[:, -1]
+
         try:
-            model = sm.OLS(y, X).fit()
+            model = sm.OLS(y_aligned, X).fit()
         except MissingDataError as e:
             print(f"Error fitting model for variable {var}: {e}")
-            for var in variables:
-                # check for missing/null/nan values:
-                if df[var].isna().any():
-                    n = df[var].isna().sum()
-                    print(f'Variable "{var}" has {n} missing values.')
+            for v in variables:  # avoid shadowing 'var'
+                if df[v].isna().any():
+                    n = df[v].isna().sum()
+                    print(f'Variable "{v}" has {n} missing values.')
             raise e
 
         results["variable"].append(var)
         results["r2"].append(model.rsquared)
         results["adj_r2"].append(model.rsquared_adj)
         results["coef_sign"].append(1 if model.params[var] >= 0 else -1)
+
     df_results = pd.DataFrame(data=results)
     return df_results
 
