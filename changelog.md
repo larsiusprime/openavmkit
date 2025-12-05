@@ -15,6 +15,8 @@ All notable changes to this project will be documented in this file.
 - Optimize catboost training
 - Optimize performance by removing redundant copy() calls
 - Remove stacked ensemble code
+- Fix notebook bug with to_parquet (use write_parquet instead)
+- Fix formatting in examine_df
 - Fix bug with fill missing
 - Fix triangular parcel detection
 - Fix bug with hedonic ensembles
