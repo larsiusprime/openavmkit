@@ -190,7 +190,8 @@ def _tune_catboost(
     cat_feats = [c for c in (cat_vars or []) if c in X.columns]
     full_pool = Pool(X, y, cat_features=cat_feats)
     
-    task_type = "GPU" if use_gpu else "CPU"
+    #task_type = "GPU" if use_gpu else "CPU"
+    task_type = "CPU" # GPU is too unreliable for now, so default catboost to CPU
     
     if verbose:
         print(f"Tuning Catboost. n_trials={n_trials}, n_splits={n_splits}, use_gpu={use_gpu}")
