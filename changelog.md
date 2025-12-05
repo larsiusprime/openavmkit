@@ -1,6 +1,28 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2025-12-04
+- Move to Python 3.11+
+- Add metric unit support
+- Add multi-mra model
+- Add writing out model parameters (coefficients/SHAPs)
+- Add support for named models
+- Add custom pass-through models
+- Add docker container deployment to CI
+- Add more/better warnings/errors/feedback
+- Optimize memory use in model runs
+- Optimize GWR training
+- Optimize catboost training
+- Optimize performance by removing redundant copy() calls
+- Remove stacked ensemble code
+- Fix bug with fill missing
+- Fix triangular parcel detection
+- Fix bug with hedonic ensembles
+- Fix various export bugs
+- Fix casting regression bug in MRA
+- Update dependency versions
+- Cleanup caching logic
+
 ## [0.4.5] - 2025-11-07
 - Fix aggregation logic
 - Fix duplicate handling
