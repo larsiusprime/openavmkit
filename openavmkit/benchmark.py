@@ -1759,7 +1759,7 @@ def _predict_one_model(
         # MRA is a special case where we have to call run_ instead of predict_, because there's delicate state mangling.
         # We pass the pretrained `model` object to run_mra() to get it to skip training and move straight to prediction
         mra_model: MRAModel = smr.model
-        results = run_mra(ds, model.intercept, verbose, mra_model)
+        results = run_mra(ds, mra_model.intercept, verbose, mra_model)
     elif model_engine == "multi_mra":
         multi_mra_model: MultiMRAModel = smr.model
         results = predict_multi_mra(ds, multi_mra_model, timing, verbose)
@@ -3176,19 +3176,21 @@ def _run_hedonic_models(
             )
             return
         smr.ds = ds
+        
         results = _predict_one_model(
             smr=smr,
-            model=model,
+            model_name=model_name,
+            model_engine=model_engine,
             outpath=outpath,
             settings=settings,
             save_results=save_results,
             verbose=verbose,
         )
         if results is not None:
-            hedonic_results[model] = results
+            hedonic_results[model_name] = results
 
     all_hedonic_results = MultiModelResults(
-        model_results=hedonic_results, benchmark=_calc_benchmark(hedonic_results)
+        model_results=hedonic_results, benchmark=_calc_benchmark(hedonic_results), df_univ=df_universe, df_sales=df_sales
     )
 
     if run_ensemble:
@@ -3868,6 +3870,7 @@ def _run_models(
             settings=settings,
             model_group=model_group,
             models_to_run=models_to_run,
+            model_entries=model_entries,
             all_results=all_results,
             df_sales=df_sales,
             df_universe=df_univ,

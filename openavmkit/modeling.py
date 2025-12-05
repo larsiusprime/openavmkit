@@ -2040,6 +2040,11 @@ def predict_multi_mra(
             Predictions for this split, in the same order as X_split/df_split.
         """
 
+        # NEW: ensure intercept column exists if the model was trained with one
+        if "const" in feature_names and "const" not in X_split.columns:
+            X_split = X_split.copy()
+            X_split["const"] = 1.0
+
         # Safety checks: index and length alignment
         if len(X_split) != len(df_split):
             raise ValueError(
@@ -2162,6 +2167,7 @@ def predict_multi_mra(
     )
 
     return results
+
 
 
 def predict_ground_truth(
@@ -5618,7 +5624,11 @@ def write_multi_mra_params(
         # Drop helper column and reset indices to keep everything clean
         df = df.drop(columns="__row_pos__").reset_index(drop=True)
         X = X.reset_index(drop=True)
-
+        
+        if "const" in feature_names and "const" not in X.columns:
+            X = X.copy()
+            X["const"] = 1.0
+        
         # Ensure we have all expected features
         missing_feats = [f for f in feature_names if f not in X.columns]
         if missing_feats:
