@@ -1,6 +1,9 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## [0.5.1] - 2025-12-04
+- Fix bug in examine_df/examine_df_in_ridiculous_detail
+
 ## [0.5.0] - 2025-12-04
 - Move to Python 3.11+
 - Add metric unit support
