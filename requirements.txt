@@ -28,7 +28,7 @@ optuna-integration==4.5.0
 tabulate~=0.9.0
 pygam~=0.11.0
 pandas~=2.3.3
-ipython~=8.12.3
+ipython~=9.8.0
 geopandas~=1.1.1
 matplotlib~=3.10.7
 pyproj~=3.7.1
