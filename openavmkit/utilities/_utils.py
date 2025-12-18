@@ -30,7 +30,7 @@ def to_parquet_safe(df : pd.DataFrame, path: str, geometry_col : str | None = No
 def sanitize_df(df : pd.DataFrame, geometry_col: str | None = None):
     df = df.copy()
     
-    if geometry_col is None and "geometry" in df:
+    if geometry_col is None and "geometry" in df.columns:
         geometry_col = "geometry"
     
     for col in df.columns:

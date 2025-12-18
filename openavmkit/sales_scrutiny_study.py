@@ -137,7 +137,7 @@ class SalesScrutinyStudy:
                 "vacant_sale",
             ]
 
-            other_fields = [f for f in other_fields if f in df]
+            other_fields = [f for f in other_fields if f in df.columns]
 
             df_cluster_fields = df[["key_sale"] + other_fields]
             df = _calc_sales_scrutiny(df, sale_field_per)

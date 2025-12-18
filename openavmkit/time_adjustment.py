@@ -54,12 +54,12 @@ def calculate_time_adjustment(
         f"land_area_{unit}",
     ]
     for field in essential_fields:
-        if field not in df_sales_in:
+        if field not in df_sales_in.columns:
             raise ValueError(f"Field '{field}' not found in the sales data.")
 
     df_sales = df_sales_in.copy()
 
-    if "sale_quarter" not in df_sales:
+    if "sale_quarter" not in df_sales.columns:
         df_sales["sale_quarter"] = (df_sales["sale_month"] - 1) // 3 + 1
         df_sales["sale_quarter"] = (
             df_sales["sale_year"].astype(str)

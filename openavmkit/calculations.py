@@ -40,11 +40,11 @@ def perform_tweaks(df_in: pd.DataFrame, tweak: list, rename_map: dict = None):
 
         # Try both original and renamed field names
         field_to_use = None
-        if field in df:
+        if field in df.columns:
             field_to_use = field
-        elif rename_map and field in reverse_map and reverse_map[field] in df:
+        elif rename_map and field in reverse_map and reverse_map[field] in df.columns:
             field_to_use = reverse_map[field]
-        elif rename_map and field in rename_map and rename_map[field] in df:
+        elif rename_map and field in rename_map and rename_map[field] in df.columns:
             field_to_use = rename_map[field]
 
         if field_to_use is None:
@@ -54,11 +54,11 @@ def perform_tweaks(df_in: pd.DataFrame, tweak: list, rename_map: dict = None):
 
         # Try both original and renamed key field names
         key_field_to_use = None
-        if key_field in df:
+        if key_field in df.columns:
             key_field_to_use = key_field
-        elif rename_map and key_field in reverse_map and reverse_map[key_field] in df:
+        elif rename_map and key_field in reverse_map and reverse_map[key_field] in df.columns:
             key_field_to_use = reverse_map[key_field]
-        elif rename_map and key_field in rename_map and rename_map[key_field] in df:
+        elif rename_map and key_field in rename_map and rename_map[key_field] in df.columns:
             key_field_to_use = rename_map[key_field]
 
         if key_field_to_use is None:
@@ -168,14 +168,14 @@ def _calc_resolve(df: pd.DataFrame, value, i: int = 0, rename_map: dict = None):
         else:
             # Try both original and renamed column names
             field_to_use = None
-            if value in df:
+            if value in df.columns:
                 field_to_use = value
             elif rename_map:
                 # Create reverse map for looking up original names
                 reverse_map = {v: k for k, v in rename_map.items()}
-                if value in reverse_map and reverse_map[value] in df:
+                if value in reverse_map and reverse_map[value] in df.columns:
                     field_to_use = reverse_map[value]
-                elif value in rename_map and rename_map[value] in df:
+                elif value in rename_map and rename_map[value] in df.columns:
                     field_to_use = rename_map[value]
 
             if field_to_use is not None:
@@ -229,7 +229,7 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i: int = 0, rename_map: dict = No
         elements = entry[1:]
         fields = []
         for element in elements:
-            if isinstance(element, str) and element in df:
+            if isinstance(element, str) and element in df.columns:
                 fields.append(element)
             else:
                 element, i = _calc_resolve(

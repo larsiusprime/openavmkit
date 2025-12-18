@@ -252,7 +252,7 @@ def get_hydrated_sales_from_sup(sup: SalesUniversePair):
     )
     df_merged = merge_and_stomp_dfs(df_sales, df_univ, df2_stomps=False)
 
-    if "geometry" in df_merged and "geometry" not in df_sales:
+    if "geometry" in df_merged.columns and "geometry" not in df_sales.columns:
         # convert df_merged to geodataframe:
         df_merged = gpd.GeoDataFrame(df_merged, geometry="geometry")
 
@@ -328,7 +328,7 @@ def get_sale_field(settings: dict, df: pd.DataFrame = None) -> str:
     else:
         sale_field = "sale_price"
     if df is not None:
-        if sale_field == "sale_price_time_adj" and "sale_price_time_adj" in df:
+        if sale_field == "sale_price_time_adj" and "sale_price_time_adj" in df.columns:
             return "sale_price_time_adj"
     return sale_field
 

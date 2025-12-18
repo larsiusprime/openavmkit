@@ -5451,7 +5451,7 @@ def write_mra_params(
         xcols = [col for col in X.columns.tolist() if col in df_contrib]
         df_contrib["contribution_sum"] = df_contrib[["intercept"] + xcols].sum(axis=1)
         
-        df_final = _add_prediction_to_contribution(df, df_contrib)
+        df_final = _add_prediction_to_contribution(df, df_contrib, split_name=subset)
         
         contrib_path = f"{outpath}/contributions_{subset}.csv"
         df_final.to_csv(contrib_path, index=False)
@@ -5591,7 +5591,7 @@ def write_multi_mra_params(
             )
 
         # Decide which key to use for alignment
-        if "key_sale" in df_smr.columns and "key_sale" in df_ds.columns:
+        if split_name != "universe" and "key_sale" in df_smr.columns and "key_sale" in df_ds.columns:
             key_col = "key_sale"
         else:
             key_col = "key"
@@ -5684,7 +5684,7 @@ def write_multi_mra_params(
 
         # Add predictions + check_delta.
         # NOTE: df is expected to already contain "prediction" (set by SingleModelResults)
-        df_final = _add_prediction_to_contribution(df, df_contrib)
+        df_final = _add_prediction_to_contribution(df, df_contrib, split_name=split_name)
 
         return df_final
 
@@ -5761,7 +5761,7 @@ def write_gwr_params(model: GWRModel, outpath: str, dfs: dict, do_plot: bool = F
         df_contrib["contribution_sum"] = df_contrib[["intercept"] + var_cols].sum(axis=1)
         
         ## Add on predictions and check deltas
-        df_final = _add_prediction_to_contribution(df, df_contrib)
+        df_final = _add_prediction_to_contribution(df, df_contrib, split_name=subset)
         
         ## Write out the final contributions
         contrib_path = f"{outpath}/contributions_{subset}.csv"
@@ -5953,10 +5953,10 @@ def _prepare_shap_dfs(
             warnings.warn(f"SHAP values off by a non-constant factor, delta std deviation % = {delta_std_perc:0.2%}")
     
     # Back out per-unit values
-    df_unit = _contrib_to_unit_values(df_contrib, df)
+    df_unit = _contrib_to_unit_values(df_contrib, df, split_name=subset)
     
     # Add on predictions and check deltas
-    df_contrib_w_pred = _add_prediction_to_contribution(df, df_contrib)
+    df_contrib_w_pred = _add_prediction_to_contribution(df, df_contrib, split_name=subset)
     
     if do_write:
         # Write params to disk
@@ -5975,9 +5975,9 @@ def _prepare_shap_dfs(
     return df_unit, df_contrib_w_pred
 
 
-def _contrib_to_unit_values(df_contrib: pd.DataFrame, df_base: pd.DataFrame):
+def _contrib_to_unit_values(df_contrib: pd.DataFrame, df_base: pd.DataFrame, split_name: str):
     # choose join key
-    the_key = "key_sale" if "key_sale" in df_contrib.columns else "key"
+    the_key = "key_sale" if "key_sale" in df_base.columns and "key_sale" in df_contrib.columns and "univ" not in split_name else "key"
 
     # reserved columns we don't treat as variables
     reserved = ["key", "key_sale", "base_value"]
@@ -6022,9 +6022,10 @@ def _contrib_to_unit_values(df_contrib: pd.DataFrame, df_base: pd.DataFrame):
 
 def _add_prediction_to_contribution(
     df: pd.DataFrame,
-    df_contrib: pd.DataFrame
+    df_contrib: pd.DataFrame,
+    split_name: str
 ):
-    the_key = "key_sale" if "key_sale" in df else "key"
+    the_key = "key_sale" if "key_sale" in df.columns and "univ" not in split_name else "key"
     df_pred = df[[the_key, "prediction"]]
     df_combined = df_contrib.merge(df_pred, on=the_key, how="left")
     df_combined["check_delta"] = df_combined["prediction"] - df_combined["contribution_sum"]

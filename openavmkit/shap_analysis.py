@@ -233,10 +233,10 @@ def make_shap_table(
     # 4) Keys up front (robust expansion)
     if len(list_keys) != n:
         raise ValueError(f"list_keys length {len(list_keys)} != number of rows {n}")
-    if list_keys_sale and len(list_keys_sale) != n:
+    if list_keys_sale is not None and len(list_keys_sale) != n:
         raise ValueError(f"list_keys_sale length {len(list_keys_sale)} != number of rows {n}")
 
-    if list_keys_sale:
+    if list_keys_sale is not None:
         df_keys = pd.DataFrame({"key": list_keys, "key_sale": list_keys_sale})
     else:
         df_keys = pd.DataFrame({"key": list_keys})
