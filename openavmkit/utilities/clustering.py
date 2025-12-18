@@ -83,7 +83,7 @@ def make_clusters(
     
     t.start("categoricals")
     # Phase 1: split the data into clusters based on the location:
-    if field_location is not None and field_location in df:
+    if field_location is not None and field_location in df.columns:
         df["cluster"] = df[field_location].astype(str)
         if verbose:
             print(f"--> crunching on location, {len(df['cluster'].unique())} clusters")

@@ -144,9 +144,9 @@ def resolve_filter(df: pd.DataFrame, f: list, rename_map: dict = None) -> pd.Ser
         if rename_map:
             # Create reverse map for looking up original names
             reverse_map = {v: k for k, v in rename_map.items()}
-            if field in reverse_map and reverse_map[field] in df:
+            if field in reverse_map and reverse_map[field] in df.columns:
                 field = reverse_map[field]
-            elif field in rename_map and rename_map[field] in df:
+            elif field in rename_map and rename_map[field] in df.columns:
                 field = rename_map[field]
 
         if len(f) == 3:
@@ -158,7 +158,7 @@ def resolve_filter(df: pd.DataFrame, f: list, rename_map: dict = None) -> pd.Ser
             if value.startswith("str:"):
                 value = value[4:]
             else:
-                if value in df:
+                if value in df.columns:
                     value = df[value]
                 else:
                     raise ValueError(f"Could not find field named \"{value}\" in dataframe during filtering operation. If you meant to use it as a string literal, please prepend it with \"str:\"")
@@ -298,7 +298,7 @@ def _resolve_field_name(
     """Helper function to resolve a field name using the rename map. Returns the resolved
     field name if found, None otherwise.
     """
-    if field in df:
+    if field in df.columns:
         return field
     if rename_map:
         # Create reverse map for looking up original names

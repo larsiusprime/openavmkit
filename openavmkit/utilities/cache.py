@@ -98,7 +98,7 @@ def read_cache(filename: str, filetype: str) -> dict | str | object | pd.DataFra
         elif filetype == "df":
             try:
                 df = gpd.read_parquet(path)
-                if "geometry" in df:
+                if "geometry" in df.columns:
                     df = gpd.GeoDataFrame(df, geometry="geometry")
                     ensure_geometries(df, "geometry", df.crs)
             except ValueError:

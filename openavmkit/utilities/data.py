@@ -322,7 +322,7 @@ def do_per_model_group(
     if not model_groups:
         raise ValueError("You must define at least one model group in settings.modeling.model_groups! Re-tag model groups before returning here.")
     
-    if "model_group" not in df:
+    if "model_group" not in df.columns:
         raise ValueError(f"Column '{model_group}' not defined in your dataframe. Please define at least one model group in settings.modeling.model_groups.  Re-tag model groups before returning here.")
     
     model_group_values = df["model_group"].unique().tolist()
