@@ -1195,7 +1195,7 @@ def get_dupes(entry: dict, df: pd.DataFrame = None, is_geometry: bool = False):
                 dupes = {"subset": [col], "sort_by": [col, "asc"], "drop": True}
                 if dupes_was_none:
                     warnings.warn(
-                        f"'dupes' not found for geo df '{entry_key}', defaulting to \"{col}\" as de-dedupe key. Set 'dupes:\"auto\" to remove this warning.'"
+                        f"'dupes' not found, defaulting to \"{col}\" as de-dedupe key. Set 'dupes:\"auto\" to remove this warning.'"
                     )
             else:
                 keys = ["key_sale", "key", "key2", "key3"]
@@ -1205,4 +1205,6 @@ def get_dupes(entry: dict, df: pd.DataFrame = None, is_geometry: bool = False):
                         break
         else:
             dupes = {"subset": ["key"], "sort_by": ["key", "asc"], "drop": True}
+    elif dupes == "allow":
+        dupes = {}
     return dupes

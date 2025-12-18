@@ -441,13 +441,16 @@ def _get_model_group_signature(df: pd.DataFrame)->dict:
 
 
 def _get_df_signature(df: pd.DataFrame, extra: dict | str = None) -> dict:
-    sorted_columns = sorted(df.columns)
-    signature = {
-        "num_rows": len(df),
-        "num_columns": len(df.columns),
-        "columns": sorted_columns,
-        "model_groups": _get_model_group_signature(df)
-    }
+    if df is None:
+        signature = {}
+    else:
+        sorted_columns = sorted(df.columns)
+        signature = {
+            "num_rows": len(df),
+            "num_columns": len(df.columns),
+            "columns": sorted_columns,
+            "model_groups": _get_model_group_signature(df)
+        }
     if extra is not None:
         signature["extra"] = extra
     return signature

@@ -1127,7 +1127,7 @@ def _enrich_data(
 
         # add lat/lon/rectangularity etc.
         df_univ = _basic_geo_enrichment(df_univ, s_enrich, settings, verbose=verbose)
-
+        
         # handle Census enrichment for universe if enabled
         if "census" in s_enrich:
             df_univ = _enrich_df_census(
@@ -1176,8 +1176,8 @@ def _enrich_data(
         )
 
     # Enforce vacant status
-    df_univ = _enrich_vacant(df_univ, settings)
-    df_sales = _enrich_vacant(df_sales, settings)
+    df_univ = _enrich_vacant(df_univ, settings, "universe")
+    df_sales = _enrich_vacant(df_sales, settings, "sales")
 
     sup.set("universe", df_univ)
     sup.set("sales", df_sales)
@@ -2490,7 +2490,7 @@ def _enrich_df_basic(
     
     for word in ["ref_tables", "calc", "tweak"]:
         if word in s_enrich_this:
-            warnings.warn(f"Found `word` @ `data.process.enrich.word`, but it should be under `data.process.enrich.sales` or `data.process.enrich.universe`! Nothing will happen!")
+            warnings.warn(f"Found `{word}` @ `data.process.enrich.{word}`, but it should be under `data.process.enrich.sales.{word}` or `data.process.enrich.universe.{word}`! Nothing will happen!")
     
     s_ref = s_enrich_this.get("ref_tables", {}).get(supkey, [])
     s_calc = s_enrich_this.get("calc", {}).get(supkey, {})
@@ -2533,7 +2533,7 @@ def _finesse_columns(
     return df
 
 
-def _enrich_vacant(df_in: pd.DataFrame, settings: dict) -> pd.DataFrame:
+def _enrich_vacant(df_in: pd.DataFrame, settings: dict, label:str = "") -> pd.DataFrame:
     """Enrich the DataFrame by determining vacant properties based on finished building
     area.
     """
@@ -2553,7 +2553,7 @@ def _enrich_vacant(df_in: pd.DataFrame, settings: dict) -> pd.DataFrame:
         df = _simulate_removed_buildings(df, settings, idx_vacant)
 
     else:
-        warnings.warn("You do not have a 'bldg_area_finished_sqft' field -- you really should!")
+        warnings.warn(f"You do not have a 'bldg_area_finished_sqft' field for df \"{label}\" -- you really should!")
         df = df_in
 
     return df
@@ -2829,7 +2829,7 @@ def _basic_geo_enrichment(
     if not do_anything:
         if verbose:
             print("Skipping basic geo enrichment...")
-        return
+        return gdf_in
     
     do_latlon = s_basic.get("latlon", True)
     do_area = s_basic.get("area", True)

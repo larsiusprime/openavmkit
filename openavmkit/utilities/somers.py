@@ -1,3 +1,4 @@
+from __future__ import annotations
 import numpy as np
 
 
@@ -122,28 +123,72 @@ def get_lot_value_m(
     return get_lot_value_ft(unit_value, frontage_ft, depth_ft)
 
 
-def get_depth_percent_ft(depth_ft: np.ndarray | float) -> np.ndarray | float:
+def get_depth_percent_ft(depth_ft):
     """
     Calculate the relative depth of a lot compared to a standard 100 ft depth.
 
-    This function expresses the lot’s depth as a proportion of a 100 ft standard lot depth.
-    For example, 0 ft → 0.0, 100 ft → 1.0, and values beyond 100 ft → >1.0.
-
-    Parameters
-    ----------
-    depth_ft : numpy.ndarray or float
-        Depth of the lot in feet.
-
-    Returns
-    -------
-    numpy.ndarray or float
-        Relative depth proportion(s), in the range [0.0, ∞), representing depth_ft / 100.
+    Robust to scalars, numpy arrays, lists, and pandas Series/Index.
+    Non-numeric inputs are coerced to NaN. Negative depths -> NaN.
     """
-    value = (133.6 * (1 - np.exp(-0.0326 * depth_ft**0.813))) / 100
-    value = (
-        np.round((value * 1000) + 0.5) / 1000
-    )  # round to the nearest 0.001 -- ensures that 100 ft is *exactly* 100%
+    # Optional pandas support (only used if pandas objects are passed)
+    try:
+        import pandas as pd  # type: ignore
+        _HAS_PANDAS = True
+    except Exception:
+        pd = None
+        _HAS_PANDAS = False
+
+    # Preserve pandas Series output if that's what we got
+    is_pandas_series = _HAS_PANDAS and isinstance(depth_ft, pd.Series)
+    is_pandas_index = _HAS_PANDAS and isinstance(depth_ft, pd.Index)
+
+    # Scalar detection (works for python + numpy scalars)
+    is_scalar = np.isscalar(depth_ft) or isinstance(depth_ft, np.generic)
+
+    # Coerce to a float ndarray (fixes bug)
+    if depth_ft is None:
+        arr = np.array(np.nan, dtype=float)
+    elif is_pandas_series or is_pandas_index:
+        # pd.to_numeric fixes object dtype, strings, None, etc.
+        s = pd.to_numeric(depth_ft, errors="coerce")
+        arr = s.to_numpy(dtype=float)
+    else:
+        # Handle lists/tuples/ndarrays/scalars; coerce to float
+        arr = np.asarray(depth_ft)
+        if arr.dtype == object:
+            # Gracefully coerce mixed/object arrays to float (non-numeric -> NaN)
+            if _HAS_PANDAS:
+                arr = pd.to_numeric(arr.ravel(), errors="coerce").to_numpy(dtype=float).reshape(arr.shape)
+            else:
+                # Minimal fallback without pandas:
+                def _to_float(x):
+                    try:
+                        return float(x)
+                    except Exception:
+                        return np.nan
+                arr = np.vectorize(_to_float, otypes=[float])(arr)
+        else:
+            arr = arr.astype(float, copy=False)
+
+    # Negative depths would produce complex numbers for fractional powers
+    arr = np.where(arr < 0, np.nan, arr)
+
+    # --- Compute ---
+    value = (133.6 * (1.0 - np.exp(-0.0326 * np.power(arr, 0.813)))) / 100.0
+
+    # Round-half-up to nearest 0.001
+    value = np.floor(value * 1000.0 + 0.5) / 1000.0
+
+    # Ensure exactly 1.0 at 100 ft (even after float noise)
+    value = np.where(np.isclose(arr, 100.0, rtol=0.0, atol=1e-12), 1.0, value)
+
+    # --- Return in a friendly shape/type ---
+    if is_pandas_series:
+        return pd.Series(value, index=depth_ft.index, name=getattr(depth_ft, "name", None))
+    if is_scalar:
+        return float(np.asarray(value).reshape(()))  # scalar python float
     return value
+
 
 
 def get_depth_percent_m(depth_m: np.ndarray | float) -> np.ndarray | float:

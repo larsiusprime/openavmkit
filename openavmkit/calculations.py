@@ -313,6 +313,10 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i: int = 0, rename_map: dict = No
         return lhs * rhs
     elif op == "/":
         return lhs / rhs
+    elif op == "min":
+        return np.minimum(lhs, rhs)
+    elif op == "max":
+        return np.maximum(lhs, rhs)
     elif op == "//":
         return (lhs // rhs).astype(int)
     elif op == "/0":
