@@ -1316,7 +1316,7 @@ def run_one_model(
     t.start("setup")
     if len(ds.y_sales) < 15:
         if verbose:
-            print(f"--> model {model} has less than 15 sales. Skipping...")
+            print(f"--> model {model_name} has less than 15 sales. Skipping...")
         return None
 
     intercept = entry.get("intercept", True)
