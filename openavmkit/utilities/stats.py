@@ -651,10 +651,16 @@ def calc_correlations(
     for col in X.columns:
         if X[col].dtype != "object":
             X[col] = (X[col] - X[col].mean()) / X[col].std()
+    
+    # Compute correlations ONCE. Subsequent iterations just slice this matrix.
+    corr_full = X.corr()
+    
+    # Track remaining columns explicitly (so we don't mutate X repeatedly)
+    remaining = list(X.columns)
 
     while True:
         # Compute the correlation matrix
-        naive_corr = X.corr()
+        naive_corr = corr_full.loc[remaining, remaining]
 
         # Identify variables with the highest correlation with the target variable (the first column)
         target_corr = naive_corr.iloc[:, 0].abs().sort_values(ascending=False)
@@ -696,7 +702,7 @@ def calc_correlations(
             first_run = first_run.sort_values("corr_score", ascending=False)
 
         if min_score < threshold:
-            X = X.drop(min_score_idx, axis=1)
+            remaining.remove(min_score_idx)
         else:
             break
 
@@ -707,7 +713,7 @@ def calc_correlations(
         plot_correlation(naive_corr, "Correlation of Variables (initial)")
 
     # recompute the correlation matrix
-    final_corr = X.corr()
+    final_corr = corr_full.loc[remaining, remaining]
 
     if do_plots:
         plot_correlation(final_corr, "Correlation of Variables (final)")

@@ -4501,7 +4501,7 @@ def _run_local_area(
 
     timing.stop("train")
     if verbose:
-        print("Tuning Local {ds.unit}: searching for optimal parameters...")
+        print(f"Tuning Local {ds.unit}: searching for optimal parameters...")
         print(
             f"--> optimal improved $/finished {ds.unit} (overall) = {overall_per_impr_area:0.2f}"
         )

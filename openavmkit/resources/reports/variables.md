@@ -2,17 +2,17 @@
 
 |  |  |
 |--|--|
-| Locality | {{{locality}}} |  
-| Valuation date | {{{val_date}}} |  
-| Modeling group | {{{modeling_group}}} |
+| Locality | {{locality}} |  
+| Valuation date | {{val_date}} |  
+| Modeling group | {{modeling_group}} |
 
 ## Executive Summary
 
-The most significant variables that drive real estate value in {{{locality}}} are:
+The most significant variables that drive real estate value in {{locality}} are:
 
-{{{summary_table}}}
+{{summary_table}}
 
-There are countless variables that can be included in any particular model, but only certain ones will wind up being significant. If the most significant variables that drive real estate value can be identified, then {{{locality}}} can focus their data-gathering efforts on just those.
+There are countless variables that can be included in any particular model, but only certain ones will wind up being significant. If the most significant variables that drive real estate value can be identified, then {{locality}} can focus their data-gathering efforts on just those.
 
 We perform several kinds of analysis to determine which variables are the most important, an analysis we perform separately for each modeling group.
 
@@ -54,11 +54,11 @@ Each variable is tested against each of these metrics, and given a pass/fail sco
 
 Here are the weights for each statistic:
 
-{{{pre_model_weights}}}
+{{pre_model_weights}}
 
 And here are the overall test results for each variable:
 
-{{{pre_model_table}}}
+{{pre_model_table}}
 
 You can find an explanation of each of these statistical tests in the Appendix.
 
@@ -82,7 +82,7 @@ Here are the overall test results for each variable, expressed as % of overall v
 | 4    | Blah     | 10000        | 10%            |
 |      | **Total**| **100000**   | **100%**       |
 
-{{{post_model_table}}}
+{{post_model_table}}
 
 Statistics nerds can find an explanation of each of statistical tests, along with detailed results for each variable, in the Appendix.
 
@@ -94,15 +94,15 @@ This test looks for variables that are closely associated with `selling price`, 
 
 We then combine these into an overall `correlation score`, which is `(correlation score) * (correlation strength)^2`. This gives us a good single metric for important variables that are not too redundant with others.
 
-Our test considers a correlation score of {{{thresh_correlation}}} or higher as a **pass** (✅).
+Our test considers a correlation score of {{thresh_correlation}} or higher as a **pass** (✅).
 
 Here are the initial results from the variables in this model:
 
-{{{table_corr_initial}}}
+{{table_corr_initial}}
 
-And here are the results after we removed variables with a correlation score lower than {{{thresh_correlation}}}:
+And here are the results after we removed variables with a correlation score lower than {{thresh_correlation}}:
 
-{{{table_corr_final}}}
+{{table_corr_final}}
 
 
 ### VIF -- Variance Inflation Factor
@@ -116,15 +116,15 @@ And here are the results after we removed variables with a correlation score low
 | 5-10 | High correlation                                    |
 | 10+  | Very high correlation                               |
 
-Our test considers a VIF lower than {{{thresh_vif}}} as a *pass* (✅).
+Our test considers a VIF lower than {{thresh_vif}} as a *pass* (✅).
 
 Here are the initial results from the variables in this model:
 
-{{{table_vif_initial}}}
+{{table_vif_initial}}
 
-And here are the results after we removed variables with a VIF higher than {{{thresh_vif}}}:
+And here are the results after we removed variables with a VIF higher than {{thresh_vif}}:
 
-{{{table_vif_final}}}
+{{table_vif_final}}
 
 ### P-value -- Probability value
 
@@ -138,29 +138,29 @@ The bottom line is that the lower the p-value is, the better. A sufficiently low
 
 However, the p-value should never be taken as evidence all by itself, just one indicator among many.
 
-Our test considers a p-value of {{{thresh_p_value}}} or lower as a **pass** (✅).
+Our test considers a p-value of {{thresh_p_value}} or lower as a **pass** (✅).
 
 Here are the initial results from the variables in this model:
 
-{{{table_p_value_initial}}}
+{{table_p_value_initial}}
 
-And here are the results after we removed variables with a p-value higher than {{{thresh_p_value}}}:
+And here are the results after we removed variables with a p-value higher than {{thresh_p_value}}:
 
-{{{table_p_value_final}}}
+{{table_p_value_final}}
 
 ### T-value
 
 [T-value](https://en.wikipedia.org/wiki/Student%27s_t-test) is a measure from the Student's T-test. It measures the strength of the relationship between the independent variable and the dependent variable. The higher the T-value, the more significant the relationship.
 
-Our test considers a T-value with an absolute value of {{{thresh_t_value}}} or higher as a **pass** (✅).
+Our test considers a T-value with an absolute value of {{thresh_t_value}} or higher as a **pass** (✅).
 
 Here are the initial results from the variables in this model:
 
-{{{table_t_value_initial}}}
+{{table_t_value_initial}}
 
-Here are the results after we removed variables with a T-value whose absolute value is lower than {{{thresh_t_value}}}:
+Here are the results after we removed variables with a T-value whose absolute value is lower than {{thresh_t_value}}:
 
-{{{table_t_value_final}}}
+{{table_t_value_final}}
 
 ### ENR -- Elastic Net Regularization
 
@@ -168,15 +168,15 @@ Here are the results after we removed variables with a T-value whose absolute va
 
 The bottom line is this method spits out a score for each variable that tells you how important that variable is to the model, with useless variables being shrunk very close to zero.
 
-Our test considers a score of {{{thresh_enr_coef}}} or higher as a **pass** (✅).
+Our test considers a score of {{thresh_enr_coef}} or higher as a **pass** (✅).
 
 Here are the initial results from the variables in this model:
 
-{{{table_enr_initial}}}
+{{table_enr_initial}}
 
-Here are the results after we removed variables with an ENR lower than {{{thresh_enr}}}:
+Here are the results after we removed variables with an ENR lower than {{thresh_enr}}:
 
-{{{table_enr_final}}}
+{{table_enr_final}}
 
 ### R-squared
 
@@ -184,15 +184,15 @@ Here are the results after we removed variables with an ENR lower than {{{thresh
 
 For our test, we run a single-variable linear model for every variable in the dataset, and calculate the R-squared and the [Adjusted R-squared](https://en.wikipedia.org/wiki/Coefficient_of_determination#Adjusted_R2) (generally considered a more robust statistic than R-squared alone) for each one. A higher value means the variable is more important to the model.
 
-Our test considers a threshold of {{{thresh_adj_r2}}} or higher as a **pass** (✅).
+Our test considers a threshold of {{thresh_adj_r2}} or higher as a **pass** (✅).
 
 Here are the initial results from the variables in this model:
 
-{{{table_adj_r2_initial}}}
+{{table_adj_r2_initial}}
 
-Here are the results after we removed variables with an Adjusted R-squared lower than {{{thresh_adj_r2}}}:
+Here are the results after we removed variables with an Adjusted R-squared lower than {{thresh_adj_r2}}:
 
-{{{table_adj_r2_final}}}
+{{table_adj_r2_final}}
 
 ### Coefficient sign
 
@@ -204,8 +204,8 @@ When we run the R-squared test, the Elastic Net Regularization test, and the T-v
 
 Here are the initial results from the variables in this model:
 
-{{{table_coef_sign_initial}}}
+{{table_coef_sign_initial}}
 
 Here are the results after we removed variables with a coefficient sign mismatch:
 
-{{{table_coef_sign_final}}}
+{{table_coef_sign_final}}

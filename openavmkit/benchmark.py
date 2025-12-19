@@ -14,6 +14,7 @@ from statsmodels.nonparametric.kernel_regression import KernelReg
 from xgboost import XGBRegressor
 from IPython.display import display
 import numpy as np
+from openavmkit.reports import finish_report
 from sklearn.linear_model import LinearRegression
 
 from openavmkit.data import (
@@ -289,6 +290,7 @@ def try_variables(
     df_hydrated.loc[idx_vacant, df_vacant.columns] = df_vacant.values
 
     all_best_variables = {}
+    all_reports = {}
 
     try_vars = settings.get("modeling", {}).get("try_variables", {})
     model_groups_to_skip = try_vars.get("skip", [])
@@ -301,8 +303,10 @@ def try_variables(
         settings: dict,
         verbose: bool,
         results: dict,
+        reports: dict
     ):
         bests = {}
+        local_reports = {}
 
         for vacant_only in [False, True]:
 
@@ -338,18 +342,24 @@ def try_variables(
                 variables_to_use=variables_to_use,
                 tests_to_run=["corr", "r2"],
                 do_report=True,
+                do_cross=True,
+                do_plots=plot,
                 verbose=verbose,
             )
 
             best_variables = var_recs["variables"]
             df_results = var_recs["df_results"]
-
+            report = var_recs["report"]
+            
             if vacant_only:
                 bests["vacant_only"] = df_results
+                local_reports["vacant_only"] = report
             else:
                 bests["main"] = df_results
+                local_reports["main"] = report
 
         results[model_group] = bests
+        reports[model_group] = local_reports
 
     do_per_model_group(
         df_hydrated,
@@ -361,6 +371,7 @@ def try_variables(
             "do_report": do_report,
             "verbose": verbose,
             "results": all_best_variables,
+            "reports": all_reports
         },
         key="key_sale",
         skip=model_groups_to_skip
@@ -372,11 +383,12 @@ def try_variables(
     print("********** BEST VARIABLES ***********")
     for model_group in all_best_variables:
         entry = all_best_variables[model_group]
+        report_entry = all_reports[model_group]
         for vacant_status in entry:
             print("")
             print(f"model group: {model_group} / {vacant_status}")
             results = entry[vacant_status]
-            pd.set_option("display.max_rows", None)
+            report = report_entry[vacant_status]
             results = results[~results["corr_strength"].isna()]
 
             styled = results.style.format(
@@ -390,39 +402,18 @@ def try_variables(
                 }
             )
 
+            pd.set_option("display.max_rows", None)
             display(styled)
+            pd.set_option("display.max_rows", 15)
+            
             file_out = f"out/try/{model_group}/{vacant_status}.csv"
+            report_out = f"out/try/{model_group}/{vacant_status}_report"
             if not os.path.exists(os.path.dirname(file_out)):
                 os.makedirs(os.path.dirname(file_out))
             results.to_csv(file_out, index=False)
-            pd.set_option("display.max_rows", 15)
-
-            for var in results["variable"].unique():
-                if var in df_hydrated.columns:
-                    # do a correlation scatter plot of the variable vs. the dependent variable (sale_field):
-                    df_sub = df_hydrated[
-                        df_hydrated["model_group"].eq(model_group)
-                        & df_hydrated[var].notna()
-                        & df_hydrated[sale_field].notna()
-                    ]
-
-                    for status in ["vacant", "improved"]:
-                        # clear any previous plots with plt:
-                        plt.clf()
-
-                        if status == "vacant":
-                            df_sub2 = df_sub[df_sub["vacant_sale"].eq(True)]
-                        else:
-                            df_sub2 = df_sub[df_sub["vacant_sale"].eq(False)]
-
-                        if len(df_sub2) > 0 and plot:
-                            # do a scatter plot of the variable vs. the dependent variable (sale_field):
-                            df_sub2.plot.scatter(x=var, y=sale_field)
-                            # labels
-                            plt.xlabel(var)
-                            plt.ylabel(sale_field)
-                            plt.title(f"'{var}' vs '{sale_field}' ({status} only)")
-                            plt.show()
+            
+            if do_report:
+                finish_report(report, report_out, "variable", settings)
 
 
 def get_variable_recommendations(
@@ -433,8 +424,11 @@ def get_variable_recommendations(
     model_group: str,
     variables_to_use: list[str] | None = None,
     tests_to_run: list[str] | None = None,
+    do_cross: bool = True,
     do_report: bool = False,
+    do_plots: bool = False,
     verbose: bool = False,
+    t: TimingData = None
 ) -> dict:
     """Determine which variables are most likely to be meaningful in a model.
 
@@ -460,10 +454,16 @@ def get_variable_recommendations(
     tests_to_run : list[str] or None
         A list of tests to run. If None, all tests are run. Legal values are "corr",
         "r2", "p_value", "t_value", "enr", and "vif"
+    do_cross_validation: bool
+        If True, runs cross validation to generate the final variable selection
     do_report : bool
         If True, generates a report of the variable selection process.
+    do_plots: bool, optional
+        If True, prints correlation plots
     verbose : bool, optional
         If True, prints additional debugging information.
+    t : TimingData or None
+        TimingData object
 
     Returns
     -------
@@ -471,16 +471,24 @@ def get_variable_recommendations(
         A dictionary with keys "variables" (the best variables list) and "report"
         (the generated report).
     """
-
+    
+    if t is None:
+        t = TimingData()
+    
+    t.start("variables.markdown")
     report = MarkdownReport("variables")
-
+    t.stop("variables.markdown")
+    
     if tests_to_run is None:
         tests_to_run = ["corr", "r2", "p_value", "t_value", "enr", "vif"]
 
     if "sale_price_time_adj" not in df_sales:
         warnings.warn("Time adjustment was not found in sales data. Calculating now...")
+        t.start("variables.time_adjustment")
         df_sales = enrich_time_adjustment(df_sales, settings, verbose=verbose)
-
+        t.stop("variables.time_adjustment")
+    
+    t.start("variables.stuff")
     s = settings
     s_model = s.get("modeling", {})
     vacant_status = "vacant" if vacant_only else "main"
@@ -507,7 +515,7 @@ def get_variable_recommendations(
         variables_to_use = [
             variable for variable in variables_to_use if variable not in flagged
         ]
-
+    
     # Check for duplicate variables in variables_to_use
     if variables_to_use is not None:
         seen_vars = set()
@@ -548,14 +556,20 @@ def get_variable_recommendations(
             f"This could cause errors in analysis. Keeping only first occurrence of each column."
         )
         df_universe = df_universe.loc[:, ~df_universe.columns.duplicated()]
-
+    
+    t.stop("variables.stuff")
+    
+    t.start("variables.prepare_ds")
     ds = _prepare_ds(
         "var_recs", df_sales, df_universe, model_group, vacant_only, settings, variables_to_use
     )
+    t.stop("variables.prepare_ds")
+    t.start("variables.one_hot")
     ds = ds.encode_categoricals_with_one_hot()
-
+    t.stop("variables.one_hot")
+    t.start("variables.split")
     ds.split()
-
+    t.stop("variables.split")
     feature_selection = (
         settings.get("modeling", {})
         .get("instructions", {})
@@ -569,16 +583,20 @@ def get_variable_recommendations(
     if "corr" in tests_to_run:
         # Correlation
         X_corr = ds.df_sales[[ds.dep_var] + ds.ind_vars]
-        corr_results = calc_correlations(X_corr, thresh.get("correlation", 0.1))
+        t.start("variables.corr")
+        corr_results = calc_correlations(X_corr, thresh.get("correlation", 0.1), do_plots=do_plots)
+        t.stop("variables.corr")
     else:
         corr_results = None
 
     if "enr" in tests_to_run:
         # Elastic net regularization
         try:
+            t.start("variables.enr")
             enr_coefs = calc_elastic_net_regularization(
                 X_sales, y_sales, thresh.get("enr", 0.01)
             )
+            t.stop("variables.enr")
         except ValueError as e:
             nulls_in_X = X_sales[X_sales.isna().any(axis=1)]
             print(f"Found {len(nulls_in_X)} rows with nulls in X:")
@@ -591,27 +609,34 @@ def get_variable_recommendations(
 
     if "r2" in tests_to_run:
         # R² values
+        t.start("variables.r2")
         r2_values = calc_r2(ds.df_sales, ds.ind_vars, y_sales)
+        t.stop("variables.r2")
     else:
         r2_values = None
 
     if "p_value" in tests_to_run:
         # P Values
+        t.start("variables.p")
         p_values = calc_p_values_recursive_drop(
             X_sales, y_sales, thresh.get("p_value", 0.05)
         )
+        t.stop("variables.p")
     else:
         p_values = None
 
     if "t_value" in tests_to_run:
         # T Values
+        t.start("variables.t")
         t_values = calc_t_values_recursive_drop(
             X_sales, y_sales, thresh.get("t_value", 2)
         )
+        t.stop("variables.t")
     else:
         t_values = None
 
     if "vif" in tests_to_run:
+        t.start("variables.vif")
         # VIF
         # Filter out boolean columns before VIF calculation
         bool_cols = []
@@ -653,9 +678,11 @@ def get_variable_recommendations(
                 "initial": pd.DataFrame(columns=["variable", "vif"]),
                 "final": pd.DataFrame(columns=["variable", "vif"]),
             }
+        t.stop("variables.vif")
     else:
         vif = None
-
+    
+    t.start("variables.calc_recs")
     # Generate final results & recommendations
     df_results = _calc_variable_recommendations(
         ds=ds,
@@ -666,37 +693,48 @@ def get_variable_recommendations(
         p_values_results=p_values,
         t_values_results=t_values,
         vif_results=vif,
-        report=report,
+        report=report
     )
+    t.stop("variables.calc_recs")
 
+    t.start("variables.final_stuff")
     curr_variables = df_results["variable"].tolist()
     best_variables = curr_variables.copy()
     best_score = float("inf")
-
+    
     df_cross = df_results.copy()
     y = ds.y_sales
-    while len(curr_variables) > 0:
-        X = ds.df_sales[curr_variables]
-        cv_score = calc_cross_validation_score(X, y)
-        if cv_score < best_score:
-            best_score = cv_score
-            best_variables = curr_variables.copy()
-        worst_idx = df_cross["weighted_score"].idxmin()
-        worst_variable = df_cross.loc[worst_idx, "variable"]
-        curr_variables.remove(worst_variable)
-        # Remove the variable from the results dataframe.
-        df_cross = df_cross[df_cross["variable"].ne(worst_variable)]
-
+    
+    t.start("variables.final_stuff.while")
+    if do_cross:
+        while len(curr_variables) > 0:
+            X = ds.df_sales[curr_variables]
+            t.start("variables.final_stuff.while.cross")
+            cv_score = calc_cross_validation_score(X, y)
+            t.stop("variables.final_stuff.while.cross")
+            if cv_score < best_score:
+                best_score = cv_score
+                best_variables = curr_variables.copy()
+            worst_idx = df_cross["weighted_score"].idxmin()
+            worst_variable = df_cross.loc[worst_idx, "variable"]
+            curr_variables.remove(worst_variable)
+            # Remove the variable from the results dataframe.
+            df_cross = df_cross[df_cross["variable"].ne(worst_variable)]
+    t.stop("variables.final_stuff.while")
+    
     # Create a table from the list of best variables.
     df_best = pd.DataFrame(best_variables, columns=["Variable"])
     df_best["Rank"] = range(1, len(df_best) + 1)
     df_best["Description"] = df_best["Variable"]
+    
+    t.start("variables.final_stuff.apply_dd")
     df_best = _apply_dd_to_df_rows(
         df_best, "Variable", settings, ds.one_hot_descendants, "name"
     )
     df_best = _apply_dd_to_df_rows(
         df_best, "Description", settings, ds.one_hot_descendants, "description"
     )
+    t.stop("variables.final_stuff.apply_dd")
     df_best = df_best[["Rank", "Variable", "Description"]]
     df_best.loc[df_best["Variable"].eq(df_best["Description"]), "Description"] = ""
     df_best.set_index("Rank", inplace=True)
@@ -706,6 +744,7 @@ def get_variable_recommendations(
         report = generate_variable_report(report, settings, model_group, best_variables)
     else:
         report = None
+    t.stop("variables.final_stuff")
 
     return {"variables": best_variables, "report": report, "df_results": df_results}
 
@@ -2744,7 +2783,7 @@ def _calc_variable_recommendations(
     p_values_results: dict,
     t_values_results: dict,
     vif_results: dict,
-    report: MarkdownReport = None,
+    report: MarkdownReport = None
 ):
     """Calculate variable recommendations based on various statistical metrics.
     """
@@ -3701,15 +3740,23 @@ def _run_models(
     t.stop("setup")
     t.start("var_recs")
 
+    # We do a "quick" variable optimization step here. It drops some of the more expensive tests for the sake of speed
+    # If you want to do those more expensive tests, you should run them in try_variables instead
     var_recs = get_variable_recommendations(
         df_sales,
         df_univ,
         vacant_only,
         settings,
         model_group,
-        do_report=True,
+        tests_to_run = ["corr", "r2", "p_value", "t_value", "vif"], # Exclude ENR for speed
+        do_report=False,
+        do_cross=False, # Exclude cross-validation for speed
         verbose=True,
+        t=t
     )
+    
+    t.stop("var_recs")
+    
     best_variables = var_recs["variables"]
     del var_recs # Delete var_recs to drop the results dataframe it holds since we don't need it
 

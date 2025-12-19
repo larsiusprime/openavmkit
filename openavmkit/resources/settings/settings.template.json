@@ -395,7 +395,10 @@
 				"days_to_demo"
 			],
 			"+categorical": [
+				"ss_id",
 				"he_id",
+				"impr_he_id",
+				"land_he_id",
 				"address",
 				"model_group",
 				"warning_vacant_discrepancy",
