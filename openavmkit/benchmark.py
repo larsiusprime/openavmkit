@@ -15,6 +15,7 @@ from xgboost import XGBRegressor
 from IPython.display import display
 import numpy as np
 from openavmkit.reports import finish_report
+from openavmkit.utilities.stats import calc_representation
 from sklearn.linear_model import LinearRegression
 
 from openavmkit.data import (
@@ -464,7 +465,7 @@ def get_variable_recommendations(
         If True, prints additional debugging information.
     t : TimingData or None
         TimingData object
-
+    
     Returns
     -------
     dict
@@ -579,16 +580,29 @@ def get_variable_recommendations(
 
     X_sales = ds.X_sales[ds.ind_vars]
     y_sales = ds.y_sales
-
+    
+    X_univ = ds.X_univ[ds.ind_vars]
+    
+    t.start("variables.rep")
+    rep_results = calc_representation(X_sales, X_univ, do_plots=do_plots)
+    bad_vars = rep_results["bad_vars"]
+    t.stop("variables.rep")
+    
+    # Remove bad variables
+    ind_vars = [var for var in ds.ind_vars if var not in bad_vars]
+    
     if "corr" in tests_to_run:
         # Correlation
-        X_corr = ds.df_sales[[ds.dep_var] + ds.ind_vars]
+        X_corr = ds.df_sales[[ds.dep_var] + ind_vars]
         t.start("variables.corr")
         corr_results = calc_correlations(X_corr, thresh.get("correlation", 0.1), do_plots=do_plots)
+        
+        # Remove bad variables
+        ind_vars = [var for var in ds.ind_vars if var not in corr_results["bad_vars"]]
         t.stop("variables.corr")
     else:
         corr_results = None
-
+    
     if "enr" in tests_to_run:
         # Elastic net regularization
         try:
@@ -610,7 +624,7 @@ def get_variable_recommendations(
     if "r2" in tests_to_run:
         # R² values
         t.start("variables.r2")
-        r2_values = calc_r2(ds.df_sales, ds.ind_vars, y_sales)
+        r2_values = calc_r2(ds.df_sales, ind_vars, y_sales)
         t.stop("variables.r2")
     else:
         r2_values = None
@@ -687,6 +701,7 @@ def get_variable_recommendations(
     df_results = _calc_variable_recommendations(
         ds=ds,
         settings=settings,
+        rep_results=rep_results,
         correlation_results=corr_results,
         enr_results=enr_coefs,
         r2_values_results=r2_values,
@@ -745,6 +760,8 @@ def get_variable_recommendations(
     else:
         report = None
     t.stop("variables.final_stuff")
+    
+    print(t.print())
 
     return {"variables": best_variables, "report": report, "df_results": df_results}
 
@@ -2777,6 +2794,7 @@ def _prepare_ds(
 def _calc_variable_recommendations(
     ds: DataSplit,
     settings: dict,
+    rep_results: dict,
     correlation_results: dict,
     enr_results: dict,
     r2_values_results: pd.DataFrame,
@@ -2794,7 +2812,7 @@ def _calc_variable_recommendations(
     )
     thresh = feature_selection.get("thresholds", {})
     weights = feature_selection.get("weights", {})
-
+    
     stuff_to_merge = [
         correlation_results,
         {"final": r2_values_results},
@@ -2896,7 +2914,10 @@ def _calc_variable_recommendations(
             "corr_clarity": "Clarity",
             "corr_score": "Score",
         }
-
+        
+        # Representation:
+        
+        
         # VIF:
         thresh_vif = thresh.get("vif", 10)
         vif_renames = {"variable": "Variable", "vif": "VIF"}

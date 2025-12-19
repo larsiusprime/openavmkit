@@ -602,15 +602,19 @@ def plot_correlation(corr: pd.DataFrame, title: str = "Correlation of Variables"
         vmax=1.0,
         vmin=-1.0,
         xticklabels=corr.columns.tolist(),  # explicitly set the xticklabels
-        yticklabels=corr.index.tolist(),  # explicitly set the yticklabels
-        annot_kws={"size": 8},  # adjust font size if needed
     )
 
-    plt.title(title)
-    plt.xticks(rotation=45, ha="right")  # rotate x labels if needed
-    plt.yticks(rotation=0)  # keep y labels horizontal
-    plt.tight_layout(pad=2)
-    plt.show()
+
+def _corr_problem_columns(X: pd.DataFrame) -> list[str]:
+    """
+    Columns that will yield NaN correlations:
+    - all-NaN
+    - zero variance (<= 1 unique non-null value)
+    """
+    numeric = X.select_dtypes(exclude=["object"])
+    all_nan = [c for c in numeric.columns if numeric[c].isna().all()]
+    zero_var = [c for c in numeric.columns if numeric[c].nunique(dropna=True) <= 1]
+    return sorted(set(all_nan) | set(zero_var))
 
 
 def calc_correlations(
@@ -646,6 +650,14 @@ def calc_correlations(
     """
     X = X.copy()
     first_run = None
+    
+    bad_vars = _corr_problem_columns(X)
+    if bad_vars:
+        X = X.drop(columns=bad_vars, errors="ignore")
+        print("")
+        print(f"Found {len(bad_vars)} columns with null correlations, recommend dropping:")
+        for col in bad_vars:
+            print(col)
 
     # Normalize all numerical values prior to computation:
     for col in X.columns:
@@ -718,7 +730,184 @@ def calc_correlations(
     if do_plots:
         plot_correlation(final_corr, "Correlation of Variables (final)")
 
-    return {"initial": first_run, "final": df_score}
+    return {"initial": first_run, "final": df_score, "bad_vars": bad_vars}
+
+
+def plot_correlation(corr: pd.DataFrame, title: str = "Correlation of Variables") -> None:
+    """
+    Plot a heatmap of a correlation matrix, removing NaN-correlation variables
+    so the plot never shows blank cells.
+    """
+    
+    cmap = sns.diverging_palette(220, 10, as_cmap=True)
+    cmap = cmap.reversed()
+
+    plt.figure(figsize=(10, 8))
+
+    sns.heatmap(
+        corr,
+        annot=True,
+        fmt=".1f",
+        cbar=True,
+        cmap=cmap,
+        vmax=1.0,
+        vmin=-1.0,
+        xticklabels=corr.columns.tolist(),
+        yticklabels=corr.index.tolist(),
+        annot_kws={"size": 8},
+    )
+
+    plt.title(title)
+    plt.xticks(rotation=45, ha="right")
+    plt.yticks(rotation=0)
+    plt.tight_layout(pad=2)
+    plt.show()
+
+
+def calc_representation(
+    X_sales: pd.DataFrame,
+    X_univ: pd.DataFrame,
+    do_plots: bool = False
+) -> pd.DataFrame:
+    """
+    Calculate how well-represented variables in the sales data frame are
+    in the universe dataframe.
+
+    Representation is defined as the percentage of non-zero values,
+    with NaNs treated as zero.
+
+    Also reports distribution stats (25th percentile, median, 75th percentile)
+    for each variable in sales and universe.
+
+    Parameters
+    ----------
+    X_sales : pandas.DataFrame
+        Input DataFrame with variables for the sales dataset
+    X_univ : pandas.DataFrame
+        Input DataFrame with variables for the universe dataset
+    do_plots : bool, optional
+        If true, plots the results dataframe (Default = False)
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns:
+        - name
+        - sales_pct_gt0, univ_pct_gt0
+        - sales_mean, sales_median
+        - univ_mean, univ_median
+    """
+    # Only compare shared columns
+    common_cols = X_sales.columns.intersection(X_univ.columns)
+
+    def _numeric_filled(df: pd.DataFrame) -> pd.DataFrame:
+        # Coerce to numeric; treat non-numeric and NaNs as 0
+        return df[common_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
+
+    sales_num = _numeric_filled(X_sales)
+    univ_num = _numeric_filled(X_univ)
+
+    # % non-zero
+    sales_pct = (sales_num != 0).sum(axis=0) / len(sales_num)
+    univ_pct = (univ_num != 0).sum(axis=0) / len(univ_num)
+
+    result = (
+        pd.DataFrame({
+            "name": common_cols,
+            "sales_pct_gt0": sales_pct.values,
+            "univ_pct_gt0": univ_pct.values,
+            "sales_mean": sales_num.mean().values,
+            "sales_median": sales_num.median().values,
+            "univ_mean": univ_num.mean().values,
+            "univ_median": univ_num.median().values,
+        })
+        .sort_values("name")
+        .reset_index(drop=True)
+    )
+    
+    result = result.sort_values(by="univ_pct_gt0", ascending=False)
+    
+    unrepresented_vars = result[
+        result["sales_pct_gt0"].le(0) |
+        result["univ_pct_gt0"].le(0)
+    ]["name"].unique().tolist()
+    
+    for key in ["sales_pct_gt0", "univ_pct_gt0"]:
+        result[key] = result[key].apply(lambda x: f"{x:.2%}")
+    for key in ["sales_mean", "sales_median", "univ_mean", "univ_median"]:
+        result[key] = result[key].apply(lambda x: _fancy_format(x))
+    
+    if len(unrepresented_vars) > 0:
+        print("")
+        print(f"Found {len(unrepresented_vars)} variables with 0 representation in either sales or universe dataset. You should NOT model with these:")
+        for col in unrepresented_vars:
+            print(col)
+        print("")
+    
+    if do_plots:
+        pd.set_option('display.max_rows', None)
+        display(result)
+        pd.set_option('display.max_rows', 15)
+    
+    return {
+        "bad_vars": unrepresented_vars,
+        "df": result
+   }
+
+
+def _fancy_format(num: float | int) -> str:
+    """Formats a number in a pleasing and efficient way
+
+    Parameters
+    ----------
+    num : float | int
+        The number to format
+
+    Returns
+    -------
+    str
+        The formatted number as a string
+
+    Notes
+    -----
+    - Renders infinity as ∞
+    - Renders any null, nan, or similar values as "N/A"
+    - Shows decimals for small numbers
+    - Shows large numbers with suffixes (K for thousand, M for million, etc)
+    """
+    if not isinstance(num, (int, float, np.number)):
+        # if NoneType:
+        if num is None:
+            return "N/A"
+        return str(num) + "-->?(type=" + str(type(num)) + ")"
+
+    if np.isinf(num):
+        return "∞" if num > 0 else "-∞"
+
+    if np.isinf(num):
+        if num > 0:
+            return " ∞"
+        else:
+            return "-∞"
+    if pd.isna(num):
+        return "N/A"
+    if num == 0:
+        return "0.00"
+    if 1 > abs(num) > 0:
+        return "{:.2f}".format(num)
+    num = float("{:.3g}".format(num))
+    magnitude = 0
+    while abs(num) >= 1000 and abs(num) > 1e-6:
+        magnitude += 1
+        num /= 1000.0
+    if magnitude <= 11:
+        magletter = ["", "K", "M", "B", "T", "Q", "Qi", "S", "Sp", "O", "N", "D"][
+            magnitude
+        ]
+        return "{}{}".format("{:f}".format(num).rstrip("0").rstrip("."), magletter)
+    else:
+        # format num in scientific notation with 2 decimal places
+        return "{:e}".format(num)
 
 
 def calc_elastic_net_regularization(
