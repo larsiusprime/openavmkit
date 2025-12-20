@@ -617,6 +617,27 @@ def _corr_problem_columns(X: pd.DataFrame) -> list[str]:
     return sorted(set(all_nan) | set(zero_var))
 
 
+def _order_by_target_corr(corr: pd.DataFrame, target_col: str | None = None) -> list[str]:
+    """
+    Return column order sorted by absolute correlation to target (descending).
+    Keeps target first.
+    """
+    if corr.empty:
+        return []
+
+    if target_col is None:
+        target_col = corr.columns[0]
+
+    # absolute corr with target, descending
+    order = corr[target_col].abs().sort_values(ascending=False).index.tolist()
+
+    # ensure target is first (it will be, but be explicit)
+    if order and order[0] != target_col:
+        order = [target_col] + [c for c in order if c != target_col]
+
+    return order
+    
+
 def calc_correlations(
     X: pd.DataFrame,
     threshold: float = 0.1,
@@ -650,7 +671,7 @@ def calc_correlations(
     """
     X = X.copy()
     first_run = None
-    
+
     bad_vars = _corr_problem_columns(X)
     if bad_vars:
         X = X.drop(columns=bad_vars, errors="ignore")
@@ -663,69 +684,125 @@ def calc_correlations(
     for col in X.columns:
         if X[col].dtype != "object":
             X[col] = (X[col] - X[col].mean()) / X[col].std()
-    
-    # Compute correlations ONCE. Subsequent iterations just slice this matrix.
+
     corr_full = X.corr()
-    
-    # Track remaining columns explicitly (so we don't mutate X repeatedly)
     remaining = list(X.columns)
 
+    # Keep a copy of the *initial* ordered corr for plotting later
+    naive_corr_for_plot = None  # <--- NEW
+
     while True:
-        # Compute the correlation matrix
         naive_corr = corr_full.loc[remaining, remaining]
 
-        # Identify variables with the highest correlation with the target variable (the first column)
-        target_corr = naive_corr.iloc[:, 0].abs().sort_values(ascending=False)
+        # --- NEW: compute one explicit order and apply to both axes
+        order = _order_by_target_corr(naive_corr, target_col=naive_corr.columns[0])
+        naive_corr = naive_corr.loc[order, order]
+        # -----------------------------------------------
 
-        # Sort naive_corr by the correlation of the target variable
-        naive_corr = naive_corr.loc[target_corr.index, target_corr.index]
+        if naive_corr_for_plot is None:  # <--- NEW
+            naive_corr_for_plot = naive_corr.copy()
 
         naive_corr_sans_target = naive_corr.iloc[1:, 1:]
 
-        # Get the (absolute) strength of the correlation with the target variable
-        strength = naive_corr.iloc[:, 0].abs()
+        strength = naive_corr.iloc[:, 0].abs().iloc[1:]
 
-        # drop the target variable from strength:
-        strength = strength.iloc[1:]
-
-        # Calculate the clarity of the correlation: how correlated it is with all other variables *except* the target variable
         clarity = 1 - (
             (naive_corr_sans_target.abs().sum(axis=1) - 1.0)
             / (len(naive_corr_sans_target.columns) - 1)
         )
 
-        # Combine the strength and clarity into a single score -- bigger is better, and we want high strength and high clarity
         score = strength * clarity * clarity
 
-        # Identify the variable with the lowest score
         min_score_idx = score.idxmin()
-
-        if pd.isna(min_score_idx):
-            min_score = score[0]
-        else:
-            min_score = score[min_score_idx]
+        min_score = score[min_score_idx]
 
         data = {"corr_strength": strength, "corr_clarity": clarity, "corr_score": score}
-        df_score = pd.DataFrame(data)
-        df_score = df_score.reset_index().rename(columns={"index": "variable"})
+        df_score = pd.DataFrame(data).reset_index().rename(columns={"index": "variable"})
 
         if first_run is None:
-            first_run = df_score
-            first_run = first_run.sort_values("corr_score", ascending=False)
+            first_run = df_score.sort_values("corr_score", ascending=False)
 
         if min_score < threshold:
             remaining.remove(min_score_idx)
         else:
             break
 
-    # sort by score:
-    df_score = df_score.sort_values("corr_score", ascending=False)
+    # ------------------------------------------------------------------
+    # NEW DROP LOGIC (second pass):
+    # For each variable, starting with the strongest (most correlated with target),
+    # drop all other variables that are more correlated with current_variable than
+    # they are with the target.
+    # ------------------------------------------------------------------
+    target_col = remaining[0]
 
-    if do_plots:
-        plot_correlation(naive_corr, "Correlation of Variables (initial)")
+    # process in descending strength-to-target order (excluding target itself)
+    ordered_by_target = (
+        corr_full.loc[remaining, target_col]
+        .abs()
+        .drop(labels=[target_col], errors="ignore")
+        .sort_values(ascending=False)
+        .index
+        .tolist()
+    )
+    
+    all_dropped = []
+    
+    for current_variable in ordered_by_target:
+        if current_variable not in remaining:
+            continue
 
-    # recompute the correlation matrix
+        # Compare every other variable's corr to current_variable vs corr to target
+        others = [v for v in remaining if v not in (target_col, current_variable)]
+        to_drop = []
+        for v in others:
+            corr_to_current = abs(corr_full.loc[v, current_variable])
+            corr_to_target = abs(corr_full.loc[v, target_col])
+            if corr_to_current > corr_to_target:
+                to_drop.append(v)
+
+        if to_drop:
+            for v in to_drop:
+                if v in remaining:
+                    remaining.remove(v)
+                    all_dropped.append(v)
+    
+    all_dropped = list(set(all_dropped))
+    if len(all_dropped) > 0:
+        bad_vars = list(set(bad_vars+all_dropped))
+    
+    # ------------------------------------------------------------------
+
+    # Recompute scores for the *final* remaining set (same math as above)
+    naive_corr = corr_full.loc[remaining, remaining]
+    order = _order_by_target_corr(naive_corr, target_col=naive_corr.columns[0])
+    naive_corr = naive_corr.loc[order, order]
+
+    naive_corr_sans_target = naive_corr.iloc[1:, 1:]
+    strength = naive_corr.iloc[:, 0].abs().iloc[1:]
+    clarity = 1 - (
+        (naive_corr_sans_target.abs().sum(axis=1) - 1.0)
+        / (len(naive_corr_sans_target.columns) - 1)
+    )
+    score = strength * clarity * clarity
+
+    data = {"corr_strength": strength, "corr_clarity": clarity, "corr_score": score}
+    df_score = (
+        pd.DataFrame(data)
+        .reset_index()
+        .rename(columns={"index": "variable"})
+        .sort_values("corr_score", ascending=False)
+    )
+
+    if do_plots and naive_corr_for_plot is not None:
+        plot_correlation(naive_corr_for_plot, "Correlation of Variables (initial)")
+
+    # recompute correlation matrix for remaining vars
     final_corr = corr_full.loc[remaining, remaining]
+
+    # --- NEW: order final_corr the same way (by target corr within remaining set)
+    final_order = _order_by_target_corr(final_corr, target_col=final_corr.columns[0])
+    final_corr = final_corr.loc[final_order, final_order]
+    # -----------------------------------------------
 
     if do_plots:
         plot_correlation(final_corr, "Correlation of Variables (final)")
@@ -735,18 +812,37 @@ def calc_correlations(
 
 def plot_correlation(corr: pd.DataFrame, title: str = "Correlation of Variables") -> None:
     """
-    Plot a heatmap of a correlation matrix, removing NaN-correlation variables
-    so the plot never shows blank cells.
+    Plot a heatmap of a correlation matrix with adaptive formatting:
+    - Shrinks axis label fonts as the matrix grows
+    - Hides cell annotations when the plot becomes too dense
     """
-    
-    cmap = sns.diverging_palette(220, 10, as_cmap=True)
-    cmap = cmap.reversed()
 
-    plt.figure(figsize=(10, 8))
+    n = corr.shape[0]
+
+    # Heuristics for readability
+    if n <= 10:
+        annot = True
+        annot_size = 8
+        label_size = 10
+        fig_size = (10, 8)
+    elif n <= 20:
+        annot = True
+        annot_size = 6
+        label_size = 8
+        fig_size = (12, 10)
+    else:
+        annot = False          # Hide numbers in cells
+        annot_size = None
+        label_size = 6
+        fig_size = (14, 12)
+
+    cmap = sns.diverging_palette(220, 10, as_cmap=True).reversed()
+
+    plt.figure(figsize=fig_size)
 
     sns.heatmap(
         corr,
-        annot=True,
+        annot=annot,
         fmt=".1f",
         cbar=True,
         cmap=cmap,
@@ -754,14 +850,18 @@ def plot_correlation(corr: pd.DataFrame, title: str = "Correlation of Variables"
         vmin=-1.0,
         xticklabels=corr.columns.tolist(),
         yticklabels=corr.index.tolist(),
-        annot_kws={"size": 8},
+        annot_kws={"size": annot_size} if annot else None,
     )
 
     plt.title(title)
-    plt.xticks(rotation=45, ha="right")
-    plt.yticks(rotation=0)
+
+    # Axis label formatting
+    plt.xticks(rotation=45, ha="right", fontsize=label_size)
+    plt.yticks(rotation=0, fontsize=label_size)
+
     plt.tight_layout(pad=2)
     plt.show()
+
 
 
 def calc_representation(
