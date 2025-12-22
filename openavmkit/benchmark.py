@@ -455,8 +455,6 @@ def get_variable_recommendations(
     tests_to_run : list[str] or None
         A list of tests to run. If None, all tests are run. Legal values are "corr",
         "r2", "p_value", "t_value", "enr", and "vif"
-    do_cross_validation: bool
-        If True, runs cross validation to generate the final variable selection
     do_report : bool
         If True, generates a report of the variable selection process.
     do_plots: bool, optional
