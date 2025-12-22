@@ -3878,7 +3878,7 @@ def _run_models(
             df_universe=df_univ,
             model_group=model_group,
             vacant_only=vacant_only,
-            hedonic=hedonic,
+            hedonic=False,
             outpath=outpath,
             dep_var=dep_var,
             dep_var_test=dep_var_test,
