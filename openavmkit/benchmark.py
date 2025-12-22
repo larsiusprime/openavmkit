@@ -16,11 +16,11 @@ from IPython.display import display
 import numpy as np
 from openavmkit.reports import finish_report
 from openavmkit.utilities.stats import calc_representation
+from openavmkit.utilities.settings import get_ensemble_instructions, get_locations
 from sklearn.linear_model import LinearRegression
 
 from openavmkit.data import (
     get_important_field,
-    get_locations,
     _read_split_keys,
     SalesUniversePair,
     get_hydrated_sales_from_sup,
@@ -2270,9 +2270,10 @@ def _optimize_ensemble_allocation(
     df_test = ds.df_test
     df_univ = ds.df_universe
     instructions = settings.get("modeling", {}).get("instructions", {})
-
+    
     if ensemble_list is None:
-        ensemble_list = instructions.get(vacant_status, {}).get("ensemble", [])
+        ensemble_inst = get_ensemble_instructions(settings, vacant_status)
+        ensemble_list = ensemble_inst.get("list", [])
 
     if len(ensemble_list) == 0:
         ensemble_list = [key for key in all_results.model_results.keys()]
@@ -2445,9 +2446,10 @@ def _optimize_ensemble(
     df_sales = ds.df_sales
     df_univ = ds.df_universe
     instructions = settings.get("modeling", {}).get("instructions", {})
-
+    
     if ensemble_list is None:
-        ensemble_list = instructions.get(vacant_status, {}).get("ensemble", [])
+        ensemble_inst = get_ensemble_instructions(settings, vacant_status)
+        ensemble_list = ensemble_inst.get("list", [])
 
     if len(ensemble_list) == 0:
         ensemble_list = [key for key in all_results.model_results.keys()]
@@ -3252,34 +3254,19 @@ def _run_hedonic_models(
     )
 
     if run_ensemble:
-        best_ensemble = _optimize_ensemble(
-            df_sales=df_sales,
-            df_universe=df_universe,
-            model_group=model_group,
-            vacant_only=False,
-            dep_var=dep_var,
-            dep_var_test=dep_var_test,
-            all_results=all_hedonic_results,
-            settings=settings,
-            verbose=verbose,
-            hedonic=True,
-        )
-        # Run the ensemble model
-        ensemble_results = _run_ensemble(
+        _perform_default_ensemble(
             df_sales=df_sales,
             df_universe=df_universe,
             model_group=model_group,
             vacant_only=False,
             hedonic=True,
-            dep_var=dep_var,
-            dep_var_test=dep_var_test,
             outpath=outpath,
-            ensemble_list=best_ensemble,
+            ep_var=dep_var,
+            dep_var_test=dep_var_test,
             all_results=all_hedonic_results,
             settings=settings,
-            verbose=verbose,
+            verbose=verbose
         )
-
         out_pickle = f"{outpath}/model_ensemble.pickle"
         with open(out_pickle, "wb") as file:
             pickle.dump(ensemble_results, file)
@@ -3312,6 +3299,60 @@ def _run_hedonic_models(
         print("")
 
         print("")
+
+
+def _perform_default_ensemble(
+    df_sales: pd.DataFrame | None,
+    df_universe: pd.DataFrame | None,
+    model_group: str,
+    vacant_only: bool,
+    hedonic: bool,
+    outpath: str,
+    dep_var: str,
+    dep_var_test: str,
+    all_results: MultiModelResults,
+    settings: dict,
+    verbose: bool = False,
+    ensemble_list: list[str] = None,
+    t: TimingData = None
+):
+    if t is None:
+        t = TimingData()
+    t.start("optimize_ensemble")
+    if verbose:
+        print("Optimizing ensemble...")
+    best_ensemble = _optimize_ensemble(
+        df_sales=df_sales,
+        df_universe=df_universe,
+        model_group=model_group,
+        vacant_only=vacant_only,
+        dep_var=dep_var,
+        dep_var_test=dep_var_test,
+        all_results=all_results,
+        settings=settings,
+        verbose=verbose,
+        hedonic=hedonic,
+    )
+    t.stop("optimize_ensemble")
+    # Run the ensemble model
+    t.start("run_ensemble")
+    if verbose:
+        print("Running ensemble...")
+    ensemble_results = _run_ensemble(
+        df_sales=df_sales,
+        df_universe=df_universe,
+        model_group=model_group,
+        vacant_only=vacant_only,
+        hedonic=hedonic,
+        dep_var=dep_var,
+        dep_var_test=dep_var_test,
+        outpath=outpath,
+        ensemble_list=best_ensemble,
+        all_results=all_results,
+        settings=settings,
+        verbose=verbose,
+    )
+    t.stop("run_ensemble")
 
 
 def _fix_earliest_latest_dates(df: pd.DataFrame):
@@ -3832,42 +3873,21 @@ def _run_models(
     t.stop("calc benchmarks")
 
     if run_ensemble:
-        if verbose:
-            print(f"Optimizing ensemble...")
-        t.start("optimize ensemble")
-        best_ensemble = _optimize_ensemble(
+        _perform_default_ensemble(
             df_sales=df_sales,
             df_universe=df_univ,
             model_group=model_group,
             vacant_only=vacant_only,
-            dep_var=dep_var,
-            dep_var_test=dep_var_test,
-            all_results=all_results,
-            settings=settings,
-            verbose=verbose,
-        )
-        t.stop("optimize ensemble")
-
-        # Run the ensemble model
-        t.start("run ensemble")
-        if verbose:
-            print(f"Running ensemble...")
-        ensemble_results = _run_ensemble(
-            df_sales=df_sales,
-            df_universe=df_univ,
-            model_group=model_group,
-            vacant_only=vacant_only,
-            hedonic=False,
-            dep_var=dep_var,
-            dep_var_test=dep_var_test,
+            hedonic=hedonic,
             outpath=outpath,
-            ensemble_list=best_ensemble,
+            dep_var=dep_var,
+            dep_var_test=dep_var_test,
             all_results=all_results,
             settings=settings,
             verbose=verbose,
+            t=t
         )
-        t.stop("run ensemble")
-
+        
         if verbose:
             print(f"Writing ensemble pickle...")
         out_pickle = f"{outpath}/model_ensemble.pickle"

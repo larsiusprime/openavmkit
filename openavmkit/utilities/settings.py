@@ -738,6 +738,71 @@ def get_long_distance_unit(settings: dict) -> str|None:
         return "km"
 
 
+def get_locations(settings: dict, df: pd.DataFrame = None) -> list[str]:
+    """
+    Retrieve location fields from settings. These are all the fields that are considered locations.
+
+    Parameters
+    ----------
+    settings : dict
+        Settings dictionary.
+    df : pandas.DataFrame, optional
+        Optional DataFrame to filter available locations.
+
+    Returns
+    -------
+    list[str]
+        List of location field names.
+    """
+
+    locations = (
+        settings.get("field_classification", {})
+        .get("important", {})
+        .get("locations", [])
+    )
+    if df is not None:
+        locations = [loc for loc in locations if loc in df]
+    return locations
+    
+
+def get_ensemble_instructions(settings: dict, mvh: str) -> dict:
+    """
+    Retrieves ensemble instructions for a particular modeling section
+    
+    Parameters
+    ----------
+    settings : dict
+        Settings dictionary.
+    mvh : string
+        Which section -- "main", "vacant", or "hedonic"
+        
+    Returns
+    -------
+    dict
+        Dictionary object containing ensemble settings
+    """
+    
+    instructions = settings.get("modeling", {}).get("instructions", {}).get(mvh, {})
+    
+    ensemble = instructions.get("ensemble", {})
+    type = ensemble.get("type", "default")
+    if type == "default":
+        models = ensemble.get("models", [])
+        return {
+            "type": "default",
+            "models": models
+        }
+    elif type == "local":
+        locations = ensemble.get("locations", None)
+        if locations is None:
+            locations = get_locations(settings)
+        if locations is None:
+            locations = []
+        return {
+            "type": "local",
+            "locations": locations
+        }
+
 #######################################
 # PRIVATE
 #######################################

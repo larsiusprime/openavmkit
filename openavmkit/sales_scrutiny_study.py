@@ -10,7 +10,6 @@ from openavmkit.data import (
   _get_sales,
   get_sale_field,
   get_important_fields,
-  get_locations,
   get_vacant_sales,
   SalesUniversePair,
   get_hydrated_sales_from_sup,
@@ -26,7 +25,7 @@ from openavmkit.utilities.data import (
     combine_dfs,
 )
 from openavmkit.utilities.excel import write_to_excel
-from openavmkit.utilities.settings import get_fields_categorical, _apply_dd_to_df_cols, area_unit
+from openavmkit.utilities.settings import get_fields_categorical, _apply_dd_to_df_cols, area_unit, get_locations
 
 
 class SalesScrutinyStudySummary:

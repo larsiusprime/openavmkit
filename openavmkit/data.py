@@ -431,33 +431,6 @@ def get_report_locations(settings: dict, df: pd.DataFrame = None) -> list[str]:
     return locations
 
 
-def get_locations(settings: dict, df: pd.DataFrame = None) -> list[str]:
-    """
-    Retrieve location fields from settings. These are all the fields that are considered locations.
-
-    Parameters
-    ----------
-    settings : dict
-        Settings dictionary.
-    df : pandas.DataFrame, optional
-        Optional DataFrame to filter available locations.
-
-    Returns
-    -------
-    list[str]
-        List of location field names.
-    """
-
-    locations = (
-        settings.get("field_classification", {})
-        .get("important", {})
-        .get("locations", [])
-    )
-    if df is not None:
-        locations = [loc for loc in locations if loc in df]
-    return locations
-
-
 def get_important_fields(settings: dict, df: pd.DataFrame = None) -> list[str]:
     """
     Retrieve important field names from settings.
