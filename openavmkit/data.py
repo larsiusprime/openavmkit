@@ -2882,7 +2882,11 @@ def _basic_geo_enrichment(
                 gdf[f"land_area_gis_delta_{unit}"], gdf[f"land_area_{unit}"]
             )
 
-        gdf[f"land_area_{unit}_log"] = np.log(gdf[f"land_area_{unit}"])
+        gdf[f"land_area_{unit}_log"] = np.where(
+            gdf[f"land_area_{unit}"] > 0,
+            np.log(gdf[f"land_area_{unit}"]),
+            np.nan
+        )
 
         t.stop("area")
     
