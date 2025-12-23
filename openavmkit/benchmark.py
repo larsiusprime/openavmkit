@@ -472,19 +472,18 @@ def get_variable_recommendations(
         (the generated report).
     """
 
-    report = MarkdownReport("variables")
+    report: MarkdownReport = MarkdownReport("variables")
 
     if tests_to_run is None:
-        tests_to_run = ["corr", "r2", "p_value", "t_value", "enr", "vif"]
+        tests_to_run: list[str] = ["corr", "r2", "p_value", "t_value", "enr", "vif"]
 
-    if "sale_price_time_adj" not in df_sales:
+    if "sale_price_time_adj" not in df_sales.columns:
         warnings.warn("Time adjustment was not found in sales data. Calculating now...")
         df_sales = enrich_time_adjustment(df_sales, settings, verbose=verbose)
 
-    s = settings
-    s_model = s.get("modeling", {})
+    settings_model = settings.get("modeling", {})
     vacant_status = "vacant" if vacant_only else "main"
-    model_entries = s_model.get("models", {}).get(vacant_status, {})
+    model_entries = settings_model.get("models", {}).get(vacant_status, {})
     entry: dict | None = model_entries.get("model", model_entries.get("default", {}))
     if variables_to_use is None:
         variables_to_use: list | None = entry.get("ind_vars", None)
@@ -492,16 +491,16 @@ def get_variable_recommendations(
     if variables_to_use is None or len(variables_to_use) == 0:
         raise ValueError("No independent variables provided! Please define some!")
     
-    cats = get_fields_categorical(settings, df_sales, include_boolean=False)
+    categoricals = get_fields_categorical(settings, df_sales, include_boolean=False)
+
     flagged = []
-    for variable in variables_to_use:
-        if variable in cats:
-            uniques = df_sales[variable].unique()
-            if len(uniques) > 50:
-                warnings.warn(
-                    f"Variable '{variable}' has more than 50 unique values. No variable analysis will be done on it and it will not be auto-dropped. Hope you know what you're doing!"
-                )
-                flagged.append(variable)
+    categoricals_to_use = [x for x in variables_to_use if x in categoricals]
+    for variable in categoricals_to_use:
+        if df_sales[variable].nunique() > 50:
+            warnings.warn(
+                f"Variable '{variable}' has more than 50 unique values. No variable analysis will be done on it and it will not be auto-dropped. Hope you know what you're doing!"
+            )
+            flagged.append(variable)
 
     if len(flagged) > 0:
         variables_to_use = [
@@ -895,7 +894,7 @@ def run_models(
                 do_shaps=do_shaps,
                 do_plots=do_plots
             )
-            if mg_results is not None:
+            if mg_results is not None and save_results:
                 dict_all_results[model_group] = mg_results
         t.stop(f"model group: {model_group}")
     t.stop("run model groups")
@@ -1208,7 +1207,7 @@ def run_one_model(
         entry = default_entry
         if entry is None:
             raise ValueError(
-                f"Model entry for {model} not found, and there is no default entry!"
+                f"Model entry for {model_name} not found, and there is no default entry!"
             )
     model_engine = entry.get("model", model_name)
     
@@ -1234,7 +1233,7 @@ def run_one_model(
     # no duplicates!
     ind_vars = list(set(ind_vars))
     if ind_vars is None:
-        raise ValueError(f"ind_vars not found for model {model}")
+        raise ValueError(f"ind_vars not found for model {model_name}")
 
     if are_ind_vars_default:
         if (best_variables is not None) and (set(ind_vars) != set(best_variables)):
@@ -1277,7 +1276,7 @@ def run_one_model(
     t.start("setup")
     if len(ds.y_sales) < 15:
         if verbose:
-            print(f"--> model {model} has less than 15 sales. Skipping...")
+            print(f"--> model {model_name} has less than 15 sales. Skipping...")
         return None
 
     intercept = entry.get("intercept", True)
@@ -2748,6 +2747,8 @@ def _calc_variable_recommendations(
 ):
     """Calculate variable recommendations based on various statistical metrics.
     """
+    one_hot_descendents = ds.one_hot_descendants # Unpack this and delete it to get rid of some dataframe copies
+    del ds
     feature_selection = (
         settings.get("modeling", {})
         .get("instructions", {})
@@ -2908,7 +2909,7 @@ def _calc_variable_recommendations(
             ]
             dfr_corr.set_index("Rank", inplace=True)
             dfr_corr = _apply_dd_to_df_rows(
-                dfr_corr, "Variable", settings, ds.one_hot_descendants
+                dfr_corr, "Variable", settings, one_hot_descendents
             )
             report.set_var(f"table_corr_{state}", df_to_markdown(dfr_corr))
 
@@ -2937,7 +2938,7 @@ def _calc_variable_recommendations(
                 dfr_vif = dfr_vif[["Rank", "Variable", "VIF", "Pass/Fail"]]
                 dfr_vif.set_index("Rank", inplace=True)
                 dfr_vif = _apply_dd_to_df_rows(
-                    dfr_vif, "Variable", settings, ds.one_hot_descendants
+                    dfr_vif, "Variable", settings, one_hot_descendents
                 )
                 report.set_var(f"table_vif_{state}", df_to_markdown(dfr_vif))
             else:
@@ -2959,7 +2960,7 @@ def _calc_variable_recommendations(
                 dfr_p_value = dfr_p_value[["Rank", "Variable", "P-value", "Pass/Fail"]]
                 dfr_p_value.set_index("Rank", inplace=True)
                 dfr_p_value = _apply_dd_to_df_rows(
-                    dfr_p_value, "Variable", settings, ds.one_hot_descendants
+                    dfr_p_value, "Variable", settings, one_hot_descendents
                 )
                 report.set_var(f"table_p_value_{state}", df_to_markdown(dfr_p_value))
 
@@ -2981,7 +2982,7 @@ def _calc_variable_recommendations(
                 dfr_t_value = dfr_t_value[["Rank", "Variable", "T-value", "Pass/Fail"]]
                 dfr_t_value.set_index("Rank", inplace=True)
                 dfr_t_value = _apply_dd_to_df_rows(
-                    dfr_t_value, "Variable", settings, ds.one_hot_descendants
+                    dfr_t_value, "Variable", settings, one_hot_descendents
                 )
                 report.set_var(f"table_t_value_{state}", df_to_markdown(dfr_t_value))
 
@@ -3002,7 +3003,7 @@ def _calc_variable_recommendations(
                 dfr_enr = dfr_enr[["Rank", "Variable", "Coefficient", "Pass/Fail"]]
                 dfr_enr.set_index("Rank", inplace=True)
                 dfr_enr = _apply_dd_to_df_rows(
-                    dfr_enr, "Variable", settings, ds.one_hot_descendants
+                    dfr_enr, "Variable", settings, one_hot_descendents
                 )
                 report.set_var(f"table_enr_{state}", df_to_markdown(dfr_enr))
 
@@ -3021,7 +3022,7 @@ def _calc_variable_recommendations(
                 dfr_r2 = dfr_r2[["Rank", "Variable", "R-squared", "Pass/Fail"]]
                 dfr_r2.set_index("Rank", inplace=True)
                 dfr_r2 = _apply_dd_to_df_rows(
-                    dfr_r2, "Variable", settings, ds.one_hot_descendants
+                    dfr_r2, "Variable", settings, one_hot_descendents
                 )
                 if state == "final":
                     dfr_r2 = dfr_r2[dfr_r2["Pass/Fail"].eq("✅")]
@@ -3064,7 +3065,7 @@ def _calc_variable_recommendations(
                         .astype("string")
                     )
                 dfr_coef_sign = _apply_dd_to_df_rows(
-                    dfr_coef_sign, "Variable", settings, ds.one_hot_descendants
+                    dfr_coef_sign, "Variable", settings, one_hot_descendents
                 )
                 if state == "final":
                     dfr_coef_sign = dfr_coef_sign[dfr_coef_sign["Pass/Fail"].eq("✅")]
@@ -3073,7 +3074,7 @@ def _calc_variable_recommendations(
                 )
 
         dfr["Rank"] = range(1, len(dfr) + 1)
-        dfr = _apply_dd_to_df_rows(dfr, "Variable", settings, ds.one_hot_descendants)
+        dfr = _apply_dd_to_df_rows(dfr, "Variable", settings, one_hot_descendents)
 
         the_cols = [
             "Rank",
@@ -3652,27 +3653,27 @@ def _run_models(
     df_sales = df_sales[df_sales["model_group"].eq(model_group)].copy()
     df_univ = df_univ[df_univ["model_group"].eq(model_group)].copy()
 
-    s = settings
-    s_model = s.get("modeling", {})
-    s_inst = s_model.get("instructions", {})
-    s_mvh = s_inst.get(main_vacant_hedonic, {})
+    settings_model = settings.get("modeling", {})
+    settings_model_instructions = settings_model.get("instructions", {})
+    settings_mvh = settings_model_instructions.get(main_vacant_hedonic, {})
 
     if is_hedonic:
         # For a hedonic model, we don't want to overload the vacant signal
         # so we grab only a modest amount of improved sales to supplement the vacants
-        s_sel = s_mvh.get("select", {})
-        impr_to_vac_ratio = s_sel.get("improved_to_vacant_ratio", 4.0)
-        random_seed = s_inst.get("random_seed", 1337)
+        settings_select = settings_mvh.get("select", {})
+        impr_to_vac_ratio = settings_select.get("improved_to_vacant_ratio", 4.0)
+        random_seed = settings_model_instructions.get("random_seed", 1337)
         
         df_sales = _trim_hedonic_sales(df_sales, model_group, impr_to_vac_ratio, random_seed, verbose)
         
     default_value = get_sale_field(settings, df_sales)
-    dep_var = s_inst.get("dep_var", default_value)
-    dep_var_test = s_inst.get("dep_var_test", default_value)
-    fields_cat = get_fields_categorical(s, df_univ, include_boolean=True)
-    models_to_run = s_inst.get(main_vacant_hedonic, {}).get("run", None)
+    dep_var = settings_model_instructions.get("dep_var", default_value)
+    dep_var_test = settings_model_instructions.get("dep_var_test", default_value)
+    fields_cat = get_fields_categorical(settings, df_univ, include_boolean=True)
+    models_to_run = settings_model_instructions.get(main_vacant_hedonic, {}).get("run", None)
+    models_to_skip = settings_model_instructions.get(main_vacant_hedonic,{}).get("skip",{}).get(model_group,[])
 
-    model_entries = s_model.get("models").get(main_vacant_hedonic, {})
+    model_entries = settings_model.get("models").get(main_vacant_hedonic, {})
 
     if models_to_run is None:
         models_to_run = list(model_entries.keys())
@@ -3718,6 +3719,9 @@ def _run_models(
     # Run the models one by one and stash the results
     t.start("run_models")
     for model_name in models_to_run:
+        if model_name in models_to_skip:
+            print(f"Skipping model {model_name}.")
+            continue
         model_entry = model_entries.get(model_name, model_entries.get("default", {}))
         model_engine = model_entry.get("engine", model_name)
         
