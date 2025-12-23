@@ -26,6 +26,7 @@ from openavmkit.data import (
     get_hydrated_sales_from_sup,
     get_report_locations,
     get_sale_field,
+    filter_df_by_date_range
 )
 from openavmkit.modeling import (
     run_mra,
@@ -1010,7 +1011,7 @@ def write_out_all_results(sup: SalesUniversePair, all_results: dict):
             smr = mm_results.model_results[model_type]
             col_name = (
                 f"market_value_{model_type}"
-                if model_type != "ensemble"
+                if "ensemble" not in model_type
                 else "market_value"
             )
             df_pred = smr.df_universe[["key", smr.field_prediction]].rename(
@@ -2396,6 +2397,339 @@ def _optimize_ensemble_allocation_iteration(
     return best_score, best_list
 
 
+def _run_local_ensemble(
+    df_sales: pd.DataFrame | None,
+    df_universe: pd.DataFrame | None,
+    model_group: str,
+    vacant_only: bool,
+    dep_var: str,
+    dep_var_test: str,
+    all_results: MultiModelResults,
+    settings: dict,
+    outpath: str,
+    verbose: bool = False,
+    hedonic: bool = False,
+    locations: list[str] = None,
+):
+    """
+    Optimize the ensemble allocation over all iterations.
+    """
+    timing = TimingData()
+    timing.start("total")
+    timing.start("setup")
+
+    first_key = list(all_results.model_results.keys())[0]
+    test_keys = all_results.model_results[first_key].ds.test_keys
+    train_keys = all_results.model_results[first_key].ds.train_keys
+
+    if df_sales is None:
+        df_universe = all_results.df_univ_orig
+        df_sales = all_results.df_sales_orig
+
+    ds = DataSplit(
+        "ensemble",
+        df_sales,
+        df_universe,
+        model_group,
+        settings,
+        dep_var,
+        dep_var_test,
+        [],
+        [],
+        {},
+        test_keys,
+        train_keys,
+        vacant_only=vacant_only,
+        hedonic=hedonic,
+    )
+
+    vacant_status = "vacant" if vacant_only else "main"
+    df_test = ds.df_test
+    df_train = ds.df_train
+    df_sales = ds.df_sales
+    df_univ = ds.df_universe
+    
+    if locations is None:
+        locations = []
+        warnings.warn("You didn't provide any locations! Local ensemble won't be very effective.")
+    
+    return _run_local_ensemble_test_and_paint(
+        df_test=df_test,
+        df_train=df_train,
+        df_sales=df_sales,
+        df_univ=df_univ,
+        settings=settings,
+        timing=timing,
+        all_results=all_results,
+        ds=ds,
+        locations=locations,
+        outpath=outpath,
+        verbose=verbose
+    )
+
+
+def calc_df_mape(
+    df: pd.DataFrame,
+    field_prediction: str,
+    settings: dict,
+    dep_var: str,
+    is_land_predictions: bool = False
+):
+    """
+    Calculate MAPE 
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Dataframe you want to calculate MAPE for
+    field_prediction : str
+        The field name for predictions.
+    settings : dict
+        Settings dictionary
+    dep_var: str
+        The field you're trying to predict
+    is_land_predictions: bool
+        Are you predicting land values or not. If true, uses the `valid_for_land_ratio_study` validity flag.
+    """
+    
+    # Clean arrays
+    y = df[dep_var].to_numpy()
+    df[dep_var] = pd.to_numeric(df[dep_var], errors="coerce")
+    df[field_prediction] = pd.to_numeric(df[field_prediction], errors="coerce")
+    
+    # Get validity field
+    valid_field = "valid_for_ratio_study"
+    if is_land_predictions:
+        valid_field = "valid_for_land_ratio_study"
+        
+    # select only values that are not NaN in either and are valid for ratio study:
+    df_clean = df[
+        df[valid_field] & 
+        ~pd.isna(df[dep_var]) & 
+        ~pd.isna(df[field_prediction])
+    ]
+    
+    # Get y & y_pred
+    y = df_clean[dep_var].to_numpy()
+    y_pred = df_clean[field_prediction].to_numpy()
+    
+    # Calculate MAPE
+    if len(y) > 0 and len(y_pred) > 0:
+        return mean_absolute_percentage_error(y, y_pred)
+    
+    return float("nan")
+
+
+def _test_mape_local_ensemble(
+    df: pd.DataFrame,
+    location_field: str,
+    location_value: str,
+    model_keys: list[str],
+    settings: dict,
+    dep_var: str,
+    is_land_predictions: bool,
+    best_mape: float = float('inf'),
+    verbose: bool = False
+):
+    if location_field != "":
+        df_slice = df[df[location_field].eq(location_value)].copy()
+    else:
+        df_slice = df
+    best_model = None
+    
+    for key in model_keys:
+        mape = calc_df_mape(df_slice, key, settings, dep_var, is_land_predictions)
+        if mape < best_mape:
+            best_model = key
+            best_mape = mape
+            if verbose:
+                print(f"----> loc = {location_value:<10}, model = {key:<12}, mape = {best_mape:>6.3f}, samples = {len(df_slice):<12}")
+    return best_model, best_mape
+
+
+def _paint_best_local_ensemble(
+    df_in: pd.DataFrame,
+    locations: list[str],
+    model_keys: list[str],
+    settings: dict,
+    dep_var: str,
+    is_land_predictions: bool,
+    best_map: dict
+):
+    df = df_in.copy()
+    df["prediction"] = float('nan')
+    df["local_model"] = None
+    df["local_mape"] = None
+    
+    print(f"Painting location values...")
+    
+    for location in locations:
+        if location == "":
+            loc_values = [""]
+        else:
+            loc_values = df[location].unique()
+        
+        print(f"-->location = {location} loc_values = {len(loc_values)}")
+        entry = best_map[location]
+        
+        for loc_value in loc_values:
+            if loc_value in entry:
+                loc_entry = entry[loc_value]
+                model = loc_entry["model"]
+                mape = loc_entry["mape"]
+                if model is None:
+                    continue
+                if mape is None:
+                    mape = float("nan")
+                print(f"----> @ = {str(loc_value):<12}, model = {str(model):<12}, mape = {mape:>6.2f}")
+                if location == "":
+                    df["prediction"] = df[model]
+                    df["local_model"] = model
+                    df["local_mape"] = mape
+                else:
+                    df.loc[df[location].eq(loc_value), "prediction"] = df[model]
+                    df.loc[df[location].eq(loc_value), "local_model"] = model
+                    df.loc[df[location].eq(loc_value), "local_mape"] = mape
+    return df
+
+
+def _run_local_ensemble_test_and_paint(
+    df_test: pd.DataFrame,
+    df_train: pd.DataFrame,
+    df_sales: pd.DataFrame,
+    df_univ: pd.DataFrame,
+    settings: dict,
+    timing: TimingData,
+    all_results: MultiModelResults,
+    ds: DataSplit,
+    locations: list[str],
+    outpath: str,
+    verbose: bool = False,
+):
+    # Get all the dataframes we need, ensure they have keys + location fields
+    timing.start("setup")
+    valid_field = "valid_for_ratio_study"
+    if ds.is_land_predictions():
+        valid_field = "valid_for_land_ratio_study"
+    df_test_ensemble = df_test[["key_sale", "key", ds.dep_var_test, valid_field]+locations].copy()
+    df_train_ensemble = df_train[["key_sale", "key", ds.dep_var_test, valid_field]+locations].copy()
+    df_sales_ensemble = df_sales[["key_sale", "key", ds.dep_var_test, valid_field]+locations].copy()
+    df_univ_ensemble = df_univ[["key"]+locations].copy()
+    timing.stop("setup")
+
+    timing.start("parameter_search")
+    timing.stop("parameter_search")
+
+    # Set up the dataframes so that we have one prediction column per input model
+    timing.start("train")
+    model_keys = [key for key in all_results.model_results.keys() if key not in ["assessor", "ground_truth"]]
+    for m_key in model_keys:
+        m_results: SingleModelResults = all_results.model_results[m_key]
+        field_prediction = m_results.field_prediction
+        df_pred_test = m_results.df_test[["key_sale", field_prediction]].copy()
+        df_pred_test = df_pred_test.rename(columns={field_prediction: m_key})
+        
+        df_pred_train = m_results.df_train[["key_sale", field_prediction]].copy()
+        df_pred_train = df_pred_train.rename(columns={field_prediction: m_key})
+        
+        df_pred_sales = m_results.df_sales[["key_sale", field_prediction]].copy()
+        df_pred_sales = df_pred_sales.rename(columns={field_prediction: m_key})
+
+        df_pred_univ = m_results.df_universe[["key", field_prediction]].copy()
+        df_pred_univ = df_pred_univ.rename(columns={field_prediction: m_key})
+
+        df_test_ensemble = df_test_ensemble.merge(df_pred_test, on="key_sale", how="left")
+        df_train_ensemble = df_train_ensemble.merge(df_pred_train, on="key_sale", how="left")
+        df_sales_ensemble = df_sales_ensemble.merge(df_pred_sales, on="key_sale", how="left")
+        df_univ_ensemble = df_univ_ensemble.merge(df_pred_univ, on="key", how="left")
+    timing.stop("train")
+    
+    # prepare some variables
+    all_locations = [""] + locations
+    dep_var = ds.dep_var
+    is_land_predictions = ds.is_land_predictions()
+    best_map = {}
+    
+    # FOr each location field, find the best performing model for each of its unique location values
+    for location in all_locations:
+        loc_entry = {}
+        
+        # If location is empty, it means the whole dataframe
+        if location == "":
+            loc_values = [""]
+        else:
+            loc_values = df_sales[location].unique()
+        
+        if verbose:
+            print(f"--> location = {location} loc_values = {len(loc_values)}")
+        
+        for loc_value in loc_values:
+            # Find the best model/best mape for this specific location value
+            best_model, best_mape = _test_mape_local_ensemble(
+                df=df_train_ensemble,
+                location_field=location,
+                location_value=loc_value,
+                model_keys=model_keys,
+                settings=settings,
+                dep_var=dep_var,
+                is_land_predictions=is_land_predictions,
+                verbose=verbose
+            )
+            # Stash the results for this unique location value
+            loc_entry[loc_value] = {
+                "model": best_model,
+                "mape": best_mape
+            }
+        # Stash the results for the entire location field
+        best_map[location] = loc_entry
+    
+    # Now we generate whole-dataframe predictions by using the best model for each location
+    # When multiple values are given, we favor the most specific results given
+    timing.start("predict_test")
+    df_test_ensemble = _paint_best_local_ensemble(df_test_ensemble, locations, model_keys, settings, dep_var, is_land_predictions, best_map)
+    y_pred_test = df_test_ensemble["prediction"]
+    timing.stop("predict_test")
+
+    timing.start("predict_sales")
+    df_sales_ensemble = _paint_best_local_ensemble(df_sales_ensemble, locations, model_keys, settings, dep_var, is_land_predictions, best_map)
+    y_pred_sales = df_sales_ensemble["prediction"]
+    timing.stop("predict_sales")
+
+    timing.start("predict_univ")
+    df_univ_ensemble = _paint_best_local_ensemble(df_univ_ensemble, locations, model_keys, settings, dep_var, is_land_predictions, best_map)
+    y_pred_univ = df_univ_ensemble["prediction"]
+    timing.stop("predict_univ")
+    
+    # Generate a SingleModelResults object for the whole ensemble
+    results : SingleModelResults = SingleModelResults(
+        ds,
+        "prediction",
+        "he_id",
+        model_name="ensemble",
+        model_engine="ensemble",
+        model="ensemble",
+        y_pred_test=y_pred_test.to_numpy(),
+        y_pred_sales=y_pred_sales.to_numpy(),
+        y_pred_univ=y_pred_univ.to_numpy(),
+        timing=timing,
+        verbose=verbose
+    )
+    timing.stop("total")
+    
+    print(f"Results: score = {results.utility_sales_lookback}, r2 = {results.pred_sales_lookback.r2}, mape = {results.pred_sales_lookback.mape}, rmse = {results.pred_sales_lookback.rmse}")
+    score = results.utility_sales_lookback
+    
+    dfs = {
+        "sales": df_sales_ensemble,
+        "universe": df_univ_ensemble,
+        "test": df_test_ensemble,
+    }
+
+    _write_ensemble_model_results(results, outpath, settings, dfs, model_keys+["local_model","local_mape"])
+
+    return results
+
+
 def _optimize_ensemble(
     df_sales: pd.DataFrame | None,
     df_universe: pd.DataFrame | None,
@@ -2410,7 +2744,7 @@ def _optimize_ensemble(
     ensemble_list: list[str] = None,
 ):
     """
-    Optimize the ensemble allocation over all iterations.
+    Optimize the ensemble over all iterations.
     """
     timing = TimingData()
     timing.start("total")
@@ -3254,7 +3588,7 @@ def _run_hedonic_models(
     )
 
     if run_ensemble:
-        _perform_default_ensemble(
+        _perform_ensemble(
             df_sales=df_sales,
             df_universe=df_universe,
             model_group=model_group,
@@ -3299,6 +3633,103 @@ def _run_hedonic_models(
         print("")
 
         print("")
+
+
+def _perform_ensemble(
+    df_sales: pd.DataFrame | None,
+    df_universe: pd.DataFrame | None,
+    model_group: str,
+    vacant_only: bool,
+    hedonic: bool,
+    outpath: str,
+    dep_var: str,
+    dep_var_test: str,
+    all_results: MultiModelResults,
+    settings: dict,
+    verbose: bool = False,
+    t: TimingData = None
+):
+    mvh = "main"
+    if vacant_only:
+        mvh = "vacant"
+    elif hedonic:
+        mvh = "hedonic"
+    ensemble_inst = get_ensemble_instructions(settings, mvh)
+    ensemble_type = ensemble_inst["type"]
+    if ensemble_type == "default":
+        ensemble_models = ensemble_inst.get("models", [])
+        return _perform_default_ensemble(
+            df_sales=df_sales,
+            df_universe=df_universe,
+            model_group=model_group,
+            vacant_only=vacant_only,
+            hedonic=hedonic,
+            outpath=outpath,
+            dep_var=dep_var,
+            dep_var_test=dep_var_test,
+            all_results=all_results,
+            settings=settings,
+            verbose=verbose,
+            ensemble_list=ensemble_models,
+            t=t
+        )
+    elif ensemble_type == "local":
+        ensemble_locations = ensemble_inst.get("locations", [])
+        return _perform_local_ensemble(
+            df_sales=df_sales,
+            df_universe=df_universe,
+            model_group=model_group,
+            vacant_only=vacant_only,
+            hedonic=hedonic,
+            outpath=outpath,
+            dep_var=dep_var,
+            dep_var_test=dep_var_test,
+            all_results=all_results,
+            settings=settings,
+            verbose=verbose,
+            locations=ensemble_locations,
+            t=t
+        )
+    else:
+        raise ValueError(f"Unrecognized ensemble type \"{ensemble_type}\"!")
+
+
+def _perform_local_ensemble(
+    df_sales: pd.DataFrame | None,
+    df_universe: pd.DataFrame | None,
+    model_group: str,
+    vacant_only: bool,
+    hedonic: bool,
+    outpath: str,
+    dep_var: str,
+    dep_var_test: str,
+    all_results: MultiModelResults,
+    settings: dict,
+    verbose: bool = False,
+    locations: list[str] = None,
+    t: TimingData = None
+):
+    if t is None:
+        t = TimingData()
+    t.start("run_ensemble")
+    if verbose:
+        print("Optimizing & running ensemble...")
+    ensemble_results = _run_local_ensemble(
+        df_sales=df_sales,
+        df_universe=df_universe,
+        model_group=model_group,
+        vacant_only=vacant_only,
+        dep_var=dep_var,
+        dep_var_test=dep_var_test,
+        all_results=all_results,
+        settings=settings,
+        outpath=outpath,
+        locations=locations,
+        verbose=verbose,
+        hedonic=hedonic,
+    )
+    t.stop("run_ensemble")
+    return ensemble_results
 
 
 def _perform_default_ensemble(
@@ -3353,6 +3784,7 @@ def _perform_default_ensemble(
         verbose=verbose,
     )
     t.stop("run_ensemble")
+    return ensemble_results
 
 
 def _fix_earliest_latest_dates(df: pd.DataFrame):
@@ -3873,7 +4305,7 @@ def _run_models(
     t.stop("calc benchmarks")
 
     if run_ensemble:
-        _perform_default_ensemble(
+        ensemble_results = _perform_ensemble(
             df_sales=df_sales,
             df_universe=df_univ,
             model_group=model_group,
