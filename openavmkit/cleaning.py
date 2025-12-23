@@ -431,6 +431,15 @@ def _fill_unknown_values(df, settings: dict):
             else:
                 df = _fill_thing(df, field, fill_method)
 
+    # After all fills, clean up
+
+    # Partial fills on true/false are converted to a string in processing to avoid errors. Convert them back to booleans
+    false_fills = settings.get("data",{}).get("process",{}).get("fill",{}).get("false", [])
+    for fill_col in false_fills:
+        if fill_col in df.columns:
+            df[fill_col] = df[fill_col].astype(bool)
+
+
     valuation_date = get_valuation_date(settings)
     valuation_year = valuation_date.year
 
