@@ -3595,7 +3595,7 @@ def _run_hedonic_models(
             vacant_only=False,
             hedonic=True,
             outpath=outpath,
-            ep_var=dep_var,
+            dep_var=dep_var,
             dep_var_test=dep_var_test,
             all_results=all_hedonic_results,
             settings=settings,
