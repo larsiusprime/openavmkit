@@ -1345,7 +1345,9 @@ class SingleModelResults:
         self._deal_with_log_and_area()
 
         timing.start("chd")
-        df_univ_valid = df_univ[[field_prediction, field_horizontal_equity_id]].copy()
+        the_fields = [field_prediction, field_horizontal_equity_id]
+        the_fields = [field for field in the_fields if field in df_univ]
+        df_univ_valid = df_univ[the_fields].copy()
         
         for col in df_univ_valid.columns:
             dtype = df_univ_valid[col].dtype
