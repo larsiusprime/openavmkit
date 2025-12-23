@@ -1,7 +1,7 @@
 azure-storage-blob==12.27.1
 catboost==1.2.8
 numpy==2.3.5
-huggingface-hub==1.1.2
+huggingface-hub==1.2.3
 lightgbm==4.6.0
 markdown==3.10
 mgwr==2.2.1
