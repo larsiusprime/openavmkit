@@ -1345,10 +1345,8 @@ class SingleModelResults:
         self._deal_with_log_and_area()
 
         timing.start("chd")
-        df_univ_valid = df_univ.copy()
-        df_univ_valid = pd.DataFrame(df_univ_valid)
-        df_univ_valid.drop(columns=["geometry"], errors="ignore", inplace=True)
-
+        df_univ_valid = df_univ[[field_prediction, field_horizontal_equity_id]].copy()
+        
         for col in df_univ_valid.columns:
             dtype = df_univ_valid[col].dtype
 
