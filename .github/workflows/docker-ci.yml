@@ -85,20 +85,61 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-and-push-image
     env:
-      # This is now a full image reference (including registry/repo:tag)
       SAFE_RUN_TAG: ${{ needs.build-and-push-image.outputs.safe_run_tag }}
+
     steps:
+      - name: Free disk space on runner (before docker pull)
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          echo "== Disk before =="
+          df -h
+          sudo du -xh /usr/local /opt /usr/share 2>/dev/null | sort -h | tail -n 40 || true
+
+          # Remove big preinstalled SDKs/tools that many CI jobs don't need
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo rm -rf /usr/local/share/powershell || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+
+          # Clean apt caches
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+
+          echo "== Disk after cleanup =="
+          df -h
+
       - name: Log in to the Container registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # Test the image and notebooks on us-nc-guilford using the simple-entrypoint.sh script, failing if any of the notebooks return an error
-      # The RUN environment variable is set to 'test' to trigger the test mode in the simple-entrypoint.sh script
-      - name: Test the image and notebooks
+
+      - name: Pull image (so we can see failures here)
+        shell: bash
         run: |
+          set -euxo pipefail
+          echo "Pulling ${{ env.SAFE_RUN_TAG }}"
+          docker pull "${{ env.SAFE_RUN_TAG }}"
+          echo "== Docker disk usage after pull =="
+          docker system df
+          echo "== Disk after pull =="
+          df -h
+
+      - name: Test the image and notebooks
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          # run container temp dirs in RAM to reduce host writes
+          # (helps if tests write lots to /tmp)
           docker run --rm \
+            --tmpfs /tmp:rw,noexec,nosuid,size=2g \
             -e RUN=test \
             -e LOCALITY=us-nc-guilford \
             "${{ env.SAFE_RUN_TAG }}"
