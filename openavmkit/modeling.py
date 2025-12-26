@@ -729,31 +729,95 @@ class DataSplit:
 
         return ds
 
-    def encode_categoricals_as_categories(self):
+    def encode_categoricals_as_categories(
+        self,
+        unknown_token: str = "UNKNOWN"
+    ):
         """
-        Convert all categorical variables in sales and universe DataFrames to the 'category' dtype.
+        Enforce train-defined categorical vocab, and sync all splits to it.
 
+        Rules:
+        - Categories are defined ONLY from df_train (after filling missings).
+        - Any categorical value not found in TRAIN is replaced with UNKNOWN in
+          df_test and df_universe (and df_sales as well, for consistency).
+        - df_sales and df_universe (and df_test) are assigned the exact same
+          pandas Categorical categories index as df_train, so codes are synced.
+
+        Parameters
+        ----------
+        unknown_token : str
+            Token used to replace values not seen in training, as well as NaN/None/NA
+        
         Returns
         -------
         DataSplit
-            The updated DataSplit instance.
+            Updated DataSplit instance.
         """
-
         if len(self.categorical_vars) == 0:
             return self
 
         ds = self.copy()
 
-        for col in ds.categorical_vars:
-            ds.df_universe[col] = ds.df_universe[col].astype("category")
-            if "UNKNOWN" not in ds.df_universe[col].cat.categories:
-                ds.df_universe[col].cat.add_categories(["UNKNOWN"])
+        if getattr(ds, "df_train", None) is None:
+            raise ValueError("encode_categoricals_as_categories requires df_train to be present.")
 
-            ds.df_sales[col] = ds.df_sales[col].astype("category")
-            if "UNKNOWN" not in ds.df_sales[col].cat.categories:
-                ds.df_sales[col].cat.add_categories(["UNKNOWN"])
+        # Build train-defined categories (vocab) per column
+        train_categories = {}
+
+        for col in ds.categorical_vars:
+            if col not in ds.df_train.columns:
+                # If it isn't in train, we can't define vocab from train.
+                continue
+
+            s_train = ds.df_train[col]
+            
+            # ensure we aren't stuck in Categorical fillna restrictions
+            if pd.api.types.is_categorical_dtype(s_train):
+                s_train = s_train.astype(object)
+
+            s_train = s_train.fillna(unknown_token)
+            s_train = s_train.astype(str)
+
+            cats = list(pd.unique(s_train))
+
+            # Ensure unknown token exists in the *category index*
+            if unknown_token not in cats:
+                cats.append(unknown_token)
+
+            train_categories[col] = cats
+
+            # Make train column a Categorical with these exact categories
+            ds.df_train[col] = pd.Categorical(s_train, categories=cats)
+
+        # Helper to coerce a df to train vocab, replacing unseen values with UNKNOWN
+        def coerce_to_train_vocab(df) -> None:
+            if df is None:
+                return
+            for col, cats in train_categories.items():
+                if col not in df.columns:
+                    continue
+                
+                s = df[col]
+                if pd.api.types.is_categorical_dtype(s):
+                    s = s.astype(object)
+                s = s.fillna(unknown_token)
+                s = s.astype(str)
+
+                # Replace any value not in training categories with UNKNOWN
+                s = s.where(s.isin(cats), other=unknown_token)
+                if unknown_token not in cats:
+                    cats.append(unknown_token)
+
+                df[col] = pd.Categorical(s, categories=cats)
+
+        # Apply to other splits
+        # TEST/SALES/UNIVERSE: obliterate unseen categories -> UNKNOWN
+        coerce_to_train_vocab(getattr(ds, "df_test", None))
+        coerce_to_train_vocab(getattr(ds, "df_universe", None))
+        coerce_to_train_vocab(getattr(ds, "df_sales", None))
 
         return ds
+
 
     def reconcile_fields_with_foreign(self, foreign_ds):
         """Reconcile this DataSplit's fields with those of a provided reference DataSplit
@@ -3138,7 +3202,8 @@ def run_xgboost(
 
     timing.start("total")
 
-    ds = ds.encode_categoricals_with_one_hot()
+    #ds = ds.encode_categoricals_with_one_hot()
+    ds = ds.encode_categoricals_as_categories()
     ds.split()
 
     # Fix for object-typed boolean columns (especially 'within_*' fields)
@@ -3170,9 +3235,13 @@ def run_xgboost(
     )
 
     parameters["verbosity"] = 0
-    parameters["tree_method"] = "auto"
     parameters["device"] = "cpu"
     parameters["objective"] = "reg:squarederror"
+    
+    parameters["enable_categorical"] = True
+    parameters.setdefault("tree_method", "hist")
+    parameters.setdefault("max_cat_to_onehot", 1)
+
     # parameters["eval_metric"] = "rmse"
     xgboost_model = xgb.XGBRegressor(**parameters)
 
@@ -3282,7 +3351,8 @@ def run_lightgbm(
     timing.start("total")
 
     timing.start("setup")
-    ds = ds.encode_categoricals_with_one_hot()
+    #ds = ds.encode_categoricals_with_one_hot()
+    ds = ds.encode_categoricals_as_categories()
     ds.split()
 
     # Fix for object-typed boolean columns (especially 'within_*' fields)
@@ -4647,13 +4717,14 @@ def _get_params(
             if verbose:
                 print(f"--> using saved parameters")
     if params is None:
+        cat_vars = [c for c in (ds.categorical_vars or []) if c in ds.X_train.columns]
         params = tune_func(
             ds.X_train,
             ds.y_train,
             sizes=ds.train_sizes,
             he_ids=ds.train_he_ids,
             verbose=verbose,
-            cat_vars=ds.categorical_vars,
+            cat_vars=cat_vars,
             **kwargs,
         )
         if save_params:

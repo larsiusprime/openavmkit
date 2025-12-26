@@ -4229,27 +4229,36 @@ def _run_models(
             f"For model_group: {model_group}, vacant_only: {vacant_only}, there are fewer than 15 sales records. Model might not be any good!"
         )
     t.stop("setup")
-    t.start("var_recs")
+    
+    auto_reduce_vars = True
 
-    # We do a "quick" variable optimization step here. It drops some of the more expensive tests for the sake of speed
-    # If you want to do those more expensive tests, you should run them in try_variables instead
-    var_recs = get_variable_recommendations(
-        df_sales,
-        df_univ,
-        vacant_only,
-        settings,
-        model_group,
-        tests_to_run = ["corr", "r2", "p_value", "t_value", "vif"], # Exclude ENR for speed
-        do_report=False,
-        do_cross=False, # Exclude cross-validation for speed
-        verbose=True,
-        t=t
-    )
-    
-    t.stop("var_recs")
-    
-    best_variables = var_recs["variables"]
-    del var_recs # Delete var_recs to drop the results dataframe it holds since we don't need it
+    # For tree-based models, and multi-mra, we don't perform variable reduction
+    if model_engine in ["xgboost", "lightgbm", "catboost", "multi_mra"]:
+        auto_reduce_vars = False
+
+    if auto_reduce_vars:
+        t.start("var_recs")
+        # We do a "quick" variable optimization step here. It drops some of the more expensive tests for the sake of speed
+        # If you want to do those more expensive tests, you should run them in try_variables instead
+        var_recs = get_variable_recommendations(
+            df_sales,
+            df_univ,
+            vacant_only,
+            settings,
+            model_group,
+            tests_to_run = ["corr", "r2", "p_value", "t_value", "vif"], # Exclude ENR for speed
+            do_report=False,
+            do_cross=False, # Exclude cross-validation for speed
+            verbose=True,
+            t=t
+        )
+        
+        t.stop("var_recs")
+        
+        best_variables = var_recs["variables"]
+        del var_recs # Delete var_recs to drop the results dataframe it holds since we don't need it
+    else:
+        best_variables = None
 
     any_results = False
 
@@ -4263,10 +4272,7 @@ def _run_models(
         model_engine = model_entry.get("engine", model_name)
         
         model_variables = best_variables
-        # For tree-based models, we don't perform variable reduction
-        if model_engine in ["xgboost", "lightgbm", "catboost"]:
-            model_variables = None
-
+        
         results = run_one_model(
             df_sales=df_sales,
             df_universe=df_univ,
