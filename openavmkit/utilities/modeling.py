@@ -1,8 +1,16 @@
+from __future__ import annotations
 import numpy as np
 from statsmodels.regression.linear_model import RegressionResults
 from pygam import LinearGAM, s, te
 import pandas as pd
 from typing import Any
+
+from dataclasses import dataclass
+from itertools import combinations
+from typing import List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
 
 class GarbageModel:
     """An intentionally bad predictive model, to use as a sort of control. Produces random predictions.
@@ -495,3 +503,128 @@ class MultiMRAModel:
         self.intercept = intercept
         self.location_fields = location_fields
         self.min_sample_size = min_sample_size
+
+# Multi-MRA optimization:
+
+@dataclass(frozen=True)
+class GreedyResult:
+    variables: List[str]
+    cv_r2: float
+    train_r2: float
+
+
+def _ols_train_and_loocv_r2(X_design: np.ndarray, y: np.ndarray, sst: float) -> Tuple[float, float]:
+    """
+    Returns (train_r2, loocv_r2) using the leverage shortcut for LOOCV.
+    X_design includes intercept.
+    """
+    beta, *_ = np.linalg.lstsq(X_design, y, rcond=None)
+    yhat = X_design @ beta
+    resid = y - yhat
+    sse_train = float(resid.T @ resid)
+
+    XtX_inv = np.linalg.pinv(X_design.T @ X_design)
+    h = np.sum((X_design @ XtX_inv) * X_design, axis=1)
+
+    denom = 1.0 - h
+    denom = np.where(np.abs(denom) < 1e-12, np.sign(denom) * 1e-12, denom)
+    loocv_resid = resid / denom
+    sse_cv = float(loocv_resid.T @ loocv_resid)
+
+    train_r2 = 1.0 - (sse_train / sst)
+    cv_r2 = 1.0 - (sse_cv / sst)
+    return train_r2, cv_r2
+
+
+def greedy_forward_loocv(
+    X: pd.DataFrame,
+    y: pd.Series,
+    *,
+    k_max: Optional[int] = None,
+    min_gain: float = 0.002,          # stop if best add improves CV-R² < 0.2%
+    standardize: bool = True,
+    prescreen_k: Optional[int] = 15,  # optionally screen to top K by |corr| for speed
+) -> GreedyResult:
+    """
+    Greedy forward selection maximizing LOOCV R² (fast).
+    Returns selected vars + CV-R² + train R².
+
+    Assumes X, y are numeric, aligned, and NaN-free.
+    """
+
+    yv = y.to_numpy(dtype=float)
+    Xmat = X.to_numpy(dtype=float)
+    cols = list(X.columns)
+
+    n, p = Xmat.shape
+    if p == 0:
+        return GreedyResult([], cv_r2=float("-inf"), train_r2=float("-inf"))
+
+    # SST
+    y_centered = yv - yv.mean()
+    sst = float(y_centered.T @ y_centered)
+    if sst == 0.0:
+        # constant y: no signal; return empty / simplest
+        return GreedyResult([], cv_r2=0.0, train_r2=0.0)
+
+    # Standardize X for stability (recommended)
+    if standardize:
+        mu = Xmat.mean(axis=0)
+        sd = Xmat.std(axis=0, ddof=0)
+        sd = np.where(sd == 0, 1.0, sd)
+        Xmat = (Xmat - mu) / sd
+
+    # Adaptive size cap if not provided
+    if k_max is None:
+        k_max = min(p, max(2, n // 5))  # n=15 -> 3 vars, n=50 -> 10 vars
+    k_max = max(1, min(k_max, p))
+
+    # Optional prescreen to reduce p cheaply
+    if prescreen_k is not None and prescreen_k < p:
+        # corr with y (absolute)
+        y_std = y_centered.std(ddof=0)
+        if y_std == 0:
+            return GreedyResult([], cv_r2=0.0, train_r2=0.0)
+        x_std = Xmat.std(axis=0, ddof=0)
+        x_std = np.where(x_std == 0, 1.0, x_std)
+        corr = (Xmat.T @ y_centered) / (n * x_std * y_std)
+        keep_idx = np.argsort(np.abs(corr))[-prescreen_k:]
+        keep_idx = np.sort(keep_idx)
+        Xmat = Xmat[:, keep_idx]
+        cols = [cols[i] for i in keep_idx]
+        p = Xmat.shape[1]
+        k_max = min(k_max, p)
+
+    selected: List[int] = []
+    remaining = set(range(p))
+
+    # baseline: intercept-only
+    X0 = np.ones((n, 1))
+    best_train_r2, best_cv_r2 = _ols_train_and_loocv_r2(X0, yv, sst)
+
+    while remaining and len(selected) < k_max:
+        step_best_cv = best_cv_r2
+        step_best_train = best_train_r2
+        step_best_j = None
+
+        for j in list(remaining):
+            idxs = selected + [j]
+            Xsub = Xmat[:, idxs]
+            X_design = np.column_stack([np.ones(n), Xsub])
+
+            train_r2, cv_r2 = _ols_train_and_loocv_r2(X_design, yv, sst)
+            if cv_r2 > step_best_cv + 1e-12:
+                step_best_cv = cv_r2
+                step_best_train = train_r2
+                step_best_j = j
+
+        # stop if no meaningful improvement
+        if step_best_j is None or (step_best_cv - best_cv_r2) < min_gain:
+            break
+
+        selected.append(step_best_j)
+        remaining.remove(step_best_j)
+        best_cv_r2 = step_best_cv
+        best_train_r2 = step_best_train
+
+    return GreedyResult([cols[i] for i in selected], best_cv_r2, best_train_r2)

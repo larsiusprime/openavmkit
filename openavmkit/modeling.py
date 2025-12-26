@@ -76,7 +76,8 @@ from openavmkit.utilities.modeling import (
     MultiMRAModel,
     GroundTruthModel,
     SpatialLagModel,
-    LandSLICEModel
+    LandSLICEModel,
+    greedy_forward_loocv
 )
 from openavmkit.utilities.data import (
     clean_column_names,
@@ -1844,6 +1845,7 @@ def run_mra(
 
 def run_multi_mra(
     ds: DataSplit,
+    outpath: str,
     location_fields: list[str],
     intercept: bool = True,
     verbose: bool = False,
@@ -1856,6 +1858,8 @@ def run_multi_mra(
     ----------
     ds : DataSplit
         DataSplit object (sales/universe/splits should already be set up).
+    outpath : str
+        Path to write parameters out to
     location_fields : list[str]
         Ordered list of location field names, most specific -> least specific.
         These fields must exist in ds.df_train / ds.df_test / ds.df_universe.
@@ -1876,6 +1880,7 @@ def run_multi_mra(
     """
     ds_prepped, multi_model, timing = _run_multi_mra(
         ds,
+        outpath,
         location_fields=location_fields,
         min_sample_size=min_sample_size,
         intercept=intercept,
@@ -1887,6 +1892,7 @@ def run_multi_mra(
 
 def _run_multi_mra(
     ds: DataSplit,
+    outpath: str,
     location_fields: list[str],
     min_sample_size: int = 30,
     intercept: bool = True,
@@ -1926,32 +1932,11 @@ def _run_multi_mra(
 
     # Record the consistent feature order used for ALL regressions
     feature_names = list(ds_prepped.X_train.columns)
-
-    timing.stop("setup")
-
-    # ------------------------------------------------------------------
-    # Train: global regression + local regressions by location
-    # ------------------------------------------------------------------
-    timing.start("train")
-
+    
+    df_train = ds_prepped.df_train
+    
     X_train = ds_prepped.X_train
     y_train = ds_prepped.y_train
-
-    # ------------------------
-    # Global OLS (fallback)
-    # ------------------------
-    global_model = sm.OLS(y_train, X_train).fit()
-    global_coef = global_model.params.reindex(feature_names).to_numpy()
-
-    if verbose:
-        print(f"[Multi-MRA] Global OLS trained with {len(X_train)} observations.")
-        print(f"[Multi-MRA] Number of features (including intercept if any): {len(feature_names)}")
-
-    # ------------------------
-    # Local OLS per location
-    # ------------------------
-    coef_map: Dict[str, Dict[Any, np.ndarray]] = {}
-    df_train = ds_prepped.df_train
 
     # Alignment safety checks
     if len(df_train) != len(X_train):
@@ -1969,8 +1954,88 @@ def _run_multi_mra(
     # Ensure minimum sample size is at least number of features + 1
     # (to reduce rank-deficiency issues).
     effective_min_sample_size = max(min_sample_size, n_features + 1)
+    timing.stop("setup")
+    
+    timing.start("parameter_search")
+    
+    # Oprimize for best variables
+    best_var_map = {}
 
+    if verbose:
+        print(f"Tuning Multi-MRA: searching for optimal variables. (Total variables = {n_features})...")
+    
+    model_name = ds.name
+    
+    if os.path.exists(f"{outpath}/{model_name}_vars.json"):
+        best_var_map = json.load(open(f"{outpath}/{model_name}_vars.json", "r"))
+        if verbose:
+            print(f"--> using saved variables")
+    
+    if not best_var_map:
+        for location_field in location_fields:
+            if location_field not in df_train.columns:
+                continue
+
+            field_map: Dict[Any, np.ndarray] = {}
+            unique_locs = df_train[location_field].unique()
+
+            if verbose:
+                print(
+                    f"[Multi-MRA] Optimizing local OLS for field '{location_field}' "
+                    f"with {len(unique_locs)} distinct values (min_sample_size={effective_min_sample_size})."
+                )
+            
+            i = 0
+            for loc in unique_locs:
+                # Build mask for this specific location value
+                mask_loc = df_train[location_field].eq(loc)
+
+                # Safety: mask and X_train index alignment is guaranteed above
+                X_loc = X_train.loc[mask_loc, :]
+                y_loc = y_train.loc[mask_loc]
+
+                n_loc = len(X_loc)
+                if n_loc < effective_min_sample_size:
+                    continue
+                print(f"--> {i/len(unique_locs):5.2%} -- {i:>6}/{len(unique_locs)} -- value = {loc}...")
+
+                try:
+                    best_vars = greedy_forward_loocv(X_loc, y_loc).variables
+                except np.linalg.LinAlgError:
+                    best_vars = None
+                field_map[loc] = best_vars
+                i += 1
+            best_var_map[location_field] = field_map
+        os.makedirs(outpath, exist_ok=True)
+        if verbose:
+            print(f"--> saving variables to \"{outpath}/{model_name}_vars.json\"")
+        json.dump(best_var_map, open(f"{outpath}/{model_name}_vars.json", "w"))
+
+    timing.stop("parameter_search")
+
+    # ------------------------------------------------------------------
+    # Train: global regression + local regressions by location
+    # ------------------------------------------------------------------
+    timing.start("train")
+
+    has_const = "const" in X_train
+
+    # ------------------------
+    # Global OLS (fallback)
+    # ------------------------
+    global_model = sm.OLS(y_train, X_train).fit()
+    global_coef = global_model.params.reindex(feature_names).to_numpy()
+
+    if verbose:
+        print(f"[Multi-MRA] Global OLS trained with {len(X_train)} observations.")
+        print(f"[Multi-MRA] Number of features (including intercept if any): {len(feature_names)}")
+
+    # ------------------------
+    # Local OLS per location
+    # ------------------------
+    coef_map: Dict[str, Dict[Any, np.ndarray]] = {}
     for location_field in location_fields:
+        best_var_field = best_var_map.get(location_field, {})
         if location_field not in df_train.columns:
             if verbose:
                 print(
@@ -1986,13 +2051,23 @@ def _run_multi_mra(
                 f"[Multi-MRA] Training local OLS for field '{location_field}' "
                 f"with {len(unique_locs)} distinct values (min_sample_size={effective_min_sample_size})."
             )
-
+        
         for loc in unique_locs:
+            best_vars_loc = best_var_field.get(loc, [])
+            
             # Build mask for this specific location value
             mask_loc = df_train[location_field].eq(loc)
 
+            # Subset of X_train with only the best variables
+            if best_vars_loc:
+                if has_const:
+                    best_vars_loc = best_vars_loc + ["const"]
+                X_best = X_train[best_vars_loc]
+            else:
+                X_best = X_train
+
             # Safety: mask and X_train index alignment is guaranteed above
-            X_loc = X_train.loc[mask_loc, :]
+            X_loc = X_best.loc[mask_loc, :]
             y_loc = y_train.loc[mask_loc]
 
             n_loc = len(X_loc)

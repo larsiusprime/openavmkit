@@ -1372,7 +1372,7 @@ def run_one_model(
     elif model_engine == "mra":
         results = run_mra(ds, intercept=intercept, verbose=verbose)
     elif model_engine == "multi_mra":
-        results = run_multi_mra(ds, location_fields, intercept=intercept, verbose=verbose)
+        results = run_multi_mra(ds, outpath, location_fields, intercept=intercept, verbose=verbose)
     elif model_engine == "kernel":
         results = run_kernel(
             ds, outpath, save_params, use_saved_params, verbose=verbose
@@ -4230,12 +4230,19 @@ def _run_models(
         )
     t.stop("setup")
     
-    auto_reduce_vars = True
-
-    # For tree-based models, and multi-mra, we don't perform variable reduction
-    if model_engine in ["xgboost", "lightgbm", "catboost", "multi_mra"]:
-        auto_reduce_vars = False
-
+    # Check if we need to auto reduce variables globally
+    auto_reduce_vars = False
+    for model_name in models_to_run:
+        if model_name in models_to_skip:
+            print(f"Skipping model {model_name}.")
+            continue
+        model_entry = model_entries.get(model_name, model_entries.get("default", {}))
+        model_engine = model_entry.get("engine", model_name)
+        # For tree-based models, and multi-mra, we don't perform variable reduction
+        if model_engine not in ["pass_through", "ground_truth", "xgboost", "lightgbm", "catboost", "multi_mra"]:
+            auto_reduce_vars = True
+            break
+        
     if auto_reduce_vars:
         t.start("var_recs")
         # We do a "quick" variable optimization step here. It drops some of the more expensive tests for the sake of speed
