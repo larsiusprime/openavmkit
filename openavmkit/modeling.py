@@ -1882,7 +1882,6 @@ def run_multi_mra(
         ds,
         outpath,
         location_fields=location_fields,
-        min_sample_size=min_sample_size,
         intercept=intercept,
         verbose=verbose,
     )
@@ -1894,7 +1893,6 @@ def _run_multi_mra(
     ds: DataSplit,
     outpath: str,
     location_fields: list[str],
-    min_sample_size: int = 30,
     intercept: bool = True,
     verbose: bool = False,
 ) -> tuple[DataSplit, MultiMRAModel, TimingData]:
@@ -1951,14 +1949,11 @@ def _run_multi_mra(
         )
 
     n_features = len(feature_names)
-    # Ensure minimum sample size is at least number of features + 1
-    # (to reduce rank-deficiency issues).
-    effective_min_sample_size = max(min_sample_size, n_features + 1)
     timing.stop("setup")
     
     timing.start("parameter_search")
     
-    # Oprimize for best variables
+    # Optimize for best variables
     best_var_map = {}
 
     if verbose:
@@ -1982,7 +1977,7 @@ def _run_multi_mra(
             if verbose:
                 print(
                     f"[Multi-MRA] Optimizing local OLS for field '{location_field}' "
-                    f"with {len(unique_locs)} distinct values (min_sample_size={effective_min_sample_size})."
+                    f"with {len(unique_locs)} distinct values."
                 )
             
             i = 0
@@ -1995,15 +1990,16 @@ def _run_multi_mra(
                 y_loc = y_train.loc[mask_loc]
 
                 n_loc = len(X_loc)
-                if n_loc < effective_min_sample_size:
+                min_n_loc = X_loc.shape[1] + 1
+                if n_loc < min_n_loc:
                     continue
                 print(f"--> {i/len(unique_locs):5.2%} -- {i:>6}/{len(unique_locs)} -- value = {loc}...")
 
                 try:
                     best_vars = greedy_forward_loocv(X_loc, y_loc).variables
                 except np.linalg.LinAlgError:
-                    best_vars = None
-                field_map[loc] = best_vars
+                    best_vars = []
+                field_map[str(loc)] = best_vars
                 i += 1
             best_var_map[location_field] = field_map
         os.makedirs(outpath, exist_ok=True)
@@ -2024,7 +2020,7 @@ def _run_multi_mra(
     # Global OLS (fallback)
     # ------------------------
     global_model = sm.OLS(y_train, X_train).fit()
-    global_coef = global_model.params.reindex(feature_names).to_numpy()
+    global_coef = global_model.params.reindex(feature_names, fill_value=0.0).to_numpy(dtype=float)
 
     if verbose:
         print(f"[Multi-MRA] Global OLS trained with {len(X_train)} observations.")
@@ -2049,19 +2045,20 @@ def _run_multi_mra(
         if verbose:
             print(
                 f"[Multi-MRA] Training local OLS for field '{location_field}' "
-                f"with {len(unique_locs)} distinct values (min_sample_size={effective_min_sample_size})."
+                f"with {len(unique_locs)} distinct values)."
             )
         
         for loc in unique_locs:
-            best_vars_loc = best_var_field.get(loc, [])
+            best_vars_loc = best_var_field.get(str(loc), [])
             
             # Build mask for this specific location value
             mask_loc = df_train[location_field].eq(loc)
 
             # Subset of X_train with only the best variables
+            best_vars_loc = list(best_vars_loc)
             if best_vars_loc:
-                if has_const:
-                    best_vars_loc = best_vars_loc + ["const"]
+                if has_const and "const" not in best_vars_loc:
+                    best_vars_loc.append("const")
                 X_best = X_train[best_vars_loc]
             else:
                 X_best = X_train
@@ -2069,9 +2066,11 @@ def _run_multi_mra(
             # Safety: mask and X_train index alignment is guaranteed above
             X_loc = X_best.loc[mask_loc, :]
             y_loc = y_train.loc[mask_loc]
+            
+            min_n_loc = X_loc.shape[1] + 1
 
             n_loc = len(X_loc)
-            if n_loc < effective_min_sample_size:
+            if n_loc < min_n_loc:
                 # Not enough observations for a stable local regression
                 continue
 
@@ -2083,11 +2082,11 @@ def _run_multi_mra(
                 continue
 
             # Align coefficients to the master feature ordering
-            params = local_model.params.reindex(feature_names)
-            beta = params.to_numpy()
+            params = local_model.params.reindex(feature_names, fill_value=0.0)
+            beta = params.to_numpy(dtype=float)
 
             # Store in field_map
-            field_map[loc] = beta
+            field_map[str(loc)] = beta
 
         coef_map[location_field] = field_map
 
@@ -2105,8 +2104,7 @@ def _run_multi_mra(
         global_coef=global_coef,
         feature_names=feature_names,
         intercept=intercept,
-        location_fields=location_fields,
-        min_sample_size=effective_min_sample_size,
+        location_fields=location_fields
     )
 
     return ds_prepped, multi_model, timing
@@ -2160,24 +2158,7 @@ def predict_multi_mra(
     # ------------------------------------------------------------------
     # Helper: apply hierarchical painting for one split
     # ------------------------------------------------------------------
-    def _predict_split(X_split: pd.DataFrame, df_split: pd.DataFrame, split_name: str) -> np.ndarray:
-        """
-        Apply hierarchical Multi-MRA prediction to a particular split.
-
-        Parameters
-        ----------
-        X_split : pd.DataFrame
-            Feature matrix for this split.
-        df_split : pd.DataFrame
-            Underlying DataFrame for this split (must contain location_fields).
-        split_name : str
-            Name of the split (for debug messages).
-
-        Returns
-        -------
-        np.ndarray
-            Predictions for this split, in the same order as X_split/df_split.
-        """
+    def _predict_split(X_split: pd.DataFrame, y_split: pd.Series|np.ndarray|None, df_split: pd.DataFrame, split_name: str) -> np.ndarray:
 
         # NEW: ensure intercept column exists if the model was trained with one
         if "const" in feature_names and "const" not in X_split.columns:
@@ -2218,7 +2199,7 @@ def predict_multi_mra(
                 # Location field not present in this split; skip
                 continue
 
-            loc_values = df_split[location_field].to_numpy()
+            loc_values = df_split[location_field].astype(str).to_numpy()
 
             if verbose:
                 print(
@@ -2243,12 +2224,31 @@ def predict_multi_mra(
 
                 # Select the subset of X corresponding to this location
                 X_loc = X_split.loc[mask_loc, feature_names]
-
+                
                 # Compute predictions: X_loc @ beta
-                y_loc = X_loc.to_numpy().dot(beta)
+                y_loc_pred = X_loc.to_numpy().dot(beta)
+                
+                # Select the subset of ground truth for this location
+                if y_split is not None:
+                    if isinstance(y_split, np.ndarray):
+                        y_loc_true = y_split[mask_loc]
+                    else:
+                        y_loc_true = y_split.loc[mask_loc]
+                    
+                    # if verbose:
+                        ## Residual sum of squares
+                        # ss_res = ((y_loc_true - y_loc_pred) ** 2).sum()
 
+                        ## Total sum of squares (local mean!)
+                        # ss_tot = ((y_loc_true - y_loc_true.mean()) ** 2).sum()
+
+                        ## Local R-squared
+                        # r2_loc = 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
+
+                        # print(f"--> loc=\"{loc}\" r2 = {r2_loc}")
+                
                 # Assign to y_pred for these rows
-                y_pred[mask_loc] = y_loc
+                y_pred[mask_loc] = y_loc_pred
 
         # Global fallback for any remaining NaNs
         mask_global = np.isnan(y_pred)
@@ -2265,22 +2265,24 @@ def predict_multi_mra(
     # TEST
     timing.start("predict_test")
     X_test = ds.X_test.copy()
+    y_test = ds.y_test.copy()
     df_test = ds.df_test.copy()
-    y_pred_test = _predict_split(X_test, df_test, split_name="test")
+    y_pred_test = _predict_split(X_test, y_test, df_test, split_name="test")
     timing.stop("predict_test")
 
     # SALES
     timing.start("predict_sales")
     X_sales = ds.X_sales.copy()
+    y_sales = ds.y_sales.copy()
     df_sales = ds.df_sales.copy()
-    y_pred_sales = _predict_split(X_sales, df_sales, split_name="sales")
+    y_pred_sales = _predict_split(X_sales, y_sales, df_sales, split_name="sales")
     timing.stop("predict_sales")
 
     # UNIVERSE
     timing.start("predict_univ")
     X_univ = ds.X_univ.copy()
     df_univ = ds.df_universe.copy()
-    y_pred_univ = _predict_split(X_univ, df_univ, split_name="universe")
+    y_pred_univ = _predict_split(X_univ, None, df_univ, split_name="universe")
     timing.stop("predict_univ")
 
     timing.stop("total")
@@ -3830,7 +3832,7 @@ def predict_garbage(
         ds,
         "prediction",
         "he_id",
-        model_name,
+        ds.name,
         model_engine,
         garbage_model,
         y_pred_test,

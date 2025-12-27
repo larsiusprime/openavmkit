@@ -453,8 +453,7 @@ class MultiMRAModel:
       - The feature_names (column order) used for all regressions
       - Whether an intercept was used
       - The location_fields (ordered most specific -> least specific)
-      - The minimum sample size used for local fits
-    
+      
     Attributes
     ----------
     coef_map : dict[str, dict[Any, np.ndarray]]
@@ -467,8 +466,6 @@ class MultiMRAModel:
         Whether an intercept column was used.
     location_fields : list[str]
         Location fields in order from most specific to least specific.
-    min_sample_size : int
-        Minimum number of observations required to fit a local regression.
     """
 
     def __init__(
@@ -478,7 +475,6 @@ class MultiMRAModel:
         feature_names: list[str],
         intercept: bool,
         location_fields: list[str],
-        min_sample_size: int,
     ):
         """
         Parameters
@@ -494,16 +490,13 @@ class MultiMRAModel:
             Whether an intercept column was used.
         location_fields : list[str]
             Location fields in order from most specific to least specific.
-        min_sample_size : int
-            Minimum number of observations required to fit a local regression.
         """
         self.coef_map = coef_map
         self.global_coef = global_coef
         self.feature_names = feature_names
         self.intercept = intercept
         self.location_fields = location_fields
-        self.min_sample_size = min_sample_size
-
+       
 # Multi-MRA optimization:
 
 @dataclass(frozen=True)
@@ -547,28 +540,46 @@ def greedy_forward_loocv(
 ) -> GreedyResult:
     """
     Greedy forward selection maximizing LOOCV R² (fast).
-    Returns selected vars + CV-R² + train R².
+    Auto-detects intercept handling:
+      - If X contains a 'const' column, treats it as intercept (always included, not selectable, not standardized).
+      - Otherwise, adds an intercept internally (as before).
 
     Assumes X, y are numeric, aligned, and NaN-free.
     """
 
     yv = y.to_numpy(dtype=float)
-    Xmat = X.to_numpy(dtype=float)
-    cols = list(X.columns)
+    cols_all = list(X.columns)
+
+    has_const = "const" in cols_all
+    if has_const:
+        # Treat provided const as the intercept (force-include)
+        const_vec = X["const"].to_numpy(dtype=float).reshape(-1, 1)
+
+        # Optional sanity check (not required, but helpful during debugging):
+        # if not (np.nanstd(const_vec) < 1e-12):
+        #     raise ValueError("'const' column exists but is not (near-)constant; cannot treat as intercept safely.")
+
+        X_no_const = X.drop(columns=["const"])
+        cols = list(X_no_const.columns)
+        Xmat = X_no_const.to_numpy(dtype=float)
+    else:
+        const_vec = None
+        cols = cols_all
+        Xmat = X.to_numpy(dtype=float)
 
     n, p = Xmat.shape
-    if p == 0:
+    if p == 0 and not has_const:
         return GreedyResult([], cv_r2=float("-inf"), train_r2=float("-inf"))
 
     # SST
     y_centered = yv - yv.mean()
     sst = float(y_centered.T @ y_centered)
     if sst == 0.0:
-        # constant y: no signal; return empty / simplest
         return GreedyResult([], cv_r2=0.0, train_r2=0.0)
 
     # Standardize X for stability (recommended)
-    if standardize:
+    # IMPORTANT: never standardize the intercept; we already removed it above if present.
+    if standardize and p > 0:
         mu = Xmat.mean(axis=0)
         sd = Xmat.std(axis=0, ddof=0)
         sd = np.where(sd == 0, 1.0, sd)
@@ -576,12 +587,12 @@ def greedy_forward_loocv(
 
     # Adaptive size cap if not provided
     if k_max is None:
-        k_max = min(p, max(2, n // 5))  # n=15 -> 3 vars, n=50 -> 10 vars
-    k_max = max(1, min(k_max, p))
+        # if p==0 but has_const, we still just fit const-only
+        k_max = 0 if p == 0 else min(p, max(2, n // 5))
+    k_max = max(0, min(k_max, p))
 
     # Optional prescreen to reduce p cheaply
-    if prescreen_k is not None and prescreen_k < p:
-        # corr with y (absolute)
+    if prescreen_k is not None and prescreen_k < p and p > 0:
         y_std = y_centered.std(ddof=0)
         if y_std == 0:
             return GreedyResult([], cv_r2=0.0, train_r2=0.0)
@@ -598,9 +609,15 @@ def greedy_forward_loocv(
     selected: List[int] = []
     remaining = set(range(p))
 
-    # baseline: intercept-only
-    X0 = np.ones((n, 1))
-    best_train_r2, best_cv_r2 = _ols_train_and_loocv_r2(X0, yv, sst)
+    # baseline
+    if has_const:
+        # intercept is provided as a column; baseline is const-only
+        X0 = const_vec
+        best_train_r2, best_cv_r2 = _ols_train_and_loocv_r2(X0, yv, sst)
+    else:
+        # original behavior: intercept-only baseline
+        X0 = np.ones((n, 1))
+        best_train_r2, best_cv_r2 = _ols_train_and_loocv_r2(X0, yv, sst)
 
     while remaining and len(selected) < k_max:
         step_best_cv = best_cv_r2
@@ -610,7 +627,13 @@ def greedy_forward_loocv(
         for j in list(remaining):
             idxs = selected + [j]
             Xsub = Xmat[:, idxs]
-            X_design = np.column_stack([np.ones(n), Xsub])
+
+            if has_const:
+                # Use provided intercept column
+                X_design = np.column_stack([const_vec, Xsub])
+            else:
+                # Add intercept internally (original behavior)
+                X_design = np.column_stack([np.ones(n), Xsub])
 
             train_r2, cv_r2 = _ols_train_and_loocv_r2(X_design, yv, sst)
             if cv_r2 > step_best_cv + 1e-12:
@@ -618,7 +641,6 @@ def greedy_forward_loocv(
                 step_best_train = train_r2
                 step_best_j = j
 
-        # stop if no meaningful improvement
         if step_best_j is None or (step_best_cv - best_cv_r2) < min_gain:
             break
 
@@ -627,4 +649,5 @@ def greedy_forward_loocv(
         best_cv_r2 = step_best_cv
         best_train_r2 = step_best_train
 
+    # Return only non-const variables (const is forced-in when present)
     return GreedyResult([cols[i] for i in selected], best_cv_r2, best_train_r2)
