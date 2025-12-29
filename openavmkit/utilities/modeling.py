@@ -422,6 +422,140 @@ class LandSLICEModel:
         return df
 
 
+@dataclass
+class TreeBasedCategoricalData:
+    """
+    Stores categorical metadata needed to reproduce LightGBM-compatible
+    categorical encodings and generate numeric matrices for SHAP.
+    """
+
+    feature_names: List[str]
+    categorical_cols: List[str]
+    category_levels: Dict[str, List]
+    bool_cols: List[str]
+
+    # ---------- construction ----------
+
+    @classmethod
+    def from_training_data(
+        cls,
+        X_train: pd.DataFrame,
+        categorical_cols: List[str],
+    ) -> "TreeBasedCategoricalData":
+        """
+        Build metadata from training data AFTER categoricals have been
+        converted to pandas 'category' dtype.
+        """
+        feature_names = list(X_train.columns)
+
+        cat_cols = [
+            c for c in categorical_cols
+            if c in X_train.columns
+            and pd.api.types.is_categorical_dtype(X_train[c])
+        ]
+
+        category_levels = {
+            c: list(X_train[c].cat.categories)
+            for c in cat_cols
+        }
+
+        bool_cols = [
+            c for c in X_train.columns
+            if pd.api.types.is_bool_dtype(X_train[c])
+            or str(X_train[c].dtype) == "boolean"
+        ]
+
+        return cls(
+            feature_names=feature_names,
+            categorical_cols=cat_cols,
+            category_levels=category_levels,
+            bool_cols=bool_cols,
+        )
+
+    # ---------- enforcement ----------
+
+    def apply(self, X: pd.DataFrame) -> pd.DataFrame:
+        """
+        Reapply categorical + boolean structure to a dataframe.
+        Unknown categories are preserved but will map to NaN later.
+        """
+        X = X.reindex(columns=self.feature_names)
+
+        # enforce booleans
+        for c in self.bool_cols:
+            if c in X.columns:
+                X[c] = X[c].astype("boolean")
+
+        # enforce categorical levels
+        for c, levels in self.category_levels.items():
+            if c in X.columns:
+                X[c] = pd.Categorical(X[c], categories=levels)
+
+        return X
+
+    # ---------- SHAP / numeric view ----------
+
+    def to_numeric_matrix(self, X: pd.DataFrame) -> np.ndarray:
+        """
+        Convert dataframe to a numeric matrix compatible with SHAP.
+        Categoricals -> integer codes, unknowns/missing -> np.nan.
+        """
+        X = self.apply(X)
+        out = X.copy()
+
+        for c in self.categorical_cols:
+            codes = out[c].cat.codes.astype(np.float64)
+            codes[codes == -1] = np.nan
+            out[c] = codes
+
+        for c in self.bool_cols:
+            out[c] = out[c].astype("Float64").astype(np.float64)
+
+        return out.to_numpy(dtype=np.float64)
+
+
+class LightGBMModel:
+    """LightGBM Model
+    
+    Attributes
+    ----------
+    booster: Booster
+        The trained LightGBM Booster model
+    cat_data: TreeBasedCategoricalData
+    """
+    def __init__(self, booster, cat_data):
+        self.booster = booster
+        self.cat_data = cat_data
+
+
+class XGBoostModel:
+    """XGBoost Model
+    
+    Attributes
+    ----------
+    regressor: XGBRegressor
+        The trained XGBoost XGBRegressor model
+    cat_data: TreeBasedCategoricalData
+    """
+    def __init__(self, regressor, cat_data):
+        self.regressor = regressor
+        self.cat_data = cat_data
+
+
+class CatBoostModel:
+    """CatBoost Model
+    
+    Attributes
+    ----------
+    regressor: CatBRegressor
+        The trained CatBoost CatBRegressor model
+    cat_data: TreeBasedCategoricalData
+    """
+    def __init__(self, regressor, cat_data):
+        self.regressor = regressor
+        self.cat_data = cat_data
+
+
 class MRAModel:
     """Multiple Regression Analysis Model
 

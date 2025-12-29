@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 
 def get_model_shaps(
-    model: xgb.XGBRegressor | lgb.Booster | cb.CatBoostRegressor,
+    model: XGBoostModel | LightGBMModel | CatBoostModel
     X_bkg: pd.DataFrame,
     X_to_explain: pd.DataFrame
 )-> shap.Explanation:
@@ -20,7 +20,7 @@ def get_model_shaps(
     
     Parameters
     ----------
-    model: xgboost.XGBRegressor | lightgbm.Booster | catboost.CatBoostRegressor
+    model: XGBoostModel | LightGBMModel | CatBoostModel
         A trained prediction model
     X_bkg: pd.DataFrame
         2D array of independent variables' values from the background set
@@ -34,11 +34,11 @@ def get_model_shaps(
 
     tree_explainer: shap.TreeExplainer
 
-    if isinstance(model, (xgb.core.Booster, xgb.XGBRegressor)):
+    if isinstance(model, XGBBoostModel):
         tree_explainer = _xgboost_shap(model, X_bkg)
-    elif isinstance(model, lgb.basic.Booster):
+    elif isinstance(model, LightGBMModel):
         tree_explainer = _lightgbm_shap(model, X_bkg)
-    elif isinstance(model, cb.CatBoostRegressor):
+    elif isinstance(model, CatBoostModel):
         tree_explainer = _catboost_shap(model, X_bkg)
     else:
         raise ValueError(f"Unsupported model type: {type(model)}")
@@ -47,7 +47,7 @@ def get_model_shaps(
 
 
 def get_full_model_shaps(
-    model: xgb.XGBRegressor | lgb.Booster | cb.CatBoostRegressor,
+    model: XGBoostModel | LightGBMModel | CatBoostModel,
     X_train: pd.DataFrame,
     X_test: pd.DataFrame,
     X_sales: pd.DataFrame,
@@ -58,7 +58,7 @@ def get_full_model_shaps(
     
     Parameters
     ----------
-    model: xgboost.XGBRegressor | lightgbm.Booster | catboost.CatBoostRegressor
+    model: XGBoostModel | LightGBMModel | CatBoostModel
         A trained prediction model
     X_train: pd.DataFrame
         2D array of independent variables' values from the training set
@@ -78,11 +78,11 @@ def get_full_model_shaps(
 
     tree_explainer: shap.TreeExplainer
 
-    if isinstance(model, (xgb.core.Booster, xgb.XGBRegressor)):
+    if isinstance(model, XGBoostModel):
         tree_explainer = _xgboost_shap(model, X_train)
-    elif isinstance(model, lgb.basic.Booster):
+    elif isinstance(model, LightGBMModel):
         tree_explainer = _lightgbm_shap(model, X_train)
-    elif isinstance(model, cb.CatBoostRegressor):
+    elif isinstance(model, CatBoostModel):
         tree_explainer = _catboost_shap(model, X_train)
     else:
         raise ValueError(f"Unsupported model type: {type(model)}")
@@ -261,7 +261,7 @@ def _calc_shap(
 ) -> shap.Explanation:
     
     # 1) XGBoost
-    if isinstance(model, (xgb.core.Booster, xgb.XGBRegressor)):
+    if isinstance(model, XGBoostModel):
         xgb_explainer = _xgboost_shap(
             model,
             X_train
@@ -269,7 +269,7 @@ def _calc_shap(
         return _xgboost_explain(X_to_explain)
 
     # 2) LightGBM
-    if isinstance(model, lgb.basic.Booster):
+    if isinstance(model, LightGBMModel):
         lgbm_explainer = _lightgbm_shap(
             model,
             X_train
@@ -277,7 +277,7 @@ def _calc_shap(
         return _lightgbm_explain(X_to_explain)
 
     # 3) CatBoost
-    if isinstance(model, cb.CatBoostRegressor):
+    if isinstance(model, CatBoostModel):
         return _catboost_shap(
             model,
             X_to_explain
@@ -289,7 +289,7 @@ def _calc_shap(
 
 
 def _xgboost_shap(
-    model: xgb.core.Booster | xgb.XGBRegressor,
+    model: XGBoostModel,
     X_train: pd.DataFrame,
     background_size: int = 100,
     approximate: bool = True,
@@ -300,7 +300,8 @@ def _xgboost_shap(
     bg_arr = bg_df.to_numpy(dtype=np.float32)
 
     # b) build the TreeExplainer on the Booster itself
-    booster = model.get_booster() if isinstance(model, xgb.XGBRegressor) else model
+    regressor = model.regressor
+    booster = model.get_booster()
     return shap.TreeExplainer(
         booster,
         data=bg_arr,
@@ -309,7 +310,7 @@ def _xgboost_shap(
 
 
 def _lightgbm_shap(
-    model: lgb.basic.Booster,
+    model: LightGBMModel,
     X_train: pd.DataFrame,
     background_size: int = 100,
     approximate: bool = True,
@@ -317,15 +318,16 @@ def _lightgbm_shap(
 )-> shap.TreeExplainer:
     bg_df  = X_train.sample(min(background_size, len(X_train)), random_state=0)
     bg_arr = bg_df.to_numpy(dtype=np.float64)
+    booster = model.booster
     return shap.TreeExplainer(
-        model,
+        booster,
         data=bg_arr,
         feature_perturbation="interventional"
     )
 
 
 def _catboost_shap(
-    model: cb.CatBoostRegressor,
+    model: CatBoostModel,
     X_train: pd.DataFrame,
     background_size: int = 100,
     approximate: bool = True,
@@ -342,8 +344,8 @@ def _catboost_shap(
 
     Parameters
     ----------
-    model : catboost.CatBoostRegressor
-        Trained CatBoostRegressor instance.
+    model : CatBoostModel
+        Trained CatBoostModel instance.
     X_train : pd.DataFrame
         Training data (unused here, kept for API symmetry).
     background_size : int, default=100
@@ -360,13 +362,15 @@ def _catboost_shap(
         Configured TreeExplainer for the CatBoost model.
     """
 
+    regressor = model.regressor
+    
     explainer = shap.TreeExplainer(
-        model,
+        regressor,
         feature_perturbation="tree_path_dependent",
     )
 
     # Tag this explainer so _shap_explain knows it's CatBoost
-    explainer._cb_model = model   # type: ignore[attr-defined]
+    explainer._cb_model = regressor   # type: ignore[attr-defined]
 
     return explainer
 

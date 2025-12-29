@@ -1823,14 +1823,14 @@ def _predict_one_model(
         gwr_model: GWRModel = smr.model
         results = predict_gwr(ds, gwr_model, timing, verbose)
     elif model_engine == "xgboost":
-        xgb_regressor: XGBRegressor = smr.model
-        results = predict_xgboost(ds, xgb_regressor, timing, verbose)
+        xgb_model: XGBoostModel = smr.model
+        results = predict_xgboost(ds, xgb_model, timing, verbose)
     elif model_engine == "lightgbm":
-        lightgbm_regressor: Booster = smr.model
-        results = predict_lightgbm(ds, lightgbm_regressor, timing, verbose)
+        lgbm_model: LightGBMModel = smr.model
+        results = predict_lightgbm(ds, lgbm_model, timing, verbose)
     elif model_engine == "catboost":
-        catboost_regressor: CatBoostRegressor = smr.model
-        results = predict_catboost(ds, catboost_regressor, timing, verbose)
+        catboost_model: CatBoostModel = smr.model
+        results = predict_catboost(ds, catboost_model, timing, verbose)
     elif model_engine == "slice":
         slice_model: LandSLICEModel = smr.model
         results = predict_slice(ds, slice_model, timing, verbose)

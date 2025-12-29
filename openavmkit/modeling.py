@@ -99,16 +99,16 @@ from openavmkit.utilities.timing import TimingData
 pd.set_option("future.no_silent_downcasting", True)
 
 TreeBasedModel = Union[
-    XGBRegressor,
-    Booster,
-    CatBoostRegressor
+    XGBoostModel,
+    LightGBMModel,
+    CatBoostModel
 ]
 
 PredictionModel = Union[
     MRAModel,
-    XGBRegressor,
-    Booster,
-    CatBoostRegressor,
+    XGBoostModel,
+    LightGBMModel,
+    CatBoostModel,
     KernelReg,
     GarbageModel,
     AverageModel,
@@ -1959,51 +1959,50 @@ def _run_multi_mra(
     
     # Optimize for best variables
     best_var_map = {}
-
-
+    
     if optimize_vars:
-    if verbose:
+        if verbose:
             print(f"Tuning Multi-MRA: searching for optimal variables. (Total variables = {n_features})...")
-        
-        model_name = ds.name
-        
-        if os.path.exists(f"{outpath}/{model_name}_vars.json"):
-            best_var_map = json.load(open(f"{outpath}/{model_name}_vars.json", "r"))
-            if verbose:
-                print(f"--> using saved variables")
-        
-        if not best_var_map:
-            for location_field in location_fields:
-                if location_field not in df_train.columns:
-                    continue
-
-                field_map: Dict[Any, np.ndarray] = {}
-                unique_locs = df_train[location_field].unique()
-
-                if verbose:
-                    print(
-                        f"[Multi-MRA] Optimizing local OLS for field '{location_field}' "
-                        f"with {len(unique_locs)} distinct values."
-                )
             
-            i = 0
-            for loc in unique_locs:
-                # Build mask for this specific location value
-                mask_loc = df_train[location_field].eq(loc)
+            model_name = ds.name
+            
+            if os.path.exists(f"{outpath}/{model_name}_vars.json"):
+                best_var_map = json.load(open(f"{outpath}/{model_name}_vars.json", "r"))
+                if verbose:
+                    print(f"--> using saved variables")
+            
+            if not best_var_map:
+                for location_field in location_fields:
+                    if location_field not in df_train.columns:
+                        continue
 
-                # Safety: mask and X_train index alignment is guaranteed above
-                X_loc = X_train.loc[mask_loc, :]
-                y_loc = y_train.loc[mask_loc]
+                    field_map: Dict[Any, np.ndarray] = {}
+                    unique_locs = df_train[location_field].unique()
 
-                n_loc = len(X_loc)
-                min_n_loc = X_loc.shape[1] + 1
-                if n_loc < min_n_loc:
-                    continue
-                print(f"--> {i/len(unique_locs):5.2%} -- {i:>6}/{len(unique_locs)} -- value = {loc}...")
+                    if verbose:
+                        print(
+                            f"[Multi-MRA] Optimizing local OLS for field '{location_field}' "
+                            f"with {len(unique_locs)} distinct values."
+                    )
+                
+                i = 0
+                for loc in unique_locs:
+                    # Build mask for this specific location value
+                    mask_loc = df_train[location_field].eq(loc)
 
-                try:
-                    best_vars = greedy_forward_loocv(X_loc, y_loc).variables
-                except np.linalg.LinAlgError:
+                    # Safety: mask and X_train index alignment is guaranteed above
+                    X_loc = X_train.loc[mask_loc, :]
+                    y_loc = y_train.loc[mask_loc]
+
+                    n_loc = len(X_loc)
+                    min_n_loc = X_loc.shape[1] + 1
+                    if n_loc < min_n_loc:
+                        continue
+                    print(f"--> {i/len(unique_locs):5.2%} -- {i:>6}/{len(unique_locs)} -- value = {loc}...")
+
+                    try:
+                        best_vars = greedy_forward_loocv(X_loc, y_loc).variables
+                    except np.linalg.LinAlgError:
                         best_vars = []
                     field_map[str(loc)] = best_vars
                     
@@ -2013,7 +2012,7 @@ def _run_multi_mra(
                 os.makedirs(outpath, exist_ok=True)
                 if verbose:
                     print(f"--> saving variables to \"{outpath}/{model_name}_vars.json\"")
-            json.dump(best_var_map, open(f"{outpath}/{model_name}_vars.json", "w"))
+                json.dump(best_var_map, open(f"{outpath}/{model_name}_vars.json", "w"))
 
     timing.stop("parameter_search")
 
@@ -2060,41 +2059,41 @@ def _run_multi_mra(
             best_vars_loc = best_var_field.get(str(loc), [])
             
             # Build mask for this specific location value
-                mask_loc = df_train[location_field].eq(loc)
+            mask_loc = df_train[location_field].eq(loc)
 
-                # Subset of X_train with only the best variables
-                best_vars_loc = list(best_vars_loc)
-                if best_vars_loc:
-                    if has_const and "const" not in best_vars_loc:
-                        best_vars_loc.append("const")
-                    X_best = X_train[best_vars_loc]
-                else:
-                    X_best = X_train
+            # Subset of X_train with only the best variables
+            best_vars_loc = list(best_vars_loc)
+            if best_vars_loc:
+                if has_const and "const" not in best_vars_loc:
+                    best_vars_loc.append("const")
+                X_best = X_train[best_vars_loc]
+            else:
+                X_best = X_train
 
-                # Safety: mask and X_train index alignment is guaranteed above
-                X_loc = X_best.loc[mask_loc, :]
-                y_loc = y_train.loc[mask_loc]
-                
-                min_n_loc = X_loc.shape[1] + 1
+            # Safety: mask and X_train index alignment is guaranteed above
+            X_loc = X_best.loc[mask_loc, :]
+            y_loc = y_train.loc[mask_loc]
+            
+            min_n_loc = X_loc.shape[1] + 1
 
-                n_loc = len(X_loc)
-                if n_loc < min_n_loc:
-                    # Not enough observations for a stable local regression
-                    continue
+            n_loc = len(X_loc)
+            if n_loc < min_n_loc:
+                # Not enough observations for a stable local regression
+                continue
 
-                # Fit local OLS; catch linear algebra issues
-                try:
-                    local_model = sm.OLS(y_loc, X_loc).fit()
-                except np.linalg.LinAlgError:
-                    # Singular / ill-conditioned; skip this loc
-                    continue
+            # Fit local OLS; catch linear algebra issues
+            try:
+                local_model = sm.OLS(y_loc, X_loc).fit()
+            except np.linalg.LinAlgError:
+                # Singular / ill-conditioned; skip this loc
+                continue
 
-                # Align coefficients to the master feature ordering
-                params = local_model.params.reindex(feature_names, fill_value=0.0)
-                beta = params.to_numpy(dtype=float)
+            # Align coefficients to the master feature ordering
+            params = local_model.params.reindex(feature_names, fill_value=0.0)
+            beta = params.to_numpy(dtype=float)
 
-                # Store in field_map
-                field_map[str(loc)] = beta
+            # Store in field_map
+            field_map[str(loc)] = beta
 
         coef_map[location_field] = field_map
 
@@ -3182,7 +3181,7 @@ def run_gwr(
 
 def predict_xgboost(
     ds: DataSplit,
-    xgboost_model: xgb.XGBRegressor,
+    xgboost_model: XGBoostModel,
     timing: TimingData,
     verbose: bool = False,
 ) -> SingleModelResults:
@@ -3193,8 +3192,8 @@ def predict_xgboost(
     ----------
     ds : DataSplit
         DataSplit object containing train/test/universe splits.
-    xgboost_model : xgb.XGBRegressor
-        Trained XGBRegressor instance.
+    xgboost_model : XGBoostModel
+        Trained XGBoostModel instance.
     timing : TimingData
         TimingData object for recording performance metrics.
     verbose : bool, optional
@@ -3205,17 +3204,18 @@ def predict_xgboost(
     SingleModelResults
         Prediction results from the XGBoost model.
     """
+    regressor = xgboost_model.regressor
 
     timing.start("predict_test")
-    y_pred_test = safe_predict(xgboost_model.predict, ds.X_test)
+    y_pred_test = safe_predict(regressor.predict, ds.X_test)
     timing.stop("predict_test")
 
     timing.start("predict_sales")
-    y_pred_sales = safe_predict(xgboost_model.predict, ds.X_sales)
+    y_pred_sales = safe_predict(regressor.predict, ds.X_sales)
     timing.stop("predict_sales")
 
     timing.start("predict_univ")
-    y_pred_univ = safe_predict(xgboost_model.predict, ds.X_univ)
+    y_pred_univ = safe_predict(regressor.predict, ds.X_univ)
     timing.stop("predict_univ")
 
     timing.stop("total")
@@ -3316,17 +3316,20 @@ def run_xgboost(
     parameters.setdefault("max_cat_to_onehot", 1)
 
     # parameters["eval_metric"] = "rmse"
-    xgboost_model = xgb.XGBRegressor(**parameters)
+    regressor = xgb.XGBRegressor(**parameters)
 
     timing.start("train")
-    xgboost_model.fit(ds.X_train, ds.y_train)
+    regressor.fit(ds.X_train, ds.y_train)
     timing.stop("train")
-
+    
+    cat_data = None # TODO
+    xgboost_model = XGBoostModel(regressor=regressor, cat_data=cat_data)
+    
     return predict_xgboost(ds, xgboost_model, timing, verbose)
 
 
 def predict_lightgbm(
-    ds: DataSplit, gbm: lgb.Booster, timing: TimingData, verbose: bool = False
+    ds: DataSplit, model: LightGBMModel, timing: TimingData, verbose: bool = False
 ) -> SingleModelResults:
     """
     Generate predictions using a LightGBM model.
@@ -3335,8 +3338,8 @@ def predict_lightgbm(
     ----------
     ds : DataSplit
         DataSplit object containing train/test/universe splits.
-    gbm : lgb.Booster
-        Trained LightGBM Booster.
+    model : LightGBMModel
+        Trained LightGBM model.
     timing : TimingData
         TimingData object for recording performance metrics.
     verbose : bool, optional
@@ -3347,6 +3350,7 @@ def predict_lightgbm(
     SingleModelResults
         Prediction results from the LightGBM model.
     """
+    gbm:Booster = model.booster
 
     timing.start("predict_test")
     y_pred_test = safe_predict(
@@ -3500,19 +3504,16 @@ def run_lightgbm(
         ],
     )
     timing.stop("train")
+    
+    cat_data = None #TODO
+    model = LightGBMModel(booster=gbm, cat_data=cat_data)
 
-    # Print timing information for LightGBM model
-    # if verbose:
-    #   print("\n***** LightGBM Model Timing *****")
-    #   print(timing.print())
-    #   print("*********************************\n")
-
-    return predict_lightgbm(ds, gbm, timing, verbose)
+    return predict_lightgbm(ds, model, timing, verbose)
 
 
 def predict_catboost(
     ds: DataSplit,
-    catboost_model: catboost.CatBoostRegressor,
+    catboost_model: CatBoostModel,
     timing: TimingData,
     verbose: bool = False,
 ) -> SingleModelResults:
@@ -3523,8 +3524,8 @@ def predict_catboost(
     ----------
     ds : DataSplit
         DataSplit object containing train/test/universe splits.
-    catboost_model : catboost.CatBoostRegressor
-        Trained CatBoostRegressor instance.
+    catboost_model : CatBoostModel
+        Trained CatBoostModel instance.
     timing : TimingData
         TimingData object for recording performance metrics.
     verbose : bool, optional
@@ -3537,13 +3538,15 @@ def predict_catboost(
     """
 
     cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
+    
+    regressor = catboost_model.regressor
 
     timing.start("predict_test")
     if len(ds.y_test) == 0:
         y_pred_test = np.array([])
     else:
         test_pool = Pool(data=ds.X_test, label=ds.y_test, cat_features=cat_vars)
-        y_pred_test = catboost_model.predict(test_pool)
+        y_pred_test = regressor.predict(test_pool)
     timing.stop("predict_test")
 
     timing.start("predict_sales")
@@ -3551,7 +3554,7 @@ def predict_catboost(
         y_pred_sales = np.array([])
     else:
         sales_pool = Pool(data=ds.X_sales, label=ds.y_sales, cat_features=cat_vars)
-        y_pred_sales = catboost_model.predict(sales_pool)
+        y_pred_sales = regressor.predict(sales_pool)
     timing.stop("predict_sales")
 
     timing.start("predict_univ")
@@ -3559,7 +3562,7 @@ def predict_catboost(
         y_pred_univ = np.array([])
     else:
         univ_pool = Pool(data=ds.X_univ, cat_features=cat_vars)
-        y_pred_univ = catboost_model.predict(univ_pool)
+        y_pred_univ = regressor.predict(univ_pool)
     timing.stop("predict_univ")
 
     timing.stop("total")
@@ -3648,15 +3651,19 @@ def run_catboost(
     params["train_dir"] = f"{outpath}/catboost/catboost_info"
     os.makedirs(params["train_dir"], exist_ok=True)
     cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
-    catboost_model = catboost.CatBoostRegressor(**params)
+
+    regressor = catboost.CatBoostRegressor(**params)
     train_pool = Pool(data=ds.X_train, label=ds.y_train, cat_features=cat_vars)
     timing.stop("setup")
 
     timing.start("train")
-    catboost_model.fit(train_pool)
+    regressor.fit(train_pool)
     timing.stop("train")
+    
+    cat_data = None #TODO
+    model = CatBoostModel(regressor=regressor, cat_data=None)
 
-    return predict_catboost(ds, catboost_model, timing, verbose)
+    return predict_catboost(ds, model, timing, verbose)
 
 
 def predict_slice(
@@ -5539,7 +5546,7 @@ def fit_land_SLICE_model(
 
 def write_tree_based_params(model: PredictionModel, df: pd.DataFrame, outpath: str, location: str = None):
     
-    # model is either XGBoost (XGBRegressor), LightBGM (Booster), or CatBoost (CatBoostRegressor)
+    # model is either XGBoost, LightBGM, or CatBoost
     
     # phase 1 -- calculate per-parcel global SHAPs based on the trained model
     
