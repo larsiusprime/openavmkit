@@ -1847,6 +1847,7 @@ def run_multi_mra(
     ds: DataSplit,
     outpath: str,
     location_fields: list[str],
+    optimize_vars: bool = False,
     intercept: bool = True,
     verbose: bool = False,
     min_sample_size: int = 15
@@ -1863,9 +1864,10 @@ def run_multi_mra(
     location_fields : list[str]
         Ordered list of location field names, most specific -> least specific.
         These fields must exist in ds.df_train / ds.df_test / ds.df_universe.
+    optimize_vars: bool, optional
+        Whether to automatically trim the variable selection to the most optimal or not. Defaults to False.
     intercept : bool, optional
-        Whether to include an intercept column in the regression.
-        Defaults to True.
+        Whether to include an intercept column in the regression. Defaults to True.
     verbose : bool, optional
         If True, print verbose output. Defaults to False.
     min_sample_size : int, optional
@@ -1878,14 +1880,15 @@ def run_multi_mra(
     SingleModelResults
         Prediction results from the Multi-MRA model.
     """
+
     ds_prepped, multi_model, timing = _run_multi_mra(
         ds,
         outpath,
         location_fields=location_fields,
+        optimize_vars=optimize_vars,
         intercept=intercept,
         verbose=verbose,
     )
-    # IMPORTANT: use ds_prepped, not the original ds
     return predict_multi_mra(ds_prepped, multi_model, timing, verbose=verbose)
 
 
@@ -1893,6 +1896,7 @@ def _run_multi_mra(
     ds: DataSplit,
     outpath: str,
     location_fields: list[str],
+    optimize_vars: bool = True,
     intercept: bool = True,
     verbose: bool = False,
 ) -> tuple[DataSplit, MultiMRAModel, TimingData]:
@@ -1956,28 +1960,30 @@ def _run_multi_mra(
     # Optimize for best variables
     best_var_map = {}
 
+
+    if optimize_vars:
     if verbose:
-        print(f"Tuning Multi-MRA: searching for optimal variables. (Total variables = {n_features})...")
-    
-    model_name = ds.name
-    
-    if os.path.exists(f"{outpath}/{model_name}_vars.json"):
-        best_var_map = json.load(open(f"{outpath}/{model_name}_vars.json", "r"))
-        if verbose:
-            print(f"--> using saved variables")
-    
-    if not best_var_map:
-        for location_field in location_fields:
-            if location_field not in df_train.columns:
-                continue
-
-            field_map: Dict[Any, np.ndarray] = {}
-            unique_locs = df_train[location_field].unique()
-
+            print(f"Tuning Multi-MRA: searching for optimal variables. (Total variables = {n_features})...")
+        
+        model_name = ds.name
+        
+        if os.path.exists(f"{outpath}/{model_name}_vars.json"):
+            best_var_map = json.load(open(f"{outpath}/{model_name}_vars.json", "r"))
             if verbose:
-                print(
-                    f"[Multi-MRA] Optimizing local OLS for field '{location_field}' "
-                    f"with {len(unique_locs)} distinct values."
+                print(f"--> using saved variables")
+        
+        if not best_var_map:
+            for location_field in location_fields:
+                if location_field not in df_train.columns:
+                    continue
+
+                field_map: Dict[Any, np.ndarray] = {}
+                unique_locs = df_train[location_field].unique()
+
+                if verbose:
+                    print(
+                        f"[Multi-MRA] Optimizing local OLS for field '{location_field}' "
+                        f"with {len(unique_locs)} distinct values."
                 )
             
             i = 0
@@ -1998,14 +2004,16 @@ def _run_multi_mra(
                 try:
                     best_vars = greedy_forward_loocv(X_loc, y_loc).variables
                 except np.linalg.LinAlgError:
-                    best_vars = []
-                field_map[str(loc)] = best_vars
-                i += 1
-            best_var_map[location_field] = field_map
-        os.makedirs(outpath, exist_ok=True)
-        if verbose:
-            print(f"--> saving variables to \"{outpath}/{model_name}_vars.json\"")
-        json.dump(best_var_map, open(f"{outpath}/{model_name}_vars.json", "w"))
+                        best_vars = []
+                    field_map[str(loc)] = best_vars
+                    
+                    i += 1
+                    best_var_map[location_field] = field_map
+
+                os.makedirs(outpath, exist_ok=True)
+                if verbose:
+                    print(f"--> saving variables to \"{outpath}/{model_name}_vars.json\"")
+            json.dump(best_var_map, open(f"{outpath}/{model_name}_vars.json", "w"))
 
     timing.stop("parameter_search")
 
@@ -2052,41 +2060,41 @@ def _run_multi_mra(
             best_vars_loc = best_var_field.get(str(loc), [])
             
             # Build mask for this specific location value
-            mask_loc = df_train[location_field].eq(loc)
+                mask_loc = df_train[location_field].eq(loc)
 
-            # Subset of X_train with only the best variables
-            best_vars_loc = list(best_vars_loc)
-            if best_vars_loc:
-                if has_const and "const" not in best_vars_loc:
-                    best_vars_loc.append("const")
-                X_best = X_train[best_vars_loc]
-            else:
-                X_best = X_train
+                # Subset of X_train with only the best variables
+                best_vars_loc = list(best_vars_loc)
+                if best_vars_loc:
+                    if has_const and "const" not in best_vars_loc:
+                        best_vars_loc.append("const")
+                    X_best = X_train[best_vars_loc]
+                else:
+                    X_best = X_train
 
-            # Safety: mask and X_train index alignment is guaranteed above
-            X_loc = X_best.loc[mask_loc, :]
-            y_loc = y_train.loc[mask_loc]
-            
-            min_n_loc = X_loc.shape[1] + 1
+                # Safety: mask and X_train index alignment is guaranteed above
+                X_loc = X_best.loc[mask_loc, :]
+                y_loc = y_train.loc[mask_loc]
+                
+                min_n_loc = X_loc.shape[1] + 1
 
-            n_loc = len(X_loc)
-            if n_loc < min_n_loc:
-                # Not enough observations for a stable local regression
-                continue
+                n_loc = len(X_loc)
+                if n_loc < min_n_loc:
+                    # Not enough observations for a stable local regression
+                    continue
 
-            # Fit local OLS; catch linear algebra issues
-            try:
-                local_model = sm.OLS(y_loc, X_loc).fit()
-            except np.linalg.LinAlgError:
-                # Singular / ill-conditioned; skip this loc
-                continue
+                # Fit local OLS; catch linear algebra issues
+                try:
+                    local_model = sm.OLS(y_loc, X_loc).fit()
+                except np.linalg.LinAlgError:
+                    # Singular / ill-conditioned; skip this loc
+                    continue
 
-            # Align coefficients to the master feature ordering
-            params = local_model.params.reindex(feature_names, fill_value=0.0)
-            beta = params.to_numpy(dtype=float)
+                # Align coefficients to the master feature ordering
+                params = local_model.params.reindex(feature_names, fill_value=0.0)
+                beta = params.to_numpy(dtype=float)
 
-            # Store in field_map
-            field_map[str(loc)] = beta
+                # Store in field_map
+                field_map[str(loc)] = beta
 
         coef_map[location_field] = field_map
 
@@ -2234,18 +2242,6 @@ def predict_multi_mra(
                         y_loc_true = y_split[mask_loc]
                     else:
                         y_loc_true = y_split.loc[mask_loc]
-                    
-                    # if verbose:
-                        ## Residual sum of squares
-                        # ss_res = ((y_loc_true - y_loc_pred) ** 2).sum()
-
-                        ## Total sum of squares (local mean!)
-                        # ss_tot = ((y_loc_true - y_loc_true.mean()) ** 2).sum()
-
-                        ## Local R-squared
-                        # r2_loc = 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
-
-                        # print(f"--> loc=\"{loc}\" r2 = {r2_loc}")
                 
                 # Assign to y_pred for these rows
                 y_pred[mask_loc] = y_loc_pred

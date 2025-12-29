@@ -1297,7 +1297,7 @@ def run_one_model(
             ind_vars = best_variables
 
     interactions = get_variable_interactions(entry, settings, df_sales)
-    location_fields = get_locations(settings, df_sales)
+    location_fields = entry.get("locations", get_locations(settings, df_sales))
 
     if test_keys is None or train_keys is None:
         test_keys, train_keys = _read_split_keys(model_group)
@@ -1307,23 +1307,23 @@ def run_one_model(
     ds = get_data_split_for(
         model_name=model_name,
         model_engine=model_engine,
-        model_entry=entry,
-        model_group=model_group,
-        location_fields=location_fields,
-        ind_vars=ind_vars,
-        df_sales=df_sales,
-        df_universe=df_universe,
-        settings=settings,
-        dep_var=dep_var,
-        dep_var_test=dep_var_test,
-        fields_cat=fields_cat,
-        interactions=interactions,
-        test_keys=test_keys,
-        train_keys=train_keys,
-        vacant_only=vacant_only,
-        hedonic=hedonic,
-        hedonic_test_against_vacant_sales=True,
-    )
+            model_entry=entry,
+            model_group=model_group,
+            location_fields=location_fields,
+            ind_vars=ind_vars,
+            df_sales=df_sales,
+            df_universe=df_universe,
+            settings=settings,
+            dep_var=dep_var,
+            dep_var_test=dep_var_test,
+            fields_cat=fields_cat,
+            interactions=interactions,
+            test_keys=test_keys,
+            train_keys=train_keys,
+            vacant_only=vacant_only,
+            hedonic=hedonic,
+            hedonic_test_against_vacant_sales=True,
+        )
     t.stop("data split")
 
     t.start("setup")
@@ -1332,6 +1332,7 @@ def run_one_model(
             print(f"--> model {model_name} has less than 15 sales. Skipping...")
         return None
 
+    optimize_vars = entry.get("optimize_vars", False)
     intercept = entry.get("intercept", True)
     n_trials = entry.get("n_trials", 50)
     use_gpu = entry.get("use_gpu", True)
@@ -1372,7 +1373,7 @@ def run_one_model(
     elif model_engine == "mra":
         results = run_mra(ds, intercept=intercept, verbose=verbose)
     elif model_engine == "multi_mra":
-        results = run_multi_mra(ds, outpath, location_fields, intercept=intercept, verbose=verbose)
+        results = run_multi_mra(ds, outpath, location_fields, optimize_vars=optimize_vars, intercept=intercept, verbose=verbose)
     elif model_engine == "kernel":
         results = run_kernel(
             ds, outpath, save_params, use_saved_params, verbose=verbose
