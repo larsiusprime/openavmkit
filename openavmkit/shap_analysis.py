@@ -55,24 +55,27 @@ def get_full_model_shaps(
     approximate = True
     cat_data = model.cat_data
     
+    model_type = ""
     if isinstance(model, XGBoostModel):
+        model_type = "xgboost"
         tree_explainer = _xgboost_shap(model, X_train)
     elif isinstance(model, LightGBMModel):
+        model_type = "lightgbm"
         approximate = False # approx. not supported for LightGBM
         tree_explainer = _lightgbm_shap(model, X_train)
     elif isinstance(model, CatBoostModel):
+        model_type = "catboost"
         tree_explainer = _catboost_shap(model, X_train)
     else:
         raise ValueError(f"Unsupported model type: {type(model)}")
     
     if verbose:
         print(f"Generating SHAPs...")
-    shap_sales = _shap_explain(tree_explainer, X_sales)
-
-    shap_sales = _shap_explain(tree_explainer, X_sales, cat_data=cat_data, approximate=approximate, verbose=verbose, label="sales")
-    shap_train = _shap_explain(tree_explainer, X_train, cat_data=cat_data, approximate=approximate, verbose=verbose, label="train")
-    shap_test  = _shap_explain(tree_explainer, X_test,  cat_data=cat_data, approximate=approximate, verbose=verbose, label="test")
-    shap_univ  = _shap_explain(tree_explainer, X_univ,  cat_data=cat_data, approximate=approximate, verbose=verbose, label="universe")
+    
+    shap_sales = _shap_explain(model_type, tree_explainer, X_sales, cat_data=cat_data, approximate=approximate, verbose=verbose, label="sales")
+    shap_train = _shap_explain(model_type, tree_explainer, X_train, cat_data=cat_data, approximate=approximate, verbose=verbose, label="train")
+    shap_test  = _shap_explain(model_type, tree_explainer, X_test,  cat_data=cat_data, approximate=approximate, verbose=verbose, label="test")
+    shap_univ  = _shap_explain(model_type, tree_explainer, X_univ,  cat_data=cat_data, approximate=approximate, verbose=verbose, label="universe")
 
     return {
         "train": shap_train,
@@ -283,7 +286,8 @@ def _xgboost_shap(
 
     # b) build the TreeExplainer on the Booster itself
     regressor = model.regressor
-    booster = model.get_booster()
+    booster = regressor.get_booster() if isinstance(regressor, xgb.XGBRegressor) else regressor
+    
     return shap.TreeExplainer(
         booster,
         data=bg_arr,
@@ -401,6 +405,7 @@ def _lgb_pred_contrib_chunked(booster, X: pd.DataFrame, chunk_size: int, verbose
 
 
 def _shap_explain(
+    model_type: str,
     te: shap.TreeExplainer,
     X_to_explain: pd.DataFrame,
     approximate: bool = True,
@@ -420,6 +425,8 @@ def _shap_explain(
     
     Parameters
     ----------
+    model_type: str
+        "xgboost", "catboost", or "lightgbm"
     te : shap.TreeExplainer
         TreeExplainer instance built on the trained model and background data.
     X_to_explain : pd.DataFrame
@@ -441,8 +448,8 @@ def _shap_explain(
     """
 
     # --- CatBoost fast path -------------------------------------------------
-    cb_model = getattr(te, "_cb_model", None)
-    if cb_model is not None:
+    if model_type == "catboost":
+        cb_model = getattr(te, "_cb_model", None)
         # This is a CatBoostRegressor explainer; use CatBoost-native SHAP.
 
         # Discover categorical feature indices from the model if available.
@@ -481,8 +488,9 @@ def _shap_explain(
     
     # TreeExplainer stores a TreeEnsemble wrapper in te.model, and often keeps the
     # original model at te.model.original_model.
-    lgb_booster = getattr(getattr(te, "model", None), "original_model", None)
-    if lgb_booster is not None and hasattr(lgb_booster, "predict"):
+    if model_type == "lightgbm":
+        lgb_booster = getattr(getattr(te, "model", None), "original_model", None)
+    
         # Apply categorical structure if provided
         X_used = cat_data.apply(X_to_explain) if (cat_data is not None and len(cat_data.categorical_cols) > 0) else X_to_explain
 

@@ -1875,6 +1875,7 @@ def _clamp_land_predictions(
 
     # Look for the corresponding universe, sales, and test predictions for the land value model.
     df_univ = load_model_results(model_group, model_name, "universe", lookpath)
+    
     if df_univ is not None:
         # There's a match for this model name (ex: "xgboost" or "lightgbm") in the set of main models
         df_sales = load_model_results(model_group, model_name, "sales", lookpath)
@@ -1966,6 +1967,7 @@ def _clamp_land_predictions(
     
     ds.df_test = df_land_test.merge(ds.df_test[["key_sale"] + [f for f in ds.df_test if f not in df_land_test]], on="key_sale", how="left")
     ds.df_sales = df_land_sales.merge(ds.df_sales[["key_sale"] + [f for f in ds.df_sales if f not in df_land_sales]], on="key_sale", how="left")
+    
     ds.df_universe = df_land_univ.merge(ds.df_universe[["key"] + [f for f in ds.df_universe if f not in df_land_univ]], on="key", how="left")
     
     # Create a new SingleModelResults object with the clamped land value predictions

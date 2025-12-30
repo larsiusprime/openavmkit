@@ -772,6 +772,8 @@ class DataSplit:
             if col not in ds.df_train.columns:
                 # If it isn't in train, we can't define vocab from train.
                 continue
+            if col == "key" or col == "key_sale":
+                continue
 
             s_train = ds.df_train[col]
             
@@ -1437,7 +1439,7 @@ class SingleModelResults:
         else:
             self.chd = float("nan")
         timing.stop("chd")
-
+        
         timing.start("utility")
         self.utility_test = self.pred_test.mape * 100
         if y_pred_sales is not None:
