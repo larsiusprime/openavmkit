@@ -9,41 +9,12 @@ import lightgbm as lgb
 import catboost as cb
 import matplotlib.pyplot as plt
 
-
-def get_model_shaps(
-    model: XGBoostModel | LightGBMModel | CatBoostModel
-    X_bkg: pd.DataFrame,
-    X_to_explain: pd.DataFrame
-)-> shap.Explanation:
-    """
-    Calculates shaps for a single background/explanation set
-    
-    Parameters
-    ----------
-    model: XGBoostModel | LightGBMModel | CatBoostModel
-        A trained prediction model
-    X_bkg: pd.DataFrame
-        2D array of independent variables' values from the background set
-    X_to_explain: pd.DataFrame
-        2D array of independent variables' values you wish to explain
-    
-    Returns
-    -------
-    shap.Explanation
-    """
-
-    tree_explainer: shap.TreeExplainer
-
-    if isinstance(model, XGBBoostModel):
-        tree_explainer = _xgboost_shap(model, X_bkg)
-    elif isinstance(model, LightGBMModel):
-        tree_explainer = _lightgbm_shap(model, X_bkg)
-    elif isinstance(model, CatBoostModel):
-        tree_explainer = _catboost_shap(model, X_bkg)
-    else:
-        raise ValueError(f"Unsupported model type: {type(model)}")
-
-    return _shap_explain(tree_explainer, X_to_explain)
+from openavmkit.utilities.modeling import (
+    XGBoostModel,
+    LightGBMModel,
+    CatBoostModel,
+    TreeBasedCategoricalData
+)
 
 
 def get_full_model_shaps(
@@ -51,7 +22,8 @@ def get_full_model_shaps(
     X_train: pd.DataFrame,
     X_test: pd.DataFrame,
     X_sales: pd.DataFrame,
-    X_univ: pd.DataFrame
+    X_univ: pd.DataFrame,
+    verbose: bool = False
 ):
     """
     Calculates shaps for all subsets (test, train, sales, universe) of one model run
@@ -68,6 +40,8 @@ def get_full_model_shaps(
         2D array of independent variables' values from the sales set
     X_univ: pd.DataFrame
         2D array of independent variables' values from the universe set
+    verbose: bool
+        Whether to print verbose information. Defaults to False.
     
     Returns
     -------
@@ -77,20 +51,28 @@ def get_full_model_shaps(
     """
 
     tree_explainer: shap.TreeExplainer
-
+    
+    approximate = True
+    cat_data = model.cat_data
+    
     if isinstance(model, XGBoostModel):
         tree_explainer = _xgboost_shap(model, X_train)
     elif isinstance(model, LightGBMModel):
+        approximate = False # approx. not supported for LightGBM
         tree_explainer = _lightgbm_shap(model, X_train)
     elif isinstance(model, CatBoostModel):
         tree_explainer = _catboost_shap(model, X_train)
     else:
         raise ValueError(f"Unsupported model type: {type(model)}")
-
-    shap_train = _shap_explain(tree_explainer, X_train)
-    shap_test  = _shap_explain(tree_explainer, X_test)
+    
+    if verbose:
+        print(f"Generating SHAPs...")
     shap_sales = _shap_explain(tree_explainer, X_sales)
-    shap_univ  = _shap_explain(tree_explainer, X_univ)
+
+    shap_sales = _shap_explain(tree_explainer, X_sales, cat_data=cat_data, approximate=approximate, verbose=verbose, label="sales")
+    shap_train = _shap_explain(tree_explainer, X_train, cat_data=cat_data, approximate=approximate, verbose=verbose, label="train")
+    shap_test  = _shap_explain(tree_explainer, X_test,  cat_data=cat_data, approximate=approximate, verbose=verbose, label="test")
+    shap_univ  = _shap_explain(tree_explainer, X_univ,  cat_data=cat_data, approximate=approximate, verbose=verbose, label="universe")
 
     return {
         "train": shap_train,
@@ -314,15 +296,41 @@ def _lightgbm_shap(
     X_train: pd.DataFrame,
     background_size: int = 100,
     approximate: bool = True,
-    check_additivity: bool = False
-)-> shap.TreeExplainer:
-    bg_df  = X_train.sample(min(background_size, len(X_train)), random_state=0)
-    bg_arr = bg_df.to_numpy(dtype=np.float64)
+    check_additivity: bool = False,
+) -> shap.TreeExplainer:
     booster = model.booster
+
+    has_cats = bool(getattr(model, "cat_data", None)) and len(model.cat_data.categorical_cols) > 0
+
+    if has_cats:
+        # SHAP limitation: categorical splits only supported with tree_path_dependent
+        # and *no* background data passed.
+        te = shap.TreeExplainer(
+            booster,
+            feature_perturbation="tree_path_dependent",
+        )
+
+        # Optional: set a background-based expected value for nicer baselines
+        # (SHAP will otherwise use the model's internal baseline).
+        bg_df = X_train.sample(min(background_size, len(X_train)), random_state=0)
+        bg_df = model.cat_data.apply(bg_df)
+        try:
+            preds = booster.predict(bg_df)
+            te.expected_value = preds.mean(axis=0)
+        except Exception:
+            # If prediction fails for some reason, fall back to SHAP's default baseline.
+            pass
+
+        return te
+
+    # No categoricals: interventional + numeric background is fine
+    bg_df = X_train.sample(min(background_size, len(X_train)), random_state=0)
+    bg_arr = bg_df.to_numpy(dtype=np.float64)
+
     return shap.TreeExplainer(
         booster,
         data=bg_arr,
-        feature_perturbation="interventional"
+        feature_perturbation="interventional",
     )
 
 
@@ -375,12 +383,31 @@ def _catboost_shap(
     return explainer
 
 
+def _lgb_pred_contrib_chunked(booster, X: pd.DataFrame, chunk_size: int, verbose: bool, label: str):
+    import time
+    n = len(X)
+    out = []
+    t_all = time.time()
+    for i in range(0, n, chunk_size):
+        j = min(i + chunk_size, n)
+        t0 = time.time()
+        out.append(booster.predict(X.iloc[i:j], pred_contrib=True))
+        if verbose:
+            dt = time.time() - t0
+            print(f"[{label}] LightGBM contrib rows {i}:{j}/{n} ({100*j/n:.1f}%) in {dt:.2f}s", flush=True)
+    if verbose:
+        print(f"[{label}] LightGBM contrib total {time.time()-t_all:.2f}s", flush=True)
+    return np.vstack(out)
+
 
 def _shap_explain(
     te: shap.TreeExplainer,
     X_to_explain: pd.DataFrame,
     approximate: bool = True,
     check_additivity: bool = False,
+    cat_data: TreeBasedCategoricalData | None = None,
+    verbose: bool = False,
+    label: str = ""
 ) -> shap.Explanation:
     """
     Use a TreeExplainer to compute SHAP values for X_to_explain and wrap
@@ -401,6 +428,12 @@ def _shap_explain(
         Passed through to TreeExplainer.shap_values (where supported).
     check_additivity : bool, default=False
         Passed through to TreeExplainer.shap_values.
+    cat_data: TreeBasedCategoricalData, default=None
+        Categorical encoding data, if any
+    verbose: bool
+        Whether to print verbose output. Defaults to False.
+    label: str
+        Informative label
 
     Returns
     -------
@@ -444,19 +477,63 @@ def _shap_explain(
             feature_names=list(X_to_explain.columns),
         )
 
+    # --- LightGBM native fast path -----------------------------------------
+    
+    # TreeExplainer stores a TreeEnsemble wrapper in te.model, and often keeps the
+    # original model at te.model.original_model.
+    lgb_booster = getattr(getattr(te, "model", None), "original_model", None)
+    if lgb_booster is not None and hasattr(lgb_booster, "predict"):
+        # Apply categorical structure if provided
+        X_used = cat_data.apply(X_to_explain) if (cat_data is not None and len(cat_data.categorical_cols) > 0) else X_to_explain
+
+        # LightGBM native contributions are fast and avoid SHAP's slow path.
+        if verbose:
+            print(f"LightGBM.predict()...")
+        #contrib = lgb_booster.predict(X_used, pred_contrib=True)
+        contrib = _lgb_pred_contrib_chunked(lgb_booster, X_used, chunk_size=10_000, verbose=verbose, label=label)
+        if verbose:
+            print(f"LightGBM.predict() finished.")
+
+        # contrib: (n_samples, n_features + 1)
+        base_values = contrib[:, -1]
+        values = contrib[:, :-1]
+
+        # Keep data in a reasonably numpy-ish form for Explanation.
+        # Don't force float if categoricals exist.
+        X_arr = X_used.to_numpy(copy=False)
+
+        feature_names = list(X_used.columns)
+        return shap.Explanation(
+            values=values,
+            base_values=base_values,
+            data=X_arr,
+            feature_names=feature_names,
+        )
+
     # --- Default path: XGBoost / LightGBM / generic trees -------------------
     # If it's not tagged as CatBoost, fall back to TreeExplainer directly.
-    vals = te.shap_values(
-        X_to_explain,
-        approximate=approximate,
-        check_additivity=check_additivity,
-    )
 
-    X_arr = X_to_explain.to_numpy(dtype=np.float64, copy=False)
+    if cat_data is not None and len(cat_data.categorical_cols) > 0:
+        X_used = cat_data.apply(X_to_explain)   # preserves category dtype + ordering
+        vals = te.shap_values(
+            X_used,
+            approximate=approximate,
+            check_additivity=check_additivity,
+        )
+        X_arr = X_used.to_numpy(copy=False)     # keep object/category, don't force float
+        feature_names = cat_data.feature_names
+    else:
+        vals = te.shap_values(
+            X_to_explain,
+            approximate=approximate,
+            check_additivity=check_additivity,
+        )
+        X_arr = X_to_explain.to_numpy(dtype=np.float64, copy=False)
+        feature_names = list(X_to_explain.columns)
 
     return shap.Explanation(
         values=vals,
         base_values=te.expected_value,
         data=X_arr,
-        feature_names=list(X_to_explain.columns),
+        feature_names=list(feature_names),
     )

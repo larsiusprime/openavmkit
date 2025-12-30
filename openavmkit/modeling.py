@@ -40,7 +40,6 @@ from xgboost import XGBRegressor
 
 from openavmkit.shap_analysis import (
     make_shap_table,
-    get_model_shaps,
     get_full_model_shaps
 )
 
@@ -73,11 +72,15 @@ from openavmkit.utilities.modeling import (
     PassThroughModel,
     GWRModel,
     MRAModel,
+    XGBoostModel,
+    LightGBMModel,
+    CatBoostModel,
     MultiMRAModel,
     GroundTruthModel,
     SpatialLagModel,
     LandSLICEModel,
-    greedy_forward_loocv
+    greedy_forward_loocv,
+    TreeBasedCategoricalData
 )
 from openavmkit.utilities.data import (
     clean_column_names,
@@ -3381,7 +3384,7 @@ def predict_lightgbm(
         "he_id",
         model_name,
         model_engine,
-        gbm,
+        model,
         y_pred_test,
         y_pred_sales,
         y_pred_univ,
@@ -3482,6 +3485,10 @@ def run_lightgbm(
 
     timing.start("train")
     cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
+    cat_data = TreeBasedCategoricalData.from_training_data(
+        ds.X_train,
+        categorical_cols=cat_vars,
+    )
     lgb_train = lgb.Dataset(ds.X_train, ds.y_train, categorical_feature=cat_vars)
     lgb_test = lgb.Dataset(
         ds.X_test, ds.y_test, categorical_feature=cat_vars, reference=lgb_train
@@ -3505,7 +3512,6 @@ def run_lightgbm(
     )
     timing.stop("train")
     
-    cat_data = None #TODO
     model = LightGBMModel(booster=gbm, cat_data=cat_data)
 
     return predict_lightgbm(ds, model, timing, verbose)
@@ -6018,7 +6024,8 @@ def write_shaps(
         X_train,
         X_test,
         X_sales,
-        X_univ
+        X_univ,
+        verbose=verbose
     )
     
     dfs = {
@@ -6079,10 +6086,23 @@ def _prepare_shap_dfs(
     # Check for divergent baseline due to approximate shap calculation
     
     ## get the same feature matrix used for SHAP (X_to_explain)
-    X_to_explain = df[list_vars].to_numpy()
+    X_to_explain = df[list_vars]
 
     ## raw model predictions on those exact rows
-    yhat_raw = model.predict(X_to_explain)
+
+    predictor = None
+    if isinstance(model, LightGBMModel):
+        predictor = model.booster
+    elif isinstance(model, CatBoostModel) or isinstance(model, XGBoostModel):
+        predictor = model.regressor
+    
+    cat_data = model.cat_data
+    if cat_data is not None and len(cat_data.categorical_cols) > 0:
+        X_to_explain = cat_data.apply(X_to_explain)
+    else:
+        X_to_explain = X_to_explain.to_numpy()
+
+    yhat_raw = predictor.predict(X_to_explain)
 
     ## SHAP reconstruction on those rows
     recon = np.asarray(shap_entry.base_values).ravel() + shap_entry.values.sum(axis=1)
@@ -6138,7 +6158,9 @@ def _contrib_to_unit_values(df_contrib: pd.DataFrame, df_base: pd.DataFrame, spl
         c for c in df_contrib.columns
         if c not in reserved and c in df_base.columns
     ]
-
+    numeric_vars = []
+    skipped = []
+    
     # rename contrib columns to avoid clashes with base
     df_contrib_renamed = df_contrib.rename(
         columns={v: f"{v}_contrib" for v in var_names}
@@ -6152,7 +6174,16 @@ def _contrib_to_unit_values(df_contrib: pd.DataFrame, df_base: pd.DataFrame, spl
     df_merged = df_contrib_renamed.merge(df_base_trim, on=the_key, how="left")
 
     # compute per-unit contributions
+    normal_vars = []
     for v in var_names:
+        if v not in df_merged:
+            continue
+        if pd.api.types.is_numeric_dtype(df_merged[v]):
+            numeric_vars.append(v)
+        else:
+            normal_vars.append(v)
+    
+    for v in numeric_vars:
         df_merged[f"{v}_unit"] = div_df_z_safe(df_merged, f"{v}_contrib", v)
 
     # build the output with keys
@@ -6161,11 +6192,11 @@ def _contrib_to_unit_values(df_contrib: pd.DataFrame, df_base: pd.DataFrame, spl
     if "base_value" in df_contrib.columns:
         keep_cols.append("base_value")
 
-    unit_cols = [f"{v}_unit" for v in var_names]
-    df_out = df_merged[keep_cols + unit_cols].copy()
+    unit_cols = [f"{v}_unit" for v in numeric_vars]
+    df_out = df_merged[keep_cols + normal_vars + unit_cols].copy()
     
     df_out_renamed = df_out.rename(
-        columns={f"{v}_unit": v for v in var_names}
+        columns={f"{v}_unit": v for v in numeric_vars}
     )
 
     return df_out_renamed
