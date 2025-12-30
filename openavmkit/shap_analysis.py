@@ -473,13 +473,20 @@ def _shap_explain(
         base_values = shap_vals[:, -1]
         values = shap_vals[:, :-1]
 
-        X_arr = X_to_explain.to_numpy(dtype=np.float64, copy=False)
+        if cat_data is not None:
+            # numeric matrix: categories -> codes, bool-like -> 0/1, stable column order
+            X_arr = cat_data.to_numeric_matrix(X_to_explain)
+            feature_names = list(cat_data.feature_names)
+        else:
+            # fallback, but do NOT force float because it can contain strings
+            X_arr = X_to_explain.to_numpy(copy=False)
+            feature_names = list(X_to_explain.columns)
 
         return shap.Explanation(
             values=values,
             base_values=base_values,
             data=X_arr,
-            feature_names=list(X_to_explain.columns),
+            feature_names=feature_names,
         )
 
     # --- LightGBM native fast path -----------------------------------------
@@ -528,7 +535,7 @@ def _shap_explain(
                 check_additivity=check_additivity,
             )
         except NotImplementedError as e:
-        feature_names = cat_data.feature_names
+            feature_names = cat_data.feature_names
             # If TreeExplainer refuses due to categorical splits, rebuild explainer in tree_path_dependent mode
             if "Categorical split is not yet supported" in str(e):
                 te = shap.TreeExplainer(te.model.original_model, feature_perturbation="tree_path_dependent")

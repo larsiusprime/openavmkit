@@ -3184,6 +3184,25 @@ def run_gwr(
     return predict_gwr(ds, gwr_model, timing, verbose, diagnostic)
 
 
+def _fix_bool_objs(ds:DataSplit):
+    # Fix for object-typed boolean columns (especially 'within_*' fields)
+    for col in ds.X_train.columns:
+        if col.startswith("within_") or (
+            ds.X_train[col].dtype == "object"
+            and ds.X_train[col].isin([True, False]).all()
+        ):
+            if verbose:
+                print(f"Converting column {col} from {ds.X_train[col].dtype} to bool")
+            ds.X_train[col] = ds.X_train[col].astype(bool)
+            if col in ds.X_test.columns:
+                ds.X_test[col] = ds.X_test[col].astype(bool)
+            if col in ds.X_univ.columns:
+                ds.X_univ[col] = ds.X_univ[col].astype(bool)
+            if col in ds.X_sales.columns:
+                ds.X_sales[col] = ds.X_sales[col].astype(bool)
+    return ds
+
+
 def predict_xgboost(
     ds: DataSplit,
     xgboost_model: XGBoostModel,
@@ -3285,20 +3304,7 @@ def run_xgboost(
     ds.split()
 
     # Fix for object-typed boolean columns (especially 'within_*' fields)
-    for col in ds.X_train.columns:
-        if col.startswith("within_") or (
-            ds.X_train[col].dtype == "object"
-            and ds.X_train[col].isin([True, False]).all()
-        ):
-            if verbose:
-                print(f"Converting column {col} from {ds.X_train[col].dtype} to bool")
-            ds.X_train[col] = ds.X_train[col].astype(bool)
-            if col in ds.X_test.columns:
-                ds.X_test[col] = ds.X_test[col].astype(bool)
-            if col in ds.X_univ.columns:
-                ds.X_univ[col] = ds.X_univ[col].astype(bool)
-            if col in ds.X_sales.columns:
-                ds.X_sales[col] = ds.X_sales[col].astype(bool)
+    ds = _fix_bool_objs(ds)
 
     parameters = _get_params(
         "XGBoost",
@@ -3443,20 +3449,7 @@ def run_lightgbm(
     ds.split()
 
     # Fix for object-typed boolean columns (especially 'within_*' fields)
-    for col in ds.X_train.columns:
-        if col.startswith("within_") or (
-            ds.X_train[col].dtype == "object"
-            and ds.X_train[col].isin([True, False]).all()
-        ):
-            if verbose:
-                print(f"Converting column {col} from {ds.X_train[col].dtype} to bool")
-            ds.X_train[col] = ds.X_train[col].astype(bool)
-            if col in ds.X_test.columns:
-                ds.X_test[col] = ds.X_test[col].astype(bool)
-            if col in ds.X_univ.columns:
-                ds.X_univ[col] = ds.X_univ[col].astype(bool)
-            if col in ds.X_sales.columns:
-                ds.X_sales[col] = ds.X_sales[col].astype(bool)
+    ds = _fix_bool_objs(ds)
 
     timing.stop("setup")
 
@@ -3642,6 +3635,8 @@ def run_catboost(
     timing.start("setup")
     ds = ds.encode_categoricals_as_categories()
     ds.split()
+    # Fix for object-typed boolean columns (especially 'within_*' fields)
+    ds = _fix_bool_objs(ds)
     timing.stop("setup")
 
     timing.start("parameter_search")
@@ -3673,8 +3668,12 @@ def run_catboost(
     regressor.fit(train_pool)
     timing.stop("train")
     
-    cat_data = None #TODO
-    model = CatBoostModel(regressor=regressor, cat_data=None)
+    cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
+    cat_data = TreeBasedCategoricalData.from_training_data(
+        ds.X_train,
+        categorical_cols=cat_vars
+    )
+    model = CatBoostModel(regressor=regressor, cat_data=cat_data)
 
     return predict_catboost(ds, model, timing, verbose)
 
