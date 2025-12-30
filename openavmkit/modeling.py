@@ -3327,7 +3327,12 @@ def run_xgboost(
     regressor.fit(ds.X_train, ds.y_train)
     timing.stop("train")
     
-    cat_data = None # TODO
+    cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
+    cat_data = TreeBasedCategoricalData.from_training_data(
+        ds.X_train,
+        categorical_cols=cat_vars,
+    )
+
     xgboost_model = XGBoostModel(regressor=regressor, cat_data=cat_data)
     
     return predict_xgboost(ds, xgboost_model, timing, verbose)
@@ -6111,9 +6116,10 @@ def _prepare_shap_dfs(
     
     deltas = (recon - yhat_raw)
     delta_mean = float(deltas.mean())
-    delta_mean_perc = abs(delta_mean / float(yhat_raw.mean()))
+    yhat_raw_mean = float(yhat_raw.mean())
+    delta_mean_perc = float("nan") if yhat_raw_mean == 0 else abs(delta_mean / yhat_raw_mean)
     delta_std = float(deltas.std())
-    delta_std_perc = abs(delta_std / float(deltas.mean()))
+    delta_std_perc = float("nan") if delta_mean == 0 else abs(delta_std / delta_mean)
     
     # if there's more than a 0.1% difference between baselines
     if delta_mean_perc > 0.001:

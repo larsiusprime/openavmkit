@@ -4247,6 +4247,8 @@ def _run_models(
             break
         
     if auto_reduce_vars:
+        if verbose:
+            print(f"Auto-reducing variables for model type \"{model_engine}\"")
         t.start("var_recs")
         # We do a "quick" variable optimization step here. It drops some of the more expensive tests for the sake of speed
         # If you want to do those more expensive tests, you should run them in try_variables instead
@@ -4281,7 +4283,11 @@ def _run_models(
         model_entry = model_entries.get(model_name, model_entries.get("default", {}))
         model_engine = model_entry.get("engine", model_name)
         
-        model_variables = best_variables
+        # Tree-based models don't auto-reduce variables ever
+        if model_engine not in ["xgboost", "catboost", "lightgbm"]:
+            model_variables = best_variables
+        else:
+            model_variables = None
         
         results = run_one_model(
             df_sales=df_sales,

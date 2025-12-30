@@ -280,19 +280,17 @@ def _xgboost_shap(
     approximate: bool = True,
     check_additivity: bool = False
 )-> shap.TreeExplainer :
-    # a) sample & convert to float32 array
-    bg_df = X_train.sample(min(background_size, len(X_train)), random_state=0)
-    bg_arr = bg_df.to_numpy(dtype=np.float32)
-
-    # b) build the TreeExplainer on the Booster itself
-    regressor = model.regressor
-    booster = regressor.get_booster() if isinstance(regressor, xgb.XGBRegressor) else regressor
-    
-    return shap.TreeExplainer(
-        booster,
-        data=bg_arr,
-        feature_perturbation="interventional"
+    # For categorical splits, tree_path_dependent is the safe choice.
+    te = shap.TreeExplainer(
+        model.regressor,
+        feature_perturbation="tree_path_dependent",
     )
+
+    # Make SHAP create DMatrix with categorical support when input has pandas category dtype
+    if hasattr(te, "model"):
+        te.model._xgb_dmatrix_props = {"enable_categorical": True}
+
+    return te
 
 
 def _lightgbm_shap(
@@ -520,28 +518,35 @@ def _shap_explain(
 
     # --- Default path: XGBoost / LightGBM / generic trees -------------------
     # If it's not tagged as CatBoost, fall back to TreeExplainer directly.
-
-    if cat_data is not None and len(cat_data.categorical_cols) > 0:
-        X_used = cat_data.apply(X_to_explain)   # preserves category dtype + ordering
-        vals = te.shap_values(
-            X_used,
-            approximate=approximate,
-            check_additivity=check_additivity,
-        )
-        X_arr = X_used.to_numpy(copy=False)     # keep object/category, don't force float
+    
+    if model_type == "xgboost":
+        X_used = cat_data.apply(X_to_explain)
+        try:
+            vals = te.shap_values(
+                X_used,
+                approximate=approximate,
+                check_additivity=check_additivity,
+            )
+        except NotImplementedError as e:
         feature_names = cat_data.feature_names
-    else:
-        vals = te.shap_values(
-            X_to_explain,
-            approximate=approximate,
-            check_additivity=check_additivity,
-        )
-        X_arr = X_to_explain.to_numpy(dtype=np.float64, copy=False)
-        feature_names = list(X_to_explain.columns)
+            # If TreeExplainer refuses due to categorical splits, rebuild explainer in tree_path_dependent mode
+            if "Categorical split is not yet supported" in str(e):
+                te = shap.TreeExplainer(te.model.original_model, feature_perturbation="tree_path_dependent")
+                te.model._xgb_dmatrix_props = {"enable_categorical": True}
+                vals = te.shap_values(
+                    X_used,
+                    approximate=approximate,
+                    check_additivity=check_additivity,
+                )
+            else:
+                raise
 
-    return shap.Explanation(
-        values=vals,
-        base_values=te.expected_value,
-        data=X_arr,
-        feature_names=list(feature_names),
-    )
+        X_arr = X_used.to_numpy(copy=False)
+        return shap.Explanation(
+            values=vals,
+            base_values=te.expected_value,
+            data=X_arr,
+            feature_names=list(X_used.columns),
+        )
+    else:
+        raise ValueError(f"Unsupported model type \"{model_type}\"")
