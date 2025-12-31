@@ -35,6 +35,8 @@ def _tune_xgboost(
             "objective": "reg:squarederror",  # Regression objective
             "eval_metric": "mape",  # Mean Absolute Percentage Error
             "tree_method": "hist",  # Use 'hist' for performance; use 'gpu_hist' for GPUs
+            "enable_categorical": True,
+            "max_cat_to_onehot": 1,
             "learning_rate": trial.suggest_float("learning_rate", 0.001, 0.1, log=True),
             "max_depth": trial.suggest_int("max_depth", 3, 15),
             "min_child_weight": trial.suggest_float(
@@ -149,7 +151,7 @@ def _tune_lightgbm(
 
         # Use rolling-origin cross-validation
         mape = _lightgbm_rolling_origin_cv(
-            X, y, params, n_splits=n_splits, random_state=random_state
+            X, y, params, n_splits=n_splits, random_state=random_state, cat_vars=cat_vars
         )
         if verbose:
             print(
@@ -378,8 +380,8 @@ def _xgb_rolling_origin_cv(
             X_train, X_val = X[train_idx], X[val_idx]
             y_train, y_val = y[train_idx], y[val_idx]
 
-        train_data = xgb.DMatrix(X_train, label=y_train)
-        val_data = xgb.DMatrix(X_val, label=y_val)
+        train_data = xgb.DMatrix(X_train, label=y_train, enable_categorical=True)
+        val_data = xgb.DMatrix(X_val, label=y_val, enable_categorical=True)
 
         evals = [(val_data, "validation")]
 
@@ -476,62 +478,51 @@ def _catboost_rolling_origin_cv(
         )
 
         # Predict and evaluate
-        y_pred = model.predict(X_val)
+        y_pred = model.predict(val_pool)
         mape_scores.append(mean_absolute_percentage_error(y_val, y_pred))
 
     return np.mean(mape_scores)
 
 
-def _lightgbm_rolling_origin_cv(X, y, params, n_splits=5, random_state=42):
-    """Performs rolling-origin cross-validation for LightGBM model evaluation.
-
-    Args:
-        X (array-like): Feature matrix.
-        y (array-like): Target vector.
-        params (dict): LightGBM hyperparameters.
-        n_splits (int): Number of folds for cross-validation. Default is 5.
-        random_state (int): Random seed for reproducibility. Default is 42.
-
-    Returns:
-        float: Mean MAPE score across all folds.
-    """
+def _lightgbm_rolling_origin_cv(X, y, params, n_splits=5, random_state=42, cat_vars=None):
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     mape_scores = []
 
     for train_idx, val_idx in kf.split(X):
-        # Use .iloc for DataFrame-like objects
-        if hasattr(X, 'iloc'):
+        if hasattr(X, "iloc"):
             X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
             y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
         else:
             X_train, X_val = X[train_idx], X[val_idx]
             y_train, y_val = y[train_idx], y[val_idx]
 
-        train_data = lgb.Dataset(X_train, label=y_train)
-        val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
+        # Determine categorical features present in this fold
+        cat_feats = [c for c in (cat_vars or []) if hasattr(X_train, "columns") and c in X_train.columns]
 
-        params["verbosity"] = -1
+        train_data = lgb.Dataset(X_train, label=y_train, categorical_feature=cat_feats)
+        val_data = lgb.Dataset(X_val, label=y_val, categorical_feature=cat_feats, reference=train_data)
+
+        # Work on a fold-local copy to avoid cross-fold mutation
+        fold_params = dict(params)
+        fold_params["verbosity"] = -1
 
         num_boost_round = 1000
-        if "num_iterations" in params:
-            num_boost_round = params.pop("num_iterations")
+        if "num_iterations" in fold_params:
+            num_boost_round = fold_params.pop("num_iterations")
 
-        # Train LightGBM
         model = lgb.train(
-            params,
+            fold_params,
             train_data,
             num_boost_round=num_boost_round,
             valid_sets=[val_data],
             callbacks=[
-                lgb.early_stopping(
-                    stopping_rounds=5, verbose=False
-                ),  # Early stopping after 50 rounds
-                lgb.log_evaluation(period=0),  # Disable evaluation logs
+                lgb.early_stopping(stopping_rounds=5, verbose=False),
+                lgb.log_evaluation(period=0),
             ],
         )
 
-        # Predict and evaluate
         y_pred = model.predict(X_val, num_iteration=model.best_iteration)
         mape_scores.append(mean_absolute_percentage_error(y_val, y_pred))
 
     return np.mean(mape_scores)
+

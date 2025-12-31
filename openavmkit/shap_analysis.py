@@ -9,56 +9,28 @@ import lightgbm as lgb
 import catboost as cb
 import matplotlib.pyplot as plt
 
-
-def get_model_shaps(
-    model: xgb.XGBRegressor | lgb.Booster | cb.CatBoostRegressor,
-    X_bkg: pd.DataFrame,
-    X_to_explain: pd.DataFrame
-)-> shap.Explanation:
-    """
-    Calculates shaps for a single background/explanation set
-    
-    Parameters
-    ----------
-    model: xgboost.XGBRegressor | lightgbm.Booster | catboost.CatBoostRegressor
-        A trained prediction model
-    X_bkg: pd.DataFrame
-        2D array of independent variables' values from the background set
-    X_to_explain: pd.DataFrame
-        2D array of independent variables' values you wish to explain
-    
-    Returns
-    -------
-    shap.Explanation
-    """
-
-    tree_explainer: shap.TreeExplainer
-
-    if isinstance(model, (xgb.core.Booster, xgb.XGBRegressor)):
-        tree_explainer = _xgboost_shap(model, X_bkg)
-    elif isinstance(model, lgb.basic.Booster):
-        tree_explainer = _lightgbm_shap(model, X_bkg)
-    elif isinstance(model, cb.CatBoostRegressor):
-        tree_explainer = _catboost_shap(model, X_bkg)
-    else:
-        raise ValueError(f"Unsupported model type: {type(model)}")
-
-    return _shap_explain(tree_explainer, X_to_explain)
+from openavmkit.utilities.modeling import (
+    XGBoostModel,
+    LightGBMModel,
+    CatBoostModel,
+    TreeBasedCategoricalData
+)
 
 
 def get_full_model_shaps(
-    model: xgb.XGBRegressor | lgb.Booster | cb.CatBoostRegressor,
+    model: XGBoostModel | LightGBMModel | CatBoostModel,
     X_train: pd.DataFrame,
     X_test: pd.DataFrame,
     X_sales: pd.DataFrame,
-    X_univ: pd.DataFrame
+    X_univ: pd.DataFrame,
+    verbose: bool = False
 ):
     """
     Calculates shaps for all subsets (test, train, sales, universe) of one model run
     
     Parameters
     ----------
-    model: xgboost.XGBRegressor | lightgbm.Booster | catboost.CatBoostRegressor
+    model: XGBoostModel | LightGBMModel | CatBoostModel
         A trained prediction model
     X_train: pd.DataFrame
         2D array of independent variables' values from the training set
@@ -68,6 +40,8 @@ def get_full_model_shaps(
         2D array of independent variables' values from the sales set
     X_univ: pd.DataFrame
         2D array of independent variables' values from the universe set
+    verbose: bool
+        Whether to print verbose information. Defaults to False.
     
     Returns
     -------
@@ -77,20 +51,31 @@ def get_full_model_shaps(
     """
 
     tree_explainer: shap.TreeExplainer
-
-    if isinstance(model, (xgb.core.Booster, xgb.XGBRegressor)):
+    
+    approximate = True
+    cat_data = model.cat_data
+    
+    model_type = ""
+    if isinstance(model, XGBoostModel):
+        model_type = "xgboost"
         tree_explainer = _xgboost_shap(model, X_train)
-    elif isinstance(model, lgb.basic.Booster):
+    elif isinstance(model, LightGBMModel):
+        model_type = "lightgbm"
+        approximate = False # approx. not supported for LightGBM
         tree_explainer = _lightgbm_shap(model, X_train)
-    elif isinstance(model, cb.CatBoostRegressor):
+    elif isinstance(model, CatBoostModel):
+        model_type = "catboost"
         tree_explainer = _catboost_shap(model, X_train)
     else:
         raise ValueError(f"Unsupported model type: {type(model)}")
-
-    shap_train = _shap_explain(tree_explainer, X_train)
-    shap_test  = _shap_explain(tree_explainer, X_test)
-    shap_sales = _shap_explain(tree_explainer, X_sales)
-    shap_univ  = _shap_explain(tree_explainer, X_univ)
+    
+    if verbose:
+        print(f"Generating SHAPs...")
+    
+    shap_sales = _shap_explain(model_type, tree_explainer, X_sales, cat_data=cat_data, approximate=approximate, verbose=verbose, label="sales")
+    shap_train = _shap_explain(model_type, tree_explainer, X_train, cat_data=cat_data, approximate=approximate, verbose=verbose, label="train")
+    shap_test  = _shap_explain(model_type, tree_explainer, X_test,  cat_data=cat_data, approximate=approximate, verbose=verbose, label="test")
+    shap_univ  = _shap_explain(model_type, tree_explainer, X_univ,  cat_data=cat_data, approximate=approximate, verbose=verbose, label="universe")
 
     return {
         "train": shap_train,
@@ -261,7 +246,7 @@ def _calc_shap(
 ) -> shap.Explanation:
     
     # 1) XGBoost
-    if isinstance(model, (xgb.core.Booster, xgb.XGBRegressor)):
+    if isinstance(model, XGBoostModel):
         xgb_explainer = _xgboost_shap(
             model,
             X_train
@@ -269,7 +254,7 @@ def _calc_shap(
         return _xgboost_explain(X_to_explain)
 
     # 2) LightGBM
-    if isinstance(model, lgb.basic.Booster):
+    if isinstance(model, LightGBMModel):
         lgbm_explainer = _lightgbm_shap(
             model,
             X_train
@@ -277,7 +262,7 @@ def _calc_shap(
         return _lightgbm_explain(X_to_explain)
 
     # 3) CatBoost
-    if isinstance(model, cb.CatBoostRegressor):
+    if isinstance(model, CatBoostModel):
         return _catboost_shap(
             model,
             X_to_explain
@@ -289,43 +274,70 @@ def _calc_shap(
 
 
 def _xgboost_shap(
-    model: xgb.core.Booster | xgb.XGBRegressor,
+    model: XGBoostModel,
     X_train: pd.DataFrame,
     background_size: int = 100,
     approximate: bool = True,
     check_additivity: bool = False
 )-> shap.TreeExplainer :
-    # a) sample & convert to float32 array
-    bg_df = X_train.sample(min(background_size, len(X_train)), random_state=0)
-    bg_arr = bg_df.to_numpy(dtype=np.float32)
-
-    # b) build the TreeExplainer on the Booster itself
-    booster = model.get_booster() if isinstance(model, xgb.XGBRegressor) else model
-    return shap.TreeExplainer(
-        booster,
-        data=bg_arr,
-        feature_perturbation="interventional"
+    # For categorical splits, tree_path_dependent is the safe choice.
+    te = shap.TreeExplainer(
+        model.regressor,
+        feature_perturbation="tree_path_dependent",
     )
+
+    # Make SHAP create DMatrix with categorical support when input has pandas category dtype
+    if hasattr(te, "model"):
+        te.model._xgb_dmatrix_props = {"enable_categorical": True}
+
+    return te
 
 
 def _lightgbm_shap(
-    model: lgb.basic.Booster,
+    model: LightGBMModel,
     X_train: pd.DataFrame,
     background_size: int = 100,
     approximate: bool = True,
-    check_additivity: bool = False
-)-> shap.TreeExplainer:
-    bg_df  = X_train.sample(min(background_size, len(X_train)), random_state=0)
+    check_additivity: bool = False,
+) -> shap.TreeExplainer:
+    booster = model.booster
+
+    has_cats = bool(getattr(model, "cat_data", None)) and len(model.cat_data.categorical_cols) > 0
+
+    if has_cats:
+        # SHAP limitation: categorical splits only supported with tree_path_dependent
+        # and *no* background data passed.
+        te = shap.TreeExplainer(
+            booster,
+            feature_perturbation="tree_path_dependent",
+        )
+
+        # Optional: set a background-based expected value for nicer baselines
+        # (SHAP will otherwise use the model's internal baseline).
+        bg_df = X_train.sample(min(background_size, len(X_train)), random_state=0)
+        bg_df = model.cat_data.apply(bg_df)
+        try:
+            preds = booster.predict(bg_df)
+            te.expected_value = preds.mean(axis=0)
+        except Exception:
+            # If prediction fails for some reason, fall back to SHAP's default baseline.
+            pass
+
+        return te
+
+    # No categoricals: interventional + numeric background is fine
+    bg_df = X_train.sample(min(background_size, len(X_train)), random_state=0)
     bg_arr = bg_df.to_numpy(dtype=np.float64)
+
     return shap.TreeExplainer(
-        model,
+        booster,
         data=bg_arr,
-        feature_perturbation="interventional"
+        feature_perturbation="interventional",
     )
 
 
 def _catboost_shap(
-    model: cb.CatBoostRegressor,
+    model: CatBoostModel,
     X_train: pd.DataFrame,
     background_size: int = 100,
     approximate: bool = True,
@@ -342,8 +354,8 @@ def _catboost_shap(
 
     Parameters
     ----------
-    model : catboost.CatBoostRegressor
-        Trained CatBoostRegressor instance.
+    model : CatBoostModel
+        Trained CatBoostModel instance.
     X_train : pd.DataFrame
         Training data (unused here, kept for API symmetry).
     background_size : int, default=100
@@ -360,23 +372,45 @@ def _catboost_shap(
         Configured TreeExplainer for the CatBoost model.
     """
 
+    regressor = model.regressor
+    
     explainer = shap.TreeExplainer(
-        model,
+        regressor,
         feature_perturbation="tree_path_dependent",
     )
 
     # Tag this explainer so _shap_explain knows it's CatBoost
-    explainer._cb_model = model   # type: ignore[attr-defined]
+    explainer._cb_model = regressor   # type: ignore[attr-defined]
 
     return explainer
 
 
+def _lgb_pred_contrib_chunked(booster, X: pd.DataFrame, chunk_size: int, verbose: bool, label: str):
+    import time
+    n = len(X)
+    out = []
+    t_all = time.time()
+    for i in range(0, n, chunk_size):
+        j = min(i + chunk_size, n)
+        t0 = time.time()
+        out.append(booster.predict(X.iloc[i:j], pred_contrib=True))
+        if verbose:
+            dt = time.time() - t0
+            print(f"[{label}] LightGBM contrib rows {i}:{j}/{n} ({100*j/n:.1f}%) in {dt:.2f}s", flush=True)
+    if verbose:
+        print(f"[{label}] LightGBM contrib total {time.time()-t_all:.2f}s", flush=True)
+    return np.vstack(out)
+
 
 def _shap_explain(
+    model_type: str,
     te: shap.TreeExplainer,
     X_to_explain: pd.DataFrame,
     approximate: bool = True,
     check_additivity: bool = False,
+    cat_data: TreeBasedCategoricalData | None = None,
+    verbose: bool = False,
+    label: str = ""
 ) -> shap.Explanation:
     """
     Use a TreeExplainer to compute SHAP values for X_to_explain and wrap
@@ -389,6 +423,8 @@ def _shap_explain(
     
     Parameters
     ----------
+    model_type: str
+        "xgboost", "catboost", or "lightgbm"
     te : shap.TreeExplainer
         TreeExplainer instance built on the trained model and background data.
     X_to_explain : pd.DataFrame
@@ -397,6 +433,12 @@ def _shap_explain(
         Passed through to TreeExplainer.shap_values (where supported).
     check_additivity : bool, default=False
         Passed through to TreeExplainer.shap_values.
+    cat_data: TreeBasedCategoricalData, default=None
+        Categorical encoding data, if any
+    verbose: bool
+        Whether to print verbose output. Defaults to False.
+    label: str
+        Informative label
 
     Returns
     -------
@@ -404,8 +446,8 @@ def _shap_explain(
     """
 
     # --- CatBoost fast path -------------------------------------------------
-    cb_model = getattr(te, "_cb_model", None)
-    if cb_model is not None:
+    if model_type == "catboost":
+        cb_model = getattr(te, "_cb_model", None)
         # This is a CatBoostRegressor explainer; use CatBoost-native SHAP.
 
         # Discover categorical feature indices from the model if available.
@@ -431,28 +473,87 @@ def _shap_explain(
         base_values = shap_vals[:, -1]
         values = shap_vals[:, :-1]
 
-        X_arr = X_to_explain.to_numpy(dtype=np.float64, copy=False)
+        if cat_data is not None:
+            # numeric matrix: categories -> codes, bool-like -> 0/1, stable column order
+            X_arr = cat_data.to_numeric_matrix(X_to_explain)
+            feature_names = list(cat_data.feature_names)
+        else:
+            # fallback, but do NOT force float because it can contain strings
+            X_arr = X_to_explain.to_numpy(copy=False)
+            feature_names = list(X_to_explain.columns)
 
         return shap.Explanation(
             values=values,
             base_values=base_values,
             data=X_arr,
-            feature_names=list(X_to_explain.columns),
+            feature_names=feature_names,
+        )
+
+    # --- LightGBM native fast path -----------------------------------------
+    
+    # TreeExplainer stores a TreeEnsemble wrapper in te.model, and often keeps the
+    # original model at te.model.original_model.
+    if model_type == "lightgbm":
+        lgb_booster = getattr(getattr(te, "model", None), "original_model", None)
+    
+        # Apply categorical structure if provided
+        X_used = cat_data.apply(X_to_explain) if (cat_data is not None and len(cat_data.categorical_cols) > 0) else X_to_explain
+
+        # LightGBM native contributions are fast and avoid SHAP's slow path.
+        if verbose:
+            print(f"LightGBM.predict()...")
+        #contrib = lgb_booster.predict(X_used, pred_contrib=True)
+        contrib = _lgb_pred_contrib_chunked(lgb_booster, X_used, chunk_size=10_000, verbose=verbose, label=label)
+        if verbose:
+            print(f"LightGBM.predict() finished.")
+
+        # contrib: (n_samples, n_features + 1)
+        base_values = contrib[:, -1]
+        values = contrib[:, :-1]
+
+        # Keep data in a reasonably numpy-ish form for Explanation.
+        # Don't force float if categoricals exist.
+        X_arr = X_used.to_numpy(copy=False)
+
+        feature_names = list(X_used.columns)
+        return shap.Explanation(
+            values=values,
+            base_values=base_values,
+            data=X_arr,
+            feature_names=feature_names,
         )
 
     # --- Default path: XGBoost / LightGBM / generic trees -------------------
     # If it's not tagged as CatBoost, fall back to TreeExplainer directly.
-    vals = te.shap_values(
-        X_to_explain,
-        approximate=approximate,
-        check_additivity=check_additivity,
-    )
+    
+    if model_type == "xgboost":
+        X_used = cat_data.apply(X_to_explain)
+        try:
+            vals = te.shap_values(
+                X_used,
+                approximate=approximate,
+                check_additivity=check_additivity,
+            )
+        except NotImplementedError as e:
+            feature_names = cat_data.feature_names
+            # If TreeExplainer refuses due to categorical splits, rebuild explainer in tree_path_dependent mode
+            if "Categorical split is not yet supported" in str(e):
+                te = shap.TreeExplainer(te.model.original_model, feature_perturbation="tree_path_dependent")
+                te.model._xgb_dmatrix_props = {"enable_categorical": True}
+                vals = te.shap_values(
+                    X_used,
+                    approximate=approximate,
+                    check_additivity=check_additivity,
+                )
+            else:
+                raise
 
-    X_arr = X_to_explain.to_numpy(dtype=np.float64, copy=False)
-
-    return shap.Explanation(
-        values=vals,
-        base_values=te.expected_value,
-        data=X_arr,
-        feature_names=list(X_to_explain.columns),
-    )
+        X_arr = X_used.to_numpy(copy=False)
+        return shap.Explanation(
+            values=vals,
+            base_values=te.expected_value,
+            data=X_arr,
+            feature_names=list(X_used.columns),
+        )
+    else:
+        raise ValueError(f"Unsupported model type \"{model_type}\"")

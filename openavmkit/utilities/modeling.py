@@ -1,8 +1,16 @@
+from __future__ import annotations
 import numpy as np
 from statsmodels.regression.linear_model import RegressionResults
 from pygam import LinearGAM, s, te
 import pandas as pd
 from typing import Any
+
+from dataclasses import dataclass
+from itertools import combinations
+from typing import List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
 
 class GarbageModel:
     """An intentionally bad predictive model, to use as a sort of control. Produces random predictions.
@@ -414,6 +422,140 @@ class LandSLICEModel:
         return df
 
 
+@dataclass
+class TreeBasedCategoricalData:
+    """
+    Stores categorical metadata needed to reproduce LightGBM-compatible
+    categorical encodings and generate numeric matrices for SHAP.
+    """
+
+    feature_names: List[str]
+    categorical_cols: List[str]
+    category_levels: Dict[str, List]
+    bool_cols: List[str]
+
+    # ---------- construction ----------
+
+    @classmethod
+    def from_training_data(
+        cls,
+        X_train: pd.DataFrame,
+        categorical_cols: List[str],
+    ) -> "TreeBasedCategoricalData":
+        """
+        Build metadata from training data AFTER categoricals have been
+        converted to pandas 'category' dtype.
+        """
+        feature_names = list(X_train.columns)
+
+        cat_cols = [
+            c for c in categorical_cols
+            if c in X_train.columns
+            and pd.api.types.is_categorical_dtype(X_train[c])
+        ]
+
+        category_levels = {
+            c: list(X_train[c].cat.categories)
+            for c in cat_cols
+        }
+
+        bool_cols = [
+            c for c in X_train.columns
+            if pd.api.types.is_bool_dtype(X_train[c])
+            or str(X_train[c].dtype) == "boolean"
+        ]
+
+        return cls(
+            feature_names=feature_names,
+            categorical_cols=cat_cols,
+            category_levels=category_levels,
+            bool_cols=bool_cols,
+        )
+
+    # ---------- enforcement ----------
+
+    def apply(self, X: pd.DataFrame) -> pd.DataFrame:
+        """
+        Reapply categorical + boolean structure to a dataframe.
+        Unknown categories are preserved but will map to NaN later.
+        """
+        X = X.reindex(columns=self.feature_names)
+
+        # enforce booleans
+        for c in self.bool_cols:
+            if c in X.columns:
+                X[c] = X[c].astype("boolean")
+
+        # enforce categorical levels
+        for c, levels in self.category_levels.items():
+            if c in X.columns:
+                X[c] = pd.Categorical(X[c], categories=levels)
+
+        return X
+
+    # ---------- SHAP / numeric view ----------
+
+    def to_numeric_matrix(self, X: pd.DataFrame) -> np.ndarray:
+        """
+        Convert dataframe to a numeric matrix compatible with SHAP.
+        Categoricals -> integer codes, unknowns/missing -> np.nan.
+        """
+        X = self.apply(X)
+        out = X.copy()
+
+        for c in self.categorical_cols:
+            codes = out[c].cat.codes.astype(np.float64)
+            codes[codes == -1] = np.nan
+            out[c] = codes
+
+        for c in self.bool_cols:
+            out[c] = out[c].astype("Float64").astype(np.float64)
+
+        return out.to_numpy(dtype=np.float64)
+
+
+class LightGBMModel:
+    """LightGBM Model
+    
+    Attributes
+    ----------
+    booster: Booster
+        The trained LightGBM Booster model
+    cat_data: TreeBasedCategoricalData
+    """
+    def __init__(self, booster, cat_data):
+        self.booster = booster
+        self.cat_data = cat_data
+
+
+class XGBoostModel:
+    """XGBoost Model
+    
+    Attributes
+    ----------
+    regressor: XGBRegressor
+        The trained XGBoost XGBRegressor model
+    cat_data: TreeBasedCategoricalData
+    """
+    def __init__(self, regressor, cat_data):
+        self.regressor = regressor
+        self.cat_data = cat_data
+
+
+class CatBoostModel:
+    """CatBoost Model
+    
+    Attributes
+    ----------
+    regressor: CatBRegressor
+        The trained CatBoost CatBRegressor model
+    cat_data: TreeBasedCategoricalData
+    """
+    def __init__(self, regressor, cat_data):
+        self.regressor = regressor
+        self.cat_data = cat_data
+
+
 class MRAModel:
     """Multiple Regression Analysis Model
 
@@ -445,8 +587,7 @@ class MultiMRAModel:
       - The feature_names (column order) used for all regressions
       - Whether an intercept was used
       - The location_fields (ordered most specific -> least specific)
-      - The minimum sample size used for local fits
-    
+      
     Attributes
     ----------
     coef_map : dict[str, dict[Any, np.ndarray]]
@@ -459,8 +600,6 @@ class MultiMRAModel:
         Whether an intercept column was used.
     location_fields : list[str]
         Location fields in order from most specific to least specific.
-    min_sample_size : int
-        Minimum number of observations required to fit a local regression.
     """
 
     def __init__(
@@ -470,7 +609,6 @@ class MultiMRAModel:
         feature_names: list[str],
         intercept: bool,
         location_fields: list[str],
-        min_sample_size: int,
     ):
         """
         Parameters
@@ -486,12 +624,164 @@ class MultiMRAModel:
             Whether an intercept column was used.
         location_fields : list[str]
             Location fields in order from most specific to least specific.
-        min_sample_size : int
-            Minimum number of observations required to fit a local regression.
         """
         self.coef_map = coef_map
         self.global_coef = global_coef
         self.feature_names = feature_names
         self.intercept = intercept
         self.location_fields = location_fields
-        self.min_sample_size = min_sample_size
+       
+# Multi-MRA optimization:
+
+@dataclass(frozen=True)
+class GreedyResult:
+    variables: List[str]
+    cv_r2: float
+    train_r2: float
+
+
+def _ols_train_and_loocv_r2(X_design: np.ndarray, y: np.ndarray, sst: float) -> Tuple[float, float]:
+    """
+    Returns (train_r2, loocv_r2) using the leverage shortcut for LOOCV.
+    X_design includes intercept.
+    """
+    beta, *_ = np.linalg.lstsq(X_design, y, rcond=None)
+    yhat = X_design @ beta
+    resid = y - yhat
+    sse_train = float(resid.T @ resid)
+
+    XtX_inv = np.linalg.pinv(X_design.T @ X_design)
+    h = np.sum((X_design @ XtX_inv) * X_design, axis=1)
+
+    denom = 1.0 - h
+    denom = np.where(np.abs(denom) < 1e-12, np.sign(denom) * 1e-12, denom)
+    loocv_resid = resid / denom
+    sse_cv = float(loocv_resid.T @ loocv_resid)
+
+    train_r2 = 1.0 - (sse_train / sst)
+    cv_r2 = 1.0 - (sse_cv / sst)
+    return train_r2, cv_r2
+
+
+def greedy_forward_loocv(
+    X: pd.DataFrame,
+    y: pd.Series,
+    *,
+    k_max: Optional[int] = None,
+    min_gain: float = 0.002,          # stop if best add improves CV-R² < 0.2%
+    standardize: bool = True,
+    prescreen_k: Optional[int] = 15,  # optionally screen to top K by |corr| for speed
+) -> GreedyResult:
+    """
+    Greedy forward selection maximizing LOOCV R² (fast).
+    Auto-detects intercept handling:
+      - If X contains a 'const' column, treats it as intercept (always included, not selectable, not standardized).
+      - Otherwise, adds an intercept internally (as before).
+
+    Assumes X, y are numeric, aligned, and NaN-free.
+    """
+
+    yv = y.to_numpy(dtype=float)
+    cols_all = list(X.columns)
+
+    has_const = "const" in cols_all
+    if has_const:
+        # Treat provided const as the intercept (force-include)
+        const_vec = X["const"].to_numpy(dtype=float).reshape(-1, 1)
+
+        # Optional sanity check (not required, but helpful during debugging):
+        # if not (np.nanstd(const_vec) < 1e-12):
+        #     raise ValueError("'const' column exists but is not (near-)constant; cannot treat as intercept safely.")
+
+        X_no_const = X.drop(columns=["const"])
+        cols = list(X_no_const.columns)
+        Xmat = X_no_const.to_numpy(dtype=float)
+    else:
+        const_vec = None
+        cols = cols_all
+        Xmat = X.to_numpy(dtype=float)
+
+    n, p = Xmat.shape
+    if p == 0 and not has_const:
+        return GreedyResult([], cv_r2=float("-inf"), train_r2=float("-inf"))
+
+    # SST
+    y_centered = yv - yv.mean()
+    sst = float(y_centered.T @ y_centered)
+    if sst == 0.0:
+        return GreedyResult([], cv_r2=0.0, train_r2=0.0)
+
+    # Standardize X for stability (recommended)
+    # IMPORTANT: never standardize the intercept; we already removed it above if present.
+    if standardize and p > 0:
+        mu = Xmat.mean(axis=0)
+        sd = Xmat.std(axis=0, ddof=0)
+        sd = np.where(sd == 0, 1.0, sd)
+        Xmat = (Xmat - mu) / sd
+
+    # Adaptive size cap if not provided
+    if k_max is None:
+        # if p==0 but has_const, we still just fit const-only
+        k_max = 0 if p == 0 else min(p, max(2, n // 5))
+    k_max = max(0, min(k_max, p))
+
+    # Optional prescreen to reduce p cheaply
+    if prescreen_k is not None and prescreen_k < p and p > 0:
+        y_std = y_centered.std(ddof=0)
+        if y_std == 0:
+            return GreedyResult([], cv_r2=0.0, train_r2=0.0)
+        x_std = Xmat.std(axis=0, ddof=0)
+        x_std = np.where(x_std == 0, 1.0, x_std)
+        corr = (Xmat.T @ y_centered) / (n * x_std * y_std)
+        keep_idx = np.argsort(np.abs(corr))[-prescreen_k:]
+        keep_idx = np.sort(keep_idx)
+        Xmat = Xmat[:, keep_idx]
+        cols = [cols[i] for i in keep_idx]
+        p = Xmat.shape[1]
+        k_max = min(k_max, p)
+
+    selected: List[int] = []
+    remaining = set(range(p))
+
+    # baseline
+    if has_const:
+        # intercept is provided as a column; baseline is const-only
+        X0 = const_vec
+        best_train_r2, best_cv_r2 = _ols_train_and_loocv_r2(X0, yv, sst)
+    else:
+        # original behavior: intercept-only baseline
+        X0 = np.ones((n, 1))
+        best_train_r2, best_cv_r2 = _ols_train_and_loocv_r2(X0, yv, sst)
+
+    while remaining and len(selected) < k_max:
+        step_best_cv = best_cv_r2
+        step_best_train = best_train_r2
+        step_best_j = None
+
+        for j in list(remaining):
+            idxs = selected + [j]
+            Xsub = Xmat[:, idxs]
+
+            if has_const:
+                # Use provided intercept column
+                X_design = np.column_stack([const_vec, Xsub])
+            else:
+                # Add intercept internally (original behavior)
+                X_design = np.column_stack([np.ones(n), Xsub])
+
+            train_r2, cv_r2 = _ols_train_and_loocv_r2(X_design, yv, sst)
+            if cv_r2 > step_best_cv + 1e-12:
+                step_best_cv = cv_r2
+                step_best_train = train_r2
+                step_best_j = j
+
+        if step_best_j is None or (step_best_cv - best_cv_r2) < min_gain:
+            break
+
+        selected.append(step_best_j)
+        remaining.remove(step_best_j)
+        best_cv_r2 = step_best_cv
+        best_train_r2 = step_best_train
+
+    # Return only non-const variables (const is forced-in when present)
+    return GreedyResult([cols[i] for i in selected], best_cv_r2, best_train_r2)

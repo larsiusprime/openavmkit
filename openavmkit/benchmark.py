@@ -1297,7 +1297,7 @@ def run_one_model(
             ind_vars = best_variables
 
     interactions = get_variable_interactions(entry, settings, df_sales)
-    location_fields = get_locations(settings, df_sales)
+    location_fields = entry.get("locations", get_locations(settings, df_sales))
 
     if test_keys is None or train_keys is None:
         test_keys, train_keys = _read_split_keys(model_group)
@@ -1307,23 +1307,23 @@ def run_one_model(
     ds = get_data_split_for(
         model_name=model_name,
         model_engine=model_engine,
-        model_entry=entry,
-        model_group=model_group,
-        location_fields=location_fields,
-        ind_vars=ind_vars,
-        df_sales=df_sales,
-        df_universe=df_universe,
-        settings=settings,
-        dep_var=dep_var,
-        dep_var_test=dep_var_test,
-        fields_cat=fields_cat,
-        interactions=interactions,
-        test_keys=test_keys,
-        train_keys=train_keys,
-        vacant_only=vacant_only,
-        hedonic=hedonic,
-        hedonic_test_against_vacant_sales=True,
-    )
+            model_entry=entry,
+            model_group=model_group,
+            location_fields=location_fields,
+            ind_vars=ind_vars,
+            df_sales=df_sales,
+            df_universe=df_universe,
+            settings=settings,
+            dep_var=dep_var,
+            dep_var_test=dep_var_test,
+            fields_cat=fields_cat,
+            interactions=interactions,
+            test_keys=test_keys,
+            train_keys=train_keys,
+            vacant_only=vacant_only,
+            hedonic=hedonic,
+            hedonic_test_against_vacant_sales=True,
+        )
     t.stop("data split")
 
     t.start("setup")
@@ -1332,6 +1332,7 @@ def run_one_model(
             print(f"--> model {model_name} has less than 15 sales. Skipping...")
         return None
 
+    optimize_vars = entry.get("optimize_vars", False)
     intercept = entry.get("intercept", True)
     n_trials = entry.get("n_trials", 50)
     use_gpu = entry.get("use_gpu", True)
@@ -1372,7 +1373,7 @@ def run_one_model(
     elif model_engine == "mra":
         results = run_mra(ds, intercept=intercept, verbose=verbose)
     elif model_engine == "multi_mra":
-        results = run_multi_mra(ds, location_fields, intercept=intercept, verbose=verbose)
+        results = run_multi_mra(ds, outpath, location_fields, optimize_vars=optimize_vars, intercept=intercept, verbose=verbose)
     elif model_engine == "kernel":
         results = run_kernel(
             ds, outpath, save_params, use_saved_params, verbose=verbose
@@ -1822,14 +1823,14 @@ def _predict_one_model(
         gwr_model: GWRModel = smr.model
         results = predict_gwr(ds, gwr_model, timing, verbose)
     elif model_engine == "xgboost":
-        xgb_regressor: XGBRegressor = smr.model
-        results = predict_xgboost(ds, xgb_regressor, timing, verbose)
+        xgb_model: XGBoostModel = smr.model
+        results = predict_xgboost(ds, xgb_model, timing, verbose)
     elif model_engine == "lightgbm":
-        lightgbm_regressor: Booster = smr.model
-        results = predict_lightgbm(ds, lightgbm_regressor, timing, verbose)
+        lgbm_model: LightGBMModel = smr.model
+        results = predict_lightgbm(ds, lgbm_model, timing, verbose)
     elif model_engine == "catboost":
-        catboost_regressor: CatBoostRegressor = smr.model
-        results = predict_catboost(ds, catboost_regressor, timing, verbose)
+        catboost_model: CatBoostModel = smr.model
+        results = predict_catboost(ds, catboost_model, timing, verbose)
     elif model_engine == "slice":
         slice_model: LandSLICEModel = smr.model
         results = predict_slice(ds, slice_model, timing, verbose)
@@ -1874,6 +1875,7 @@ def _clamp_land_predictions(
 
     # Look for the corresponding universe, sales, and test predictions for the land value model.
     df_univ = load_model_results(model_group, model_name, "universe", lookpath)
+    
     if df_univ is not None:
         # There's a match for this model name (ex: "xgboost" or "lightgbm") in the set of main models
         df_sales = load_model_results(model_group, model_name, "sales", lookpath)
@@ -1965,6 +1967,7 @@ def _clamp_land_predictions(
     
     ds.df_test = df_land_test.merge(ds.df_test[["key_sale"] + [f for f in ds.df_test if f not in df_land_test]], on="key_sale", how="left")
     ds.df_sales = df_land_sales.merge(ds.df_sales[["key_sale"] + [f for f in ds.df_sales if f not in df_land_sales]], on="key_sale", how="left")
+    
     ds.df_universe = df_land_univ.merge(ds.df_universe[["key"] + [f for f in ds.df_universe if f not in df_land_univ]], on="key", how="left")
     
     # Create a new SingleModelResults object with the clamped land value predictions
@@ -4229,27 +4232,45 @@ def _run_models(
             f"For model_group: {model_group}, vacant_only: {vacant_only}, there are fewer than 15 sales records. Model might not be any good!"
         )
     t.stop("setup")
-    t.start("var_recs")
-
-    # We do a "quick" variable optimization step here. It drops some of the more expensive tests for the sake of speed
-    # If you want to do those more expensive tests, you should run them in try_variables instead
-    var_recs = get_variable_recommendations(
-        df_sales,
-        df_univ,
-        vacant_only,
-        settings,
-        model_group,
-        tests_to_run = ["corr", "r2", "p_value", "t_value", "vif"], # Exclude ENR for speed
-        do_report=False,
-        do_cross=False, # Exclude cross-validation for speed
-        verbose=True,
-        t=t
-    )
     
-    t.stop("var_recs")
-    
-    best_variables = var_recs["variables"]
-    del var_recs # Delete var_recs to drop the results dataframe it holds since we don't need it
+    # Check if we need to auto reduce variables globally
+    auto_reduce_vars = False
+    for model_name in models_to_run:
+        if model_name in models_to_skip:
+            print(f"Skipping model {model_name}.")
+            continue
+        model_entry = model_entries.get(model_name, model_entries.get("default", {}))
+        model_engine = model_entry.get("engine", model_name)
+        # For tree-based models, and multi-mra, we don't perform variable reduction
+        if model_engine not in ["pass_through", "ground_truth", "xgboost", "lightgbm", "catboost", "multi_mra"]:
+            auto_reduce_vars = True
+            break
+        
+    if auto_reduce_vars:
+        if verbose:
+            print(f"Auto-reducing variables for model type \"{model_engine}\"")
+        t.start("var_recs")
+        # We do a "quick" variable optimization step here. It drops some of the more expensive tests for the sake of speed
+        # If you want to do those more expensive tests, you should run them in try_variables instead
+        var_recs = get_variable_recommendations(
+            df_sales,
+            df_univ,
+            vacant_only,
+            settings,
+            model_group,
+            tests_to_run = ["corr", "r2", "p_value", "t_value", "vif"], # Exclude ENR for speed
+            do_report=False,
+            do_cross=False, # Exclude cross-validation for speed
+            verbose=True,
+            t=t
+        )
+        
+        t.stop("var_recs")
+        
+        best_variables = var_recs["variables"]
+        del var_recs # Delete var_recs to drop the results dataframe it holds since we don't need it
+    else:
+        best_variables = None
 
     any_results = False
 
@@ -4262,11 +4283,12 @@ def _run_models(
         model_entry = model_entries.get(model_name, model_entries.get("default", {}))
         model_engine = model_entry.get("engine", model_name)
         
-        model_variables = best_variables
-        # For tree-based models, we don't perform variable reduction
-        if model_engine in ["xgboost", "lightgbm", "catboost"]:
+        # Tree-based models don't auto-reduce variables ever
+        if model_engine not in ["xgboost", "catboost", "lightgbm"]:
+            model_variables = best_variables
+        else:
             model_variables = None
-
+        
         results = run_one_model(
             df_sales=df_sales,
             df_universe=df_univ,

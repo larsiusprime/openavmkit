@@ -40,7 +40,6 @@ from xgboost import XGBRegressor
 
 from openavmkit.shap_analysis import (
     make_shap_table,
-    get_model_shaps,
     get_full_model_shaps
 )
 
@@ -73,10 +72,15 @@ from openavmkit.utilities.modeling import (
     PassThroughModel,
     GWRModel,
     MRAModel,
+    XGBoostModel,
+    LightGBMModel,
+    CatBoostModel,
     MultiMRAModel,
     GroundTruthModel,
     SpatialLagModel,
-    LandSLICEModel
+    LandSLICEModel,
+    greedy_forward_loocv,
+    TreeBasedCategoricalData
 )
 from openavmkit.utilities.data import (
     clean_column_names,
@@ -98,16 +102,16 @@ from openavmkit.utilities.timing import TimingData
 pd.set_option("future.no_silent_downcasting", True)
 
 TreeBasedModel = Union[
-    XGBRegressor,
-    Booster,
-    CatBoostRegressor
+    XGBoostModel,
+    LightGBMModel,
+    CatBoostModel
 ]
 
 PredictionModel = Union[
     MRAModel,
-    XGBRegressor,
-    Booster,
-    CatBoostRegressor,
+    XGBoostModel,
+    LightGBMModel,
+    CatBoostModel,
     KernelReg,
     GarbageModel,
     AverageModel,
@@ -729,31 +733,97 @@ class DataSplit:
 
         return ds
 
-    def encode_categoricals_as_categories(self):
+    def encode_categoricals_as_categories(
+        self,
+        unknown_token: str = "UNKNOWN"
+    ):
         """
-        Convert all categorical variables in sales and universe DataFrames to the 'category' dtype.
+        Enforce train-defined categorical vocab, and sync all splits to it.
 
+        Rules:
+        - Categories are defined ONLY from df_train (after filling missings).
+        - Any categorical value not found in TRAIN is replaced with UNKNOWN in
+          df_test and df_universe (and df_sales as well, for consistency).
+        - df_sales and df_universe (and df_test) are assigned the exact same
+          pandas Categorical categories index as df_train, so codes are synced.
+
+        Parameters
+        ----------
+        unknown_token : str
+            Token used to replace values not seen in training, as well as NaN/None/NA
+        
         Returns
         -------
         DataSplit
-            The updated DataSplit instance.
+            Updated DataSplit instance.
         """
-
         if len(self.categorical_vars) == 0:
             return self
 
         ds = self.copy()
 
-        for col in ds.categorical_vars:
-            ds.df_universe[col] = ds.df_universe[col].astype("category")
-            if "UNKNOWN" not in ds.df_universe[col].cat.categories:
-                ds.df_universe[col].cat.add_categories(["UNKNOWN"])
+        if getattr(ds, "df_train", None) is None:
+            raise ValueError("encode_categoricals_as_categories requires df_train to be present.")
 
-            ds.df_sales[col] = ds.df_sales[col].astype("category")
-            if "UNKNOWN" not in ds.df_sales[col].cat.categories:
-                ds.df_sales[col].cat.add_categories(["UNKNOWN"])
+        # Build train-defined categories (vocab) per column
+        train_categories = {}
+
+        for col in ds.categorical_vars:
+            if col not in ds.df_train.columns:
+                # If it isn't in train, we can't define vocab from train.
+                continue
+            if col == "key" or col == "key_sale":
+                continue
+
+            s_train = ds.df_train[col]
+            
+            # ensure we aren't stuck in Categorical fillna restrictions
+            if pd.api.types.is_categorical_dtype(s_train):
+                s_train = s_train.astype(object)
+
+            s_train = s_train.fillna(unknown_token)
+            s_train = s_train.astype(str)
+
+            cats = list(pd.unique(s_train))
+
+            # Ensure unknown token exists in the *category index*
+            if unknown_token not in cats:
+                cats.append(unknown_token)
+
+            train_categories[col] = cats
+
+            # Make train column a Categorical with these exact categories
+            ds.df_train[col] = pd.Categorical(s_train, categories=cats)
+
+        # Helper to coerce a df to train vocab, replacing unseen values with UNKNOWN
+        def coerce_to_train_vocab(df) -> None:
+            if df is None:
+                return
+            for col, cats in train_categories.items():
+                if col not in df.columns:
+                    continue
+                
+                s = df[col]
+                if pd.api.types.is_categorical_dtype(s):
+                    s = s.astype(object)
+                s = s.fillna(unknown_token)
+                s = s.astype(str)
+
+                # Replace any value not in training categories with UNKNOWN
+                s = s.where(s.isin(cats), other=unknown_token)
+                if unknown_token not in cats:
+                    cats.append(unknown_token)
+
+                df[col] = pd.Categorical(s, categories=cats)
+
+        # Apply to other splits
+        # TEST/SALES/UNIVERSE: obliterate unseen categories -> UNKNOWN
+        coerce_to_train_vocab(getattr(ds, "df_test", None))
+        coerce_to_train_vocab(getattr(ds, "df_universe", None))
+        coerce_to_train_vocab(getattr(ds, "df_sales", None))
 
         return ds
+
 
     def reconcile_fields_with_foreign(self, foreign_ds):
         """Reconcile this DataSplit's fields with those of a provided reference DataSplit
@@ -1369,7 +1439,7 @@ class SingleModelResults:
         else:
             self.chd = float("nan")
         timing.stop("chd")
-
+        
         timing.start("utility")
         self.utility_test = self.pred_test.mape * 100
         if y_pred_sales is not None:
@@ -1780,7 +1850,9 @@ def run_mra(
 
 def run_multi_mra(
     ds: DataSplit,
+    outpath: str,
     location_fields: list[str],
+    optimize_vars: bool = False,
     intercept: bool = True,
     verbose: bool = False,
     min_sample_size: int = 15
@@ -1792,12 +1864,15 @@ def run_multi_mra(
     ----------
     ds : DataSplit
         DataSplit object (sales/universe/splits should already be set up).
+    outpath : str
+        Path to write parameters out to
     location_fields : list[str]
         Ordered list of location field names, most specific -> least specific.
         These fields must exist in ds.df_train / ds.df_test / ds.df_universe.
+    optimize_vars: bool, optional
+        Whether to automatically trim the variable selection to the most optimal or not. Defaults to False.
     intercept : bool, optional
-        Whether to include an intercept column in the regression.
-        Defaults to True.
+        Whether to include an intercept column in the regression. Defaults to True.
     verbose : bool, optional
         If True, print verbose output. Defaults to False.
     min_sample_size : int, optional
@@ -1810,21 +1885,23 @@ def run_multi_mra(
     SingleModelResults
         Prediction results from the Multi-MRA model.
     """
+
     ds_prepped, multi_model, timing = _run_multi_mra(
         ds,
+        outpath,
         location_fields=location_fields,
-        min_sample_size=min_sample_size,
+        optimize_vars=optimize_vars,
         intercept=intercept,
         verbose=verbose,
     )
-    # IMPORTANT: use ds_prepped, not the original ds
     return predict_multi_mra(ds_prepped, multi_model, timing, verbose=verbose)
 
 
 def _run_multi_mra(
     ds: DataSplit,
+    outpath: str,
     location_fields: list[str],
-    min_sample_size: int = 30,
+    optimize_vars: bool = True,
     intercept: bool = True,
     verbose: bool = False,
 ) -> tuple[DataSplit, MultiMRAModel, TimingData]:
@@ -1862,32 +1939,11 @@ def _run_multi_mra(
 
     # Record the consistent feature order used for ALL regressions
     feature_names = list(ds_prepped.X_train.columns)
-
-    timing.stop("setup")
-
-    # ------------------------------------------------------------------
-    # Train: global regression + local regressions by location
-    # ------------------------------------------------------------------
-    timing.start("train")
-
+    
+    df_train = ds_prepped.df_train
+    
     X_train = ds_prepped.X_train
     y_train = ds_prepped.y_train
-
-    # ------------------------
-    # Global OLS (fallback)
-    # ------------------------
-    global_model = sm.OLS(y_train, X_train).fit()
-    global_coef = global_model.params.reindex(feature_names).to_numpy()
-
-    if verbose:
-        print(f"[Multi-MRA] Global OLS trained with {len(X_train)} observations.")
-        print(f"[Multi-MRA] Number of features (including intercept if any): {len(feature_names)}")
-
-    # ------------------------
-    # Local OLS per location
-    # ------------------------
-    coef_map: Dict[str, Dict[Any, np.ndarray]] = {}
-    df_train = ds_prepped.df_train
 
     # Alignment safety checks
     if len(df_train) != len(X_train):
@@ -1902,11 +1958,92 @@ def _run_multi_mra(
         )
 
     n_features = len(feature_names)
-    # Ensure minimum sample size is at least number of features + 1
-    # (to reduce rank-deficiency issues).
-    effective_min_sample_size = max(min_sample_size, n_features + 1)
+    timing.stop("setup")
+    
+    timing.start("parameter_search")
+    
+    # Optimize for best variables
+    best_var_map = {}
+    
+    if optimize_vars:
+        if verbose:
+            print(f"Tuning Multi-MRA: searching for optimal variables. (Total variables = {n_features})...")
+            
+            model_name = ds.name
+            
+            if os.path.exists(f"{outpath}/{model_name}_vars.json"):
+                best_var_map = json.load(open(f"{outpath}/{model_name}_vars.json", "r"))
+                if verbose:
+                    print(f"--> using saved variables")
+            
+            if not best_var_map:
+                for location_field in location_fields:
+                    if location_field not in df_train.columns:
+                        continue
 
+                    field_map: Dict[Any, np.ndarray] = {}
+                    unique_locs = df_train[location_field].unique()
+
+                    if verbose:
+                        print(
+                            f"[Multi-MRA] Optimizing local OLS for field '{location_field}' "
+                            f"with {len(unique_locs)} distinct values."
+                    )
+                
+                i = 0
+                for loc in unique_locs:
+                    # Build mask for this specific location value
+                    mask_loc = df_train[location_field].eq(loc)
+
+                    # Safety: mask and X_train index alignment is guaranteed above
+                    X_loc = X_train.loc[mask_loc, :]
+                    y_loc = y_train.loc[mask_loc]
+
+                    n_loc = len(X_loc)
+                    min_n_loc = X_loc.shape[1] + 1
+                    if n_loc < min_n_loc:
+                        continue
+                    print(f"--> {i/len(unique_locs):5.2%} -- {i:>6}/{len(unique_locs)} -- value = {loc}...")
+
+                    try:
+                        best_vars = greedy_forward_loocv(X_loc, y_loc).variables
+                    except np.linalg.LinAlgError:
+                        best_vars = []
+                    field_map[str(loc)] = best_vars
+                    
+                    i += 1
+                    best_var_map[location_field] = field_map
+
+                os.makedirs(outpath, exist_ok=True)
+                if verbose:
+                    print(f"--> saving variables to \"{outpath}/{model_name}_vars.json\"")
+                json.dump(best_var_map, open(f"{outpath}/{model_name}_vars.json", "w"))
+
+    timing.stop("parameter_search")
+
+    # ------------------------------------------------------------------
+    # Train: global regression + local regressions by location
+    # ------------------------------------------------------------------
+    timing.start("train")
+
+    has_const = "const" in X_train
+
+    # ------------------------
+    # Global OLS (fallback)
+    # ------------------------
+    global_model = sm.OLS(y_train, X_train).fit()
+    global_coef = global_model.params.reindex(feature_names, fill_value=0.0).to_numpy(dtype=float)
+
+    if verbose:
+        print(f"[Multi-MRA] Global OLS trained with {len(X_train)} observations.")
+        print(f"[Multi-MRA] Number of features (including intercept if any): {len(feature_names)}")
+
+    # ------------------------
+    # Local OLS per location
+    # ------------------------
+    coef_map: Dict[str, Dict[Any, np.ndarray]] = {}
     for location_field in location_fields:
+        best_var_field = best_var_map.get(location_field, {})
         if location_field not in df_train.columns:
             if verbose:
                 print(
@@ -1920,19 +2057,32 @@ def _run_multi_mra(
         if verbose:
             print(
                 f"[Multi-MRA] Training local OLS for field '{location_field}' "
-                f"with {len(unique_locs)} distinct values (min_sample_size={effective_min_sample_size})."
+                f"with {len(unique_locs)} distinct values)."
             )
-
+        
         for loc in unique_locs:
+            best_vars_loc = best_var_field.get(str(loc), [])
+            
             # Build mask for this specific location value
             mask_loc = df_train[location_field].eq(loc)
 
+            # Subset of X_train with only the best variables
+            best_vars_loc = list(best_vars_loc)
+            if best_vars_loc:
+                if has_const and "const" not in best_vars_loc:
+                    best_vars_loc.append("const")
+                X_best = X_train[best_vars_loc]
+            else:
+                X_best = X_train
+
             # Safety: mask and X_train index alignment is guaranteed above
-            X_loc = X_train.loc[mask_loc, :]
+            X_loc = X_best.loc[mask_loc, :]
             y_loc = y_train.loc[mask_loc]
+            
+            min_n_loc = X_loc.shape[1] + 1
 
             n_loc = len(X_loc)
-            if n_loc < effective_min_sample_size:
+            if n_loc < min_n_loc:
                 # Not enough observations for a stable local regression
                 continue
 
@@ -1944,11 +2094,11 @@ def _run_multi_mra(
                 continue
 
             # Align coefficients to the master feature ordering
-            params = local_model.params.reindex(feature_names)
-            beta = params.to_numpy()
+            params = local_model.params.reindex(feature_names, fill_value=0.0)
+            beta = params.to_numpy(dtype=float)
 
             # Store in field_map
-            field_map[loc] = beta
+            field_map[str(loc)] = beta
 
         coef_map[location_field] = field_map
 
@@ -1966,8 +2116,7 @@ def _run_multi_mra(
         global_coef=global_coef,
         feature_names=feature_names,
         intercept=intercept,
-        location_fields=location_fields,
-        min_sample_size=effective_min_sample_size,
+        location_fields=location_fields
     )
 
     return ds_prepped, multi_model, timing
@@ -2021,24 +2170,7 @@ def predict_multi_mra(
     # ------------------------------------------------------------------
     # Helper: apply hierarchical painting for one split
     # ------------------------------------------------------------------
-    def _predict_split(X_split: pd.DataFrame, df_split: pd.DataFrame, split_name: str) -> np.ndarray:
-        """
-        Apply hierarchical Multi-MRA prediction to a particular split.
-
-        Parameters
-        ----------
-        X_split : pd.DataFrame
-            Feature matrix for this split.
-        df_split : pd.DataFrame
-            Underlying DataFrame for this split (must contain location_fields).
-        split_name : str
-            Name of the split (for debug messages).
-
-        Returns
-        -------
-        np.ndarray
-            Predictions for this split, in the same order as X_split/df_split.
-        """
+    def _predict_split(X_split: pd.DataFrame, y_split: pd.Series|np.ndarray|None, df_split: pd.DataFrame, split_name: str) -> np.ndarray:
 
         # NEW: ensure intercept column exists if the model was trained with one
         if "const" in feature_names and "const" not in X_split.columns:
@@ -2079,7 +2211,7 @@ def predict_multi_mra(
                 # Location field not present in this split; skip
                 continue
 
-            loc_values = df_split[location_field].to_numpy()
+            loc_values = df_split[location_field].astype(str).to_numpy()
 
             if verbose:
                 print(
@@ -2104,12 +2236,19 @@ def predict_multi_mra(
 
                 # Select the subset of X corresponding to this location
                 X_loc = X_split.loc[mask_loc, feature_names]
-
+                
                 # Compute predictions: X_loc @ beta
-                y_loc = X_loc.to_numpy().dot(beta)
-
+                y_loc_pred = X_loc.to_numpy().dot(beta)
+                
+                # Select the subset of ground truth for this location
+                if y_split is not None:
+                    if isinstance(y_split, np.ndarray):
+                        y_loc_true = y_split[mask_loc]
+                    else:
+                        y_loc_true = y_split.loc[mask_loc]
+                
                 # Assign to y_pred for these rows
-                y_pred[mask_loc] = y_loc
+                y_pred[mask_loc] = y_loc_pred
 
         # Global fallback for any remaining NaNs
         mask_global = np.isnan(y_pred)
@@ -2126,22 +2265,24 @@ def predict_multi_mra(
     # TEST
     timing.start("predict_test")
     X_test = ds.X_test.copy()
+    y_test = ds.y_test.copy()
     df_test = ds.df_test.copy()
-    y_pred_test = _predict_split(X_test, df_test, split_name="test")
+    y_pred_test = _predict_split(X_test, y_test, df_test, split_name="test")
     timing.stop("predict_test")
 
     # SALES
     timing.start("predict_sales")
     X_sales = ds.X_sales.copy()
+    y_sales = ds.y_sales.copy()
     df_sales = ds.df_sales.copy()
-    y_pred_sales = _predict_split(X_sales, df_sales, split_name="sales")
+    y_pred_sales = _predict_split(X_sales, y_sales, df_sales, split_name="sales")
     timing.stop("predict_sales")
 
     # UNIVERSE
     timing.start("predict_univ")
     X_univ = ds.X_univ.copy()
     df_univ = ds.df_universe.copy()
-    y_pred_univ = _predict_split(X_univ, df_univ, split_name="universe")
+    y_pred_univ = _predict_split(X_univ, None, df_univ, split_name="universe")
     timing.stop("predict_univ")
 
     timing.stop("total")
@@ -3043,9 +3184,28 @@ def run_gwr(
     return predict_gwr(ds, gwr_model, timing, verbose, diagnostic)
 
 
+def _fix_bool_objs(ds:DataSplit):
+    # Fix for object-typed boolean columns (especially 'within_*' fields)
+    for col in ds.X_train.columns:
+        if col.startswith("within_") or (
+            ds.X_train[col].dtype == "object"
+            and ds.X_train[col].isin([True, False]).all()
+        ):
+            if verbose:
+                print(f"Converting column {col} from {ds.X_train[col].dtype} to bool")
+            ds.X_train[col] = ds.X_train[col].astype(bool)
+            if col in ds.X_test.columns:
+                ds.X_test[col] = ds.X_test[col].astype(bool)
+            if col in ds.X_univ.columns:
+                ds.X_univ[col] = ds.X_univ[col].astype(bool)
+            if col in ds.X_sales.columns:
+                ds.X_sales[col] = ds.X_sales[col].astype(bool)
+    return ds
+
+
 def predict_xgboost(
     ds: DataSplit,
-    xgboost_model: xgb.XGBRegressor,
+    xgboost_model: XGBoostModel,
     timing: TimingData,
     verbose: bool = False,
 ) -> SingleModelResults:
@@ -3056,8 +3216,8 @@ def predict_xgboost(
     ----------
     ds : DataSplit
         DataSplit object containing train/test/universe splits.
-    xgboost_model : xgb.XGBRegressor
-        Trained XGBRegressor instance.
+    xgboost_model : XGBoostModel
+        Trained XGBoostModel instance.
     timing : TimingData
         TimingData object for recording performance metrics.
     verbose : bool, optional
@@ -3068,17 +3228,18 @@ def predict_xgboost(
     SingleModelResults
         Prediction results from the XGBoost model.
     """
+    regressor = xgboost_model.regressor
 
     timing.start("predict_test")
-    y_pred_test = safe_predict(xgboost_model.predict, ds.X_test)
+    y_pred_test = safe_predict(regressor.predict, ds.X_test)
     timing.stop("predict_test")
 
     timing.start("predict_sales")
-    y_pred_sales = safe_predict(xgboost_model.predict, ds.X_sales)
+    y_pred_sales = safe_predict(regressor.predict, ds.X_sales)
     timing.stop("predict_sales")
 
     timing.start("predict_univ")
-    y_pred_univ = safe_predict(xgboost_model.predict, ds.X_univ)
+    y_pred_univ = safe_predict(regressor.predict, ds.X_univ)
     timing.stop("predict_univ")
 
     timing.stop("total")
@@ -3138,24 +3299,12 @@ def run_xgboost(
 
     timing.start("total")
 
-    ds = ds.encode_categoricals_with_one_hot()
+    #ds = ds.encode_categoricals_with_one_hot()
+    ds = ds.encode_categoricals_as_categories()
     ds.split()
 
     # Fix for object-typed boolean columns (especially 'within_*' fields)
-    for col in ds.X_train.columns:
-        if col.startswith("within_") or (
-            ds.X_train[col].dtype == "object"
-            and ds.X_train[col].isin([True, False]).all()
-        ):
-            if verbose:
-                print(f"Converting column {col} from {ds.X_train[col].dtype} to bool")
-            ds.X_train[col] = ds.X_train[col].astype(bool)
-            if col in ds.X_test.columns:
-                ds.X_test[col] = ds.X_test[col].astype(bool)
-            if col in ds.X_univ.columns:
-                ds.X_univ[col] = ds.X_univ[col].astype(bool)
-            if col in ds.X_sales.columns:
-                ds.X_sales[col] = ds.X_sales[col].astype(bool)
+    ds = _fix_bool_objs(ds)
 
     parameters = _get_params(
         "XGBoost",
@@ -3170,21 +3319,33 @@ def run_xgboost(
     )
 
     parameters["verbosity"] = 0
-    parameters["tree_method"] = "auto"
     parameters["device"] = "cpu"
     parameters["objective"] = "reg:squarederror"
+    
+    parameters["enable_categorical"] = True
+    parameters.setdefault("tree_method", "hist")
+    parameters.setdefault("max_cat_to_onehot", 1)
+
     # parameters["eval_metric"] = "rmse"
-    xgboost_model = xgb.XGBRegressor(**parameters)
+    regressor = xgb.XGBRegressor(**parameters)
 
     timing.start("train")
-    xgboost_model.fit(ds.X_train, ds.y_train)
+    regressor.fit(ds.X_train, ds.y_train)
     timing.stop("train")
+    
+    cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
+    cat_data = TreeBasedCategoricalData.from_training_data(
+        ds.X_train,
+        categorical_cols=cat_vars,
+    )
 
+    xgboost_model = XGBoostModel(regressor=regressor, cat_data=cat_data)
+    
     return predict_xgboost(ds, xgboost_model, timing, verbose)
 
 
 def predict_lightgbm(
-    ds: DataSplit, gbm: lgb.Booster, timing: TimingData, verbose: bool = False
+    ds: DataSplit, model: LightGBMModel, timing: TimingData, verbose: bool = False
 ) -> SingleModelResults:
     """
     Generate predictions using a LightGBM model.
@@ -3193,8 +3354,8 @@ def predict_lightgbm(
     ----------
     ds : DataSplit
         DataSplit object containing train/test/universe splits.
-    gbm : lgb.Booster
-        Trained LightGBM Booster.
+    model : LightGBMModel
+        Trained LightGBM model.
     timing : TimingData
         TimingData object for recording performance metrics.
     verbose : bool, optional
@@ -3205,6 +3366,7 @@ def predict_lightgbm(
     SingleModelResults
         Prediction results from the LightGBM model.
     """
+    gbm:Booster = model.booster
 
     timing.start("predict_test")
     y_pred_test = safe_predict(
@@ -3235,7 +3397,7 @@ def predict_lightgbm(
         "he_id",
         model_name,
         model_engine,
-        gbm,
+        model,
         y_pred_test,
         y_pred_sales,
         y_pred_univ,
@@ -3282,24 +3444,12 @@ def run_lightgbm(
     timing.start("total")
 
     timing.start("setup")
-    ds = ds.encode_categoricals_with_one_hot()
+    #ds = ds.encode_categoricals_with_one_hot()
+    ds = ds.encode_categoricals_as_categories()
     ds.split()
 
     # Fix for object-typed boolean columns (especially 'within_*' fields)
-    for col in ds.X_train.columns:
-        if col.startswith("within_") or (
-            ds.X_train[col].dtype == "object"
-            and ds.X_train[col].isin([True, False]).all()
-        ):
-            if verbose:
-                print(f"Converting column {col} from {ds.X_train[col].dtype} to bool")
-            ds.X_train[col] = ds.X_train[col].astype(bool)
-            if col in ds.X_test.columns:
-                ds.X_test[col] = ds.X_test[col].astype(bool)
-            if col in ds.X_univ.columns:
-                ds.X_univ[col] = ds.X_univ[col].astype(bool)
-            if col in ds.X_sales.columns:
-                ds.X_sales[col] = ds.X_sales[col].astype(bool)
+    ds = _fix_bool_objs(ds)
 
     timing.stop("setup")
 
@@ -3335,6 +3485,10 @@ def run_lightgbm(
 
     timing.start("train")
     cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
+    cat_data = TreeBasedCategoricalData.from_training_data(
+        ds.X_train,
+        categorical_cols=cat_vars,
+    )
     lgb_train = lgb.Dataset(ds.X_train, ds.y_train, categorical_feature=cat_vars)
     lgb_test = lgb.Dataset(
         ds.X_test, ds.y_test, categorical_feature=cat_vars, reference=lgb_train
@@ -3357,19 +3511,15 @@ def run_lightgbm(
         ],
     )
     timing.stop("train")
+    
+    model = LightGBMModel(booster=gbm, cat_data=cat_data)
 
-    # Print timing information for LightGBM model
-    # if verbose:
-    #   print("\n***** LightGBM Model Timing *****")
-    #   print(timing.print())
-    #   print("*********************************\n")
-
-    return predict_lightgbm(ds, gbm, timing, verbose)
+    return predict_lightgbm(ds, model, timing, verbose)
 
 
 def predict_catboost(
     ds: DataSplit,
-    catboost_model: catboost.CatBoostRegressor,
+    catboost_model: CatBoostModel,
     timing: TimingData,
     verbose: bool = False,
 ) -> SingleModelResults:
@@ -3380,8 +3530,8 @@ def predict_catboost(
     ----------
     ds : DataSplit
         DataSplit object containing train/test/universe splits.
-    catboost_model : catboost.CatBoostRegressor
-        Trained CatBoostRegressor instance.
+    catboost_model : CatBoostModel
+        Trained CatBoostModel instance.
     timing : TimingData
         TimingData object for recording performance metrics.
     verbose : bool, optional
@@ -3394,13 +3544,15 @@ def predict_catboost(
     """
 
     cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
+    
+    regressor = catboost_model.regressor
 
     timing.start("predict_test")
     if len(ds.y_test) == 0:
         y_pred_test = np.array([])
     else:
         test_pool = Pool(data=ds.X_test, label=ds.y_test, cat_features=cat_vars)
-        y_pred_test = catboost_model.predict(test_pool)
+        y_pred_test = regressor.predict(test_pool)
     timing.stop("predict_test")
 
     timing.start("predict_sales")
@@ -3408,7 +3560,7 @@ def predict_catboost(
         y_pred_sales = np.array([])
     else:
         sales_pool = Pool(data=ds.X_sales, label=ds.y_sales, cat_features=cat_vars)
-        y_pred_sales = catboost_model.predict(sales_pool)
+        y_pred_sales = regressor.predict(sales_pool)
     timing.stop("predict_sales")
 
     timing.start("predict_univ")
@@ -3416,7 +3568,7 @@ def predict_catboost(
         y_pred_univ = np.array([])
     else:
         univ_pool = Pool(data=ds.X_univ, cat_features=cat_vars)
-        y_pred_univ = catboost_model.predict(univ_pool)
+        y_pred_univ = regressor.predict(univ_pool)
     timing.stop("predict_univ")
 
     timing.stop("total")
@@ -3483,6 +3635,8 @@ def run_catboost(
     timing.start("setup")
     ds = ds.encode_categoricals_as_categories()
     ds.split()
+    # Fix for object-typed boolean columns (especially 'within_*' fields)
+    ds = _fix_bool_objs(ds)
     timing.stop("setup")
 
     timing.start("parameter_search")
@@ -3505,15 +3659,23 @@ def run_catboost(
     params["train_dir"] = f"{outpath}/catboost/catboost_info"
     os.makedirs(params["train_dir"], exist_ok=True)
     cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
-    catboost_model = catboost.CatBoostRegressor(**params)
+
+    regressor = catboost.CatBoostRegressor(**params)
     train_pool = Pool(data=ds.X_train, label=ds.y_train, cat_features=cat_vars)
     timing.stop("setup")
 
     timing.start("train")
-    catboost_model.fit(train_pool)
+    regressor.fit(train_pool)
     timing.stop("train")
+    
+    cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
+    cat_data = TreeBasedCategoricalData.from_training_data(
+        ds.X_train,
+        categorical_cols=cat_vars
+    )
+    model = CatBoostModel(regressor=regressor, cat_data=cat_data)
 
-    return predict_catboost(ds, catboost_model, timing, verbose)
+    return predict_catboost(ds, model, timing, verbose)
 
 
 def predict_slice(
@@ -3685,7 +3847,7 @@ def predict_garbage(
         ds,
         "prediction",
         "he_id",
-        model_name,
+        ds.name,
         model_engine,
         garbage_model,
         y_pred_test,
@@ -4647,13 +4809,14 @@ def _get_params(
             if verbose:
                 print(f"--> using saved parameters")
     if params is None:
+        cat_vars = [c for c in (ds.categorical_vars or []) if c in ds.X_train.columns]
         params = tune_func(
             ds.X_train,
             ds.y_train,
             sizes=ds.train_sizes,
             he_ids=ds.train_he_ids,
             verbose=verbose,
-            cat_vars=ds.categorical_vars,
+            cat_vars=cat_vars,
             **kwargs,
         )
         if save_params:
@@ -5395,7 +5558,7 @@ def fit_land_SLICE_model(
 
 def write_tree_based_params(model: PredictionModel, df: pd.DataFrame, outpath: str, location: str = None):
     
-    # model is either XGBoost (XGBRegressor), LightBGM (Booster), or CatBoost (CatBoostRegressor)
+    # model is either XGBoost, LightBGM, or CatBoost
     
     # phase 1 -- calculate per-parcel global SHAPs based on the trained model
     
@@ -5867,7 +6030,8 @@ def write_shaps(
         X_train,
         X_test,
         X_sales,
-        X_univ
+        X_univ,
+        verbose=verbose
     )
     
     dfs = {
@@ -5928,19 +6092,33 @@ def _prepare_shap_dfs(
     # Check for divergent baseline due to approximate shap calculation
     
     ## get the same feature matrix used for SHAP (X_to_explain)
-    X_to_explain = df[list_vars].to_numpy()
+    X_to_explain = df[list_vars]
 
     ## raw model predictions on those exact rows
-    yhat_raw = model.predict(X_to_explain)
+
+    predictor = None
+    if isinstance(model, LightGBMModel):
+        predictor = model.booster
+    elif isinstance(model, CatBoostModel) or isinstance(model, XGBoostModel):
+        predictor = model.regressor
+    
+    cat_data = model.cat_data
+    if cat_data is not None and len(cat_data.categorical_cols) > 0:
+        X_to_explain = cat_data.apply(X_to_explain)
+    else:
+        X_to_explain = X_to_explain.to_numpy()
+
+    yhat_raw = predictor.predict(X_to_explain)
 
     ## SHAP reconstruction on those rows
     recon = np.asarray(shap_entry.base_values).ravel() + shap_entry.values.sum(axis=1)
     
     deltas = (recon - yhat_raw)
     delta_mean = float(deltas.mean())
-    delta_mean_perc = abs(delta_mean / float(yhat_raw.mean()))
+    yhat_raw_mean = float(yhat_raw.mean())
+    delta_mean_perc = float("nan") if yhat_raw_mean == 0 else abs(delta_mean / yhat_raw_mean)
     delta_std = float(deltas.std())
-    delta_std_perc = abs(delta_std / float(deltas.mean()))
+    delta_std_perc = float("nan") if delta_mean == 0 else abs(delta_std / delta_mean)
     
     # if there's more than a 0.1% difference between baselines
     if delta_mean_perc > 0.001:
@@ -5987,7 +6165,9 @@ def _contrib_to_unit_values(df_contrib: pd.DataFrame, df_base: pd.DataFrame, spl
         c for c in df_contrib.columns
         if c not in reserved and c in df_base.columns
     ]
-
+    numeric_vars = []
+    skipped = []
+    
     # rename contrib columns to avoid clashes with base
     df_contrib_renamed = df_contrib.rename(
         columns={v: f"{v}_contrib" for v in var_names}
@@ -6001,7 +6181,16 @@ def _contrib_to_unit_values(df_contrib: pd.DataFrame, df_base: pd.DataFrame, spl
     df_merged = df_contrib_renamed.merge(df_base_trim, on=the_key, how="left")
 
     # compute per-unit contributions
+    normal_vars = []
     for v in var_names:
+        if v not in df_merged:
+            continue
+        if pd.api.types.is_numeric_dtype(df_merged[v]):
+            numeric_vars.append(v)
+        else:
+            normal_vars.append(v)
+    
+    for v in numeric_vars:
         df_merged[f"{v}_unit"] = div_df_z_safe(df_merged, f"{v}_contrib", v)
 
     # build the output with keys
@@ -6010,11 +6199,11 @@ def _contrib_to_unit_values(df_contrib: pd.DataFrame, df_base: pd.DataFrame, spl
     if "base_value" in df_contrib.columns:
         keep_cols.append("base_value")
 
-    unit_cols = [f"{v}_unit" for v in var_names]
-    df_out = df_merged[keep_cols + unit_cols].copy()
+    unit_cols = [f"{v}_unit" for v in numeric_vars]
+    df_out = df_merged[keep_cols + normal_vars + unit_cols].copy()
     
     df_out_renamed = df_out.rename(
-        columns={f"{v}_unit": v for v in var_names}
+        columns={f"{v}_unit": v for v in numeric_vars}
     )
 
     return df_out_renamed
