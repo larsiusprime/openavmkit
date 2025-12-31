@@ -2548,8 +2548,8 @@ def _enrich_df_spatial_joins(
 
     # geometry
     gdf = _perform_spatial_joins(s_geom, dataframes, verbose=verbose)
-
     gdf = gdf[gdf["key"].isin(df["key"].values)]
+    gdf = gdf.drop_duplicates(subset="key", keep="first")
 
     # Merge everything together:
     try_keys = ["key", "key2", "key3"]
@@ -3656,7 +3656,7 @@ def load_dataframe(
     if is_geometry:
         is_geometry = entry.get("geometry", is_geometry)
     
-    if ext == "parquet":
+    if ext == "parquet" or ext == "geoparquet":
         try:
             df = gpd.read_parquet(filename, columns=cols_to_load)
             if "geometry" in df:
@@ -3824,7 +3824,7 @@ def load_dataframe(
 def _snoop_column_names(filename: str) -> list[str]:
     """Retrieve column names from a file without loading full data."""
     ext = str(filename).split(".")[-1]
-    if ext == "parquet":
+    if ext == "parquet" or ext == "geoparquet":
         parquet_file = pq.ParquetFile(filename)
         return parquet_file.schema.names
     elif ext == "csv":
