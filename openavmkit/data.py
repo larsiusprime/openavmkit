@@ -846,7 +846,7 @@ def _enrich_sup_spatial_lag_for_model_group(
 
         df_sub_train = df_sub.loc[df_sub["key_sale"].isin(train_keys)].copy()
         
-        if len(df_sub_train) <= 0:
+        if len(df_sub_train) <= (k+1):
             continue
         
         # Get the coordinates for the universe parcels
