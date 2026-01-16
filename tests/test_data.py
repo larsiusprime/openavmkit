@@ -446,8 +446,16 @@ def test_enrich_year_built():
 
 	time_formats = {"sale_date":"%Y-%m-%d"}
 
-	df_univ = enrich_time(df_univ, time_formats, {})
-	df_sales = enrich_time(df_sales, time_formats, {})
+	test_settings = {
+		"modeling":{
+			"metadata":{
+				"valuation_date": "2025-01-01"
+			}
+		}
+	}
+
+	df_univ = enrich_time(df_univ, time_formats, test_settings)
+	df_sales = enrich_time(df_sales, time_formats, test_settings)
 
 	df_univ = _do_enrich_year_built(df_univ, "bldg_year_built", "bldg_age_years", val_date, False)
 	df_sales = _do_enrich_year_built(df_sales, "bldg_year_built", "bldg_age_years", val_date, True)
@@ -466,8 +474,6 @@ def test_enrich_year_built():
 		df_sales[thing] = df_sales[thing].astype("string")
 		df_univ_expected[thing] = df_univ_expected[thing].astype("string")
 		df_sales_expected[thing] = df_sales_expected[thing].astype("string")
-
-
 
 	assert dfs_are_equal(df_univ, df_univ_expected, primary_key="key")
 	assert dfs_are_equal(df_sales, df_sales_expected, primary_key="key")
