@@ -1,5 +1,6 @@
 import xgboost as xgb
 import lightgbm as lgb
+import gpboost as gpb
 import numpy as np
 import optuna
 import pandas as pd
@@ -151,6 +152,86 @@ def _tune_lightgbm(
 
         # Use rolling-origin cross-validation
         mape = _lightgbm_rolling_origin_cv(
+            X, y, params, n_splits=n_splits, random_state=random_state, cat_vars=cat_vars
+        )
+        if verbose:
+            print(
+                f"-->trial # {trial.number}/{n_trials}, MAPE: {mape:0.4f}"
+            )  # , params: {params}")
+        return mape  # Optuna minimizes, so return the MAPE directly
+
+    # Run Bayesian Optimization with Optuna
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study = optuna.create_study(
+        direction="minimize", pruner=optuna.pruners.MedianPruner()
+    )
+    study.optimize(
+        objective, n_trials=n_trials, n_jobs=-1, callbacks=[_plateau_callback]
+    )  # Use parallelism if available
+
+    if verbose:
+        print(
+            f"Best trial: {study.best_trial.number} with MAPE: {study.best_trial.value:0.4f} and params: {study.best_trial.params}"
+        )
+    return study.best_params
+
+
+def _tune_gpboost(
+    X,
+    y,
+    sizes,
+    he_ids,
+    n_trials=50,
+    n_splits=5,
+    random_state=42,
+    cat_vars=None,
+    verbose=False,
+):
+    """Tunes GPBoost hyperparameters using Optuna and rolling-origin cross-validation.
+
+    Args:
+        X (array-like): Feature matrix.
+        y (array-like): Target vector.
+        sizes (array-like): Array of size values (land or building size)
+        he_ids (array-like): Array of horizontal equity cluster ID's
+        n_trials (int): Number of optimization trials for Optuna. Default is 100.
+        n_splits (int): Number of folds for cross-validation. Default is 5.
+        random_state (int): Random seed for reproducibility. Default is 42.
+        verbose (bool): Whether to print Optuna progress.
+
+    Returns:
+        dict: Best hyperparameters found by Optuna.
+    """
+
+    def objective(trial):
+        """Objective function for Optuna to optimize GPBoost hyperparameters."""
+        params = {
+            "objective": "regression_l2",
+            "metric": "mape",
+            "boosting_type": "gbdt",
+            "num_iterations": trial.suggest_int("num_iterations", 300, 5000),
+            "learning_rate": trial.suggest_float(
+                "learning_rate", 0.0001, 0.1, log=True
+            ),
+            "max_bin": trial.suggest_int("max_bin", 64, 1024),
+            "num_leaves": trial.suggest_int("num_leaves", 64, 2048),
+            "max_depth": trial.suggest_int("max_depth", 5, 15),
+            "min_gain_to_split": trial.suggest_float(
+                "min_gain_to_split", 1e-4, 50, log=True
+            ),
+            "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 20, 500),
+            "feature_fraction": trial.suggest_float(
+                "feature_fraction", 0.4, 0.9, log=False
+            ),
+            "subsample": trial.suggest_float("subsample", 0.5, 0.8, log=False),
+            "lambda_l1": trial.suggest_float("lambda_l1", 0.1, 10, log=True),
+            "lambda_l2": trial.suggest_float("lambda_l2", 0.1, 10, log=True),
+            "cat_smooth": trial.suggest_int("cat_smooth", 5, 200),
+            "verbosity": -1,
+        }
+
+        # Use rolling-origin cross-validation
+        mape = _gpboost_rolling_origin_cv(
             X, y, params, n_splits=n_splits, random_state=random_state, cat_vars=cat_vars
         )
         if verbose:
@@ -526,3 +607,45 @@ def _lightgbm_rolling_origin_cv(X, y, params, n_splits=5, random_state=42, cat_v
 
     return np.mean(mape_scores)
 
+
+def _gpboost_rolling_origin_cv(X, y, params, n_splits=5, random_state=42, cat_vars=None):
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    mape_scores = []
+
+    for train_idx, val_idx in kf.split(X):
+        if hasattr(X, "iloc"):
+            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+            y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+        else:
+            X_train, X_val = X[train_idx], X[val_idx]
+            y_train, y_val = y[train_idx], y[val_idx]
+
+        # Determine categorical features present in this fold
+        cat_feats = [c for c in (cat_vars or []) if hasattr(X_train, "columns") and c in X_train.columns]
+
+        train_data = gpb.Dataset(X_train, label=y_train, categorical_feature=cat_feats)
+        val_data = gpb.Dataset(X_val, label=y_val, categorical_feature=cat_feats, reference=train_data)
+
+        # Work on a fold-local copy to avoid cross-fold mutation
+        fold_params = dict(params)
+        fold_params["verbosity"] = -1
+
+        num_boost_round = 1000
+        if "num_iterations" in fold_params:
+            num_boost_round = fold_params.pop("num_iterations")
+
+        model = gpb.train(
+            fold_params,
+            train_data,
+            num_boost_round=num_boost_round,
+            valid_sets=[val_data],
+            callbacks=[
+                gpb.early_stopping(stopping_rounds=5, verbose=False),
+                gpb.log_evaluation(period=0),
+            ],
+        )
+
+        y_pred = model.predict(X_val, num_iteration=model.best_iteration)
+        mape_scores.append(mean_absolute_percentage_error(y_val, y_pred))
+
+    return np.mean(mape_scores)

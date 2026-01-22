@@ -22,6 +22,7 @@ import pandas as pd
 import geopandas as gpd
 import xgboost as xgb
 import lightgbm as lgb
+import gpboost as gpb
 import catboost
 from catboost import CatBoostRegressor, Pool
 from lightgbm import Booster
@@ -74,6 +75,7 @@ from openavmkit.utilities.modeling import (
     MRAModel,
     XGBoostModel,
     LightGBMModel,
+    GPBoostModel,
     CatBoostModel,
     MultiMRAModel,
     GroundTruthModel,
@@ -96,7 +98,7 @@ from openavmkit.utilities.stats import (
     calc_prb,
     trim_outliers_mask,
 )
-from openavmkit.tuning import _tune_lightgbm, _tune_xgboost, _tune_catboost
+from openavmkit.tuning import _tune_lightgbm, _tune_xgboost, _tune_catboost, _tune_gpboost
 from openavmkit.utilities.timing import TimingData
 
 pd.set_option("future.no_silent_downcasting", True)
@@ -104,6 +106,7 @@ pd.set_option("future.no_silent_downcasting", True)
 TreeBasedModel = Union[
     XGBoostModel,
     LightGBMModel,
+    GPBoostModel,
     CatBoostModel
 ]
 
@@ -111,6 +114,7 @@ PredictionModel = Union[
     MRAModel,
     XGBoostModel,
     LightGBMModel,
+    GPBoostModel,
     CatBoostModel,
     KernelReg,
     GarbageModel,
@@ -3517,6 +3521,181 @@ def run_lightgbm(
     return predict_lightgbm(ds, model, timing, verbose)
 
 
+def predict_gpboost(
+    ds: DataSplit, model: GPBoostModel, timing: TimingData, verbose: bool = False
+) -> SingleModelResults:
+    """
+    Generate predictions using a GPBoost model.
+
+    Parameters
+    ----------
+    ds : DataSplit
+        DataSplit object containing train/test/universe splits.
+    model : GPBoostModel
+        Trained GPBoost model.
+    timing : TimingData
+        TimingData object for recording performance metrics.
+    verbose : bool, optional
+        If True, print verbose output. Defaults to False.
+
+    Returns
+    -------
+    SingleModelResults
+        Prediction results from the GPBoost model.
+    """
+    booster = model.booster
+
+    timing.start("predict_test")
+    y_pred_test = safe_predict(
+        booster.predict, ds.X_test, {"num_iteration": booster.best_iteration}
+    )
+    timing.stop("predict_test")
+
+    timing.start("predict_sales")
+    y_pred_sales = safe_predict(
+        booster.predict, ds.X_sales, {"num_iteration": booster.best_iteration}
+    )
+    timing.stop("predict_sales")
+
+    timing.start("predict_univ")
+    y_pred_univ = safe_predict(
+        booster.predict, ds.X_univ, {"num_iteration": booster.best_iteration}
+    )
+    timing.stop("predict_univ")
+
+    timing.stop("total")
+
+    model_name = ds.name
+    model_engine = "gpboost"
+
+    results = SingleModelResults(
+        ds,
+        "prediction",
+        "he_id",
+        model_name,
+        model_engine,
+        model,
+        y_pred_test,
+        y_pred_sales,
+        y_pred_univ,
+        timing,
+        verbose=verbose,
+    )
+    return results
+
+
+def run_gpboost(
+    ds: DataSplit,
+    outpath: str,
+    save_params: bool = False,
+    use_saved_params: bool = False,
+    n_trials: int = 50,
+    verbose: bool = False,
+) -> SingleModelResults:
+    """
+    Run a GPBoost model by tuning parameters, training, and predicting.
+
+    Parameters
+    ----------
+    ds : DataSplit
+        DataSplit object.
+    outpath : str
+        Output path for saving parameters.
+    save_params : bool, optional
+        Whether to save tuned parameters. Defaults to False.
+    use_saved_params : bool, optional
+        Whether to load saved parameters. Defaults to False.
+    n_trials : int, optional
+        How many trials do run during parameter search. Defaults to 50.
+    verbose : bool, optional
+        If True, print verbose output. Defaults to False.
+
+    Returns
+    -------
+    SingleModelResults
+        Prediction results from the GPBoost model.
+    """
+
+    timing = TimingData()
+
+    timing.start("total")
+
+    timing.start("setup")
+    ds = ds.encode_categoricals_as_categories()
+    ds.split()
+
+    # Fix for object-typed boolean columns (especially 'within_*' fields)
+    ds = _fix_bool_objs(ds)
+
+    timing.stop("setup")
+
+    timing.start("parameter_search")
+    params = _get_params(
+        "GPBoost",
+        ds.name,
+        ds,
+        _tune_gpboost,
+        outpath,
+        save_params,
+        use_saved_params,
+        verbose,
+        n_trials=n_trials
+    )
+
+    # Remove any problematic parameters that might cause errors with forced splits
+    problematic_params = [
+        "forcedsplits_filename",
+        "forced_splits_filename",
+        "forced_splits_file",
+        "forced_splits",
+    ]
+    for param in problematic_params:
+        if param in params:
+            if verbose:
+                print(
+                    f"Removing problematic parameter '{param}' from GPBoost parameters"
+                )
+            params.pop(param, None)
+
+    timing.stop("parameter_search")
+
+    timing.start("train")
+    cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
+    cat_data = TreeBasedCategoricalData.from_training_data(
+        ds.X_train,
+        categorical_cols=cat_vars,
+    )
+    gpb_train = gpb.Dataset(ds.X_train, ds.y_train, categorical_feature=cat_vars)
+    gpb_test = gpb.Dataset(
+        ds.X_test, ds.y_test, categorical_feature=cat_vars, reference=gpb_train
+    )
+
+    params.setdefault("objective", "regression_l2")
+    params.setdefault("metric", "mape")
+    params.setdefault("boosting_type", "gbdt")
+    params["verbosity"] = -1
+
+    num_boost_round = 1000
+    if "num_iterations" in params:
+        num_boost_round = params.pop("num_iterations")
+
+    booster = gpb.train(
+        params,
+        gpb_train,
+        num_boost_round=num_boost_round,
+        valid_sets=[gpb_test],
+        callbacks=[
+            gpb.early_stopping(stopping_rounds=5, verbose=False),
+            gpb.log_evaluation(period=0),
+        ],
+    )
+    timing.stop("train")
+
+    model = GPBoostModel(booster=booster, cat_data=cat_data)
+
+    return predict_gpboost(ds, model, timing, verbose)
+
+
 def predict_catboost(
     ds: DataSplit,
     catboost_model: CatBoostModel,
@@ -6097,7 +6276,7 @@ def _prepare_shap_dfs(
     ## raw model predictions on those exact rows
 
     predictor = None
-    if isinstance(model, LightGBMModel):
+    if isinstance(model, (LightGBMModel, GPBoostModel)):
         predictor = model.booster
     elif isinstance(model, CatBoostModel) or isinstance(model, XGBoostModel):
         predictor = model.regressor
