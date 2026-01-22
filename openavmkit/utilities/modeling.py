@@ -528,6 +528,20 @@ class LightGBMModel:
         self.cat_data = cat_data
 
 
+class GPBoostModel:
+    """GPBoost Model
+
+    Attributes
+    ----------
+    booster: Booster
+        The trained GPBoost Booster model
+    cat_data: TreeBasedCategoricalData
+    """
+    def __init__(self, booster, cat_data):
+        self.booster = booster
+        self.cat_data = cat_data
+
+
 class XGBoostModel:
     """XGBoost Model
     

@@ -34,6 +34,7 @@ from openavmkit.modeling import (
     run_gwr,
     run_xgboost,
     run_lightgbm,
+    run_gpboost,
     run_catboost,
     run_slice,
     run_garbage,
@@ -56,6 +57,7 @@ from openavmkit.modeling import (
     predict_xgboost,
     predict_catboost,
     predict_lightgbm,
+    predict_gpboost,
     predict_slice,
     predict_ground_truth,
     predict_spatial_lag,
@@ -74,6 +76,10 @@ from openavmkit.utilities.data import (
 )
 from openavmkit.utilities.format import fancy_format, dig2_fancy_format
 from openavmkit.utilities.modeling import (
+    XGBoostModel,
+    LightGBMModel,
+    GPBoostModel,
+    CatBoostModel,
     NaiveAreaModel,
     LocalAreaModel,
     PassThroughModel,
@@ -1388,6 +1394,10 @@ def run_one_model(
         results = run_lightgbm(
             ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
+    elif model_engine == "gpboost":
+        results = run_gpboost(
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
+        )
     elif model_engine == "catboost":
         results = run_catboost(
             ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, use_gpu=use_gpu
@@ -1828,6 +1838,9 @@ def _predict_one_model(
     elif model_engine == "lightgbm":
         lgbm_model: LightGBMModel = smr.model
         results = predict_lightgbm(ds, lgbm_model, timing, verbose)
+    elif model_engine == "gpboost":
+        gpboost_model: GPBoostModel = smr.model
+        results = predict_gpboost(ds, gpboost_model, timing, verbose)
     elif model_engine == "catboost":
         catboost_model: CatBoostModel = smr.model
         results = predict_catboost(ds, catboost_model, timing, verbose)
@@ -4242,7 +4255,7 @@ def _run_models(
         model_entry = model_entries.get(model_name, model_entries.get("default", {}))
         model_engine = model_entry.get("engine", model_name)
         # For tree-based models, and multi-mra, we don't perform variable reduction
-        if model_engine not in ["pass_through", "ground_truth", "xgboost", "lightgbm", "catboost", "multi_mra"]:
+        if model_engine not in ["pass_through", "ground_truth", "xgboost", "lightgbm", "gpboost", "catboost", "multi_mra"]:
             auto_reduce_vars = True
             break
         
@@ -4284,7 +4297,7 @@ def _run_models(
         model_engine = model_entry.get("engine", model_name)
         
         # Tree-based models don't auto-reduce variables ever
-        if model_engine not in ["xgboost", "catboost", "lightgbm"]:
+        if model_engine not in ["xgboost", "catboost", "lightgbm", "gpboost"]:
             model_variables = best_variables
         else:
             model_variables = None
@@ -4689,7 +4702,7 @@ def _quick_shap(
         SHAP values array for the evaluation dataset.
     """
 
-    if smr.type not in ["xgboost", "catboost", "lightgbm"]:
+    if smr.type not in ["xgboost", "catboost", "lightgbm", "gpboost"]:
         # SHAP is not supported for this model type
         return
 

@@ -12,13 +12,14 @@ import matplotlib.pyplot as plt
 from openavmkit.utilities.modeling import (
     XGBoostModel,
     LightGBMModel,
+    GPBoostModel,
     CatBoostModel,
     TreeBasedCategoricalData
 )
 
 
 def get_full_model_shaps(
-    model: XGBoostModel | LightGBMModel | CatBoostModel,
+    model: XGBoostModel | LightGBMModel | GPBoostModel | CatBoostModel,
     X_train: pd.DataFrame,
     X_test: pd.DataFrame,
     X_sales: pd.DataFrame,
@@ -30,7 +31,7 @@ def get_full_model_shaps(
     
     Parameters
     ----------
-    model: XGBoostModel | LightGBMModel | CatBoostModel
+    model: XGBoostModel | LightGBMModel | GPBoostModel | CatBoostModel
         A trained prediction model
     X_train: pd.DataFrame
         2D array of independent variables' values from the training set
@@ -62,6 +63,10 @@ def get_full_model_shaps(
     elif isinstance(model, LightGBMModel):
         model_type = "lightgbm"
         approximate = False # approx. not supported for LightGBM
+        tree_explainer = _lightgbm_shap(model, X_train)
+    elif isinstance(model, GPBoostModel):
+        model_type = "gpboost"
+        approximate = False # approximate SHAP is not supported for LightGBM-derived models
         tree_explainer = _lightgbm_shap(model, X_train)
     elif isinstance(model, CatBoostModel):
         model_type = "catboost"
@@ -253,8 +258,8 @@ def _calc_shap(
         )
         return _xgboost_explain(X_to_explain)
 
-    # 2) LightGBM
-    if isinstance(model, LightGBMModel):
+    # 2) LightGBM / GPBoost
+    if isinstance(model, (LightGBMModel, GPBoostModel)):
         lgbm_explainer = _lightgbm_shap(
             model,
             X_train
@@ -294,7 +299,7 @@ def _xgboost_shap(
 
 
 def _lightgbm_shap(
-    model: LightGBMModel,
+    model: LightGBMModel | GPBoostModel,
     X_train: pd.DataFrame,
     background_size: int = 100,
     approximate: bool = True,
@@ -424,7 +429,7 @@ def _shap_explain(
     Parameters
     ----------
     model_type: str
-        "xgboost", "catboost", or "lightgbm"
+        "xgboost", "catboost", "lightgbm", or "gpboost"
     te : shap.TreeExplainer
         TreeExplainer instance built on the trained model and background data.
     X_to_explain : pd.DataFrame
@@ -493,7 +498,7 @@ def _shap_explain(
     
     # TreeExplainer stores a TreeEnsemble wrapper in te.model, and often keeps the
     # original model at te.model.original_model.
-    if model_type == "lightgbm":
+    if model_type in ["lightgbm", "gpboost"]:
         lgb_booster = getattr(getattr(te, "model", None), "original_model", None)
     
         # Apply categorical structure if provided
