@@ -124,7 +124,10 @@ def plot_scatterplot(
 
     # 5) Optional best-fit line
     if best_fit_line:
-        results = _simple_ols(df, x, y, intercept=False)
+        try:
+            results = _simple_ols(df, x, y, intercept=False)
+        except ValueError as e:
+            print(f"Error plotting \"{title}\", message = \"{e}\"")
         slope, intercept, r2 = results["slope"], results["intercept"], results["r2"]
         best_fit_label = f"Best fit line (r²={r2:.2f})"
         ax.plot(

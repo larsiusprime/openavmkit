@@ -1263,6 +1263,9 @@ def run_one_model(
                 f"Model entry for {model_name} not found, and there is no default entry!"
             )
     model_engine = entry.get("model", model_name)
+    if model_engine == "default":
+        # this isn't a real model, just a settings object to fill in for others
+        return None
     
     if "*" in model_engine:
         sales_chase = 0.01
