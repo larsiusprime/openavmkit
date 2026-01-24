@@ -2927,7 +2927,6 @@ def predict_gwr(
     gwr_model: GWRModel,
     timing: TimingData,
     verbose: bool,
-    diagnostic: bool = False,
     intercept: bool = True,
 ) -> SingleModelResults:
     """
@@ -2943,8 +2942,6 @@ def predict_gwr(
         TimingData object for recording performance metrics.
     verbose : bool
         If True, print verbose output.
-    diagnostic : bool, optional
-        If True, run in diagnostic mode. Defaults to False.
     intercept : bool, optional
         Whether the model includes an intercept. Defaults to True.
 
@@ -3023,8 +3020,6 @@ def predict_gwr(
     timing.stop("predict_univ")
 
     model_engine = "gwr"
-    if diagnostic:
-        model_engine = "diagnostic_gwr"
     
     model_name = ds.name
     
@@ -3079,8 +3074,7 @@ def run_gwr(
     outpath: str,
     save_params: bool = False,
     use_saved_params: bool = False,
-    verbose: bool = False,
-    diagnostic: bool = False,
+    verbose: bool = False
 ) -> SingleModelResults:
     """
     Run a GWR model by tuning its bandwidth and generating predictions.
@@ -3097,8 +3091,6 @@ def run_gwr(
         Whether to load saved parameters. Defaults to False.
     verbose : bool, optional
         If True, print verbose output. Defaults to False.
-    diagnostic : bool, optional
-        If True, run in diagnostic mode. Defaults to False.
 
     Returns
     -------
@@ -3134,8 +3126,6 @@ def run_gwr(
     timing.stop("setup")
 
     model_engine = "gwr"
-    if diagnostic:
-        model_engine = "diagnostic_gwr"  #TODO: Probably don't need this
     
     model_name = ds.name
 
