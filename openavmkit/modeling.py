@@ -3113,17 +3113,30 @@ def run_gwr(
 
     X_train = ds.X_train.values
 
-    # add a very small amount of random noise to every row in every column of X_train:
-    # this is to prevent singular matrix errors in the GWR
-    X_train += np.random.normal(0, 1e-6, X_train.shape)
+    # noise to reduce singularities
+    X_train = X_train + np.random.normal(0, 1e-6, X_train.shape)
 
-    # ensure that every dtype of every column in X_* is a float and not an object:
-    X_train = X_train.astype(np.float64)
-
-    # ensure that every dtype of y_train is a float and not an object:
-    y_train = y_train.astype(np.float64)
-
+    X_train = X_train.astype(np.float64, copy=False)
+    y_train = y_train.astype(np.float64, copy=False)
     timing.stop("setup")
+
+    # -----------------------------
+    # input validation / guard
+    # -----------------------------
+    n = int(y_train.shape[0])
+    k = int(X_train.shape[1])
+
+    # mgwr/spglm/spreg will raise if rows < cols; in practice rows <= cols is not workable anyway
+    if n <= k:
+        if verbose:
+            print(f"Skipping GWR: n_rows={n} <= n_features={k} (one-hot probably exploded).")
+        return None  # type: ignore[return-value]
+
+    # Also guard NaNs/Infs early (spreg will raise too, but this makes it clearer)
+    if not (np.isfinite(X_train).all() and np.isfinite(y_train).all()):
+        if verbose:
+            print("Skipping GWR: X_train or y_train contains NaN/inf.")
+        return None  # type: ignore[return-value]
 
     model_engine = "gwr"
     
@@ -3142,36 +3155,43 @@ def run_gwr(
                 print(f"--> using saved bandwidth: {gwr_bw:0.2f}")
 
     if gwr_bw < 0:
-        bw_max = len(y_train)
+        bw_max = n
 
         try:
             gwr_selector = Sel_BW(coords_train, y_train, X_train)
             gwr_bw = gwr_selector.search(bw_max=bw_max)
+
         except ValueError:
-            if len(y_train) < 100:
-                # Set n_jobs to 1 in case the # of cores exceeds the number of rows
-                gwr_selector = Sel_BW(
-                    coords_train, y_train, X_train, fixed=True, n_jobs=1
-                )
+            if n < 100:
+                gwr_selector = Sel_BW(coords_train, y_train, X_train, fixed=True, n_jobs=1)
                 gwr_bw = gwr_selector.search()
             else:
-                # Use default n_jobs
                 gwr_selector = Sel_BW(coords_train, y_train, X_train, fixed=True)
                 gwr_bw = gwr_selector.search()
+
+        except Exception as e:
+            # catch the spreg "more columns than rows" error (and only that)
+            msg = str(e).lower()
+            if "more columns than rows" in msg:
+                if verbose:
+                    print(f"Skipping GWR: {e}")
+                return None  # type: ignore[return-value]
+            raise
 
         if save_params:
             os.makedirs(outpath, exist_ok=True)
             json.dump(gwr_bw, open(f"{outpath}/{model_name}_bw.json", "w"))
+
         if verbose:
             print(f"--> optimal bandwidth = {gwr_bw:0.2f}")
 
     timing.stop("parameter_search")
 
     X_train = np.asarray(X_train, dtype=np.float64)
-
     gwr_model = GWRModel(coords_train, X_train, y_train, gwr_bw)
 
-    return predict_gwr(ds, gwr_model, timing, verbose, diagnostic)
+    return predict_gwr(ds, gwr_model, timing, verbose)
+
 
 
 def _fix_bool_objs(ds:DataSplit):
