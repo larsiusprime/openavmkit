@@ -1,5 +1,5 @@
 import warnings
-
+import math
 import polars as pl
 import statsmodels.api as sm
 import pandas as pd
@@ -714,7 +714,10 @@ def calc_correlations(
         score = strength * clarity * clarity
 
         min_score_idx = score.idxmin()
-        min_score = score[min_score_idx]
+        try:
+            min_score = score[min_score_idx]
+        except KeyError:
+            min_score = float('nan')
 
         data = {"corr_strength": strength, "corr_clarity": clarity, "corr_score": score}
         df_score = pd.DataFrame(data).reset_index().rename(columns={"index": "variable"})
@@ -1194,7 +1197,17 @@ def calc_p_values_recursive_drop(
     X = X.copy()
     X = sm.add_constant(X, has_constant='add')
     X = X.astype(np.float64)
-    model = sm.OLS(y, X).fit()
+    
+    model = None
+    try:
+        model = sm.OLS(y, X).fit()
+    except MissingDataError as e:
+        warnings.warn(f"OLS failed due to error: {e}")
+        return None
+    
+    if model is None:
+        return None
+    
     first_run = None
     while True:
         max_p_value = model.pvalues.max()
@@ -1283,7 +1296,7 @@ def calc_t_values_recursive_drop(
         i += 1
         try:
             t_values = calc_t_values(X, y)
-        except ValueError as e:
+        except (ValueError, MissingDataError) as e:
             t_values = pd.Series([float("nan")] * X.shape[1], index=X.columns)
         if first_run is None:
             first_run = t_values

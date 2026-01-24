@@ -1610,7 +1610,7 @@ def identify_outliers(
                 ]
                 put_at_end = ["address", location]
                 
-                cols = [col for col in cols if col not in put_at_front and col not in put_at_end]
+                cols = [col for col in cols if col not in put_at_front and col not in put_at_end and col in dfm and col is not None]
                 cols = put_at_front + cols + put_at_end
                 
                 dfm = dfm[cols]

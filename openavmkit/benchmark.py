@@ -1400,7 +1400,10 @@ def run_one_model(
     else:
         raise ValueError(f"Model {model_engine} not found!")
     t.stop("run")
-
+    
+    if results is None:
+        return None
+    
     if ds.vacant_only or ds.hedonic:
         # If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
         max_trim = _get_max_ratio_study_trim(settings, results.ds.model_group)
