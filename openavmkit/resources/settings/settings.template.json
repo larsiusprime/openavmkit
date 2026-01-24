@@ -339,6 +339,7 @@
 				"bldg_area_footprint_sqm",
 				"bldg_area_finished_sqft_inferred",
 				"bldg_area_finished_sqm_inferred",
+				"bldg_height_ft",
 				"assr_impr_value",
 				"assr_impr_value_impr_sqft",
 				"assr_impr_value_impr_sqm",
@@ -346,7 +347,8 @@
 				"true_impr_value_impr_sqft",
 				"true_impr_value_impr_sqm",
 				"renovation_num",
-				"days_to_reno"
+				"days_to_reno",
+				"total_population"
 			],
 			"+categorical": [
 				"bldg_fixtures",
