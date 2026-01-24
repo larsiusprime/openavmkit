@@ -859,3 +859,76 @@ def _to_gpboost_label(y) -> np.ndarray:
         )
 
     return arr
+
+
+GPBEffectsMode = Literal["auto", "gp_only", "re_only", "both_exact", "none"]
+
+@dataclass
+class GPBoostEffectsPolicy:
+    mode: GPBEffectsMode = "auto"
+    
+    # If both coords+group requested and n_train >= threshold, drop RE to allow Vecchia
+    vecchia_min_n: int = 800
+    
+    vecchia_neighbors: int = 30
+    
+    # Allow exact GP+RE only below this; above, it can be painfully slow
+    both_exact_max_n: int = 800
+    
+    # Emit a one-line print when auto makes a choice
+    verbose_choices: bool = True
+
+
+def choose_gpboost_effects(
+    n_train: int,
+    has_coords: bool,
+    has_groups: bool,
+    policy: GPBoostEffectsPolicy,
+):
+    """
+    Returns:
+      use_gp_coords (bool)
+      use_group_re  (bool)
+      gp_params_patch (dict)  # e.g. gp_approx, num_neighbors
+      choice_reason (str)
+    """
+    # Manual overrides first
+    if policy.mode == "none":
+        return False, False, {}, "mode=none"
+    if policy.mode == "gp_only":
+        return has_coords, False, {"gp_approx": "vecchia", "num_neighbors": policy.vecchia_neighbors}, "mode=gp_only"
+    if policy.mode == "re_only":
+        return False, has_groups, {}, "mode=re_only"
+    if policy.mode == "both_exact":
+        # Only meaningful if both requested
+        return has_coords, has_groups, {"gp_approx": "none"}, "mode=both_exact"
+
+    # AUTO mode
+    if not has_coords and not has_groups:
+        return False, False, {}, "auto: no effects requested"
+
+    # Only one kind requested
+    if has_coords and not has_groups:
+        # Spatial GP at scale: Vecchia
+        if n_train >= policy.vecchia_min_n:
+            return True, False, {"gp_approx": "vecchia", "num_neighbors": policy.vecchia_neighbors}, f"auto: GP Vecchia (n={n_train})"
+        else:
+            return True, False, {"gp_approx": "none"}, f"auto: GP exact (n={n_train})"
+
+    if has_groups and not has_coords:
+        return False, True, {}, f"auto: grouped RE only (n={n_train})"
+
+    # Both coords and groups requested
+    # Constraint: vecchia cannot be used with grouped RE.
+    if n_train >= policy.vecchia_min_n:
+        # Choose GP Vecchia, drop RE so we don't hang.
+        return True, False, {"gp_approx": "vecchia", "num_neighbors": policy.vecchia_neighbors}, (
+            f"auto: drop grouped RE to enable Vecchia GP (n={n_train})"
+        )
+
+    # Small enough to allow exact GP + RE
+    if n_train <= policy.both_exact_max_n:
+        return True, True, {"gp_approx": "none"}, f"auto: GP exact + RE (n={n_train})"
+
+    # Middle zone: safest is grouped RE only (fast, stable); coords can be modeled by features
+    return False, True, {}, f"auto: use RE only (n={n_train})"

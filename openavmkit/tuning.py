@@ -187,6 +187,7 @@ def _tune_gpboost(
     n_trials=50,
     n_splits=5,
     random_state=42,
+    policy=None,
     cat_vars=None,
     verbose=False,
     gp_coords=None,
@@ -256,6 +257,7 @@ def _tune_gpboost(
             params,
             n_splits=n_splits,
             random_state=random_state,
+            policy=policy,
             cat_vars=cat_vars,
             gp_coords=gp_coords,
             group_data=group_data,
@@ -647,12 +649,14 @@ def _lightgbm_rolling_origin_cv(X, y, params, n_splits=5, random_state=42, cat_v
 def _tlog(t0: float, msg: str):
     print(f"[GPB-CV {time.time() - t0:7.1f}s] {msg}")
 
+
 def _gpboost_cv(
     X,
     y,
     params,
     n_splits=5,
     random_state=42,
+    policy=None,
     cat_vars=None,
     gp_coords=None,
     group_data=None,
@@ -678,6 +682,9 @@ def _gpboost_cv(
     cv_strategy : {'kfold','timeseries'}
         If 'timeseries', uses TimeSeriesSplit (X must already be sorted by time).
     """
+    
+    DEBUG_DISABLE_GP = False
+    
     if cv_strategy not in {"kfold", "timeseries"}:
         raise ValueError(f"cv_strategy must be 'kfold' or 'timeseries', got {cv_strategy!r}")
 
@@ -689,6 +696,8 @@ def _gpboost_cv(
 
     mape_scores = []
     gp_model_params = gp_model_params or {}
+    gp_model_params.setdefault("gp_approx", "vecchia")
+    gp_model_params.setdefault("num_neighbors", 30)  # 20–60 typical
 
     # Require numpy arrays if effects are used
     if gp_coords is not None:
@@ -749,30 +758,58 @@ def _gpboost_cv(
         fold_params["verbosity"] = -1
 
         num_boost_round = fold_params.pop("num_iterations", 1000)
+        # debug
+        num_boost_round = min(num_boost_round, 200)
         
         _tlog(t0, f"Fold {fold_i}: GPModel init")
+        
+        if policy is None:
+            policy = GPBoostEffectsPolicy() # defaults afe auto
         
         # Build fold-local GPModel if effects are provided
         gp_model = None
         use_gp_val = False
-        if gp_coords is not None or group_data is not None:
+        
+        has_coords = gp_coords is not None
+        has_groups = group_data is not None
+        
+        use_coords, use_groups, gp_patch, reason = choose_gpboost_effects(
+            n_train=len(train_idx),
+            has_coords=has_coords,
+            has_groups=has_groups,
+            policy=policy,
+        )
+        
+        if policy.verbose_choices and (fold_i == 1):
+            _tlog(t0, f"Effects choice: {reason}")
+        
+        if use_coords or use_groups:
+            fold_gp_params = dict(gp_model_params)
+            fold_gp_params.update(gp_patch)
+            fold_gp_params.setdefault("likelihood", "gaussian")
+        
             gp_model = gpb.GPModel(
-                gp_coords=(gp_coords[train_idx] if gp_coords is not None else None),
-                group_data=(group_data[train_idx] if group_data is not None else None),
+                gp_coords=(gp_coords[train_idx] if (use_coords and gp_coords is not None) else None),
+                group_data=(group_data[train_idx] if (use_groups and group_data is not None) else None),
                 cluster_ids=(cluster_ids[train_idx] if cluster_ids is not None else None),
-                likelihood=gp_model_params.get("likelihood", "gaussian"),
-                **{k: v for k, v in gp_model_params.items() if k != "likelihood"},
+                likelihood=fold_gp_params.get("likelihood", "gaussian"),
+                **{k: v for k, v in fold_gp_params.items() if k != "likelihood"},
             )
+        
             gp_model.set_prediction_data(
-                gp_coords_pred=(gp_coords[val_idx] if gp_coords is not None else None),
-                group_data_pred=(group_data[val_idx] if group_data is not None else None),
+                gp_coords_pred=(gp_coords[val_idx] if (use_coords and gp_coords is not None) else None),
+                group_data_pred=(group_data[val_idx] if (use_groups and group_data is not None) else None),
                 cluster_ids_pred=(cluster_ids[val_idx] if cluster_ids is not None else None),
             )
             use_gp_val = True
+
         
         fold_params.setdefault("num_threads", os.cpu_count() or 4)
         _tlog(t0, f"Fold {fold_i}: train() num_boost_round={num_boost_round} num_threads={fold_params.get('num_threads')}")
         train_start = time.time()
+        
+        fold_params.setdefault("num_threads", -1)
+        fold_params.setdefault("n_jobs", -1)
         
         model = gpb.train(
             fold_params,

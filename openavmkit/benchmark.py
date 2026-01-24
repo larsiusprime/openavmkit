@@ -1415,7 +1415,10 @@ def run_one_model(
         gp_model_params = entry.get("gp_model_params", None)
         tune_gp_model = entry.get("tune_gp_model", False)
         cv_strategy = entry.get("cv_strategy", "kfold")
-
+        
+        raw = entry.get("policy") or {}
+        policy = GPBoostEffectsPolicy(**raw)
+        
         # Validate effects config: allow coords-only OR groups-only OR both.
         has_coords = coord_fields is not None
         has_groups = group_fields is not None and len(group_fields) > 0
@@ -1455,6 +1458,7 @@ def run_one_model(
 
         results = run_gpboost(
             ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose,
+            policy=policy,
             coord_fields=coord_fields,
             group_fields=group_fields,
             cluster_field=cluster_field,

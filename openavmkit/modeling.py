@@ -83,7 +83,8 @@ from openavmkit.utilities.modeling import (
     LandSLICEModel,
     greedy_forward_loocv,
     TreeBasedCategoricalData,
-    _to_gpboost_label
+    _to_gpboost_label,
+    GPBoostEffectsPolicy
 )
 from openavmkit.utilities.data import (
     clean_column_names,
@@ -3530,6 +3531,8 @@ def _gpboost_effect_arrays(
     coord_fields: tuple[str, str] = ("longitude", "latitude"),
     group_fields: Union[str, list[str], tuple[str, ...], None] = None,
     cluster_field: str | None = None,
+    use_coords: bool = True,
+    use_groups: bool = True
 ):
     x_field, y_field = coord_fields
 
@@ -3570,7 +3573,12 @@ def _gpboost_effect_arrays(
         if cluster_field not in df.columns:
             raise ValueError(f"GPBoost cluster ids: missing column '{cluster_field}' in df_source")
         cluster_ids = df.loc[X.index, cluster_field].astype(str).to_numpy()
-
+    
+    if not use_coords == False:
+        gp_coords = None
+    if not use_groups:
+        group_data = None
+    
     return gp_coords, group_data, cluster_ids
 
 
@@ -3640,6 +3648,7 @@ def run_gpboost(
     use_saved_params: bool = False,
     n_trials: int = 50,
     verbose: bool = False,
+    policy: GPBoostEffectsPolicy = None,
     coord_fields: tuple[str, str] = ("longitude", "latitude"),
     group_fields: Union[str, list[str], tuple[str, ...], None] = None,
     cluster_field: str | None = None,
@@ -3668,6 +3677,28 @@ def run_gpboost(
         cluster_field=cluster_field,
     )
     
+    has_coords = gp_coords_train is not None
+    has_groups = group_train is not None
+    
+    use_coords, use_groups, gp_patch, reason = choose_gpboost_effects(
+        n_train=len(ds.X_train),
+        has_coords=has_coords,
+        has_groups=has_groups,
+        policy=policy
+    )
+    
+    if policy.verbose_choices and verbose:
+        print(f"[GPBoost] Effects choice: {reason}")
+    
+    # Apply the choice:
+    if not use_coords:
+        gp_coords_train = None
+    if not use_groups:
+        group_train = None
+        
+    gp_model_params = dict(gp_model_params or {})
+    gp_model_params.update(gp_patch)
+    
     timing.stop("setup")
 
     timing.start("parameter_search")
@@ -3681,6 +3712,7 @@ def run_gpboost(
         use_saved_params,
         verbose,
         n_trials=n_trials,
+        policy=policy,
         gp_coords=gp_coords_train,
         group_data=group_train,
         cluster_ids=cluster_train,
@@ -3688,7 +3720,6 @@ def run_gpboost(
         tune_gp_model=tune_gp_model,
         cv_strategy=cv_strategy,
     )
-
 
     # Remove any problematic parameters that might cause errors with forced splits
     for param in ["forcedsplits_filename", "forced_splits_filename", "forced_splits_file", "forced_splits"]:
@@ -3740,6 +3771,8 @@ def run_gpboost(
             coord_fields=coord_fields,
             group_fields=group_fields,
             cluster_field=cluster_field,
+            use_coords=use_coords,
+            use_groups=use_groups
         )
         gp_model.set_prediction_data(
             gp_coords_pred=gp_coords_valid,
