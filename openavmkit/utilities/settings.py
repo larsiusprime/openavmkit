@@ -1205,7 +1205,7 @@ def _simulate_removed_buildings(
         idx_vacant = df.index
 
     fields_impr = get_fields_impr(settings, df)
-
+    
     # fill unknown values for categorical improvements:
     fields_impr_cat = fields_impr["categorical"]
     fields_impr_num = fields_impr["numeric"]
@@ -1222,7 +1222,7 @@ def _simulate_removed_buildings(
         df.loc[idx_vacant, field] = "UNKNOWN"
 
     for field in fields_impr_num:
-        df.loc[idx_vacant, field] = 0
+        df.loc[idx_vacant, field] = 0.0
 
     for field in fields_impr_bool:
         # Convert to boolean type first if needed
