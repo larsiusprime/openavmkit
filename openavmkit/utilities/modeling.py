@@ -531,15 +531,51 @@ class LightGBMModel:
 class GPBoostModel:
     """GPBoost Model
 
+    Stores both the trained Booster and the GPModel plus the metadata needed
+    to reproduce the same spatial / grouped random-effects behavior at predict time.
+
     Attributes
     ----------
-    booster: Booster
+    booster
         The trained GPBoost Booster model
-    cat_data: TreeBasedCategoricalData
+    cat_data : TreeBasedCategoricalData
+        Categorical encoding metadata
+    gp_model : gpb.GPModel
+        The fitted GPBoost GPModel object (can be None if trees-only mode)
+    coord_fields : tuple[str, str] | None
+        Names of longitude/latitude (or x/y) columns used to build gp_coords
+    group_fields : list[str] | None
+        One or more grouping columns used for grouped random effects
+    cluster_field : str | None
+        Optional column for independent spatial processes (markets/county/etc.)
+    gp_model_params : dict
+        Params used to construct GPModel (cov_function, gp_approx, num_neighbors, ...)
     """
-    def __init__(self, booster, cat_data):
+    def __init__(
+        self,
+        booster,
+        cat_data: "TreeBasedCategoricalData",
+        gp_model,
+        *,
+        coord_fields: Optional[Tuple[str, str]] = ("longitude", "latitude"),
+        group_fields: Optional[Union[str, Sequence[str]]] = None,
+        cluster_field: Optional[str] = None,
+        gp_model_params: Optional[Dict[str, Any]] = None,
+    ):
         self.booster = booster
         self.cat_data = cat_data
+        self.gp_model = gp_model
+
+        self.coord_fields = coord_fields
+        if group_fields is None:
+            self.group_fields = None
+        elif isinstance(group_fields, str):
+            self.group_fields = [group_fields]
+        else:
+            self.group_fields = list(group_fields)
+
+        self.cluster_field = cluster_field
+        self.gp_model_params = gp_model_params or {}
 
 
 class XGBoostModel:
@@ -799,3 +835,27 @@ def greedy_forward_loocv(
 
     # Return only non-const variables (const is forced-in when present)
     return GreedyResult([cols[i] for i in selected], best_cv_r2, best_train_r2)
+
+
+def _to_gpboost_label(y) -> np.ndarray:
+    """
+    Convert labels to a 1D numpy float array acceptable to GPBoost.
+    Raises if coercion introduces NaNs (so you catch bad data early).
+    """
+    if isinstance(y, (pd.Series, pd.Index)):
+        y_num = pd.to_numeric(y, errors="coerce")
+        arr = y_num.to_numpy(dtype=float)
+    else:
+        arr = np.asarray(y, dtype=float)
+
+    # Ensure 1D
+    arr = np.ravel(arr)
+
+    # Fail fast if coercion created NaNs
+    if np.isnan(arr).any():
+        raise ValueError(
+            "GPBoost label contains NaNs after numeric coercion. "
+            "Check dep_var conversion / missing values."
+        )
+
+    return arr

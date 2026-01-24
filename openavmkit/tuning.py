@@ -4,11 +4,14 @@ import gpboost as gpb
 import numpy as np
 import optuna
 import pandas as pd
+import time
 from catboost import Pool, CatBoostRegressor, cv
-
-from sklearn.model_selection import KFold
+import os
+from sklearn.model_selection import KFold, TimeSeriesSplit
 from sklearn.metrics import mean_absolute_percentage_error
 from optuna.integration import CatBoostPruningCallback
+
+from openavmkit.utilities.modeling import _to_gpboost_label
 
 #######################################
 # PRIVATE
@@ -186,6 +189,12 @@ def _tune_gpboost(
     random_state=42,
     cat_vars=None,
     verbose=False,
+    gp_coords=None,
+    group_data=None,
+    cluster_ids=None,
+    gp_model_params=None,
+    tune_gp_model=False,
+    cv_strategy: str = 'kfold',
 ):
     """Tunes GPBoost hyperparameters using Optuna and rolling-origin cross-validation.
 
@@ -230,9 +239,29 @@ def _tune_gpboost(
             "verbosity": -1,
         }
 
-        # Use rolling-origin cross-validation
-        mape = _gpboost_rolling_origin_cv(
-            X, y, params, n_splits=n_splits, random_state=random_state, cat_vars=cat_vars
+        # Optionally tune GP / random-effects hyperparameters as well
+        gp_params = dict(gp_model_params or {})
+        if tune_gp_model:
+            gp_params.setdefault('likelihood', 'gaussian')
+            gp_params['cov_function'] = trial.suggest_categorical('cov_function', ['matern', 'exponential', 'gaussian'])
+            gp_params['gp_approx'] = trial.suggest_categorical('gp_approx', ['none', 'vecchia'])
+            if gp_params['gp_approx'] == 'vecchia':
+                gp_params['num_neighbors'] = trial.suggest_int('num_neighbors', 10, 60)
+
+        # Cross-validation (must include GP model if gp_coords / group_data provided)
+        
+        mape = _gpboost_cv(
+            X,
+            y,
+            params,
+            n_splits=n_splits,
+            random_state=random_state,
+            cat_vars=cat_vars,
+            gp_coords=gp_coords,
+            group_data=group_data,
+            cluster_ids=cluster_ids,
+            gp_model_params=gp_params,
+            cv_strategy=cv_strategy,
         )
         if verbose:
             print(
@@ -245,9 +274,16 @@ def _tune_gpboost(
     study = optuna.create_study(
         direction="minimize", pruner=optuna.pruners.MedianPruner()
     )
+    
+    progress_cb = OptunaProgress(total_trials=n_trials, print_every=1)
+    
     study.optimize(
-        objective, n_trials=n_trials, n_jobs=-1, callbacks=[_plateau_callback]
-    )  # Use parallelism if available
+        objective,
+        n_trials=n_trials,
+        n_jobs=1,
+        callbacks=[_plateau_callback, progress_cb],
+        show_progress_bar=True,   # <-- add this
+    )
 
     if verbose:
         print(
@@ -608,11 +644,67 @@ def _lightgbm_rolling_origin_cv(X, y, params, n_splits=5, random_state=42, cat_v
     return np.mean(mape_scores)
 
 
-def _gpboost_rolling_origin_cv(X, y, params, n_splits=5, random_state=42, cat_vars=None):
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-    mape_scores = []
+def _tlog(t0: float, msg: str):
+    print(f"[GPB-CV {time.time() - t0:7.1f}s] {msg}")
 
-    for train_idx, val_idx in kf.split(X):
+def _gpboost_cv(
+    X,
+    y,
+    params,
+    n_splits=5,
+    random_state=42,
+    cat_vars=None,
+    gp_coords=None,
+    group_data=None,
+    cluster_ids=None,
+    gp_model_params=None,
+    cv_strategy: str = "kfold",
+):
+    """Cross-validation for GPBoost.
+
+    IMPORTANT: If gp_coords and/or group_data are provided, this CV trains and validates with a fold-local GPModel so
+    the tuned tree hyperparameters reflect the *combined* tree + GP/RE model (not just the LightGBM-like part).
+
+    Parameters
+    ----------
+    gp_coords : np.ndarray | None
+        Array of shape (n, 2) aligned to X row order.
+    group_data : np.ndarray | None
+        Array of shape (n,) or (n, k) aligned to X row order (supports multiple grouping factors).
+    cluster_ids : np.ndarray | None
+        Array of shape (n,) aligned to X row order, for independent GP realizations (e.g. multiple markets).
+    gp_model_params : dict | None
+        Extra kwargs passed to gpb.GPModel(...).
+    cv_strategy : {'kfold','timeseries'}
+        If 'timeseries', uses TimeSeriesSplit (X must already be sorted by time).
+    """
+    if cv_strategy not in {"kfold", "timeseries"}:
+        raise ValueError(f"cv_strategy must be 'kfold' or 'timeseries', got {cv_strategy!r}")
+
+    splitter = (
+        TimeSeriesSplit(n_splits=n_splits)
+        if cv_strategy == "timeseries"
+        else KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    )
+
+    mape_scores = []
+    gp_model_params = gp_model_params or {}
+
+    # Require numpy arrays if effects are used
+    if gp_coords is not None:
+        gp_coords = np.asarray(gp_coords)
+    if group_data is not None:
+        group_data = np.asarray(group_data)
+    if cluster_ids is not None:
+        cluster_ids = np.asarray(cluster_ids)
+    
+    t0 = time.time()
+    _tlog(t0, f"CV start | n={len(X)} | folds={n_splits} | "
+          f"gp={gp_coords is not None} group={group_data is not None} "
+          f"cluster={cluster_ids is not None}")
+
+    for fold_i, (train_idx, val_idx) in enumerate(splitter.split(X), start=1):
+        _tlog(t0, f"Fold {fold_i}/{n_splits}: slice data")
         if hasattr(X, "iloc"):
             X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
             y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
@@ -621,31 +713,133 @@ def _gpboost_rolling_origin_cv(X, y, params, n_splits=5, random_state=42, cat_va
             y_train, y_val = y[train_idx], y[val_idx]
 
         # Determine categorical features present in this fold
-        cat_feats = [c for c in (cat_vars or []) if hasattr(X_train, "columns") and c in X_train.columns]
+        cat_feats = [
+            c for c in (cat_vars or [])
+            if hasattr(X_train, "columns") and c in X_train.columns
+        ]
+        
+        # Labels must be numeric arrays
+        y_train_arr = _to_gpboost_label(y_train)
+        y_val_arr   = _to_gpboost_label(y_val)
+        
+        _tlog(t0, f"Fold {fold_i}: build Dataset objects (train={len(train_idx)} val={len(val_idx)})")
+        
+        # Build datasets using fold-specific categorical list
+        train_data = gpb.Dataset(
+            X_train,
+            y_train_arr,
+            categorical_feature=cat_feats,
+            free_raw_data=False,
+        )
+        
+        # IMPORTANT: reference=train_data reduces overrides & ensures consistent metadata
+        val_data = gpb.Dataset(
+            X_val,
+            y_val_arr,
+            categorical_feature=cat_feats,
+            reference=train_data,
+            free_raw_data=False,
+        )
+        
+        _tlog(t0, f"Fold {fold_i}: Dataset.construct()")
+        train_data.construct()
+        val_data.construct()
 
-        train_data = gpb.Dataset(X_train, label=y_train, categorical_feature=cat_feats)
-        val_data = gpb.Dataset(X_val, label=y_val, categorical_feature=cat_feats, reference=train_data)
-
-        # Work on a fold-local copy to avoid cross-fold mutation
         fold_params = dict(params)
         fold_params["verbosity"] = -1
 
-        num_boost_round = 1000
-        if "num_iterations" in fold_params:
-            num_boost_round = fold_params.pop("num_iterations")
-
+        num_boost_round = fold_params.pop("num_iterations", 1000)
+        
+        _tlog(t0, f"Fold {fold_i}: GPModel init")
+        
+        # Build fold-local GPModel if effects are provided
+        gp_model = None
+        use_gp_val = False
+        if gp_coords is not None or group_data is not None:
+            gp_model = gpb.GPModel(
+                gp_coords=(gp_coords[train_idx] if gp_coords is not None else None),
+                group_data=(group_data[train_idx] if group_data is not None else None),
+                cluster_ids=(cluster_ids[train_idx] if cluster_ids is not None else None),
+                likelihood=gp_model_params.get("likelihood", "gaussian"),
+                **{k: v for k, v in gp_model_params.items() if k != "likelihood"},
+            )
+            gp_model.set_prediction_data(
+                gp_coords_pred=(gp_coords[val_idx] if gp_coords is not None else None),
+                group_data_pred=(group_data[val_idx] if group_data is not None else None),
+                cluster_ids_pred=(cluster_ids[val_idx] if cluster_ids is not None else None),
+            )
+            use_gp_val = True
+        
+        fold_params.setdefault("num_threads", os.cpu_count() or 4)
+        _tlog(t0, f"Fold {fold_i}: train() num_boost_round={num_boost_round} num_threads={fold_params.get('num_threads')}")
+        train_start = time.time()
+        
         model = gpb.train(
             fold_params,
             train_data,
             num_boost_round=num_boost_round,
+            gp_model=gp_model,
+            use_gp_model_for_validation=use_gp_val,
             valid_sets=[val_data],
-            callbacks=[
-                gpb.early_stopping(stopping_rounds=5, verbose=False),
-                gpb.log_evaluation(period=0),
-            ],
+            early_stopping_rounds=5,
+            verbose_eval=1,
         )
+        
+        _tlog(t0, f"Fold {fold_i}: train finished in {time.time() - train_start:.1f}s")
+        
+        _tlog(t0, f"Fold {fold_i}: train done (best_iter={getattr(model, 'best_iteration', None)})")
 
-        y_pred = model.predict(X_val, num_iteration=model.best_iteration)
+        # Predict with effects if they exist
+        pred_kwargs = {"num_iteration": model.best_iteration}
+        if gp_coords is not None:
+            pred_kwargs["gp_coords_pred"] = gp_coords[val_idx]
+        if group_data is not None:
+            pred_kwargs["group_data_pred"] = group_data[val_idx]
+        if cluster_ids is not None:
+            pred_kwargs["cluster_ids_pred"] = cluster_ids[val_idx]
+
+        y_pred = model.predict(X_val, **pred_kwargs)
         mape_scores.append(mean_absolute_percentage_error(y_val, y_pred))
 
-    return np.mean(mape_scores)
+    return float(np.mean(mape_scores))
+
+
+class OptunaProgress:
+    def __init__(self, total_trials: int, print_every: int = 1):
+        self.total = total_trials
+        self.print_every = print_every
+        self.t0 = None
+        self.last_print_n = 0
+
+    def __call__(self, study, trial):
+        # trial is finished (COMPLETE/PRUNED/FAIL) when callback runs
+        if self.t0 is None:
+            self.t0 = time.time()
+
+        n_done = len(study.trials)
+        # Print only every N finished trials
+        if n_done - self.last_print_n < self.print_every:
+            return
+        self.last_print_n = n_done
+
+        elapsed = time.time() - self.t0
+        # Count only completed trials for "rate" stability
+        completed = [t for t in study.trials if t.value is not None]
+        n_complete = len(completed)
+
+        if n_complete == 0:
+            rate = None
+        else:
+            rate = elapsed / n_complete  # sec per completed trial
+
+        remaining = self.total - n_done
+        if rate is None or remaining <= 0:
+            eta_str = "ETA: ?"
+        else:
+            eta = remaining * rate
+            eta_str = f"ETA: {int(eta//60)}m {int(eta%60)}s"
+
+        best = study.best_value if study.best_trial is not None else None
+        best_str = f"best={best:.5f}" if best is not None else "best=?"
+
+        print(f"[Optuna] {n_done}/{self.total} trials done | {best_str} | {eta_str}")

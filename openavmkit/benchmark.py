@@ -1162,7 +1162,7 @@ def get_data_split_for(
         _ind_vars = ind_vars
     else:
         _ind_vars = ind_vars
-        if model_engine == "gwr" or model_engine == "kernel":
+        if model_engine == "gwr" or model_engine == "kernel" or model_engine == "gpboost":
             exclude_vars = ["latitude", "longitude", "latitude_norm", "longitude_norm"]
             _ind_vars = [var for var in _ind_vars if var not in exclude_vars]
 
@@ -1398,8 +1398,69 @@ def run_one_model(
             ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
     elif model_engine == "gpboost":
+        # GPBoost supports:
+        # - multiple grouped random effects (group_fields)
+        # - optional cluster_field (independent spatial surfaces per market)
+        # - gp_model_params (vecchia/neighbors/cov function etc.)
+        # - tune_gp_model and cv_strategy
+
+        # Treat existing `.locations` config as grouped RE fields
+        group_fields = location_fields if location_fields else None
+
+        # Optional per-model overrides (safe defaults if not present)
+        coord_fields = entry.get("coord_fields", ("longitude", "latitude"))
+        coord_fields = tuple(coord_fields) if coord_fields is not None else None
+
+        cluster_field = entry.get("cluster_field", None)
+        gp_model_params = entry.get("gp_model_params", None)
+        tune_gp_model = entry.get("tune_gp_model", False)
+        cv_strategy = entry.get("cv_strategy", "kfold")
+
+        # Validate effects config: allow coords-only OR groups-only OR both.
+        has_coords = coord_fields is not None
+        has_groups = group_fields is not None and len(group_fields) > 0
+
+        if not has_coords and not has_groups:
+            raise ValueError(
+                "GPBoost needs at least one random-effects structure: "
+                "either coord_fields (spatial GP) or locations/group_fields (grouped RE). "
+                "Set `coord_fields: [\"longitude\", \"latitude\"]` and/or "
+                "`locations: [\"neighborhood_id\", ...]` in this model entry."
+            )
+
+        if has_coords:
+            if len(coord_fields) != 2:
+                raise ValueError(
+                    f"GPBoost `coord_fields` must have exactly 2 fields (x,y). Got: {coord_fields}"
+                )
+            missing = [c for c in coord_fields if c not in ds.df_sales.columns]
+            if missing:
+                raise ValueError(
+                    f"GPBoost coord_fields {missing} not found in df_sales columns. "
+                    "Make sure they exist in your sales/universe data."
+                )
+
+        if has_groups:
+            missing = [g for g in group_fields if g not in ds.df_sales.columns]
+            if missing:
+                raise ValueError(
+                    f"GPBoost group_fields {missing} not found in df_sales columns. "
+                    "Make sure your `locations` fields exist in your sales/universe data."
+                )
+
+        if cluster_field is not None and cluster_field not in ds.df_sales.columns:
+            raise ValueError(
+                f"GPBoost cluster_field '{cluster_field}' not found in df_sales columns."
+            )
+
         results = run_gpboost(
-            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose,
+            coord_fields=coord_fields,
+            group_fields=group_fields,
+            cluster_field=cluster_field,
+            gp_model_params=gp_model_params,
+            tune_gp_model=tune_gp_model,
+            cv_strategy=cv_strategy,
         )
     elif model_engine == "catboost":
         results = run_catboost(

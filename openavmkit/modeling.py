@@ -82,7 +82,8 @@ from openavmkit.utilities.modeling import (
     SpatialLagModel,
     LandSLICEModel,
     greedy_forward_loocv,
-    TreeBasedCategoricalData
+    TreeBasedCategoricalData,
+    _to_gpboost_label
 )
 from openavmkit.utilities.data import (
     clean_column_names,
@@ -3521,63 +3522,111 @@ def run_lightgbm(
     return predict_lightgbm(ds, model, timing, verbose)
 
 
-def predict_gpboost(
-    ds: DataSplit, model: GPBoostModel, timing: TimingData, verbose: bool = False
-) -> SingleModelResults:
-    """
-    Generate predictions using a GPBoost model.
+def _gpboost_effect_arrays(
+    ds: DataSplit,
+    X: pd.DataFrame,
+    *,
+    df_source: pd.DataFrame | None = None,
+    coord_fields: tuple[str, str] = ("longitude", "latitude"),
+    group_fields: Union[str, list[str], tuple[str, ...], None] = None,
+    cluster_field: str | None = None,
+):
+    x_field, y_field = coord_fields
 
-    Parameters
-    ----------
-    ds : DataSplit
-        DataSplit object containing train/test/universe splits.
-    model : GPBoostModel
-        Trained GPBoost model.
-    timing : TimingData
-        TimingData object for recording performance metrics.
-    verbose : bool, optional
-        If True, print verbose output. Defaults to False.
+    # NEW: if df_source is supplied, trust it.
+    if df_source is not None:
+        df = df_source
+    else:
+        # OLD behavior (keep as fallback, but should rarely be used now)
+        candidates = [ds.df_train, ds.df_test, ds.df_sales, ds.df_universe]
+        df = next((d for d in candidates if d is not None and d.index.equals(X.index)), None)
+        if df is None:
+            df = ds.df_universe if ds.df_universe is not None else ds.df_sales
 
-    Returns
-    -------
-    SingleModelResults
-        Prediction results from the GPBoost model.
-    """
+    # Coordinates
+    gp_coords = None
+    if x_field in df.columns and y_field in df.columns:
+        gp_coords = df.loc[X.index, [x_field, y_field]].to_numpy(dtype=float)
+
+    # Grouped RE
+    group_data = None
+    if group_fields is not None:
+        group_cols = [group_fields] if isinstance(group_fields, str) else list(group_fields)
+        missing_groups = [c for c in group_cols if c not in df.columns]
+        if missing_groups:
+            raise ValueError(f"GPBoost grouped RE: missing columns in df_source: {missing_groups}")
+
+        grp = df.loc[X.index, group_cols].copy()
+        for c in group_cols:
+            grp[c] = grp[c].astype(str)
+
+        group_data = grp.to_numpy()
+        if group_data.shape[1] == 1:
+            group_data = group_data[:, 0]
+
+    # Cluster ids
+    cluster_ids = None
+    if cluster_field is not None:
+        if cluster_field not in df.columns:
+            raise ValueError(f"GPBoost cluster ids: missing column '{cluster_field}' in df_source")
+        cluster_ids = df.loc[X.index, cluster_field].astype(str).to_numpy()
+
+    return gp_coords, group_data, cluster_ids
+
+
+def predict_gpboost(ds: DataSplit, model: GPBoostModel, timing: TimingData, verbose: bool = False) -> SingleModelResults:
     booster = model.booster
 
+    gp_model = model.gp_model
+    coord_fields = getattr(model, "coord_fields", ("longitude", "latitude"))
+    group_fields = getattr(model, "group_fields", getattr(model, "location_field", None))
+    cluster_field = getattr(model, "cluster_field", None)
+    
+    best_iter = getattr(booster, "best_iteration", None)
+    if best_iter is None:
+        best_iter = getattr(booster, "best_iteration_", None)
+    base_kwargs = {} if best_iter is None else {"num_iteration": best_iter}
+
+    def _pred(X_split: pd.DataFrame, df_source: pd.DataFrame):
+        if gp_model is None:
+            return safe_predict(booster.predict, X_split, base_kwargs)
+    
+        gp_coords, group_data, cluster_ids = _gpboost_effect_arrays(
+            ds,
+            X_split,
+            df_source=df_source,
+            coord_fields=coord_fields,
+            group_fields=group_fields,
+            cluster_field=cluster_field,
+        )
+        kwargs = dict(base_kwargs)
+        if gp_coords is not None:
+            kwargs["gp_coords_pred"] = gp_coords
+        if group_data is not None:
+            kwargs["group_data_pred"] = group_data
+        if cluster_ids is not None:
+            kwargs["cluster_ids_pred"] = cluster_ids
+        return safe_predict(booster.predict, X_split, kwargs)
+    
     timing.start("predict_test")
-    y_pred_test = safe_predict(
-        booster.predict, ds.X_test, {"num_iteration": booster.best_iteration}
-    )
+    y_pred_test  = _pred(ds.X_test,  ds.df_test)
     timing.stop("predict_test")
 
     timing.start("predict_sales")
-    y_pred_sales = safe_predict(
-        booster.predict, ds.X_sales, {"num_iteration": booster.best_iteration}
-    )
+    y_pred_sales = _pred(ds.X_sales, ds.df_sales)
     timing.stop("predict_sales")
 
     timing.start("predict_univ")
-    y_pred_univ = safe_predict(
-        booster.predict, ds.X_univ, {"num_iteration": booster.best_iteration}
-    )
+    y_pred_univ  = _pred(ds.X_univ, ds.df_universe)
     timing.stop("predict_univ")
 
     timing.stop("total")
 
-    model_name = ds.name
-    model_engine = "gpboost"
-
     results = SingleModelResults(
-        ds,
-        "prediction",
-        "he_id",
-        model_name,
-        model_engine,
+        ds, "prediction", "he_id",
+        ds.name, "gpboost",
         model,
-        y_pred_test,
-        y_pred_sales,
-        y_pred_univ,
+        y_pred_test, y_pred_sales, y_pred_univ,
         timing,
         verbose=verbose,
     )
@@ -3591,33 +3640,15 @@ def run_gpboost(
     use_saved_params: bool = False,
     n_trials: int = 50,
     verbose: bool = False,
+    coord_fields: tuple[str, str] = ("longitude", "latitude"),
+    group_fields: Union[str, list[str], tuple[str, ...], None] = None,
+    cluster_field: str | None = None,
+    gp_model_params: dict | None = None,
+    tune_gp_model: bool = False,
+    cv_strategy: str = "kfold",
 ) -> SingleModelResults:
-    """
-    Run a GPBoost model by tuning parameters, training, and predicting.
-
-    Parameters
-    ----------
-    ds : DataSplit
-        DataSplit object.
-    outpath : str
-        Output path for saving parameters.
-    save_params : bool, optional
-        Whether to save tuned parameters. Defaults to False.
-    use_saved_params : bool, optional
-        Whether to load saved parameters. Defaults to False.
-    n_trials : int, optional
-        How many trials do run during parameter search. Defaults to 50.
-    verbose : bool, optional
-        If True, print verbose output. Defaults to False.
-
-    Returns
-    -------
-    SingleModelResults
-        Prediction results from the GPBoost model.
-    """
 
     timing = TimingData()
-
     timing.start("total")
 
     timing.start("setup")
@@ -3626,7 +3657,17 @@ def run_gpboost(
 
     # Fix for object-typed boolean columns (especially 'within_*' fields)
     ds = _fix_bool_objs(ds)
-
+    
+    # Build effect arrays aligned to training rows
+    gp_coords_train, group_train, cluster_train = _gpboost_effect_arrays(
+        ds,
+        ds.X_train,
+        df_source=ds.df_train,
+        coord_fields=coord_fields,
+        group_fields=group_fields,
+        cluster_field=cluster_field,
+    )
+    
     timing.stop("setup")
 
     timing.start("parameter_search")
@@ -3639,37 +3680,75 @@ def run_gpboost(
         save_params,
         use_saved_params,
         verbose,
-        n_trials=n_trials
+        n_trials=n_trials,
+        gp_coords=gp_coords_train,
+        group_data=group_train,
+        cluster_ids=cluster_train,
+        gp_model_params=gp_model_params,
+        tune_gp_model=tune_gp_model,
+        cv_strategy=cv_strategy,
     )
 
+
     # Remove any problematic parameters that might cause errors with forced splits
-    problematic_params = [
-        "forcedsplits_filename",
-        "forced_splits_filename",
-        "forced_splits_file",
-        "forced_splits",
-    ]
-    for param in problematic_params:
-        if param in params:
-            if verbose:
-                print(
-                    f"Removing problematic parameter '{param}' from GPBoost parameters"
-                )
-            params.pop(param, None)
+    for param in ["forcedsplits_filename", "forced_splits_filename", "forced_splits_file", "forced_splits"]:
+        params.pop(param, None)
 
     timing.stop("parameter_search")
 
     timing.start("train")
     cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
-    cat_data = TreeBasedCategoricalData.from_training_data(
-        ds.X_train,
-        categorical_cols=cat_vars,
-    )
-    gpb_train = gpb.Dataset(ds.X_train, ds.y_train, categorical_feature=cat_vars)
-    gpb_test = gpb.Dataset(
-        ds.X_test, ds.y_test, categorical_feature=cat_vars, reference=gpb_train
-    )
+    cat_data = TreeBasedCategoricalData.from_training_data(ds.X_train, categorical_cols=cat_vars)
 
+    y_train = _to_gpboost_label(ds.y_train)
+    gpb_train = gpb.Dataset(
+        ds.X_train,
+        y_train,
+        categorical_feature=cat_vars,
+        free_raw_data=False,
+    )
+    
+    if len(ds.y_test) > 0:
+        y_test = _to_gpboost_label(ds.y_test)
+        gpb_test = gpb.Dataset(
+            ds.X_test,
+            y_test,
+            categorical_feature=cat_vars,
+            reference=gpb_train,
+            free_raw_data=False,
+        )
+    else:
+        gpb_test = None
+
+    gp_model = None
+    use_gp_val = False
+    if gp_coords_train is not None or group_train is not None:
+        gp_model_params = gp_model_params or {}
+        gp_model = gpb.GPModel(
+            gp_coords=gp_coords_train,
+            group_data=group_train,
+            cluster_ids=cluster_train,
+            likelihood=gp_model_params.get("likelihood", "gaussian"),
+            **{k: v for k, v in gp_model_params.items() if k != "likelihood"},
+        )
+
+        # Provide validation prediction structures so early stopping uses GP + RE on the valid set
+        gp_coords_valid, group_valid, cluster_valid = _gpboost_effect_arrays(
+            ds,
+            ds.X_test,
+            df_source=ds.df_test,
+            coord_fields=coord_fields,
+            group_fields=group_fields,
+            cluster_field=cluster_field,
+        )
+        gp_model.set_prediction_data(
+            gp_coords_pred=gp_coords_valid,
+            group_data_pred=group_valid,
+            cluster_ids_pred=cluster_valid,
+        )
+        use_gp_val = True
+    
+    # Base defaults
     params.setdefault("objective", "regression_l2")
     params.setdefault("metric", "mape")
     params.setdefault("boosting_type", "gbdt")
@@ -3679,21 +3758,42 @@ def run_gpboost(
     if "num_iterations" in params:
         num_boost_round = params.pop("num_iterations")
 
-    booster = gpb.train(
-        params,
-        gpb_train,
+    train_kwargs = dict(
+        params=params,
+        train_set=gpb_train,
         num_boost_round=num_boost_round,
-        valid_sets=[gpb_test],
-        callbacks=[
-            gpb.early_stopping(stopping_rounds=5, verbose=False),
-            gpb.log_evaluation(period=0),
-        ],
+        gp_model=gp_model,
+        use_gp_model_for_validation=use_gp_val,
+        verbose_eval=False,
     )
+    
+    if gpb_test is not None:
+        train_kwargs["valid_sets"] = [gpb_test]
+        train_kwargs["early_stopping_rounds"] = 5
+    
+    booster = gpb.train(**train_kwargs)
     timing.stop("train")
 
-    model = GPBoostModel(booster=booster, cat_data=cat_data)
+    # Store gp_model + effect field config for prediction
+    model = GPBoostModel(
+        booster=booster,
+        cat_data=cat_data,
+        gp_model=gp_model,
+        coord_fields=coord_fields,
+        group_fields=group_fields,
+        cluster_field=cluster_field,
+        gp_model_params=gp_model_params
+    )
+    # Attach effect configuration for prediction (works even if GPBoostModel is a simple class)
+    try:
+        model.coord_fields = coord_fields
+        model.group_fields = group_fields
+        model.cluster_field = cluster_field
+    except Exception:
+        pass
 
     return predict_gpboost(ds, model, timing, verbose)
+
 
 
 def predict_catboost(
