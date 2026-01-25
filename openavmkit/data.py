@@ -2811,18 +2811,6 @@ def _basic_geo_enrichment(
     
     if verbose:
         print(f"Performing basic geometric enrichment...")
-    gdf_out = get_cached_df(gdf_in, "geom/basic", "key")
-    if gdf_out is not None:
-        if verbose:
-            print("--> found cached data...")
-
-        parcels_with_no_land = gdf_out[f"land_area_{unit}"].isna().sum()
-        if parcels_with_no_land > 0:
-            raise ValueError(
-                f"Found '{parcels_with_no_land}' parcels with no land area in cached data. This should not be able to happen as they should be backfilled with GIS land area. Please check your data."
-            )
-
-        return gdf_out
 
     gdf = gdf_in.copy()
 
