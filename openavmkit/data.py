@@ -4375,7 +4375,7 @@ def _perform_canonical_split(
 
     # This is how many test sales we need
     test_set_count = np.ceil(len(df) * test_share).astype(int)
-    if len(df) <= 30:
+    if len(df_v) <= 15:
         test_set_count_v = np.ceil(len(df_v) * test_share).astype(int)
     else:
         test_set_count_v = max(15, np.ceil(len(df_v) * test_share).astype(int))
