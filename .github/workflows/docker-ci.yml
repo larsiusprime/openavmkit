@@ -141,5 +141,5 @@ jobs:
           docker run --rm \
             --tmpfs /tmp:rw,noexec,nosuid,size=2g \
             -e RUN=test \
-            -e LOCALITY=us-nc-guilford \
+            -e LOCALITY=us-va-petersburgcity \
             "${{ env.SAFE_RUN_TAG }}"
