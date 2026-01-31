@@ -3705,7 +3705,7 @@ def load_dataframe(
                         df[col] = df[col].astype(str).str.lower()
                         
                         # check for and clear various known problematic strings
-                        for badvalue in [' ', '<na>', 'none', 'null', 'na']:
+                        for badvalue in ['', ' ', '<na>', 'none', 'null', 'na']:
                             df.loc[df[col].eq(badvalue), col] = None
                         
                         warnings.warn(f"Column {col} had values that could not be cast to float, suppressed them to null")

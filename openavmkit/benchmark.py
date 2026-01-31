@@ -4695,7 +4695,7 @@ def _quick_shap(
         SHAP values array for the evaluation dataset.
     """
 
-    if smr.type not in ["xgboost", "catboost", "lightgbm"]:
+    if smr.model_engine not in ["xgboost", "catboost", "lightgbm"]:
         # SHAP is not supported for this model type
         return
 

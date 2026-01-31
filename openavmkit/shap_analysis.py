@@ -247,19 +247,17 @@ def _calc_shap(
     
     # 1) XGBoost
     if isinstance(model, XGBoostModel):
-        xgb_explainer = _xgboost_shap(
+        return _xgboost_shap(
             model,
             X_train
         )
-        return _xgboost_explain(X_to_explain)
 
     # 2) LightGBM
     if isinstance(model, LightGBMModel):
-        lgbm_explainer = _lightgbm_shap(
+        return _lightgbm_shap(
             model,
             X_train
         )
-        return _lightgbm_explain(X_to_explain)
 
     # 3) CatBoost
     if isinstance(model, CatBoostModel):
