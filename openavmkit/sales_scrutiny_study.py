@@ -138,7 +138,7 @@ class SalesScrutinyStudy:
 
             other_fields = [f for f in other_fields if f in df.columns]
 
-            df_cluster_fields = df[["key_sale"] + other_fields]
+            df_cluster_fields = df[["key", "key_sale"] + other_fields]
             df = _calc_sales_scrutiny(df, sale_field_per)
             df = df.merge(df_cluster_fields, on="key_sale", how="left")
 
@@ -232,7 +232,7 @@ class SalesScrutinyStudy:
         os.makedirs(f"{path}", exist_ok=True)
 
         root_path = path
-
+        
         if is_vacant:
             df = self.df_vacant
             path = f"{path}/vacant"
@@ -291,7 +291,7 @@ class SalesScrutinyStudy:
                 "format": {"bold": True, "font_color": "red"},
             },
         }
-
+        
         write_to_excel(
             df,
             f"{path}.xlsx",
@@ -340,7 +340,7 @@ def _calc_sales_scrutiny(df_in: pd.DataFrame, sales_field: str):
     df = df_in.copy()
 
     df = _apply_he_stats(df, "ss_id", sales_field)
-
+    
     if "median" not in df:
         # If the median is not present, then we can't do anything
         # This is usually because there's nothing to analyze
@@ -385,7 +385,7 @@ def _calc_sales_scrutiny(df_in: pd.DataFrame, sales_field: str):
 
     # drop low_thresh/high_thresh:
     df = df.drop(columns=["low_thresh", "high_thresh"])
-
+    
     the_cols = [
         "key_sale",
         "ss_id",
@@ -679,6 +679,7 @@ def run_heuristics(
 
                 df = df.rename(
                     columns={
+                        "key": "Primary key",
                         "key_sale": "Sale key",
                         "sale_date": "Sale date",
                         "sale_price": "Sale price",
@@ -896,6 +897,10 @@ def _get_ss_renames():
 
 def _prettify(df: pd.DataFrame, settings: dict) -> pd.DataFrame:
     df = df.rename(columns=_get_ss_renames())
+    renames = _get_ss_renames()
+    df = df.rename(columns=renames)
+    # rearrange columns so primary key comes first
+    df = df[["Primary key"] + [col for col in df.columns.values if col != "Primary key"]]
     df = _apply_dd_to_df_cols(df, settings)
     return df
 
@@ -945,9 +950,9 @@ def _apply_he_stats(df: pd.DataFrame, cluster_id: str, sales_field: str):
     base_sales_field = _get_base_sales_field(sales_field)
 
     if base_sales_field in df and base_sales_field != sales_field:
-        df = df[["key_sale", "ss_id", sales_field, base_sales_field]].copy()
+        df = df[["key", "key_sale", "ss_id", sales_field, base_sales_field]].copy()
     else:
-        df = df[["key_sale", "ss_id", sales_field]].copy()
+        df = df[["key", "key_sale", "ss_id", sales_field]].copy()
 
     if len(df) > 0:
         df = df.merge(df_cluster, on="ss_id", how="left")
