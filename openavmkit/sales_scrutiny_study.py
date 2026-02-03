@@ -899,8 +899,9 @@ def _prettify(df: pd.DataFrame, settings: dict) -> pd.DataFrame:
     df = df.rename(columns=_get_ss_renames())
     renames = _get_ss_renames()
     df = df.rename(columns=renames)
-    # rearrange columns so primary key comes first
-    df = df[["Primary key"] + [col for col in df.columns.values if col != "Primary key"]]
+    if "Primary key" in df.columns:
+        # rearrange columns so primary key comes first
+        df = df[["Primary key"] + [col for col in df.columns.values if col != "Primary key"]]
     df = _apply_dd_to_df_cols(df, settings)
     return df
 
