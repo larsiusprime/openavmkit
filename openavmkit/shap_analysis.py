@@ -116,10 +116,14 @@ def plot_full_beeswarm(
     if save_kwargs is None:
         save_kwargs = {"dpi": 300, "bbox_inches": "tight"}
     
+    feature_names = explanation.feature_names
+    if not feature_names:
+        feature_names = []
+    
     # Wrap feature names
     wrapped_names = [
         "\n".join(textwrap.wrap(fn, width=wrap_width))
-        for fn in explanation.feature_names
+        for fn in feature_names
     ]
     expl_wrapped = shap.Explanation(
         values=explanation.values,
