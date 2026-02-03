@@ -434,10 +434,10 @@ def _fill_unknown_values(df, settings: dict):
     # After all fills, clean up
 
     # Partial fills on true/false are converted to a string in processing to avoid errors. Convert them back to booleans
-    false_fills = settings.get("data",{}).get("process",{}).get("fill",{}).get("false", [])
+    false_fills = settings.get("data", {}).get("process", {}).get("fill", {}).get("false", [])
     for fill_col in false_fills:
         if fill_col in df.columns:
-            df[fill_col] = df[fill_col].astype(bool)
+            df[fill_col] = df[fill_col].astype(str).str.lower().eq("true")
 
 
     valuation_date = get_valuation_date(settings)
@@ -489,8 +489,6 @@ def _fill_unknown_values(df, settings: dict):
 
     if bool_fields is not None:
         for field in bool_fields:
-            if field in df:
-                # First convert to boolean type explicitly, then fill NA values
-                df[field] = pd.Series(df[field], dtype="boolean")
-                df[field] = df[field].fillna(False).astype(bool)
+            if field in df.columns:
+                df[field] = df[field].fillna(False).astype(str).str.lower().eq("true")
     return df
