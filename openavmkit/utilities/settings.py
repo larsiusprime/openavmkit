@@ -1128,7 +1128,7 @@ def _get_sales(
     """
     df = df_in.copy().reset_index(drop=True)
 
-    if "vacant_sale" in df:
+    if "vacant_sale" in df.columns:
         # check for vacant sales:
         idx_vacant_sale = df["vacant_sale"].eq(True)
 
@@ -1137,34 +1137,30 @@ def _get_sales(
         df = _simulate_removed_buildings(df, settings, idx_vacant_sale)
 
         # TODO: smell
-        if "is_vacant" not in df and df_univ is not None:
+        if "is_vacant" not in df.columns and df_univ is not None:
             df = df.merge(df_univ[["key", "is_vacant"]], on="key", how="left")
 
-        if "model_group" not in df and df_univ is not None:
+        if "model_group" not in df.columns and df_univ is not None:
             df = df.merge(df_univ[["key", "model_group"]], on="key", how="left")
 
         # if a property was NOT vacant at time of sale, but is vacant now, then the sale is invalid:
         idx_is_vacant = df["is_vacant"].eq(True)
         df.loc[~idx_vacant_sale & idx_is_vacant, "valid_sale"] = False
-        idx_valid_sale = df["valid_sale"].eq(True)
         
 
     # Use sale_price_time_adj if it exists, otherwise use sale_price
-    sale_field = "sale_price_time_adj" if "sale_price_time_adj" in df else "sale_price"
-    idx_sale_price = df[sale_field].gt(0)
+    sale_field = "sale_price_time_adj" if "sale_price_time_adj" in df.columns and len(df["sale_price_time_adj"].dropna()) > 0 else "sale_price"
+    idx_positive_sale_price = df[sale_field].gt(0)
     
     
     idx_valid_sale = df["valid_sale"].eq(True)
-    
-    idx_all = idx_sale_price & idx_valid_sale & (idx_is_vacant if vacant_only else True)
-    
     idx_vacant_sale = df["vacant_sale"].eq(True)
     
     
     if vacant_only:
-        idx_all = idx_sale_price & idx_valid_sale & idx_vacant_sale
+        idx_all = idx_positive_sale_price & idx_valid_sale & idx_vacant_sale
     else:
-        idx_all = idx_sale_price & idx_valid_sale
+        idx_all = idx_positive_sale_price & idx_valid_sale
     
 
     df_sales: pd.DataFrame = df[idx_all].copy()
