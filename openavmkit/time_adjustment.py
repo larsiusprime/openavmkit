@@ -1,11 +1,13 @@
 import calendar
+import os
+import warnings
 from datetime import timedelta, datetime
 
 import numpy as np
 import pandas as pd
 
 from openavmkit.data import _get_sales
-from openavmkit.utilities.data import div_df_z_safe
+from openavmkit.utilities.data import div_df_z_safe, do_per_model_group
 from openavmkit.utilities.settings import area_unit
 
 
@@ -119,9 +121,42 @@ def apply_time_adjustment(
     pandas.DataFrame
         Sales DataFrame with an added `sale_price_time_adj` column.
     """
-    
+    return do_per_model_group(
+        df_sales_in,
+        settings,
+        apply_time_adjustment_per_model_group,
+        {"settings":settings,"period":period,"verbose":verbose},
+        key="key_sale"
+    )
+
+
+def apply_time_adjustment_per_model_group(
+        df_sales_in: pd.DataFrame, settings: dict, model_group: str, period: str = "M", verbose: bool = False
+) -> pd.DataFrame:
+    """
+    Compute time adjustment multipliers and apply them to adjust sale prices forward in time.
+
+    Parameters
+    ----------
+    df_sales_in : pandas.DataFrame
+        Input sales DataFrame.
+    settings : dict
+        Settings dictionary containing time adjustment parameters.
+    period : str, optional
+        Period type to use for adjustment ("M", "Q", or "Y"). Defaults to "M".
+    verbose : bool, optional
+        If True, print verbose output during computation. Defaults to False.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Sales DataFrame with an added `sale_price_time_adj` column.
+    """
+    if len(df_sales_in) == 0:
+        return df_sales_in
+
     unit = area_unit(settings)
-    
+
     df_sales = df_sales_in.copy()
     df_time = calculate_time_adjustment(df_sales_in, settings, period, verbose)
 
@@ -137,6 +172,9 @@ def apply_time_adjustment(
     df_time = df_time.rename(
         columns={"value": "time_adjustment", "period": "sale_date"}
     )
+
+    os.makedirs(f"out/time_adjustment/{model_group}", exist_ok=True)
+    df_time.to_csv(f"out/time_adjustment/{model_group}/time_adjustment_schedule.csv", index=False)
 
     # ensure both dtypes are datetime:
     dtype_time = df_time["sale_date"].dtype
@@ -154,7 +192,7 @@ def apply_time_adjustment(
 
     # we multiply the sale price by the time adjustment
     df_sales["sale_price_time_adj"] = (
-        df_sales["sale_price"] * df_sales["time_adjustment"]
+            df_sales["sale_price"] * df_sales["time_adjustment"]
     )
 
     # we drop the time adjustment column
@@ -427,7 +465,6 @@ def _determine_value_driver(df_in: pd.DataFrame, settings: dict):
     "land" if the relative difference is small and a significant portion of sales are
     land; otherwise returns "impr".
     """
-    
     unit = area_unit(settings)
     
     df = df_in.copy()
@@ -436,6 +473,14 @@ def _determine_value_driver(df_in: pd.DataFrame, settings: dict):
 
     df_impr = df[df[f"bldg_area_finished_{unit}"].gt(0)]
     df_land = df[df[f"land_area_{unit}"].gt(0)]
+
+    if len(df_land) == 0 and len(df_impr) !=0:
+        return "impr"
+    if len(df_impr) == 0 and len(df_land) !=0:
+        return "land"
+    if len(df_impr) == 0 and len(df_land) == 0:
+        warnings.warn("No positive values for both land and improvement, default to improved value driver")
+        return "impr"
 
     df_impr[f"sale_price_per_impr_{unit}"] = div_df_z_safe(
         df_impr, "sale_price", f"bldg_area_finished_{unit}"
@@ -483,6 +528,9 @@ def _determine_time_resolution(df_per, sale_field, min_sale_count, period: str =
             # Count how many quarters are below the minimum sale count
             df_counts = df_per.groupby("sale_year_quarter")[sale_field].agg(["count"])
             quarters_total = len(df_counts)
+            if quarters_total == 0:
+                warnings.warn("Unable to determine time resolution due to insufficient data")
+                return period
             quarters_above_min = len(df_counts[df_counts["count"].ge(min_sale_count)])
             quarters_missing = len(df_counts) - quarters_above_min
 
