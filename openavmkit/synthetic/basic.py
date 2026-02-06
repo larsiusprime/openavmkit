@@ -418,6 +418,7 @@ def generate_basic(
         "latitude": [],
         "longitude": [],
         "is_vacant": [],
+        "model_group":[]
     }
 
     data_sales = {
@@ -437,6 +438,7 @@ def generate_basic(
         "sale_quarter": [],
         "sale_year_month": [],
         "sale_year_quarter": [],
+        "model_group": []
     }
 
     latitude_center = 29.760762
@@ -640,6 +642,7 @@ def generate_basic(
             data["longitude"].append(longitude)
             data["geometry"].append(geometry)
             data["is_vacant"].append(is_vacant)
+            data["model_group"].append("residential_single_family")
 
             if valid_sale:
                 sale_date_YYYY_MM_DD = sale_date.strftime("%Y-%m-%d")
@@ -659,6 +662,7 @@ def generate_basic(
                 data_sales["sale_quarter"].append(sale_quarter)
                 data_sales["sale_year_month"].append(sale_year_month)
                 data_sales["sale_year_quarter"].append(sale_year_quarter)
+                data_sales["model_group"].append("residential_single_family")
 
     df = gpd.GeoDataFrame(data, geometry="geometry")
     df_sales = pd.DataFrame(data_sales)
