@@ -13,7 +13,7 @@ from typing import Optional, Tuple
 from shapely import wkt, wkb
 from shapely.geometry.base import BaseGeometry
 from pyproj import CRS, Geod
-from shapely import Polygon, MultiPolygon, LineString
+from shapely import Polygon, MultiPolygon, LineString, force_2d
 import pyarrow.parquet as pq
 
 from openavmkit.utilities.timing import TimingData
@@ -580,7 +580,13 @@ def ensure_geometries(df: pd.DataFrame, geom_col: str="geometry", crs: pyproj.CR
 
     # Drop the old column and assemble
     df_clean = data.drop(columns=[geom_col])
-    return gpd.GeoDataFrame(df_clean, geometry=geom_series, crs=crs)
+    
+    gdf = gpd.GeoDataFrame(df_clean, geometry=geom_series, crs=crs)
+    
+    # Check for 3D geometry and strip them out:
+    gdf.geometry = gdf.geometry.apply(force_2d)
+    
+    return gdf
 
 
 def clean_geometry(gdf: gpd.GeoDataFrame, ensure_polygon: bool=True, target_crs: str|int=None):

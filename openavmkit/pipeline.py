@@ -359,11 +359,12 @@ def examine_df_in_ridiculous_detail(df: pd.DataFrame, s: dict):
                 fields_noted.append(n)
                 df_non_null = df[~pd.isna(df[n])]
                 non_zero = len(df_non_null[np.abs(df_non_null[n]).gt(0)])
-                perc = non_zero / len(df)
-                non_null = len(df_non_null)
+                    
                 if len(df) != 0:
+                    perc = non_zero / len(df)
                     perc_non_null = non_null / len(df)
                 else:
+                    perc = float("nan")
                     perc_non_null = float('nan')
                 print(
                     get_line(
