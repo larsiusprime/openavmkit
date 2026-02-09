@@ -160,6 +160,9 @@ def apply_time_adjustment_per_model_group(
     df_sales = df_sales_in.copy()
     df_time = calculate_time_adjustment(df_sales_in, settings, period, verbose)
 
+    os.makedirs(f"out/time_adjustment/{model_group}", exist_ok=True)
+    df_time.to_csv(f"out/time_adjustment/{model_group}/time_adjustment_schedule_indexed_to_start.csv", index=False)
+
     # df_time starts with 1.0 on the first day and ends with X.0 on the last day
     # if we were to divide by this value, we would time-adjust all sales BACKWARDS in time
     # what we want is to time-adjust all sales FORWARDS in time
