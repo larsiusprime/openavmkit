@@ -3911,6 +3911,8 @@ def _handle_duplicated_rows(
                 
                 if agg_bys and agg_ascendings:
                     df_sorted = df_in.sort_values(by=agg_bys, ascending=agg_ascendings)
+                else:
+                    df_sorted = df_in.copy()
                 
                 df_result = (
                     df_sorted.groupby(subset)
