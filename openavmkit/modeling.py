@@ -781,14 +781,13 @@ class DataSplit:
             if pd.api.types.is_categorical_dtype(s_train):
                 s_train = s_train.astype(object)
 
-            s_train = s_train.fillna(unknown_token)
-            s_train = s_train.astype(str)
-
-            cats = list(pd.unique(s_train))
-
+            s_train = s_train.fillna(unknown_token).astype(object) # block to avoid python strings
+            s_train = s_train.map(lambda x: str(x))                # ensure python str, but stays object
+            cats = pd.Index(pd.unique(s_train), dtype="object")    # force object categories
+            
             # Ensure unknown token exists in the *category index*
             if unknown_token not in cats:
-                cats.append(unknown_token)
+                cats = cats.append(pd.Index([unknown_token], dtype="object"))
 
             train_categories[col] = cats
 
@@ -3310,7 +3309,6 @@ def run_xgboost(
 
     timing.start("total")
 
-    #ds = ds.encode_categoricals_with_one_hot()
     ds = ds.encode_categoricals_as_categories()
     ds.split()
 
