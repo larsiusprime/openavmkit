@@ -41,7 +41,8 @@ from openavmkit.data import (
     get_hydrated_sales_from_sup,
     write_parquet,
     write_gpkg,
-    write_zipped_shapefile
+    write_zipped_shapefile,
+    write_csv
 )
 from openavmkit.sales_scrutiny_study import (
     run_sales_scrutiny_per_model_group,
@@ -1195,7 +1196,8 @@ def write_notebook_output_sup(
     prefix: str = "1-assemble",
     parquet: bool = True,
     gpkg: bool = False,
-    shp: bool = False
+    shp: bool = False,
+    csv: bool = False
 ) -> None:
     """
     Write notebook output to disk.
@@ -1229,6 +1231,8 @@ def write_notebook_output_sup(
             write_gpkg(sup["universe"], f"out/look/{prefix}-universe.gpkg")
         if shp:
             write_zipped_shapefile(sup["universe"], f"out/look/{prefix}-universe.shp.zip")
+        if csv:
+            write_csv(sup["universe"], f"out/look/{prefix}-universe.csv")
         
         # sales
         if parquet:
@@ -1242,6 +1246,8 @@ def write_notebook_output_sup(
             write_gpkg(df_hydrated, f"out/look/{prefix}-sales-hydrated.gpkg")
         if shp:
             write_zipped_shapefile(df_hydrated, f"out/look/{prefix}-sales-hydrated.shp.zip")
+        if csv:
+            write_csv(df_hydrated, f"out/look/{prefix}-sales-hydrated.csv")
 
         print(f"...out/{prefix}-sup.pickle")
         if parquet:
@@ -1254,6 +1260,9 @@ def write_notebook_output_sup(
         if shp:
             print(f"...out/look/{prefix}-universe.shp.zip")
             print(f"...out/look/{prefix}-sales-hydrated.shp.zip")
+        if csv:
+            print(f"...out/look/{prefix}-universe.csv")
+            print(f"...out/look/{prefix}-sales-hydrated.csv")
     except Exception as e:
         warnings.warn(f"Failed to output sup: {str(e)}")
 

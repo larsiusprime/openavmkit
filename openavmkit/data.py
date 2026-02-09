@@ -5305,6 +5305,12 @@ def write_zipped_shapefile(df, path: str) -> Path:
 
     return p
 
+def write_csv(df, path: str) -> Path:
+    """
+    Write a DataFrame to a CSV file with UTF-8 encoding and no index.
+    """
+    df.to_csv(path, encoding='utf-8', index=False)
+
 
 def filter_df_by_date_range(df, start_date, end_date):
     """
