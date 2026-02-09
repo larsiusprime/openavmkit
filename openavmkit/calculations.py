@@ -199,6 +199,12 @@ def _calc_resolve(df: pd.DataFrame, value, i: int = 0, rename_map: dict = None):
     return value, i
 
 
+def _as_series(x, index):
+    if isinstance(x, pd.Series):
+        return x
+    return pd.Series(x, index=index, name=None)
+
+
 def _do_calc(df_in: pd.DataFrame, entry: list, i: int = 0, rename_map: dict = None):
     """
     Perform a calculation based on an entry list.
@@ -250,9 +256,19 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i: int = 0, rename_map: dict = No
         lhs = entry[1]
         rhs = entry[2]
         rhs2 = entry[3]
+        
         idx = resolve_filter(df, entry[1], rename_map)
         rhs, i = _calc_resolve(df, value=rhs, i=i, rename_map=rename_map)
         rhs2, i2 = _calc_resolve(df, value=rhs2, i=i, rename_map=rename_map)
+        
+        # Get index to align results to
+        target_index = df.index
+
+        # Normalize everything to Series
+        idx  = _as_series(idx,  index=target_index).astype(bool)
+        rhs  = _as_series(rhs,  index=target_index)
+        rhs2 = _as_series(rhs2, index=target_index)
+        
         results = rhs2.copy()
         results[idx] = rhs
         return results
