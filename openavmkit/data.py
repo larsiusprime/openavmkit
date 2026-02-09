@@ -3877,7 +3877,7 @@ def _handle_duplicated_rows(
         
         df = df_in.copy()
         if bys and ascendings:
-        df = df.sort_values(by=bys, ascending=ascendings)
+            df = df.sort_values(by=bys, ascending=ascendings)
         if do_drop:
             if do_drop == "all":
                 df = df.drop_duplicates(subset=subset, keep=False)

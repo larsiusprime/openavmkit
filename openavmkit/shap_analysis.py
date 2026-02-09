@@ -248,31 +248,18 @@ def make_shap_table(
 def _calc_shap(
     model, X_train: pd.DataFrame, X_to_explain: pd.DataFrame, background_size: int = 100
 ) -> shap.Explanation:
-    
-    # 1) XGBoost
     if isinstance(model, XGBoostModel):
-        return _xgboost_shap(
-            model,
-            X_train
-        )
-
-    # 2) LightGBM
-    if isinstance(model, LightGBMModel):
-        return _lightgbm_shap(
-            model,
-            X_train
-        )
-
-    # 3) CatBoost
-    if isinstance(model, CatBoostModel):
-        return _catboost_shap(
-            model,
-            X_to_explain
-        )
-
-    # 4) Everything else
-    explainer = shap.Explainer(model, X_train)
-    return explainer(X_to_explain)
+        explainer = _xgboost_shap(model, X_train, background_size=background_size)
+    elif isinstance(model, LightGBMModel):
+        explainer = _lightgbm_shap(model, X_train, background_size=background_size)
+    elif isinstance(model, CatBoostModel):
+        explainer = _catboost_shap(model, X_train, background_size=background_size)
+    else: 
+        explainer = shap.Explainer(model, X_train)
+    explanation = explainer(X_to_explain)
+    if not hasattr(explanation, "values"):
+        raise TypeError(f"Expected shap.Explanation, got {type(explanation)}")
+    return explanation
 
 
 def _xgboost_shap(

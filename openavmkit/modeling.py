@@ -2990,6 +2990,7 @@ def predict_gwr(
     if len(np_coords_test) == 0 or len(X_test) == 0:
         gwr_result_test = None
         y_pred_test = np.array([])
+        params_test = {}
     else:
         gwr_result_test = gwr.predict(np_coords_test, X_test)
         y_pred_test = gwr_result_test.predictions.flatten()
@@ -3450,17 +3451,14 @@ def run_lightgbm(
     """
 
     timing = TimingData()
-
     timing.start("total")
 
     timing.start("setup")
-    #ds = ds.encode_categoricals_with_one_hot()
     ds = ds.encode_categoricals_as_categories()
     ds.split()
-
+    
     # Fix for object-typed boolean columns (especially 'within_*' fields)
     ds = _fix_bool_objs(ds)
-
     timing.stop("setup")
 
     timing.start("parameter_search")
@@ -3473,36 +3471,37 @@ def run_lightgbm(
         save_params,
         use_saved_params,
         verbose,
-        n_trials=n_trials
+        n_trials=n_trials,
     )
 
     # Remove any problematic parameters that might cause errors with forced splits
-    problematic_params = [
+    for param in [
         "forcedsplits_filename",
         "forced_splits_filename",
         "forced_splits_file",
         "forced_splits",
-    ]
-    for param in problematic_params:
-        if param in params:
-            if verbose:
-                print(
-                    f"Removing problematic parameter '{param}' from LightGBM parameters"
-                )
-            params.pop(param, None)
+    ]:
+        params.pop(param, None)
 
     timing.stop("parameter_search")
 
     timing.start("train")
-    cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
+
+    # Guard: LightGBM needs non-empty 2D train matrix
+    if ds.X_train is None or ds.X_train.shape[0] < 1 or ds.X_train.shape[1] < 1:
+        raise ValueError(
+            f"LightGBM: empty training data (X_train shape={None if ds.X_train is None else ds.X_train.shape})."
+        )
+    if ds.y_train is None or len(ds.y_train) < 1:
+        raise ValueError("LightGBM: empty y_train.")
+
+    cat_vars = [v for v in ds.categorical_vars if v in ds.X_train.columns.values]
     cat_data = TreeBasedCategoricalData.from_training_data(
         ds.X_train,
         categorical_cols=cat_vars,
     )
+
     lgb_train = lgb.Dataset(ds.X_train, ds.y_train, categorical_feature=cat_vars)
-    lgb_test = lgb.Dataset(
-        ds.X_test, ds.y_test, categorical_feature=cat_vars, reference=lgb_train
-    )
 
     params["verbosity"] = -1
 
@@ -3510,18 +3509,16 @@ def run_lightgbm(
     if "num_iterations" in params:
         num_boost_round = params.pop("num_iterations")
 
+    # Train on TRAIN ONLY: do not pass valid_sets, do not early stop
     gbm = lgb.train(
         params,
         lgb_train,
         num_boost_round=num_boost_round,
-        valid_sets=[lgb_test],
-        callbacks=[
-            lgb.early_stopping(stopping_rounds=5, verbose=False),
-            lgb.log_evaluation(period=0),
-        ],
+        callbacks=[lgb.log_evaluation(period=0)],
     )
+
     timing.stop("train")
-    
+
     model = LightGBMModel(booster=gbm, cat_data=cat_data)
 
     return predict_lightgbm(ds, model, timing, verbose)
