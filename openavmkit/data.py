@@ -3872,10 +3872,11 @@ def _handle_duplicated_rows(
     orig_len = len(df_in)
     if num_dupes > 0:
         sort_by = _get_sort_by(dupes, {"bys":["key"],"asc":["asc"]})
-        bys = sort_by["bys"]
-        ascendings = sort_by["ascendings"]
+        bys = sort_by.get("bys", [])
+        ascendings = sort_by.get("ascendings", [])
         
         df = df_in.copy()
+        if bys and ascendings:
         df = df.sort_values(by=bys, ascending=ascendings)
         if do_drop:
             if do_drop == "all":
@@ -3902,13 +3903,14 @@ def _handle_duplicated_rows(
                 # Custom sort information per aggregation in case the user is relying on "first"/"last" agg
                 agg_sort_by = _get_sort_by(agg_entry, sort_by)
                 
-                agg_bys = agg_sort_by["bys"]
-                agg_ascendings = agg_sort_by["ascendings"]
+                agg_bys = agg_sort_by.get("bys", [])
+                agg_ascendings = agg_sort_by.get("ascendings", [])
                 
                 if field not in df_in:
                     raise ValueError(f"Field '{field}' not found in DataFrame.")
                 
-                df_sorted = df_in.sort_values(by=agg_bys, ascending=agg_ascendings)
+                if agg_bys and agg_ascendings:
+                    df_sorted = df_in.sort_values(by=agg_bys, ascending=agg_ascendings)
                 
                 df_result = (
                     df_sorted.groupby(subset)
