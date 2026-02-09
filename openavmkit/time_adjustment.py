@@ -100,7 +100,11 @@ def calculate_time_adjustment(
 
 
 def apply_time_adjustment(
-    df_sales_in: pd.DataFrame, settings: dict, period: str = "M", verbose: bool = False
+    df_sales_in: pd.DataFrame,
+    settings: dict,
+    period: str = "M",
+    write: bool = False,
+    verbose: bool = False
 ) -> pd.DataFrame:
     """
     Compute time adjustment multipliers and apply them to adjust sale prices forward in time.
@@ -113,6 +117,8 @@ def apply_time_adjustment(
         Settings dictionary containing time adjustment parameters.
     period : str, optional
         Period type to use for adjustment ("M", "Q", or "Y"). Defaults to "M".
+    write : bool, optional
+        Whether to write out the time adjustment data as a separate CSV file
     verbose : bool, optional
         If True, print verbose output during computation. Defaults to False.
 
@@ -125,13 +131,18 @@ def apply_time_adjustment(
         df_sales_in,
         settings,
         apply_time_adjustment_per_model_group,
-        {"settings":settings,"period":period,"verbose":verbose},
+        {"settings":settings,"period":period,"write":write,"verbose":verbose},
         key="key_sale"
     )
 
 
 def apply_time_adjustment_per_model_group(
-        df_sales_in: pd.DataFrame, settings: dict, model_group: str, period: str = "M", verbose: bool = False
+    df_sales_in: pd.DataFrame,
+    settings: dict,
+    model_group: str,
+    period: str = "M",
+    write: bool = False,
+    verbose: bool = False
 ) -> pd.DataFrame:
     """
     Compute time adjustment multipliers and apply them to adjust sale prices forward in time.
@@ -144,6 +155,8 @@ def apply_time_adjustment_per_model_group(
         Settings dictionary containing time adjustment parameters.
     period : str, optional
         Period type to use for adjustment ("M", "Q", or "Y"). Defaults to "M".
+    write : bool, optional
+        Whether to write out the time adjustment data as a separate CSV file
     verbose : bool, optional
         If True, print verbose output during computation. Defaults to False.
 
@@ -160,25 +173,19 @@ def apply_time_adjustment_per_model_group(
     df_sales = df_sales_in.copy()
     df_time = calculate_time_adjustment(df_sales_in, settings, period, verbose)
 
-    os.makedirs(f"out/time_adjustment/{model_group}", exist_ok=True)
-    df_time.to_csv(f"out/time_adjustment/{model_group}/time_adjustment_schedule_indexed_to_start.csv", index=False)
-
-    # df_time starts with 1.0 on the first day and ends with X.0 on the last day
-    # if we were to divide by this value, we would time-adjust all sales BACKWARDS in time
-    # what we want is to time-adjust all sales FORWARDS in time
-    # we therefore normalize to the last day, then take the reciprocal to reverse the effect
-    df_time["value"] = 1 / (df_time["value"] / df_time["value"].iloc[-1])
-
-    # now we have a multiplier that we can straightforwardly multiply sales by, that will bring all sales FORWARDS in time
-
-    # we merge the time adjustment back into the sales data
-    df_time = df_time.rename(
-        columns={"value": "time_adjustment", "period": "sale_date"}
-    )
-
+    df_time = df_time.rename(columns={"value":"start_indexed"})
+    df_time["end_indexed"] = df_time["start_indexed"]/df_time["start_indexed"].iloc[-1]
+    df_time["correction_factor"] = 1 / df_time["end_indexed"]
+    
     os.makedirs(f"out/time_adjustment/{model_group}", exist_ok=True)
     df_time.to_csv(f"out/time_adjustment/{model_group}/time_adjustment_schedule.csv", index=False)
-
+    
+    # now we have a multiplier that we can straightforwardly multiply sales by, that will bring all sales FORWARDS in time
+    # we merge the time adjustment back into the sales data
+    df_time = df_time[["period","correction_factor"]].copy().rename(
+        columns={"period": "sale_date"}
+    )
+    
     # ensure both dtypes are datetime:
     dtype_time = df_time["sale_date"].dtype
     dtype_sales = df_sales["sale_date"].dtype
@@ -195,11 +202,11 @@ def apply_time_adjustment_per_model_group(
 
     # we multiply the sale price by the time adjustment
     df_sales["sale_price_time_adj"] = (
-            df_sales["sale_price"] * df_sales["time_adjustment"]
+            df_sales["sale_price"] * df_sales["correction_factor"]
     )
 
     # we drop the time adjustment column
-    df_sales = df_sales.drop(columns=["time_adjustment"])
+    df_sales = df_sales.drop(columns=["correction_factor"])
 
     if f"sale_price_per_impr_{unit}" in df_sales:
         df_sales[f"sale_price_time_adj_per_impr_{unit}"] = div_df_z_safe(
@@ -214,7 +221,7 @@ def apply_time_adjustment_per_model_group(
 
 
 def enrich_time_adjustment(
-    df_in: pd.DataFrame, settings: dict, verbose: bool = False
+    df_in: pd.DataFrame, settings: dict, write: bool = False, verbose: bool = False
 ) -> pd.DataFrame:
     """
     Enrich the sales data by generating time-adjusted sales if not already present.
@@ -225,6 +232,8 @@ def enrich_time_adjustment(
         Input sales DataFrame.
     settings : dict
         Settings dictionary.
+    write : bool
+        Whether to write out the time adjustment to a separate CSV file. Defaults to False.
     verbose : bool, optional
         If True, print verbose output. Defaults to False.
 
@@ -243,7 +252,7 @@ def enrich_time_adjustment(
         if verbose:
             print("Applying time adjustment...")
         period = ta.get("period", "Q")
-        df = apply_time_adjustment(df.copy(), settings, period=period, verbose=verbose)
+        df = apply_time_adjustment(df.copy(), settings, period=period, write=write, verbose=verbose)
 
     return df
 
@@ -456,7 +465,6 @@ def _crunch_time_adjustment(
     # generate a DataFrame with the index of periods_expected matched with values:
     df_result = pd.DataFrame({"period": periods_expected, "value": values})
 
-    # unpack into daily values
 
     return df_result
 

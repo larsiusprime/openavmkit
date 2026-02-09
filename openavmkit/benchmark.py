@@ -483,7 +483,7 @@ def get_variable_recommendations(
     if "sale_price_time_adj" not in df_sales.columns:
         warnings.warn("Time adjustment was not found in sales data. Calculating now...")
         t.start("variables.time_adjustment")
-        df_sales = enrich_time_adjustment(df_sales, settings, verbose=verbose)
+        df_sales = enrich_time_adjustment(df_sales, settings, write=False, verbose=verbose)
         t.stop("variables.time_adjustment")
     
     t.start("variables.stuff")

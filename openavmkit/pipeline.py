@@ -363,6 +363,7 @@ def examine_df_in_ridiculous_detail(df: pd.DataFrame, s: dict):
                     
                 if len(df) != 0:
                     perc = non_zero / len(df)
+                    non_null = len(df_non_null)
                     perc_non_null = non_null / len(df)
                 else:
                     perc = float("nan")
@@ -816,7 +817,7 @@ def tag_model_groups_sup(
 
 
 def process_sales(
-    sup: SalesUniversePair, settings: dict, verbose: bool = False
+    sup: SalesUniversePair, settings: dict, write: bool = False, verbose: bool = False
 ) -> SalesUniversePair:
     """
     Process sales data within a SalesUniversePair.
@@ -830,6 +831,8 @@ def process_sales(
         Sales and universe data.
     settings : dict
         Configuration settings.
+    write : bool
+        Whether to write out data during processing. Defaults to False.
     verbose : bool, optional
         If True, prints verbose output during processing. Defaults to False.
 
@@ -855,7 +858,7 @@ def process_sales(
     print(f"len after hydrate = {len(sup['sales'])}")
 
     # enrich with time adjustment, and mark what fields were added
-    df_sales_enriched = enrich_time_adjustment(df_sales_hydrated, settings, verbose)
+    df_sales_enriched = enrich_time_adjustment(df_sales_hydrated, settings, write, verbose)
 
     print(f"len after enrich = {len(df_sales_enriched)}")
 
