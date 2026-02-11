@@ -802,17 +802,19 @@ class DataSplit:
                 if col not in df.columns:
                     continue
                 
+                # always ensure cats is object Index
+                cats = pd.Index(cats, dtype="object")
+                
                 s = df[col]
                 if pd.api.types.is_categorical_dtype(s):
                     s = s.astype(object)
-                s = s.fillna(unknown_token)
-                s = s.astype(str)
-
+                
+                s = s.fillna(unknown_token).astype(object)
+                s = s.map(lambda x: str(x))  # python str, stays object
+                
                 # Replace any value not in training categories with UNKNOWN
                 s = s.where(s.isin(cats), other=unknown_token)
-                if unknown_token not in cats:
-                    cats.append(unknown_token)
-
+                
                 df[col] = pd.Categorical(s, categories=cats)
 
         # Apply to other splits
@@ -1067,7 +1069,8 @@ class DataSplit:
         }
 
         return ds
-
+    
+    
     def split(self):
         """
         Split the sales DataFrame into training and test sets based on provided keys.
@@ -1225,6 +1228,12 @@ class DataSplit:
         ind_vars = [col for col in self.ind_vars if col in _df_test.columns]
         self.X_test = _df_test[ind_vars]
         self.y_test = _df_test[self.dep_var_test]
+        
+        # sanitize categoricals
+        self.X_test = _sanitize_categoricals(self.X_test)
+        self.X_train = _sanitize_categoricals(self.X_train)
+        self.X_sales = _sanitize_categoricals(self.X_sales)
+        self.X_univ = _sanitize_categoricals(self.X_univ)
 
 
 class SingleModelResults:
@@ -5912,6 +5921,10 @@ def write_gwr_params(model: GWRModel, outpath: str, dfs: dict, do_plot: bool = F
         if the_key == "key_sale":
             df_var_ren = df_var_ren.drop(columns="key")
         
+        # force string to avoid shenanigans
+        df_var_ren[the_key] = df_var_ren[the_key].astype("str")
+        df_params[the_key] = df_params[the_key].astype("str")
+        
         df_mult = df_params.merge(df_var_ren, on=the_key, how="left")
         
         
@@ -6025,10 +6038,16 @@ def write_shaps(
     verbose: bool = False
 ):
     ind_vars = smr.ds.ind_vars
-    X_train = smr.df_train[ind_vars].copy()
-    X_test = smr.df_test[ind_vars].copy()
-    X_sales = smr.df_sales[ind_vars].copy()
-    X_univ = smr.df_universe[ind_vars].copy()
+    
+    ind_vars_train = [v for v in ind_vars if v in smr.df_train.columns]
+    ind_vars_test = [v for v in ind_vars if v in smr.df_test.columns]
+    ind_vars_sales = [v for v in ind_vars if v in smr.df_sales.columns]
+    ind_vars_univ = [v for v in ind_vars if v in smr.df_universe.columns]
+    
+    X_train = smr.df_train[ind_vars_train].copy()
+    X_test = smr.df_test[ind_vars_test].copy()
+    X_sales = smr.df_sales[ind_vars_sales].copy()
+    X_univ = smr.df_universe[ind_vars_univ].copy()
     
     shaps = get_full_model_shaps(
         model,
@@ -6076,6 +6095,9 @@ def _prepare_shap_dfs(
         do_write: bool = True
     ):
     
+    if shap_entry is None or df is None or len(df) == 0:
+        return None, None
+    
     # Draw / Save a plot if requested
     if do_plot:
         title = f"{model.type}: {subset}"
@@ -6109,10 +6131,10 @@ def _prepare_shap_dfs(
     
     cat_data = model.cat_data
     if cat_data is not None and len(cat_data.categorical_cols) > 0:
-        X_to_explain = cat_data.apply(X_to_explain)
+        X_to_explain = cat_data.apply(X_to_explain, fill_missing_cat=isinstance(model, CatBoostModel))
     else:
         X_to_explain = X_to_explain.to_numpy()
-
+    
     yhat_raw = predictor.predict(X_to_explain)
 
     ## SHAP reconstruction on those rows
@@ -6279,5 +6301,13 @@ def write_model_parameters(
     else:
         raise TypeError(f"Unexpected model type: {type(model).__name__}")
 
+
+def _sanitize_categoricals(X: pd.DataFrame) -> pd.DataFrame:
+    X = X.copy()
+    for c in X.select_dtypes(["category"]).columns:
+        cats = X[c].cat.categories
+        if "string" in str(cats.dtype):
+            X[c] = X[c].cat.rename_categories(cats.astype("object"))
+    return X
 
 ##############################

@@ -433,6 +433,9 @@ def _shap_explain(
     -------
     shap.Explanation
     """
+    
+    if (X_to_explain is None) or len(X_to_explain) == 0:
+        return None
 
     # --- CatBoost fast path -------------------------------------------------
     if model_type == "catboost":

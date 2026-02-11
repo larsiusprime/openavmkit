@@ -480,7 +480,7 @@ def _run_ratio_study_breakdowns(
                     by = by.replace("<", "").replace(">", "")
                     by = get_important_field(settings, by, df)
 
-                if by is None:
+                if by is None or by not in df:
                     continue
 
                 cluster = {}

@@ -473,24 +473,25 @@ class TreeBasedCategoricalData:
         )
 
     # ---------- enforcement ----------
-
-    def apply(self, X: pd.DataFrame) -> pd.DataFrame:
+    
+    def apply(self, X: pd.DataFrame, *, fill_missing_cat: bool = False, missing_token: str = "__MISSING__") -> pd.DataFrame:
         """
         Reapply categorical + boolean structure to a dataframe.
-        Unknown categories are preserved but will map to NaN later.
+        Unknown categories become NaN (categorical missing) unless fill_missing_cat=True.
         """
         X = X.reindex(columns=self.feature_names)
-
-        # enforce booleans
+    
         for c in self.bool_cols:
             if c in X.columns:
                 X[c] = X[c].astype("boolean")
-
-        # enforce categorical levels
+    
         for c, levels in self.category_levels.items():
             if c in X.columns:
                 X[c] = pd.Categorical(X[c], categories=levels)
-
+                if fill_missing_cat:
+                    # turn NaN category (including unknowns) into a string token
+                    X[c] = X[c].astype("string").fillna(missing_token)
+    
         return X
 
     # ---------- SHAP / numeric view ----------

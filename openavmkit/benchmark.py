@@ -3596,7 +3596,7 @@ def _run_hedonic_models(
     )
 
     if run_ensemble:
-        _perform_ensemble(
+        ensemble_results = _perform_ensemble(
             df_sales=df_sales,
             df_universe=df_universe,
             model_group=model_group,
