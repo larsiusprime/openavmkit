@@ -611,7 +611,7 @@ class DataSplit:
         self.unit = area_unit(self.settings)
 
         # The working copy of the model group universe, that *will* be modified
-        self.df_universe = df_universe.copy()
+        self.df_universe = df_universe.copy().reset_index(drop=True)
 
         # Set "sales" fields in the universe so that columns match
         set_to_zero = ["sale_age_days"]
@@ -639,7 +639,7 @@ class DataSplit:
         self.df_sales = _get_sales(df_sales, settings, vacant_only).reset_index(
             drop=True
         )
-
+        
         self._df_sales = self.df_sales.copy()
 
         self.test_keys = test_keys
@@ -668,7 +668,10 @@ class DataSplit:
             self.df_sales.sort_values(by=days_field, ascending=False, inplace=True)
         else:
             raise ValueError(f"Field '{days_field}' not found in dataframe.")
-
+        
+        self.df_universe = self.df_universe.reset_index(drop=True)
+        self.df_sales = self.df_sales.reset_index(drop=True)
+        
         self.model_group = model_group
         self.dep_var = dep_var
         self.dep_var_test = dep_var_test
@@ -1185,7 +1188,7 @@ class DataSplit:
         ind_vars = [col for col in self.ind_vars if col in _df_sales.columns]
         self.X_sales = _df_sales[ind_vars]
         self.y_sales = _df_sales[self.dep_var]
-
+        
         ind_vars = [col for col in self.ind_vars if col in _df_train.columns]
 
         self.X_train = _df_train[ind_vars]
