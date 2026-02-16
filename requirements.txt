@@ -19,7 +19,7 @@ seaborn==0.13.2
 statsmodels==0.14.6
 xgboost==3.1.2
 xlsxwriter==3.2.9
-census==0.8.24
+census==0.8.25
 shap==0.50.0
 mpld3==0.5.12
 hilbertcurve==2.0.5
