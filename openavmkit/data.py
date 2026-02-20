@@ -8,6 +8,7 @@ import zipfile
 import shutil
 
 from pathlib import Path
+from pandas.api.types import is_categorical_dtype
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -1336,6 +1337,14 @@ def _enrich_df_distances(
                 raise ValueError(f"Distance entry ({thing}) must have either \"osm\" or \"source\" field!")
 
         default_configs = {
+            "coastline": {
+                "verbose_label": "coastline",
+                "store_top": False,
+                "error_method": "warn",
+                "sort_field": "length",
+                "type_field": "natural",
+                "tags": {"natural": "coastline"},
+            },
             "water_bodies": {
                 "verbose_label": "water bodies",
                 "store_top": True,
@@ -5351,5 +5360,11 @@ def filter_df_by_date_range(df, start_date, end_date):
     end_excl = pd.Timestamp(end_d) + pd.Timedelta(days=1)  # first moment after end day
 
     # NaT values compare as False and will be dropped
+    
+    if is_categorical_dtype(s):
+        s = pd.to_datetime(s.astype("object"), errors="coerce")  # categories are Timestamps already
+    else:
+        s = pd.to_datetime(s, errors="coerce")
+    
     mask = s.ge(start_ts) & s.lt(end_excl)
     return df.loc[mask].copy()

@@ -97,6 +97,8 @@ class OpenStreetMapService:
             }
         elif thing == "golf_courses":
             return {"leisure": ["golf_course"]}
+        elif thing == "coastline":
+            return {"natural": ["coastline"]}
         else:
             if config is not None:
                 osm_tags = config.get("osm_tags", None)
@@ -131,6 +133,7 @@ class OpenStreetMapService:
         
             
         min_area = settings.get("min_area", 10000)
+        min_length = settings.get("min_length", 0)
         top_n = settings.get("top_n", 5)
 
         # Create polygon from bbox
@@ -156,11 +159,23 @@ class OpenStreetMapService:
             utm_crs = self._get_utm_crs(bbox)
             osm_features_proj = osm_features.to_crs(utm_crs)
 
-            # Calculate areas and filter by minimum area
-            osm_features_proj["area"] = osm_features_proj.geometry.area
+            # Identify geometry types
+            geom = osm_features_proj.geometry
+            is_poly = geom.geom_type.isin(["Polygon", "MultiPolygon"])
+            is_line = geom.geom_type.isin(["LineString", "MultiLineString"])
+            
+            # Compute metrics (only where they make sense)
+            osm_features_proj["area"] = 0.0
+            osm_features_proj.loc[is_poly, "area"] = geom[is_poly].area
+            
+            osm_features_proj["length"] = 0.0
+            osm_features_proj.loc[is_line, "length"] = geom[is_line].length
+            
+            # Keep anything that meets either threshold
             osm_features_filtered = osm_features_proj[
-                osm_features_proj["area"] >= min_area
-            ]
+                (osm_features_proj["area"] >= min_area) |
+                (osm_features_proj["length"] >= min_length)
+            ].copy()
 
             if osm_features_filtered.empty:
                 return gpd.GeoDataFrame()
