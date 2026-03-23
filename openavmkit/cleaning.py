@@ -1,3 +1,5 @@
+from warnings import warn
+
 import pandas as pd
 
 from openavmkit.data import SalesUniversePair, get_hydrated_sales_from_sup
@@ -399,7 +401,15 @@ def _fill_unknown_values_per_model_group(df_in: pd.DataFrame, settings: dict):
             df_mg = df[df["model_group"].eq(model_group)].copy()
         df_mg = _fill_unknown_values(df_mg, settings)
         df, df_mg = align_categories(df, df_mg)
-        df.loc[df_mg.index, :] = df_mg
+        try:
+            df.loc[df_mg.index, :] = df_mg
+        except:
+            warn(f"model_group: {model_group}, len: {len(df_mg)}")
+            warn("Column type mismatch. You may be lacking a field type definition. The problem is likely in one of the following fields.")
+            for col in df_mg.columns:
+                if df_mg[col].dtype != df[col].dtype:
+                    warn(f"{col}: {df_mg[col].dtype}, {df[col].dtype}")
+            raise
 
     return df
 

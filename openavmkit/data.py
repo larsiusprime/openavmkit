@@ -4620,6 +4620,7 @@ def _read_split_keys(model_group: str):
     train_path = f"{path}/train_keys.csv"
     test_path = f"{path}/test_keys.csv"
     if not os.path.exists(train_path) or not os.path.exists(test_path):
+        warnings.warn(f"Model group:{model_group}")
         raise ValueError("No split keys found.")
     train_keys = pd.read_csv(train_path)["key_sale"].astype(str).values
     test_keys = pd.read_csv(test_path)["key_sale"].astype(str).values
