@@ -803,6 +803,10 @@ def get_ensemble_instructions(settings: dict, mvh: str) -> dict:
             "locations": locations
         }
 
+def get_time_adjustment_instructions(settings: dict):
+    return settings.get("data", {}).get("process", {}).get("time_adjustment", {})
+
+
 #######################################
 # PRIVATE
 #######################################

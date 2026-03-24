@@ -73,6 +73,7 @@ from openavmkit.utilities.settings import (
     area_unit,
     _get_sales,
     _simulate_removed_buildings,
+    get_time_adjustment_instructions,
 )
 
 from openavmkit.utilities.census import (
@@ -322,7 +323,7 @@ def get_sale_field(settings: dict, df: pd.DataFrame = None) -> str:
         Field name to be used for sale price.
     """
 
-    ta = settings.get("data", {}).get("process", {}).get("time_adjustment", {})
+    ta = get_time_adjustment_instructions(settings)
     use = ta.get("use", True)
     if use:
         sale_field = "sale_price_time_adj"
