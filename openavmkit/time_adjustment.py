@@ -8,7 +8,7 @@ import pandas as pd
 
 from openavmkit.data import _get_sales
 from openavmkit.utilities.data import div_df_z_safe, do_per_model_group
-from openavmkit.utilities.settings import area_unit
+from openavmkit.utilities.settings import area_unit, get_time_adjustment_instructions
 
 
 def calculate_time_adjustment(
@@ -135,6 +135,30 @@ def apply_time_adjustment(
         key="key_sale"
     )
 
+def read_time_adjustment_from_file(ta_settings: dict, model_group: str) -> pd.DataFrame|None:
+    override_path = ta_settings.get("from_file",{}).get(model_group)
+    if override_path is None:
+        return None
+    # override location is specified, load it into a dataframe and check integrity against expectations
+    try:
+        df_time_adj = pd.read_csv(override_path)
+        if "period" not in df_time_adj.columns:
+            warnings.warn(f"Time adjustment file for model group {model_group} does not contain 'period' column. Skipping load.")
+            return None
+        if "start_indexed" not in df_time_adj.columns:
+            warnings.warn(f"Time adjustment file for model group {model_group} does not contain 'start_indexed' column. Skipping load.")
+            return None
+        if "end_indexed" not in df_time_adj.columns:
+            warnings.warn(
+                f"Time adjustment file for model group {model_group} does not contain 'end_indexed' column. Skipping load.")
+            return None
+        if "correction_factor" not in df_time_adj.columns:
+            warnings.warn(f"Time adjustment file for model group {model_group} does not contain 'correction_factor' column. Skipping load.")
+            return None
+        return df_time_adj
+    except Exception as e:
+        warnings.warn(f"Error loading time adjustment file for model group {model_group}: {e}")
+        return None
 
 def apply_time_adjustment_per_model_group(
     df_sales_in: pd.DataFrame,
@@ -171,15 +195,20 @@ def apply_time_adjustment_per_model_group(
     unit = area_unit(settings)
 
     df_sales = df_sales_in.copy()
-    df_time = calculate_time_adjustment(df_sales_in, settings, period, verbose)
 
-    df_time = df_time.rename(columns={"value":"start_indexed"})
-    df_time["end_indexed"] = df_time["start_indexed"]/df_time["start_indexed"].iloc[-1]
-    df_time["correction_factor"] = 1 / df_time["end_indexed"]
-    
+    try_read_from_file = read_time_adjustment_from_file(get_time_adjustment_instructions(settings), model_group)
+    if try_read_from_file is not None:
+        print(f"Found a valid time adjustment file for model group {model_group}. Loading...")
+        df_time = try_read_from_file
+    else:
+        df_time = calculate_time_adjustment(df_sales_in, settings, period, verbose)
+        df_time = df_time.rename(columns={"value":"start_indexed"})
+        df_time["end_indexed"] = df_time["start_indexed"]/df_time["start_indexed"].iloc[-1]
+        df_time["correction_factor"] = 1 / df_time["end_indexed"]
+
     os.makedirs(f"out/time_adjustment/{model_group}", exist_ok=True)
     df_time.to_csv(f"out/time_adjustment/{model_group}/time_adjustment_schedule.csv", index=False)
-    
+
     # now we have a multiplier that we can straightforwardly multiply sales by, that will bring all sales FORWARDS in time
     # we merge the time adjustment back into the sales data
     df_time = df_time[["period","correction_factor"]].copy().rename(
@@ -245,7 +274,7 @@ def enrich_time_adjustment(
     df = df_in.copy()
 
     # Gather settings
-    ta = settings.get("data", {}).get("process", {}).get("time_adjustment", {})
+    ta = get_time_adjustment_instructions(settings)
 
     # Apply time adjustment if necessary
     if "sale_price_time_adj" not in df:
