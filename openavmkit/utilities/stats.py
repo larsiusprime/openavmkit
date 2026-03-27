@@ -1044,6 +1044,19 @@ def calc_elastic_net_regularization(
 
     X = X.copy()
 
+    # Impute NaN with column medians before standardization.
+    # ElasticNet (sklearn) does not accept NaN natively; median imputation is a neutral
+    # choice for this variable-selection pre-pass — LightGBM training still sees real NaN.
+    if X.isnull().values.any():
+        import warnings
+        warnings.warn(
+            f"calc_elastic_net_regularization: NaN detected in "
+            f"{list(X.columns[X.isnull().any()])}. "
+            "Imputing with column medians for the ElasticNet variable-selection step only.",
+            UserWarning,
+        )
+        X = X.fillna(X.median(numeric_only=True))
+
     # Standardize the features
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
@@ -1195,9 +1208,22 @@ def calc_p_values_recursive_drop(
     """
 
     X = X.copy()
+
+    # Impute NaN with column medians — statsmodels OLS does not accept NaN natively.
+    # This is only for the p-value variable-selection pre-pass; LightGBM training sees real NaN.
+    if X.isnull().values.any():
+        import warnings
+        warnings.warn(
+            f"calc_p_values_recursive_drop: NaN detected in "
+            f"{list(X.columns[X.isnull().any()])}. "
+            "Imputing with column medians for the OLS variable-selection step only.",
+            UserWarning,
+        )
+        X = X.fillna(X.median(numeric_only=True))
+
     X = sm.add_constant(X, has_constant='add')
     X = X.astype(np.float64)
-    
+
     model = None
     try:
         model = sm.OLS(y, X).fit()
@@ -1287,6 +1313,19 @@ def calc_t_values_recursive_drop(
     """
 
     X = X.copy()
+
+    # Impute NaN with column medians — statsmodels OLS does not accept NaN natively.
+    # This is only for the t-value variable-selection pre-pass; LightGBM training sees real NaN.
+    if X.isnull().values.any():
+        import warnings
+        warnings.warn(
+            f"calc_t_values_recursive_drop: NaN detected in "
+            f"{list(X.columns[X.isnull().any()])}. "
+            "Imputing with column medians for the OLS variable-selection step only.",
+            UserWarning,
+        )
+        X = X.fillna(X.median(numeric_only=True))
+
     X = sm.add_constant(X, has_constant='add')
     X = X.astype(np.float64)
 
@@ -1395,6 +1434,19 @@ def calc_vif_recursive_drop(
         If no columns remain for VIF calculation.
     """
     X = X.copy()
+
+    # Impute NaN with column medians — VIF (OLS-based) does not accept NaN natively.
+    # This is only for the VIF variable-selection pre-pass; LightGBM training sees real NaN.
+    if X.isnull().values.any():
+        import warnings
+        warnings.warn(
+            f"calc_vif_recursive_drop: NaN detected in "
+            f"{list(X.columns[X.isnull().any()])}. "
+            "Imputing with column medians for the VIF variable-selection step only.",
+            UserWarning,
+        )
+        X = X.fillna(X.median(numeric_only=True))
+
     X = X.astype(np.float64)
 
     # Get boolean and categorical variables from settings if provided
