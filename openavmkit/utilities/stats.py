@@ -713,6 +713,9 @@ def calc_correlations(
 
         score = strength * clarity * clarity
 
+        # Guard against all-NA scores (too few samples to compute correlations)
+        if score.isna().all():
+            break
         min_score_idx = score.idxmin()
         try:
             min_score = score[min_score_idx]
