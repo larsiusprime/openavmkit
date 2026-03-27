@@ -1656,6 +1656,10 @@ def finalize_models(
     save_params: bool = True,
     use_saved_params: bool = True,
     verbose: bool = False,
+    run_main: bool = True,
+    run_vacant: bool = True,
+    run_hedonic: bool = True,
+    run_ensemble: bool = True,
 ) -> None:
     """
     Tries out predictive models on the given SalesUniversePair, finalizes results and writes to disk.
@@ -1680,6 +1684,14 @@ def finalize_models(
         Whether to use saved model parameters.
     verbose : bool, optional
         If True, prints additional information.
+    run_main : bool, optional
+        Whether to run the main (improved-parcel) model. Defaults to True.
+    run_vacant : bool, optional
+        Whether to run the vacant-land model. Defaults to True.
+    run_hedonic : bool, optional
+        Whether to run the hedonic (land/improvement split) model. Defaults to True.
+    run_ensemble : bool, optional
+        Whether to build an ensemble of the base models. Defaults to True.
 
     Returns
     -------
@@ -1694,10 +1706,10 @@ def finalize_models(
         use_saved_params,
         save_results=True,
         verbose=verbose,
-        run_main=True,
-        run_vacant=True,
-        run_hedonic=True,
-        run_ensemble=True,
+        run_main=run_main,
+        run_vacant=run_vacant,
+        run_hedonic=run_hedonic,
+        run_ensemble=run_ensemble,
         do_shaps=False,
         do_plots=False
     )
