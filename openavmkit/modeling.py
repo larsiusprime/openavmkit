@@ -6207,8 +6207,27 @@ def _contrib_to_unit_values(df_contrib: pd.DataFrame, df_base: pd.DataFrame, spl
     drop_from_base = [c for c in reserved if c != the_key and c in df_base.columns]
     df_base_trim = df_base.drop(columns=drop_from_base)
 
-    # merge
-    df_merged = df_contrib_renamed.merge(df_base_trim, on=the_key, how="left")
+    # Use positional alignment instead of a key-based merge.
+    # df_contrib is built row-by-row from df_base (same order), so positional
+    # alignment is correct and avoids the pandas non-unique-join path that
+    # produces a cartesian product when df_base has a non-sequential index
+    # (e.g. after sort_values) and an Arrow-backed string key dtype that
+    # triggers the slow path in pandas merge internals. On a ~421k-row
+    # universe this manifests as a 421k² OOM crash.
+    if len(df_contrib_renamed) != len(df_base_trim):
+        import warnings
+        warnings.warn(
+            f"_contrib_to_unit_values: contrib ({len(df_contrib_renamed)} rows) and "
+            f"base ({len(df_base_trim)} rows) have different sizes; "
+            f"falling back to key-based merge on '{the_key}'.",
+            UserWarning,
+        )
+        df_merged = df_contrib_renamed.merge(df_base_trim, on=the_key, how="left")
+    else:
+        df_contrib_aligned = df_contrib_renamed.reset_index(drop=True)
+        df_base_aligned = df_base_trim.reset_index(drop=True)
+        cols_to_add = [c for c in df_base_aligned.columns if c not in df_contrib_aligned.columns]
+        df_merged = pd.concat([df_contrib_aligned, df_base_aligned[cols_to_add]], axis=1)
 
     # compute per-unit contributions
     normal_vars = []
@@ -6246,7 +6265,17 @@ def _add_prediction_to_contribution(
 ):
     the_key = "key_sale" if "key_sale" in df.columns and "univ" not in split_name else "key"
     df_pred = df[[the_key, "prediction"]]
-    df_combined = df_contrib.merge(df_pred, on=the_key, how="left")
+    # Use positional alignment to avoid cartesian-product OOM (same root cause
+    # as _contrib_to_unit_values: df has a non-sequential index from
+    # sort_values, while df_contrib has 0..N-1, and an Arrow-backed string key
+    # dtype triggers the slow path in pandas merge internals).
+    if len(df_contrib) == len(df_pred):
+        df_combined = pd.concat(
+            [df_contrib.reset_index(drop=True), df_pred[["prediction"]].reset_index(drop=True)],
+            axis=1,
+        )
+    else:
+        df_combined = df_contrib.merge(df_pred, on=the_key, how="left")
     df_combined["check_delta"] = df_combined["prediction"] - df_combined["contribution_sum"]
     return df_combined
 
