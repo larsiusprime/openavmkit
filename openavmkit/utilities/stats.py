@@ -1132,6 +1132,14 @@ def calc_r2(
             results["coef_sign"].append(float("nan"))
             continue  # skip ill-posed models
 
+        # Skip non-numeric columns (e.g. string categoricals); .astype(float) would raise ValueError
+        if not pd.api.types.is_numeric_dtype(data[var]):
+            results["variable"].append(var)
+            results["r2"].append(float("nan"))
+            results["adj_r2"].append(float("nan"))
+            results["coef_sign"].append(float("nan"))
+            continue
+
         X = sm.add_constant(data[var].astype(float), has_constant='add')
 
         # Align y with X using the same filtered rows
