@@ -41,7 +41,7 @@ jobs:
 
       # Setup QEMU for multi-architecture emulation
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       # Set up Buildx to allow for multi-platform builds
       - name: Set up Docker Buildx
