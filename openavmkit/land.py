@@ -22,7 +22,7 @@ from openavmkit.utilities.data import (
     add_area_fields,
 )
 from openavmkit.utilities.plotting import plot_histogram_df
-from openavmkit.utilities.settings import get_model_group_ids
+from openavmkit.utilities.settings import area_unit, get_model_group_ids
 
 from openavmkit.utilities.stats import calc_correlations, calc_cod, calc_r2, calc_mse_r2_adj_r2
 
@@ -788,3 +788,161 @@ def _convolve_land_analysis(
         print("=" * 80)
         print(df_results_test.to_string())
         print("")
+
+
+def calc_lycd_land_values(
+    df: pd.DataFrame,
+    settings: dict,
+    land_alloc: "float | dict | None" = None,
+    market_value_field: str = "model_market_value",
+) -> pd.DataFrame:
+    """Compute land values using the "Least You Can Do" (LYCD) method.
+
+    For each model group this method:
+
+    1. Takes the median market value and median lot size of **improved**
+       (non-vacant) properties in the group.
+    2. Derives a uniform local land rate::
+
+           local_land_rate = (median_market_value * land_alloc_pct) / median_lot_size
+
+    3. Applies that rate to every parcel::
+
+           land_value = local_land_rate * parcel_lot_size
+
+    Because every parcel's land value is driven by the *typical* parcel in its
+    area rather than its own improvement value, the method avoids the absurd
+    side-by-side disparities that arise from naively multiplying each parcel's
+    market value by a fixed allocation fraction.
+
+    When ``land_alloc`` is ``None`` the allocation for each group is derived
+    automatically from the data.  For each group the median per-unit value of
+    **vacant** properties is divided by the median per-unit value of **improved**
+    properties; that ratio is the implied land allocation.  If a group has no
+    vacant properties the global ratio (across all groups combined) is used as a
+    fallback.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing at minimum:
+
+        - ``"key"``
+        - ``"model_group"``
+        - ``market_value_field`` (default ``"model_market_value"``)
+        - ``"is_vacant"`` (bool)
+        - ``f"land_area_{unit}"`` where *unit* is ``"sqft"`` or ``"sqm"``
+
+    settings : dict
+        Settings dictionary (used to determine the area unit).
+    land_alloc : float, dict, or None
+        Fraction of market value attributable to land.
+
+        - **float** – applied uniformly to all model groups (e.g. ``0.20`` for 20 %).
+        - **dict** – ``{model_group_id: float}`` for per-group allocations.
+        - **None** – derived automatically from the ratio of vacant-to-improved
+          per-unit market values within each group.
+
+    market_value_field : str
+        Column name holding the market value estimate.  Defaults to
+        ``"model_market_value"``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of *df* with three additional columns:
+
+        - ``"lycd_land_alloc"`` – land allocation fraction used for the group.
+        - ``"lycd_local_land_rate"`` – implied per-area-unit land rate for the group.
+        - ``"lycd_land_value"`` – resulting land value (clamped to ``[0, market_value]``).
+    """
+    unit = area_unit(settings)
+    lot_area_field = f"land_area_{unit}"
+
+    df = df.copy()
+    model_groups = df["model_group"].unique()
+
+    # Resolve land_alloc to a per-group dict
+    if isinstance(land_alloc, dict):
+        alloc_by_group = {mg: land_alloc.get(mg, np.nan) for mg in model_groups}
+    elif land_alloc is not None:
+        alloc_by_group = {mg: float(land_alloc) for mg in model_groups}
+    else:
+        alloc_by_group = _derive_lycd_alloc_from_data(df, lot_area_field, market_value_field)
+
+    local_land_rates = {}
+    resolved_allocs = {}
+
+    for mg in model_groups:
+        mask_improved = df["model_group"].eq(mg) & df["is_vacant"].eq(False)
+        df_improved = df[mask_improved]
+
+        alloc = alloc_by_group.get(mg, np.nan)
+        resolved_allocs[mg] = alloc
+
+        if len(df_improved) == 0 or np.isnan(alloc):
+            local_land_rates[mg] = np.nan
+            continue
+
+        median_mv = df_improved[market_value_field].median()
+        median_lot = df_improved[lot_area_field].median()
+
+        if median_lot <= 0 or np.isnan(median_lot) or np.isnan(median_mv):
+            local_land_rates[mg] = np.nan
+            continue
+
+        local_land_rates[mg] = (median_mv * alloc) / median_lot
+
+    df["lycd_land_alloc"] = df["model_group"].map(resolved_allocs)
+    df["lycd_local_land_rate"] = df["model_group"].map(local_land_rates)
+    df["lycd_land_value"] = df["lycd_local_land_rate"] * df[lot_area_field]
+
+    # Clamp: must be >= 0 and <= market value
+    df["lycd_land_value"] = df["lycd_land_value"].clip(lower=0)
+    exceeds_mv = df["lycd_land_value"].gt(df[market_value_field])
+    df.loc[exceeds_mv, "lycd_land_value"] = df.loc[exceeds_mv, market_value_field]
+
+    return df
+
+
+def _derive_lycd_alloc_from_data(
+    df: pd.DataFrame,
+    lot_area_field: str,
+    market_value_field: str,
+) -> dict:
+    """Derive per-group land allocation fractions from vacant vs improved values.
+
+    For each model group the allocation is:
+
+        median(market_value / lot_area) for vacant parcels
+        ─────────────────────────────────────────────────
+        median(market_value / lot_area) for improved parcels
+
+    If a group has no vacant parcels the global ratio is used as a fallback.
+    """
+    def _per_unit_median(mask):
+        sub = df[mask].copy()
+        sub = sub[sub[lot_area_field].gt(0)]
+        rates = sub[market_value_field] / sub[lot_area_field]
+        return rates.median()
+
+    # Global fallback
+    global_vacant_rate = _per_unit_median(df["is_vacant"].eq(True))
+    global_improved_rate = _per_unit_median(df["is_vacant"].eq(False))
+    if global_improved_rate > 0 and not np.isnan(global_vacant_rate):
+        global_alloc = global_vacant_rate / global_improved_rate
+    else:
+        global_alloc = np.nan
+
+    result = {}
+    for mg in df["model_group"].unique():
+        mask_mg = df["model_group"].eq(mg)
+        vacant_rate = _per_unit_median(mask_mg & df["is_vacant"].eq(True))
+        improved_rate = _per_unit_median(mask_mg & df["is_vacant"].eq(False))
+
+        if improved_rate > 0 and not np.isnan(vacant_rate):
+            result[mg] = vacant_rate / improved_rate
+        else:
+            result[mg] = global_alloc
+
+    return result
