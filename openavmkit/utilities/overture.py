@@ -395,26 +395,21 @@ class OvertureService:
         if verbose:
             print(f"--> Found {len(joined)} potential building-parcel intersections")
 
-        def calculate_intersection_area(row):
-            try:
-                parcel_geom = gdf_projected.loc[row.name, "geometry"]
-                building_idx = row["index_right"]
-                if pd.isna(building_idx):
-                    return 0.0
-                building_geom = buildings_projected.loc[building_idx, "geometry"]
-                if parcel_geom.intersects(building_geom):
-                    intersection = parcel_geom.intersection(building_geom)
-                    return intersection.area * unit_mult  # Convert to desired units
-                return 0.0
-            except Exception as e:
-                if verbose:
-                    print(f"Warning: Error calculating intersection area: {e}")
-                return 0.0
-
         t.start("calc_area")
-        # TODO: Optimize this step using vectorized operations if possible
-        # Calculate intersection areas
-        joined[field_name] = joined.apply(calculate_intersection_area, axis=1)
+        # Vectorized intersection area calculation
+        joined[field_name] = 0.0
+        valid_mask = ~joined["index_right"].isna()
+        if valid_mask.any():
+            valid_joined = joined[valid_mask]
+            building_geoms = buildings_projected.loc[
+                valid_joined["index_right"].astype(int), "geometry"
+            ].values
+            building_gs = gpd.GeoSeries(
+                building_geoms, index=valid_joined.index, crs=buildings_projected.crs
+            )
+            joined.loc[valid_mask, field_name] = (
+                valid_joined["geometry"].intersection(building_gs).area * unit_mult
+            )
         t.stop("calc_area")
 
         if verbose:
