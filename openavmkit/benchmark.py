@@ -840,7 +840,8 @@ def run_models(
     run_hedonic: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
-    do_plots: bool = False
+    do_plots: bool = False,
+    do_contributions: bool = True,
 ):
     """
     Runs predictive models on the given SalesUniversePair.
@@ -945,7 +946,8 @@ def run_models(
                 verbose,
                 run_ensemble,
                 do_shaps=do_shaps,
-                do_plots=do_plots
+                do_plots=do_plots,
+                do_contributions=do_contributions,
             )
             if mg_results is not None and save_results:
                 dict_all_results[model_group] = mg_results
@@ -1199,6 +1201,7 @@ def run_one_model(
     hedonic: bool = False,
     test_keys: list[str] | None = None,
     train_keys: list[str] | None = None,
+    do_contributions: bool = True,
 ) -> SingleModelResults | None:
     """
     Run a single model based on provided parameters and return its results.
@@ -1406,7 +1409,7 @@ def run_one_model(
         t.start("write")
         main_vacant_hedonic = "hedonic" if hedonic else "vacant" if vacant_only else "main"
         location = get_model_location(settings, main_vacant_hedonic, model_name)
-        _write_model_results(results, outpath, settings, location, verbose=verbose)
+        _write_model_results(results, outpath, settings, location, verbose=verbose, do_contributions=do_contributions)
         t.stop("write")
 
     return results
@@ -1428,6 +1431,7 @@ def run_one_hedonic_model(
     hedonic_test_against_vacant_sales: bool = True,
     save_results: bool = False,
     verbose: bool = False,
+    do_contributions: bool = True,
 ):
     """Run a single hedonic model based on provided parameters and return its results.
 
@@ -1513,6 +1517,7 @@ def run_one_hedonic_model(
         settings=settings,
         save_results=save_results,
         verbose=verbose,
+        do_contributions=do_contributions,
     )
     return results
 
@@ -1766,6 +1771,7 @@ def _predict_one_model(
     settings: dict,
     save_results: bool = False,
     verbose: bool = False,
+    do_contributions: bool = True,
 ) -> SingleModelResults:
     """
     Predict results for one model, using saved results if available.
@@ -1834,15 +1840,15 @@ def _predict_one_model(
         results = predict_slice(ds, slice_model, timing, verbose)
     
     if save_results:
-        
+
         mvh = settings.get("modeling", {}).get("models", {}).get(main_vacant_hedonic, {})
         model_entry = mvh.get("model_name", mvh.get("default", {}))
         location = model_entry.get("location", None)
         if location is None:
             location = get_important_field(settings, "loc_neighborhood")
-        
+
         location = get_model_location(settings, main_vacant_hedonic, model_name)
-        _write_model_results(results, outpath, settings, location, verbose=verbose)
+        _write_model_results(results, outpath, settings, location, verbose=verbose, do_contributions=do_contributions)
 
     return results
 
@@ -2130,13 +2136,61 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
     return dfs
 
 
-def _write_model_results(results: SingleModelResults, outpath: str, settings: dict, location: str = None, verbose:bool = False):
+class _DS:
+    """Minimal stand-in for DataSplit, used only to carry ind_vars and X matrices for the deferred contributions pass."""
+    def __init__(self, ind_vars, X_test, X_sales, X_univ):
+        self.ind_vars = ind_vars
+        self.X_test = X_test
+        self.X_sales = X_sales
+        self.X_univ = X_univ
+
+
+class _SMRContribContext:
+    """
+    Minimal context needed by write_model_parameters / write_shaps for the
+    contributions-only pass.  Holds the trained model, ind_vars, X matrices,
+    and the four DataFrames (geometry stripped to reduce pickle size).
+    """
+    def __init__(self, model, ind_vars, df_train, df_test, df_sales, df_universe):
+        self.model = model
+        # Subset to ind_vars only — avoid storing the full DataFrames twice
+        safe_ind_vars = [v for v in ind_vars if v in df_test.columns]
+        self.ds = _DS(
+            ind_vars=ind_vars,
+            X_test=df_test[safe_ind_vars],
+            X_sales=df_sales[safe_ind_vars],
+            X_univ=df_universe[safe_ind_vars],
+        )
+        self.df_train = df_train
+        self.df_test = df_test
+        self.df_sales = df_sales
+        self.df_universe = df_universe
+
+
+def _write_model_results(
+    results: SingleModelResults,
+    outpath: str,
+    settings: dict,
+    location: str = None,
+    verbose: bool = False,
+    do_contributions: bool = True,
+):
     """
     Write model results to disk in parquet and CSV formats.
+
+    Parameters
+    ----------
+    do_contributions : bool, optional
+        If True (default), compute and write SHAP contribution CSVs immediately.
+        If False, skip contributions and instead save a ``_smr_for_contribs.pkl``
+        file alongside the predictions so that
+        :func:`openavmkit.pipeline.compute_model_contributions` can run the
+        contributions pass separately (allowing it to be checkpointed
+        independently of model training).
     """
-    
+
     print(f"Write model results to {outpath}")
-    
+
     dfs = _assemble_model_results(results, settings)
     path = f"{outpath}/{results.model_name}"
     if "*" in path:
@@ -2144,11 +2198,11 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
     os.makedirs(path, exist_ok=True)
     for key in dfs:
         df = dfs[key]
-        
+
         if "geometry" in df.columns:
             df = gpd.GeoDataFrame(df, geometry="geometry", crs=getattr(df, "crs", None))
             df = ensure_geometries(df)
-        
+
         df.to_parquet(f"{path}/pred_{key}.parquet")
         if "geometry" in df:
             df = df.drop(columns=["geometry"])
@@ -2165,10 +2219,30 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
 
     with open(f"{path}/pred_universe.pkl", "wb") as f:
         pickle.dump(results.pred_univ, f, protocol=pickle.HIGHEST_PROTOCOL)
-    
+
     params_path = f"{path}"
-    
-    write_model_parameters(results.model, results, location, params_path, verbose=verbose)
+
+    if not do_contributions:
+        # Save the minimal context needed for the deferred contributions pass.
+        # Geometry columns are stripped to reduce pickle size; all other columns
+        # (needed by _contrib_to_unit_values) are preserved.
+        ctx = _SMRContribContext(
+            model=results.model,
+            ind_vars=results.ds.ind_vars,
+            df_train=results.df_train.drop(columns=["geometry"], errors="ignore"),
+            df_test=results.df_test.drop(columns=["geometry"], errors="ignore"),
+            df_sales=results.df_sales.drop(columns=["geometry"], errors="ignore"),
+            df_universe=results.df_universe.drop(columns=["geometry"], errors="ignore"),
+        )
+        smr_pkl_path = f"{path}/_smr_for_contribs.pkl"
+        with open(smr_pkl_path, "wb") as f:
+            pickle.dump(ctx, f, protocol=pickle.HIGHEST_PROTOCOL)
+        import json as _json
+        with open(f"{path}/_model_features.json", "w") as f:
+            _json.dump({"ind_vars": list(ctx.ds.ind_vars)}, f)
+        print(f"  Contributions deferred — saved context to {smr_pkl_path}")
+
+    write_model_parameters(results.model, results, location, params_path, verbose=verbose, do_contributions=do_contributions)
 
 
 def get_model_location(
@@ -3506,7 +3580,8 @@ def _run_hedonic_models(
     verbose: bool = False,
     save_results: bool = False,
     run_ensemble: bool = True,
-    do_plots: bool = False
+    do_plots: bool = False,
+    do_contributions: bool = True,
 ):
     """
     Run hedonic models and ensemble them, then update the benchmark.
@@ -4143,7 +4218,8 @@ def _run_models(
     verbose: bool = False,
     run_ensemble: bool = True,
     do_shaps: bool = False,
-    do_plots: bool = False
+    do_plots: bool = False,
+    do_contributions: bool = True,
 ):
     """
     Run models for a given model group and process ensemble results.
@@ -4199,6 +4275,18 @@ def _run_models(
     models_to_skip = settings_model_instructions.get(main_vacant_hedonic,{}).get("skip",{}).get(model_group,[])
 
     model_entries = settings_model.get("models").get(main_vacant_hedonic, {})
+
+    # Apply per-group ind_vars overrides from settings.modeling.models.<mvh>.group_overrides.<group>
+    _group_ind_vars = (
+        model_entries
+        .get("group_overrides", {})
+        .get(model_group, {})
+        .get("ind_vars", None)
+    )
+    if _group_ind_vars is not None:
+        import copy
+        model_entries = copy.deepcopy(model_entries)
+        model_entries.setdefault("default", {})["ind_vars"] = _group_ind_vars
 
     if models_to_run is None:
         models_to_run = list(model_entries.keys())
@@ -4299,6 +4387,7 @@ def _run_models(
             use_saved_params=use_saved_params,
             save_results=save_results,
             verbose=verbose,
+            do_contributions=do_contributions,
         )
         if results is not None:
             model_results[model_name] = results
@@ -4415,7 +4504,8 @@ def _run_models(
             verbose=verbose,
             save_results=save_results,
             run_ensemble=run_ensemble,
-            do_plots=do_plots
+            do_plots=do_plots,
+            do_contributions=do_contributions,
         )
         t.stop("run hedonic models")
 

@@ -1656,6 +1656,13 @@ def finalize_models(
     save_params: bool = True,
     use_saved_params: bool = True,
     verbose: bool = False,
+    run_main: bool = True,
+    run_vacant: bool = True,
+    run_hedonic: bool = True,
+    run_ensemble: bool = True,
+    do_shaps: bool = False,
+    do_plots: bool = False,
+    do_contributions: bool = True,
 ) -> None:
     """
     Tries out predictive models on the given SalesUniversePair, finalizes results and writes to disk.
@@ -1680,6 +1687,18 @@ def finalize_models(
         Whether to use saved model parameters.
     verbose : bool, optional
         If True, prints additional information.
+    run_main : bool, optional
+        Whether to run main (improved) models.
+    run_vacant : bool, optional
+        Whether to run vacant land models.
+    run_hedonic : bool, optional
+        Whether to run hedonic (land/improvement split) models.
+    run_ensemble : bool, optional
+        Whether to run ensemble models.
+    do_shaps : bool, optional
+        Whether to compute SHAP values.
+    do_plots : bool, optional
+        Whether to generate plots.
 
     Returns
     -------
@@ -1694,13 +1713,77 @@ def finalize_models(
         use_saved_params,
         save_results=True,
         verbose=verbose,
-        run_main=True,
-        run_vacant=True,
-        run_hedonic=True,
-        run_ensemble=True,
-        do_shaps=False,
-        do_plots=False
+        run_main=run_main,
+        run_vacant=run_vacant,
+        run_hedonic=run_hedonic,
+        run_ensemble=run_ensemble,
+        do_shaps=do_shaps,
+        do_plots=do_plots,
+        do_contributions=do_contributions,
     )
+
+
+def compute_model_contributions(settings: dict, verbose: bool = False) -> None:
+    """
+    Compute SHAP contribution CSVs from saved model artifacts.
+
+    This is the second half of a split checkpoint strategy.  Call
+    :func:`finalize_models` with ``do_contributions=False`` first (wrapped in
+    a ``3-model-02a-train-predict`` checkpoint) to train models and save
+    predictions.  Then call this function (wrapped in a
+    ``3-model-02b-contributions`` checkpoint) to compute contributions
+    separately, so that a crash during the slow SHAP pass does not require
+    retraining.
+
+    Looks for ``_smr_for_contribs.pkl`` files written by
+    :func:`_write_model_results` and calls
+    :func:`openavmkit.modeling.write_model_parameters` for each one, then
+    deletes the pickle.
+
+    Parameters
+    ----------
+    settings : dict
+        The settings dictionary (used to determine model location).
+    verbose : bool, optional
+        If True, prints additional information.
+    """
+    import glob
+    import pickle
+    import os
+
+    from openavmkit.modeling import write_model_parameters
+    from openavmkit.benchmark import get_model_location
+
+    pkl_files = sorted(glob.glob("out/models/*/*/*/_smr_for_contribs.pkl"))
+    if not pkl_files:
+        print("compute_model_contributions: no _smr_for_contribs.pkl files found — nothing to do.")
+        return
+
+    for pkl_path in pkl_files:
+        # path is e.g. out/models/residential_sf/main/lightgbm/_smr_for_contribs.pkl
+        parts = pkl_path.replace("\\", "/").split("/")
+        model_group = parts[-4]   # e.g. residential_sf
+        mvh = parts[-3]           # e.g. main / vacant
+        model_name = parts[-2]    # e.g. lightgbm
+        outpath = "/".join(parts[:-1])  # directory containing the pkl
+
+        print(f"  Computing contributions: {model_group}/{mvh}/{model_name}")
+
+        with open(pkl_path, "rb") as f:
+            ctx = pickle.load(f)
+
+        location = get_model_location(settings, mvh, model_name)
+        write_model_parameters(
+            ctx.model,
+            ctx,
+            location,
+            outpath,
+            verbose=verbose,
+            do_contributions=True,
+        )
+
+        os.remove(pkl_path)
+        print(f"  Done — removed {pkl_path}")
 
 
 def run_models(

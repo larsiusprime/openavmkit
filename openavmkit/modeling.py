@@ -6286,9 +6286,12 @@ def write_model_parameters(
     location: str,
     outpath: str,
     do_plot: bool = False,
-    verbose: bool = False
+    verbose: bool = False,
+    do_contributions: bool = True,
 ):
-    
+    if not do_contributions:
+        return
+
     print(f"write model parameters to {outpath}")
     xs = {
         "test": smr.ds.X_test,

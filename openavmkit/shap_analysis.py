@@ -213,7 +213,12 @@ def make_shap_table(
         existing = list(expl.feature_names)
         missing = [c for c in list_vars if c not in existing]
         if missing:
-            raise ValueError(f"These list_vars are missing from explanation features: {missing}")
+            import warnings
+            warnings.warn(
+                f"These list_vars are missing from explanation features "
+                f"(likely dropped by variable selection): {missing}"
+            )
+            list_vars = [c for c in list_vars if c in existing]
         feature_cols = list_vars  # enforce this order
 
     df_features = pd.DataFrame(vals, columns=expl.feature_names)
