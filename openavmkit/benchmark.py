@@ -62,7 +62,7 @@ from openavmkit.modeling import (
     GarbageModel,
     AverageModel,
     DataSplit,
-    write_model_parameters
+    write_model_parameters, get_shap_contributions_map
 )
 from openavmkit.reports import MarkdownReport, _markdown_to_pdf
 from openavmkit.time_adjustment import enrich_time_adjustment
@@ -2169,6 +2169,22 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
     params_path = f"{path}"
     
     write_model_parameters(results.model, results, location, params_path, verbose=verbose)
+
+    try:
+        universe_parquet = gpd.read_parquet(f"{path}/pred_universe.parquet")
+    except FileNotFoundError:
+        universe_parquet = None
+    try:
+        df_contributions = pd.read_csv(f"{path}/contributions_univ.csv")
+    except FileNotFoundError:
+        df_contributions = None
+
+    if universe_parquet is not None and df_contributions is not None:
+        shap_contributions_map = get_shap_contributions_map(universe_parquet, results.df_universe, df_contributions)
+        shap_contributions_map.to_parquet(f"{path}/contributions_map.parquet")
+        print(f"Wrote contributions map to {path}/contributions_map.parquet")
+
+
 
 
 def get_model_location(

@@ -7,6 +7,8 @@ from numpy.linalg import LinAlgError
 import polars as pl
 from joblib import Parallel, delayed
 from typing import Union, Any, Dict
+
+from pandas.core.dtypes.common import is_numeric_dtype
 from pygam import LinearGAM, s, te
 from scipy.optimize import curve_fit
 from pygam.callbacks import CallBack
@@ -6249,6 +6251,47 @@ def _add_prediction_to_contribution(
     df_combined = df_contrib.merge(df_pred, on=the_key, how="left")
     df_combined["check_delta"] = df_combined["prediction"] - df_combined["contribution_sum"]
     return df_combined
+
+
+def get_shap_contributions_map(
+        df_shape: pd.DataFrame,
+        df_univ: pd.DataFrame,
+        df_contribs: pd.DataFrame
+):
+    """
+    Merge contributions, unit contributions, and geometry to create a geodataframe the user can visualize
+
+    :param df_shape:
+    :param df_univ:
+    :param df_contribs:
+    :return:
+    """
+    assert 'key' in df_contribs.columns, "df_contribs must contain 'key' column"
+    assert 'key' in df_univ.columns, "df_univ must contain 'key' column"
+    assert 'key' in df_shape.columns, "df_shape must contain 'key' column"
+    assert 'geometry' in df_shape.columns, "df_shape must contain 'geometry' column"
+
+    df_contribs = df_contribs.copy()
+    df_contribs['key'] = df_contribs['key'].astype(str)
+    df_contribs = df_contribs.set_index('key')
+
+    df_univ = df_univ.copy()
+    df_univ['key'] = df_univ['key'].astype(str)
+    df_univ = df_univ.set_index('key')
+
+    df_shape = df_shape.copy()
+    df_shape = df_shape[['key', 'geometry']]
+    df_shape['key'] = df_shape['key'].astype(str)
+    df_shape = df_shape.set_index('key')
+
+    shap_cols = [x for x in df_contribs.columns.to_list() if x not in  ['key', 'prediction','check_delta', 'contribution_sum']]
+    for col in shap_cols:
+        if col in df_univ.columns and is_numeric_dtype(df_univ[col]):
+            df_contribs[f"unit_contrib_{col}"] = df_contribs[col] / df_univ[col]
+        df_contribs.rename({col: f'contributions_{col}'}, axis=1, inplace=True)
+
+    output = df_shape.merge(df_contribs, left_on='key', right_on='key')
+    return output
 
 
 def write_model_parameters(
