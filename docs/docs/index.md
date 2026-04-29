@@ -32,3 +32,8 @@
 - [Operator reference](calc_reference.md#3-operator-reference)
 - [Worked examples](calc_reference.md#4-worked-examples)
 - [Tweaks](calc_reference.md#5-tweaks)
+## [Models reference](models_reference.md)
+- [How model invocation works](models_reference.md#1-how-model-invocation-works) — name vs engine, multi-variant runs, the `default` entry
+- [Common entry fields](models_reference.md#2-common-entry-fields)
+- [Engine reference](models_reference.md#3-engine-reference) — predictive models, reference / pass-through, naive baselines, ensemble
+- [Worked example: ablation study](models_reference.md#4-worked-example-ablation-study)

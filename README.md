@@ -37,6 +37,7 @@ See the [Changelog](changelog.md)
   - [Analysis & QA](docs/docs/advanced_settings.md#6-analysis-qa)
   - [Caching & checkpoints](docs/docs/advanced_settings.md#7-caching-checkpoints) — when to nuke the cache
   - [The `calc` expression language](docs/docs/calc_reference.md) — full operator reference for derived columns and filters
+  - [Models reference](docs/docs/models_reference.md) — every model engine, name-vs-engine dispatch, multi-variant runs
 ## 6. Notebooks & API
   - [Pipeline notebooks workflow](notebooks/README.md) — which notebook to run when
   - [Recipe — public functions](docs/docs/recipe.md)

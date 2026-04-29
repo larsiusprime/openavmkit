@@ -441,6 +441,8 @@ Run validation checks after data processing — value ranges, required fields, e
 
 ## 5. Modeling control
 
+> For the **full catalog of model engines** (XGBoost, LightGBM, CatBoost, MRA, GWR, kernel, SLICE, baselines, etc.), the **model-name-vs-engine dispatch** mechanism, and how to run **multiple variants of the same engine** (e.g. two XGBoost configurations side-by-side), see **[Models reference](models_reference.md)**. The settings on this page are the orchestration layer; that page documents each model.
+
 ### `modeling.instructions.<main|vacant|hedonic>.run`
 
 Explicit list of model names to run for the main, vacant, or hedonic stages. Without it, all models defined under `modeling.models` are run.
@@ -639,6 +641,7 @@ Symptoms to watch for:
 
 ## See also
 
+- [Models reference](models_reference.md) — full catalog of model engines, invocation patterns, multi-variant runs
 - [The `calc` expression language](calc_reference.md) — the full operator reference for `calc` blocks (used in `data.load.<id>.calc`, `data.process.calc`, etc.)
 - [Configuration](config.md) — `.env`, cloud storage, PDF generation
 - [The Basics](the_basics.md) — locality folder structure, terminology

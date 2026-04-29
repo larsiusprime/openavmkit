@@ -335,7 +335,7 @@ Open [`03-model.ipynb`](https://github.com/landeconomics/openavmkit/blob/master/
 
 - **Train/test split.** `write_canonical_splits` writes a deterministic 80/20 split so all models in this run train and evaluate on the same data.
 - **Variable selection.** `try_variables` runs a more thorough variable-importance experiment than the inline auto-reduction. Worth using when you have hypotheses about which characteristics matter; skippable when you trust the defaults.
-- **Model training.** Per model group, the configured models train and predict. Default lineup: MRA (linear regression), GWR (geographic weighted regression), XGBoost, LightGBM, CatBoost, plus several baselines.
+- **Model training.** Per model group, the configured models train and predict. Default lineup: MRA (linear regression), GWR (geographic weighted regression), XGBoost, LightGBM, CatBoost, plus several baselines. **For the full catalog of available models, how to invoke them, how to run multiple variants of the same engine (e.g. two XGBoost configurations side-by-side), and what settings each accepts, see [Models reference](models_reference.md).**
 - **Per-model output.** Each model produces three artifacts per subset (test/sales/universe):
     - **Predictions** — the central output.
     - **`params_<subset>.csv`** — per-feature parameters (regression coefficients for linear; SHAP-normalized for tree-based). "What is each feature's per-unit effect?"
@@ -534,6 +534,7 @@ You now have a working AVM. To go further:
 
 - **[advanced_settings.md](advanced_settings.md)** — full settings reference: preprocessor, enrichment menu, modeling control, ratio study tuning, caching reference.
 - **[calc_reference.md](calc_reference.md)** — the full `calc` expression language: every operator with worked examples.
+- **[models_reference.md](models_reference.md)** — every model engine: invocation, name-vs-engine dispatch, multiple variants of the same engine, settings, when to use each.
 - **[recipe.md](recipe.md)** — every public function organized by pipeline stage.
 - **[config.md](config.md)** — environment-level config: cloud storage credentials, Census API key, PDF report generation.
 - **[AGENTS.md](https://github.com/landeconomics/openavmkit/blob/master/AGENTS.md)** — extending OpenAVMKit (new models, new equity studies, new enrichment sources).
