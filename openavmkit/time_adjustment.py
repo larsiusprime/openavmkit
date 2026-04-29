@@ -1,3 +1,16 @@
+"""
+Time adjustment of sale prices.
+
+Computes a per-day multiplier that adjusts historical sale prices to the
+valuation date, using a rolling median of price per area unit. The multiplier
+is applied via ``sale_price_time_adj = sale_price * multiplier`` and used
+throughout downstream ratio studies, modeling, and reporting.
+
+The built-in engine can be wholly replaced for any model group by setting
+``data.process.time_adjustment.from_file.<model_group>`` in ``settings.json``
+to point at a precomputed CSV — useful when a jurisdiction publishes its
+own time-adjustment factors.
+"""
 import calendar
 import os
 import warnings
@@ -233,6 +246,20 @@ def apply_time_adjustment_per_model_group(
     df_sales["sale_price_time_adj"] = (
             df_sales["sale_price"] * df_sales["correction_factor"]
     )
+
+    # When the time-adjustment schedule yielded no usable correction (e.g. insufficient
+    # per-period variance for rural land sales), correction_factor is NaN and so is
+    # sale_price_time_adj. Fall back to the unadjusted sale_price so downstream consumers
+    # (canonical splits, spatial lag, _get_sales' positive-price filter) don't drop the row.
+    n_missing = int(df_sales["sale_price_time_adj"].isna().sum())
+    if n_missing > 0:
+        df_sales["sale_price_time_adj"] = df_sales["sale_price_time_adj"].fillna(
+            df_sales["sale_price"]
+        )
+        warnings.warn(
+            f"Time adjustment unavailable for {n_missing:,} sales (model group "
+            f"'{model_group}'); falling back to unadjusted sale_price for those rows."
+        )
 
     # we drop the time adjustment column
     df_sales = df_sales.drop(columns=["correction_factor"])

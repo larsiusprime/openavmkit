@@ -1,3 +1,17 @@
+"""
+SHAP-value computation and reporting for tree-based models.
+
+Computes SHAP (Shapley) values across all subsets (test, train, sales,
+universe) for XGBoost, LightGBM, and CatBoost models. Used by
+:mod:`openavmkit.modeling` to produce the per-feature ``params`` and
+``contributions`` outputs that mirror what linear models produce as
+coefficients and coefficient×value contributions.
+
+See Also
+--------
+openavmkit.modeling : Calls into this module to build params/contribs
+    files for tree-based models.
+"""
 import textwrap
 
 import numpy as np

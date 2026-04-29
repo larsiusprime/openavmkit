@@ -1,3 +1,16 @@
+"""
+Field calculations and tweaks.
+
+Implements the operators driven by ``data.load.<id>.calc`` and ``...tweak``
+entries in ``settings.json``. These let users derive new columns or amend
+existing ones during loading (arithmetic, type coercion, conditional
+selection, joins of values, geometry-based calculations, etc.) without
+touching Python.
+
+See Also
+--------
+openavmkit.filters : Filter-list evaluator used by conditional calc operators.
+"""
 import numpy as np
 import pandas as pd
 

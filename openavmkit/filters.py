@@ -1,3 +1,13 @@
+"""
+Filter-list evaluator for ``settings.json`` selection rules.
+
+Filters are expressed as nested lists: the first element is an operator
+(``"=="``, ``"!="``, ``">"``, ``"and"``, ``"or"``, ``"not"``, ``"in"``, etc.)
+and the rest are operands. Operands may be column names (resolved against
+the DataFrame), constants, or further filter lists. This lets users
+specify "valid sale" criteria, model-group membership, exclusion rules,
+and similar conditions declaratively in settings.
+"""
 import pandas as pd
 from openavmkit.utilities.data import is_column_of_type
 

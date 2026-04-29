@@ -1,3 +1,10 @@
+"""
+Internal helpers used by ``openavmkit.utilities``.
+
+Provides safe parquet writers (``to_parquet_safe``, ``sanitize_df``) that
+coerce object-dtype columns to types parquet can round-trip. Imported by
+the rest of the utilities subpackage; not part of the public surface.
+"""
 import json
 import numpy as np
 import pandas as pd

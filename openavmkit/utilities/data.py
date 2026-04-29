@@ -1,3 +1,18 @@
+"""
+DataFrame utility helpers.
+
+General-purpose helpers used throughout OpenAVMKit:
+
+- Type checks (``is_column_of_type``)
+- Safe arithmetic (``div_series_z_safe``, ``div_df_z_safe`` — handle divide-by-zero)
+- Per-model-group dispatch (``do_per_model_group``)
+- Categorical alignment between merged frames (``align_categories``, ``ensure_categories``)
+- DataFrame-to-Markdown rendering for reports (``df_to_markdown``)
+- Spatial-lag computation (``calc_spatial_lag``)
+- Area / column-name utilities
+
+Largely internal but several of these are imported across many modules.
+"""
 import os
 import pickle
 

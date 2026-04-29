@@ -1,3 +1,27 @@
+"""
+Core data loading, processing, and enrichment.
+
+Defines :class:`SalesUniversePair` (the central data structure used throughout
+OpenAVMKit), loads tabular and geospatial files described in
+``settings.json``, performs spatial joins, and orchestrates the enrichment
+pipeline (basic geometry, Census, distances/proximity, OpenStreetMap streets,
+spatial lag, spatial inference, building permits, Overture footprints).
+
+A :class:`SalesUniversePair` (or ``sup``) bundles two DataFrames:
+
+- **universe** — every parcel in the jurisdiction, regardless of whether it
+  has sold. Carries current characteristics.
+- **sales** — only parcels with valid sales in the study period. Carries
+  characteristics as they were *at the time of sale*.
+
+Most public functions take or return a ``sup``.
+
+See Also
+--------
+openavmkit.pipeline : High-level wrappers for the loading and enrichment
+    steps used by the notebooks.
+openavmkit.cleaning : Operates on the ``sup`` after data is loaded.
+"""
 import gc
 import math
 import os

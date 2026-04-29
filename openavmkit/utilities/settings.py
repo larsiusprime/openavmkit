@@ -1,3 +1,27 @@
+"""
+Settings.json loader, preprocessor, and typed accessors.
+
+This module is the single source of truth for reading ``settings.json``.
+It performs four transformations on the user's file before any other
+module sees it:
+
+1. **Comment stripping** — keys prefixed with ``__`` are removed.
+2. **Variable resolution** — string values prefixed with ``$$`` are
+   replaced by the value at the dotted path inside the same settings
+   tree (recursive until stable).
+3. **Template merging** — the user's settings are merged with the built-in
+   ``settings.template.json``, so users only need to specify overrides.
+4. **Flag handling** — ``!key`` overwrites the template instead of merging,
+   ``+key`` extends template lists instead of replacing them.
+
+After loading, a large collection of typed accessors (``get_valuation_date``,
+``get_model_group_ids``, ``get_fields_categorical``, ``area_unit``, etc.)
+provides a stable, well-typed interface to the resulting dict — prefer
+these over reaching into the dict directly.
+
+See :doc:`/advanced_settings` for a user-facing reference of the
+preprocessor and high-impact settings.
+"""
 import importlib
 import json
 import os

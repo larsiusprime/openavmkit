@@ -1,3 +1,21 @@
+"""
+Model benchmarking and ensembling.
+
+Orchestrates running multiple predictive models (MRA, GWR, XGBoost, LightGBM,
+CatBoost, kernel regression, ensembles, and several "naive" baselines) across
+each model group, with optional variable-importance experiments. Compares model
+outputs and produces ensemble predictions.
+
+This module is the high-level coordinator that drives :mod:`openavmkit.modeling`.
+The main entry points (``run_models``, ``try_variables``, ensemble runners) are
+exposed as wrappers in :mod:`openavmkit.pipeline`.
+
+Notes
+-----
+The list of models to run for each main/vacant/hedonic stage is configured in
+``settings.json`` under ``modeling.instructions.<stage>.run``. Per-model-group
+skip lists live under ``modeling.instructions.<stage>.skip.<model_group>``.
+"""
 import os
 import pickle
 import warnings

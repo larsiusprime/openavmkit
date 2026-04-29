@@ -114,8 +114,19 @@ This should open a new tab in your web browser with the Jupyter interface.
 
 For information on how to use Jupyter notebooks in general, refer to the [official Jupyter notebook documentation](https://jupyter-notebook.readthedocs.io/en/stable/).
 
+For an overview of which notebook to run when, see [notebooks/README.md](https://github.com/landeconomics/openavmkit/blob/master/notebooks/README.md).
 
+## Where to go from here
 
+Once you have a locality set up and the basics down, dig into:
+
+- **[Build a jurisdiction from scratch (tutorial)](tutorial.md)** — end-to-end walkthrough from raw data to a working AVM. The recommended next read.
+- **[The pipeline notebooks](https://github.com/landeconomics/openavmkit/blob/master/notebooks/README.md)** — `01-assemble`, `02-clean`, `03-model`, `assessment_quality`. Run them in order on a real locality.
+- **[Recipe](recipe.md)** — public function reference, organized by pipeline stage.
+- **[Advanced settings reference](advanced_settings.md)** — the settings.json preprocessor (`__` comments, `$$` references, template merging, `!`/`+` flags), plus high-impact settings most users discover only by reading source. Read this once before writing your own settings file.
+- **[Configuration](config.md)** — environment-level setup (`.env`, cloud storage, Census API keys, PDF generation).
+
+If you're a coding agent or contributor, also read **[AGENTS.md](https://github.com/landeconomics/openavmkit/blob/master/AGENTS.md)** at the repo root — it captures repo-wide conventions and gotchas.
 
 ## Terminology
 

@@ -99,11 +99,14 @@ By looking into `openavmkit/pipeline.py`, you’ll find the list of **public fun
 		- As seen in: **Model Notebook**.
 	- `try_models()`:
 		- Tries out predictive models on the given SalesUniversePair. Optimized for speed and iteration, doesn't finalize results or write anything to disk.
+		- Use this while you're iterating — adjusting variables, tweaking model groups, testing fill rules. Writing modeling artifacts to disk is a large fraction of total runtime, so skipping the write step lets you cycle much faster.
 		- As seen in: **Model Notebook**.
 	- `run_models()`:
 		- Runs predictive models on the given SalesUniversePair, taking detailed instructions from the provided settings dictionary.
+		- Lower-level than `try_models` / `finalize_models`; takes an explicit `save_results` flag.
 	- `finalize_models()`:
-		- Tries out predictive models on the given SalesUniversePair, finalizes results and writes to disk.
+		- Same training as `try_models`, but also writes everything to disk: predictions, `params_*.csv`, `contributions_*.csv`, plots, ratio-study breakdowns, ensemble outputs.
+		- Call this once you're happy with the results — to commit them for notebook 4 and downstream analysis.
 		- As seen in: **Model Notebook**.
 - Evaluating the Assessment Quality
 	- `run_and_write_ratio_study_breakdowns()`:

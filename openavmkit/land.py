@@ -1,3 +1,15 @@
+"""
+Land-value analysis and validation.
+
+Tools for evaluating predicted land values against vacant-sale ground truth
+and assessor land values. Drives the "vacant" and "hedonic land" modeling
+flows that produce predictions of land value separately from full market
+value, and runs sanity checks on the resulting numbers.
+
+See Also
+--------
+openavmkit.quality_control.check_land_values : Sanity checks consumed here.
+"""
 import os
 import pickle
 import warnings

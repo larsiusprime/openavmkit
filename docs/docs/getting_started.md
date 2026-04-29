@@ -1,5 +1,12 @@
 # Getting Started
 
+## Choose your path
+
+OpenAVMKit can be used three ways. Pick the one that fits, then follow the corresponding install option below.
+
+- **Notebook user** — you want to run the pipeline notebooks on a locality (assess, clean, model, evaluate). Most users start here. After install, do the [smoke test below](#smoke-test-with-sample-data) to confirm everything works, then jump to the [tutorial](tutorial.md) for an end-to-end walkthrough of building a jurisdiction from your own data.
+- **Python library user** — you want to import `openavmkit` modules into your own Python code (analysis scripts, custom pipelines, dashboards). After install, see [The Basics → Code modules](the_basics.md#code-modules), then the [API reference](api/) for what's available.
+- **Contributor / coding agent** — you want to extend OpenAVMKit. Install from Git (option 2 below), then read [AGENTS.md](https://github.com/landeconomics/openavmkit/blob/master/AGENTS.md) at the repo root for conventions and gotchas, plus [CONTRIBUTING.md](https://github.com/landeconomics/openavmkit/blob/master/CONTRIBUTING.md) for the PR workflow.
 
 ## Option 1 - Install from PyPI
 
@@ -161,9 +168,9 @@ pytest
 
 This will run all the unit tests and provide feedback on any errors or failed tests.
 
-## Running your first locality
+## Smoke test with sample data
 
-Okay, you've got the library installed, and you have notebooks running. Let's get you started running a test locality.
+Okay, you've got the library installed, and you have notebooks running. Before tackling your own jurisdiction, do this 10–15 minute smoke test to confirm everything works and to see what successful output looks like at each stage.
 
 First, you need to download an example dataset to work with. The Center for Land Economics has provided one based off of public domain data posted freely on local government websites. Let's download it.
 
@@ -221,12 +228,11 @@ If you set everything up correctly, you should see a log of all the files being 
 - `in/` --> contains all your input files, including `settings.json`
 - `out/` --> will contain all the output the notebook files generate
 
-Now you have everything you need to run the basic notebooks on the test data! From here you should be able to just run the notebooks themselves. 
-
-You can create your own locality datasets by creating a unique folder for them with a settings file and input data. This is regardless of whether you are syncing that data to a cloud service or not.
+Now you have everything you need to run the basic notebooks on the test data! From here you should be able to just run the notebooks themselves.
 
 You can switch between localities by editing the name of the locality variable at the top of each notebook. If you do this, be sure to reset and clear the notebook after changing the locality.
 
+> **Once this works**, you've confirmed your install is healthy and you've seen what a successful run looks like end-to-end. Now go to **[Build a jurisdiction from scratch](tutorial.md)** — the real walkthrough for onboarding your own data.
 
 ## Advanced cloud settings
 

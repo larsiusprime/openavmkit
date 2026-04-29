@@ -1,3 +1,20 @@
+"""
+Data cleaning and missing-value handling.
+
+Operates on a :class:`openavmkit.data.SalesUniversePair` to produce a
+modeling-ready dataset. Responsibilities include:
+
+- Filling missing values per the rules under ``data.process.fill.*`` in
+  ``settings.json`` (see :doc:`/advanced_settings` for the full method
+  reference: ``zero``, ``unknown``, ``none``, ``false``, ``mode``, ``median``,
+  ``mean``, ``max``, ``min``, ``custom``, plus ``_impr`` / ``_vacant`` suffixes).
+- Reconciling year-built / age-years pairs against the valuation date.
+- Auto-filling residual categorical and boolean fields.
+- Validating sales arms-length-ness when ``data.validation.enabled = true``.
+- Cleaning and filtering invalid sales.
+
+Public entry points are surfaced through :mod:`openavmkit.pipeline`.
+"""
 from warnings import warn
 
 import pandas as pd

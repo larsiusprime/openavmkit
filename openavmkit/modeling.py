@@ -1,3 +1,34 @@
+"""
+Predictive model training and prediction.
+
+Defines the model classes and training/prediction routines that produce
+property-value predictions across model groups. Supports MRA (linear
+regression), GWR (geographically-weighted regression), tree-based models
+(XGBoost, LightGBM, CatBoost), kernel regression, GAM-based land models
+(SLICE), spatial-lag models, and several "naive" baselines (Garbage,
+Average, NaiveArea, LocalArea, GroundTruth, PassThrough) used for benchmarking.
+
+Each model produces three standard outputs per subset (test/sales/universe):
+
+- **Predictions** — the central output.
+- **Params** (``params_<subset>.csv``) — per-feature parameters: regression
+  coefficients for linear models, SHAP values normalized by value size for
+  tree-based models. Conceptually, "what is each feature's per-unit effect
+  on the prediction?"
+- **Contributions** (``contributions_<subset>.csv``) — per-feature
+  contributions: coefficients × values for linear models, raw SHAP
+  contributions for tree-based models. Conceptually, "how much did each
+  feature actually contribute to this row's prediction?"
+
+When adding a new model, follow the existing ``write_*_params`` writer
+pattern in this module so the new model emits both files.
+
+See Also
+--------
+openavmkit.benchmark : Top-level orchestrator that calls into this module.
+openavmkit.utilities.modeling : Underlying model class definitions.
+openavmkit.shap_analysis : SHAP-based contribution computation.
+"""
 import json
 import os
 import pickle

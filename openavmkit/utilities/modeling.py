@@ -1,3 +1,23 @@
+"""
+Model class definitions.
+
+Defines the model classes used by :mod:`openavmkit.modeling` to train and
+predict property values. Includes:
+
+- **Tree-based wrappers** — ``XGBoostModel``, ``LightGBMModel``, ``CatBoostModel``
+- **Linear models** — ``MRAModel``, ``MultiMRAModel``
+- **Geographic models** — ``GWRModel``, ``LocalAreaModel``, ``SpatialLagModel``
+- **GAM-based** — ``LandSLICEModel`` ("Smooth Location with Increasing-Concavity Equation")
+- **Baselines** — ``GarbageModel``, ``AverageModel``, ``NaiveAreaModel``,
+  ``PassThroughModel``, ``GroundTruthModel``
+
+Plus helpers (``greedy_forward_loocv``, ``TreeBasedCategoricalData``)
+shared across model fitting routines.
+
+When adding a new model, subclass here and follow the existing pattern;
+register the prediction wrapper in :mod:`openavmkit.benchmark` and the
+params/contribs writer in :mod:`openavmkit.modeling`.
+"""
 from __future__ import annotations
 import numpy as np
 from statsmodels.regression.linear_model import RegressionResults
