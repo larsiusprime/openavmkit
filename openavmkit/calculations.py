@@ -385,25 +385,21 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i: int = 0, rename_map: dict = No
         result = lhs.astype(str).str.contains(str(rhs), na=False)
         return result.fillna(False).astype(bool)
     elif op == "contains_case_insensitive":
-        if "grantor_name" in str(lhs.name):
-            lhs_upper = lhs.astype(str).str.upper()
-            patterns = ["CITY", "MAYOR AND CITY COUNCIL", "MAYOR & CITY COUNCIL"]
+        lhs_upper = lhs.astype(str).str.upper()
+        if isinstance(rhs, list):
+            patterns = [(x[4:] if isinstance(x, str) and x.startswith("str:") else str(x)).upper() for x in rhs]
             result = pd.Series(False, index=lhs.index)
             for pattern in patterns:
                 result = result | lhs_upper.str.contains(pattern, na=False)
-            return result.fillna(False).astype(bool)
         else:
-            result = (
-                lhs.astype(str).str.upper().str.contains(str(rhs).upper(), na=False)
-            )
-            return result.fillna(False).astype(bool)
+            result = lhs_upper.str.contains(str(rhs).upper(), na=False)
+        return result.fillna(False).astype(bool)
     elif op == "isin":
-        if all(isinstance(x, str) for x in rhs):
-            # Strip all whitespace
-            result = lhs.astype(str).str.strip().isin([str(x).strip() for x in rhs])
-            # Remove "str:" prefixes from any string literals
-            result = [x[4:] if (isinstance(x,str) and x.startswith("str:")) else x for x in result]
-            return result
+        if isinstance(rhs, list):
+            cleaned = [x[4:] if isinstance(x, str) and x.startswith("str:") else x for x in rhs]
+            if all(isinstance(x, str) for x in cleaned):
+                return lhs.astype(str).str.strip().isin([x.strip() for x in cleaned])
+            return lhs.isin(cleaned)
         return lhs.isin(rhs)
     elif op == "and":
         return lhs & rhs
