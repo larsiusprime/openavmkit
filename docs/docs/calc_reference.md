@@ -213,7 +213,7 @@ Stricter than `fillempty` — only replaces actual `NaN`. Use `fillempty` for me
 | `replace` | Apply a dict of literal find/replace pairs to a string column | `["replace", "GRADE", {"+": "", "-": ""}]` |
 | `replace_regex` | Same as `replace`, but the keys are regex patterns | `["replace_regex", "ADDRESS", {"\\s+": " "}]` |
 | `contains` | True if LHS string contains RHS substring | `["contains", "DESC", "str:CONDO"]` |
-| `contains_case_insensitive` | Case-insensitive variant of `contains` | `["contains_case_insensitive", "DESC", "str:condo"]` |
+| `contains_case_insensitive` | Case-insensitive variant of `contains`. RHS may also be a list of needles, in which case the result is true if LHS contains *any* of them. | Single: `["contains_case_insensitive", "DESC", "str:condo"]`<br>List: `["contains_case_insensitive", "DESC", ["str:condo", "str:townhome", "str:apartment"]]` |
 
 ### 3.12 String split, join, and slice
 

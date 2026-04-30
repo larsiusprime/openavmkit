@@ -180,7 +180,7 @@ The portion of the full market value due solely to the land itself, without any 
 **Data set**  
 This refers to any collection of parcel records grouped together by some criteria.
 
-**Sales set**  
+**Sales set / Study set**  
 This refers to the subset of parcels that have a valid sale within the study period. We will use these to train our models as well as to evaluate them.
 
 **Training set**  

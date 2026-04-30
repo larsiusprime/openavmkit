@@ -154,7 +154,7 @@ Pulls building footprints from the Overture Maps dataset and aggregates them ont
 Spatial-joins parcels to US Census block groups and pulls demographic and income variables.
 
 - **Activation** — set both the section and `census.enabled = true`
-- **Requires** — a Census API key (see [config.md](config.md#configuring-census-api-access))
+- **Requires** — a Census API key (see [config.md](config.md#configuring-us-census-api-access))
 - **Source** — `_enrich_df_census` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 - **When to use** — you want neighborhood demographics (median income, etc.) as model features.
 
@@ -481,7 +481,7 @@ Filter out non-arms-length sales after data processing, using the conditions def
 
 ### `modeling.instructions.<main|vacant|hedonic>.run`
 
-Explicit list of model names to run for the main, vacant, or hedonic stages. Without it, all models defined under `modeling.models` are run.
+Explicit list of model names to run for the main, vacant, or hedonic stages. Without it, all models defined under `modeling.models.<main|vacant|hedonic>` are run.
 
 - **Source** — `_run_models` in [openavmkit/benchmark.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py)
 - **When to use** — you want a fast iteration on a single model, or you want to skip slow models (e.g. `gwr`) for a quick run.
@@ -585,7 +585,7 @@ On re-run, the cell reads `out/checkpoints/1-assemble-02-process_data.parquet` (
 
 **Public API:**
 
-- `from_checkpoint(prefix, func, params)` — load if cached, otherwise run and save
+- `from_checkpoint(path, func, params, use_checkpoint=True)` — load if cached, otherwise run and save. Pass `use_checkpoint=False` to bypass the cache (always re-run and overwrite the saved result).
 - `delete_checkpoints("<prefix>")` — delete all checkpoints starting with the given prefix (e.g. `delete_checkpoints("1-assemble")` clears all of notebook 1's intermediate state)
 - `clear_checkpoints = True` at the top of a notebook — convention used in the pipeline notebooks; combined with a `delete_checkpoints("<this_notebook>")` call, gives you a one-flag "start fresh" toggle
 

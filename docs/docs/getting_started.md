@@ -40,7 +40,7 @@ This command will clone the repository to your local machine, store it under a f
 
 If you don't have Python on your machine, you'll need to install it.
 
-OpenAVMKit is tested on **Python 3.11**.
+OpenAVMKit requires **Python 3.11 or newer**; 3.11 and 3.12 are tested.
 
 If you already have Python installed, but you're not sure which version of Python you have installed, you can check by running this command:
 
@@ -50,9 +50,11 @@ python --version
 
 If you have Python installed, you should see the version number printed to the console.
 
-If you don't have Python installed, you can get the supported version here:
+If you don't have Python installed, you can get a supported version here:
 
-- [Download Python 3.11.9](https://www.python.org/downloads/release/python-3119/)  
+- [Download Python 3.11.9](https://www.python.org/downloads/release/python-3119/)
+- [Python 3.12 — pick the latest patch from the Python release page](https://www.python.org/downloads/)
+
 
 If you have the wrong version of Python installed, you can download the correct version from one of the links above, and then install it. Be very careful to make sure that the new version of Python is available in your `PATH`. (If you don't know what the means, here is a [handy tutorial on the subject](https://realpython.com/add-python-to-path/)).
 
@@ -223,7 +225,7 @@ Next, run the cloud synchronization cell:
 
 ![](../assets/images/jupyter_06.png)
 
-If you set everything up correctly, you should see a log of all the files being downloaded, and your `notebooks/pipeline/data/nc-us-guilford/` folder should now have two folders inside it:
+If you set everything up correctly, you should see a log of all the files being downloaded, and your `notebooks/pipeline/data/us-nc-guilford/` folder should now have two folders inside it:
 
 - `in/` --> contains all your input files, including `settings.json`
 - `out/` --> will contain all the output the notebook files generate
@@ -278,7 +280,6 @@ Azure:
 HuggingFace:
 
 `HF_ACCESS`: `read_only` or `read_write`  
-`HF_REPO_ID`: a string  
 `HF_TOKEN`: a string  
 
 SFTP:

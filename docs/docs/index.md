@@ -16,7 +16,7 @@
 ## [Configuration](config.md)
 - [Cloud storage](config.md#configuring-cloud-storage)
 - [PDF report generation](config.md#configuring-pdf-report-generation)
-- [US Census API](config.md#configuring-census-api-access)
+- [US Census API](config.md#configuring-us-census-api-access)
 - [Open Street Map API](config.md#configuring-openstreetmap-enrichment)
 ## [Advanced settings reference](advanced_settings.md)
 - [The settings.json preprocessor](advanced_settings.md#1-the-settingsjson-preprocessor) — comments, `$$` references, template merging, `!` and `+` flags

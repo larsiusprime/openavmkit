@@ -245,7 +245,7 @@ The `calc` block lets you derive new columns at load time. `["*", "TOTAL_ACRES",
 
 **The canonical field names** (`key`, `sale_date`, `sale_price`, `bldg_area_finished_sqft`, `land_area_sqft`, `bldg_year_built`, `bldg_quality_num`, `bldg_condition_num`, `neighborhood`, etc.) are what OpenAVMKit's modeling and analysis code looks for. The renaming step in `data.load` is how you bridge from your source schema to OpenAVMKit's. Read [the_basics.md → Terminology](the_basics.md#terminology) for the conceptual model.
 
-**Year built vs. age — load year, model on age.** Map your raw year-built columns to `bldg_year_built` (and `bldg_effective_year_built` if you have it) here in `data.load`. OpenAVMKit's cleaning step automatically derives `bldg_age_years` and `bldg_effective_age_years` from these relative to your `valuation_date`. **Model on the `_age_years` fields, never on the `_year_built` fields.** See [§ B.7 → Age variables](#age-variables-use-age-not-year-built) for the full rationale.
+**Year built vs. age — load year, model on age.** Map your raw year-built columns to `bldg_year_built` (and `bldg_effective_year_built` if you have it) here in `data.load`. OpenAVMKit's cleaning step automatically derives `bldg_age_years` and `bldg_effective_age_years` by subtracting `bldg_year_built` from the *year* of your `valuation_date` (year-precision, not date-precision). **Model on the `_age_years` fields, never on the `_year_built` fields.** See [§ B.7 → Age variables](#age-variables-use-age-not-year-built) for the full rationale.
 
 #### modeling.metadata
 
@@ -448,7 +448,7 @@ This one's important enough to call out in bold:
 
 **Model on `bldg_age_years` or `bldg_effective_age_years`. Never on `bldg_year_built` or `bldg_effective_year_built`.**
 
-The flow is: **load** the year-built field from your raw data (in `data.load.<id>.load`) → OpenAVMKit's cleaning step automatically derives `bldg_age_years` from it relative to your `valuation_date` (see `_fill_unknown_values` in [openavmkit/cleaning.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py)) → **model** on the derived `bldg_age_years`.
+The flow is: **load** the year-built field from your raw data (in `data.load.<id>.load`) → OpenAVMKit's cleaning step automatically derives `bldg_age_years` from it by subtracting `bldg_year_built` from the year of your `valuation_date` (see `_fill_unknown_values` in [openavmkit/cleaning.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py)) → **model** on the derived `bldg_age_years`.
 
 Why year-built is wrong as a model variable:
 
