@@ -245,6 +245,8 @@ For each configured feature class (e.g. `parks`), every parcel gets **three** co
 
 Plus a corresponding `log_dist_to_<feature>` (log transform of the raw distance) for use in models that benefit from log-distance.
 
+> **OSM-sourced features get an `osm_` prefix.** When `osm: true`, the column names are `dist_to_osm_<feature>`, `within_osm_<feature>`, `proximity_to_osm_<feature>`, `log_dist_to_osm_<feature>`. Only `source:`-supplied features get the bare name. Reference the prefixed names in your models when the feature was pulled from OSM.
+
 #### Distance vs. proximity — which to regress on?
 
 **Prefer `proximity_to_<feature>` over `dist_to_<feature>` for regression.** Two reasons:
@@ -286,9 +288,9 @@ Set `store_top: true` and `top_n: N` to additionally produce **per-named-feature
 }
 ```
 
-This produces, in addition to the standard `dist_to_parks` / `within_parks` / `proximity_to_parks`:
+This produces, in addition to the standard `dist_to_osm_parks` / `within_osm_parks` / `proximity_to_osm_parks` (note the `osm_` prefix because `osm: true`):
 
-- `dist_to_parks_<name>` and `proximity_to_parks_<name>` for each of the top 3 parks (ranked by `sort_field`, default `area` for parks, so largest first)
+- `dist_to_osm_parks_<name>` and `proximity_to_osm_parks_<name>` for each of the top 3 parks (ranked by `sort_field`, default `area` for parks, so largest first). For `source:`-supplied features the prefix is omitted (e.g. `dist_to_parks_<name>`).
 
 Names come from the OSM `name` tag when present (cleaned for use as a column name); otherwise they fall back to `<type_field_value>_<index>` (e.g. `park_5`).
 
@@ -343,8 +345,42 @@ For each parcel, computes neighborhood averages of selected fields (sale price, 
 Fills missing values for selected fields using geospatial patterns from nearby parcels. Runs after all other enrichments so it can use enriched fields as predictors.
 
 - **Activation** — presence of the `infer` key
-- **Source** — `_enrich_spatial_inference` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
+- **Source** — `_enrich_spatial_inference` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py); model orchestration in [openavmkit/inference.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/inference.py)
 - **When to use** — you have systematically missing data on subsets of parcels and "this parcel probably looks like its neighbors" is a defensible assumption.
+
+#### Per-field model config
+
+Each entry under `infer` is keyed by the field to be filled, and its value is the model config for that field. The supported sub-keys are:
+
+| Key | Type | Effect |
+| --- | --- | --- |
+| `model.type` | string | Required. One of `ratio_proxy`, `random_forest`, `lightgbm`, `xgboost`, `ensemble`. |
+| `model.proxies` | list of strings | Predictor fields used by the inference model. |
+| `model.locations` | list of strings | Location fields to group by (e.g. `["neighborhood", "market_area"]`). If omitted, OpenAVMKit emits a warning and runs inference as a single global group. To run global-only without the warning, set this to `[]` explicitly. |
+| `model.group_by` | list of strings | (`ratio_proxy` only) Additional grouping fields combined with each location. |
+| `model.interactions` | list | (tree-based and ensemble) Variable-interaction config. |
+| `filters` | list | Filter expressions limiting which rows to predict for. |
+| `fill` | list | List of follow-up fields to fill from the inferred values. |
+
+```json
+{
+  "data": {
+    "process": {
+      "enrich": {
+        "infer": {
+          "bldg_area_finished_sqft": {
+            "model": {
+              "type": "lightgbm",
+              "proxies": ["bldg_area_footprint_sqft", "land_area_sqft"],
+              "locations": ["neighborhood", "market_area"]
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
 
 ---
 
@@ -428,14 +464,14 @@ Post-merge reconciliation rules. After sales and universe data are merged, these
 - **Source** — `_merge_dict_of_dfs` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 - **When to use** — your sales and universe both carry overlapping fields and you need deterministic precedence rules.
 
-### 4.3 `data.validation.enabled`
+### 4.3 `data.process.invalid_sales.enabled`
 
-Run validation checks after data processing — value ranges, required fields, expected types, etc.
+Filter out non-arms-length sales after data processing, using the conditions defined in `data.process.invalid_sales.filter`.
 
 - **Default** — `false`
-- **Effect** — when `true`, validation checks run and report issues. When `false`, they're skipped silently.
+- **Effect** — when `true`, sales matching the filter are excluded. When `false`, the step is skipped silently.
 - **Source** — `filter_invalid_sales` in [openavmkit/cleaning.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py)
-- **When to use** — turn on whenever you're onboarding a new locality or have changed cleaning logic. Leave off only for fast inner-loop iteration once you trust the inputs.
+- **When to use** — if you have a set of sales you know are invalid and can exclude by rule, that aren't covered by your existing sales validity codes
 
 ---
 
@@ -642,7 +678,7 @@ Symptoms to watch for:
 ## See also
 
 - [Models reference](models_reference.md) — full catalog of model engines, invocation patterns, multi-variant runs
-- [The `calc` expression language](calc_reference.md) — the full operator reference for `calc` blocks (used in `data.load.<id>.calc`, `data.process.calc`, etc.)
+- [The `calc` expression language](calc_reference.md) — the full operator reference for `calc` blocks (used in `data.load.<id>.calc`, `data.process.enrich.calc`, etc.)
 - [Configuration](config.md) — `.env`, cloud storage, PDF generation
 - [The Basics](the_basics.md) — locality folder structure, terminology
 - [Recipe](recipe.md) — public function reference and notebook map

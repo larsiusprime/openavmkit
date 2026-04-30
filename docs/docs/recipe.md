@@ -38,14 +38,12 @@ By looking into `openavmkit/pipeline.py`, you’ll find the list of **public fun
 	- `load_dataframes()`:
 		- Load dataframes based on the provided settings and return them in a dictionary.
 		- As seen in: **Assemble Notebook**.
-	- `process_data()`:
+	- `process_dataframes()`:
 		- Process raw dataframes according to settings and return a SalesUniversePair.
 		- As seen in: **Assemble Notebook**.
 	- `process_sales()`:
 		- Process sales data within a SalesUniversePair.
 		- As seen in: **Assemble Notebook**, **Clean Notebook**.
-	- `load_and_process_data()`:
-		- Load and process data according to provided settings.
 	- `load_cleaned_data_for_modeling()`:
 		- Read and return the cleaned data from notebook 2.
 		- As seen in: **Model Notebook**.

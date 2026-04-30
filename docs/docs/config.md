@@ -30,7 +30,7 @@ That's just an example of the format; here are the actual variables that it reco
 | `HF_TOKEN`                        | The Hugging Face API token                                                                                                                                              |
 | `HF_REPO_ID`                      | The Hugging Face repository ID                                                                                                                                          |
 | `SFTP_ACCESS`                     | The type of access your SFTP account has.<br>Legal values are: `read_only`, `read_write`.                                                                               |
-| `SFTP_HOST`                       | The hostname of the SFTP server                                                                                                                                         |
+| `SFTP_HOSTNAME`                   | The hostname of the SFTP server                                                                                                                                         |
 | `SFTP_USERNAME`                   | The username for the SFTP server                                                                                                                                        |
 | `SFTP_PASSWORD`                   | The password for the SFTP server                                                                                                                                        |
 | `SFTP_PORT`                       | The port number for the SFTP server                                                                                                                                     |

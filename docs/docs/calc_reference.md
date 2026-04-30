@@ -13,9 +13,9 @@ This page is the authoritative reference for the operator set. For where `calc` 
 | Location | Runs | Operates on | Typical use |
 | --- | --- | --- | --- |
 | `data.load.<id>.calc` | At file-load time, immediately after column renames and dtype coercion | The just-loaded file's columns (renamed) | Convert units (acres → sqft), build composite keys, normalize categorical values, mark valid sales |
-| `data.process.calc.universe` / `.sales` | After all enrichments are complete | The fully-enriched universe / sales DataFrames | Derive features that depend on enriched columns (Census fields, distance fields, GIS area, etc.) |
+| `data.process.enrich.calc.universe` / `.sales` | After all enrichments are complete | The fully-enriched universe / sales DataFrames | Derive features that depend on enriched columns (Census fields, distance fields, GIS area, etc.) |
 
-> **Key point:** `data.load.<id>.calc` only sees columns that exist in the file you just loaded. `data.process.calc.*` sees the full enriched picture. If a calc you wrote in `data.load` says "field not found," it's almost always because the field comes from enrichment — move the calc to `data.process.calc`.
+> **Key point:** `data.load.<id>.calc` only sees columns that exist in the file you just loaded. `data.process.enrich.calc.*` sees the full enriched picture. If a calc you wrote in `data.load` says "field not found," it's almost always because the field comes from enrichment — move the calc to `data.process.enrich.calc`.
 
 A sibling system, **`tweak`**, handles targeted per-row overrides — see [§ 5 Tweaks](#5-tweaks) below.
 
@@ -367,7 +367,7 @@ This says: "for the row where `PARCEL_ID == 12345`, set `bldg_quality_num` to `0
 ## 6. Common pitfalls
 
 - **"Field not found" errors.** A bare string operand is interpreted as a column name. If you meant a string literal, prefix it with `str:`. If you meant a reference to a value defined elsewhere in `settings.json`, prefix it with `$$`.
-- **Calc references an enriched field.** `data.load.<id>.calc` only sees the just-loaded file. If your calc references a Census or distance column, move it to `data.process.calc`.
+- **Calc references an enriched field.** `data.load.<id>.calc` only sees the just-loaded file. If your calc references a Census or distance column, move it to `data.process.enrich.calc`.
 - **Type errors in arithmetic.** A column loaded as a string (because of a non-numeric character somewhere in the data) won't multiply or divide cleanly. Use `asfloat` or `asint` first, or use `replace` to scrub the offending characters.
 - **Division by zero.** `/` raises an error on zeros. Use `/0` for z-safe division that returns `NaN` instead.
 - **Map values that don't match.** `map` passes through unmatched values unchanged. If you need to error or fall back to a default, add a follow-up `fillna` or `fillempty`.
