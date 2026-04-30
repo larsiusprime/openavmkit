@@ -2496,9 +2496,16 @@ def _enrich_df_basic(
     supkey = "sales" if is_sales else "universe"
     
     for word in ["ref_tables", "calc", "tweak"]:
-        if word in s_enrich_this:
-            warnings.warn(f"Found `{word}` @ `data.process.enrich.{word}`, but it should be under `data.process.enrich.sales.{word}` or `data.process.enrich.universe.{word}`! Nothing will happen!")
-    
+        val = s_enrich_this.get(word)
+        if val is None:
+            continue
+        if not isinstance(val, dict) or ("universe" not in val and "sales" not in val):
+            warnings.warn(
+                f"Found `{word}` @ `data.process.enrich.{word}` but it lacks `universe` and/or `sales` sub-keys. "
+                f"Restructure as `data.process.enrich.{word}.universe: [...]` or `data.process.enrich.{word}.sales: [...]`. "
+                f"Nothing will happen otherwise."
+            )
+
     s_ref = s_enrich_this.get("ref_tables", {}).get(supkey, [])
     s_calc = s_enrich_this.get("calc", {}).get(supkey, {})
     s_tweak = s_enrich_this.get("tweak", {}).get(supkey, {})

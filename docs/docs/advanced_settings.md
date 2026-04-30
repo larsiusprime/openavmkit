@@ -514,6 +514,127 @@ Each entry under `infer` is keyed by the field to be filled, and its value is th
 }
 ```
 
+### 4.10 Reference table joins — `data.process.enrich.ref_tables`
+
+Joins a separately-loaded "reference" dataframe onto your universe (or sales) by a key match. Unlike a spatial join, this is a plain SQL-style left join on a column you specify on each side. Use it when one of your loaded `data.load.<id>` files is a small lookup table — code → description, code → category, zoning short-name → long-name — and you want to add one or more of its columns to every parcel that matches.
+
+- **Activation** — presence of the `ref_tables` key with a non-empty `universe` or `sales` list. No `enabled` flag.
+- **Source** — `_perform_ref_tables` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py); invoked from `_enrich_df_basic` for both the universe and sales dataframes.
+- **When to use** — your assessor data uses coded values (1-character `LAND_CLASS`, numeric `TYPE_AND_USE`, jurisdiction-specific zoning codes) and you want a readable label or a higher-level category as a separate column, especially when the lookup adds **more than one field per code** (where a `calc` block's `map` operator would need one calc per added field). Also when the same lookup is shared between universe and sales.
+
+#### Schema
+
+```json
+{
+  "data": {
+    "process": {
+      "enrich": {
+        "ref_tables": {
+          "universe": [
+            {
+              "id": "ref_land_class",
+              "key_ref_table": "land_class_code",
+              "key_target": "land_class",
+              "add_fields": ["land_class_desc", "land_class_category"]
+            }
+          ],
+          "sales": []
+        }
+      }
+    }
+  }
+}
+```
+
+The `universe` and `sales` keys are **lists** of ref-table entries — one entry per join you want to perform — applied to the universe and sales dataframes respectively. Either or both may be present; an empty/missing list means "no ref-table joins for that side." Each list element has these keys:
+
+| Key | Required | Effect |
+| --- | --- | --- |
+| `id` | yes | The `data.load.<id>` key of the reference dataframe. The dataframe must already be loaded. |
+| `key_ref_table` | yes | Column in the reference dataframe to match on. |
+| `key_target` | yes | Column in the universe (or sales) dataframe to match on. May be the same as `key_ref_table` (in which case the join is on a single shared column name). |
+| `add_fields` | yes | List of column names from the reference dataframe to add. Must be non-empty. None of these names may already exist in the target — this is enforced and raises a `ValueError`. |
+
+#### Mechanics
+
+1. The reference dataframe is loaded like any other through `data.load.<id>` — give it a `filename`, `dupes`, and `load` mapping. It does not need a `key` column; it only needs `key_ref_table` and the `add_fields`.
+2. During basic enrichment, OpenAVMKit pulls just `[key_ref_table] + add_fields` from the reference frame and does a left merge onto the target on `key_target == key_ref_table`. When the two key column names match, a single-column merge is used; when they differ, the `key_ref_table` column is dropped from the result so only the renamed `key_target` remains.
+3. Unmatched rows in the target keep `NaN` in the new `add_fields` columns. Decide a fill rule for them in `data.process.fill` if those fields will feed modeling.
+
+#### Worked example
+
+A jurisdiction's parcels file uses 1-character land class codes (`R`, `V`, `N`, `C`, …). You want both a readable description and a higher-level category for filtering and reporting. Build a small CSV at `in/ref_land_class.csv`:
+
+```csv
+land_class_code,land_class_desc,land_class_category
+R,Residential <10ac homesite,Residential
+V,Vacant,Vacant
+N,Condo,Residential
+C,Commercial,Commercial
+```
+
+Load it as a regular table and reference it:
+
+```json
+{
+  "data": {
+    "load": {
+      "parcels": {
+        "filename": "parcels.csv",
+        "load": {
+          "key": ["REID", "string"],
+          "land_class": "Land_classification"
+        }
+      },
+      "ref_land_class": {
+        "filename": "ref_land_class.csv",
+        "dupes": "auto",
+        "load": {
+          "land_class_code": "land_class_code",
+          "land_class_desc": "land_class_desc",
+          "land_class_category": "land_class_category"
+        }
+      }
+    },
+    "process": {
+      "enrich": {
+        "ref_tables": {
+          "universe": [
+            {
+              "id": "ref_land_class",
+              "key_ref_table": "land_class_code",
+              "key_target": "land_class",
+              "add_fields": ["land_class_desc", "land_class_category"]
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+Every parcel now gets `land_class_desc` and `land_class_category` filled in from the matching ref row.
+
+#### `ref_tables` vs `calc` `map`
+
+These overlap: both can convert a code to a label. Pick by table size and number of added fields.
+
+- **`calc` with `map`** ([calc_reference.md](calc_reference.md)) is best when the mapping is small and inline-readable, and you only need *one* derived column. Each `map` invocation adds one column; doing several requires several `calc` entries that all repeat the same mapping dictionary.
+- **`ref_tables`** is best when the lookup is large enough that a CSV is more maintainable than inline JSON, when **multiple columns** come from the same lookup (e.g. both `_desc` and `_category` from the same code), or when the same mapping needs to apply to both `universe` and `sales`.
+
+The two mechanisms are not mutually exclusive — use whichever fits per case in the same settings file.
+
+#### Common errors
+
+| Error | Cause |
+| --- | --- |
+| `ValueError: No 'id' / 'key_ref_table' / 'key_target' / 'add_fields' found in ref table.` | One of the four required entry keys is missing from a list element. |
+| `ValueError: Ref table '<id>' not found in dataframes.` | The `id` doesn't match any loaded `data.load.<id>` entry. Check spelling and that the table is actually being loaded. |
+| `ValueError: Key field '<col>' not found in ref table '<id>'.` | `key_ref_table` doesn't exist in the loaded reference dataframe. Likely you didn't map it through that table's `load` block. |
+| `ValueError: Target field '<col>' not found in base dataframe` | `key_target` doesn't exist on the universe/sales after merge. Common cause: the field is created later by enrichment or `calc`, but `ref_tables` runs *first* during basic enrichment, so the column has to exist by load-and-merge time. |
+| `ValueError: Field '<col>' already exists in base dataframe.` | One of `add_fields` collides with an existing column. Either remove the conflict from `add_fields` or rename it in the reference table's `load` block. |
+
 ---
 
 ## 5. Data cleaning & validation
