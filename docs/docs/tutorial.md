@@ -7,9 +7,9 @@ This is the end-to-end walkthrough for taking a real jurisdiction from raw data 
 
 Each section ends with pointers into the reference docs ([advanced_settings.md](advanced_settings.md), [recipe.md](recipe.md), [config.md](config.md)) — the tutorial introduces what you need to make decisions, the reference docs cover every option in detail.
 
-> **For domain experts (assessors, IAAO-trained appraisers):** skim Part A to see the rhythm, then jump to Part B section 4 ("Author a minimum viable settings.json"). The IAAO terminology callouts are for generalists; you can ignore them.
->
-> **For technical generalists (data scientists, engineers):** read both parts in order. The blockquoted callouts explain mass-appraisal terminology (model groups, ratio studies, COD/PRD/PRB, equity) that the rest of the doc assumes.
+**For domain experts (assessors, IAAO-trained appraisers):** skim Part A to see the rhythm, then jump to Part B section 4 ("Author a minimum viable settings.json"). The IAAO terminology callouts are for generalists; you can ignore them.
+
+**For technical generalists (data scientists, engineers):** read both parts in order. The blockquoted callouts explain mass-appraisal terminology (model groups, ratio studies, COD/PRD/PRB, equity) that the rest of the doc assumes.
 
 ---
 
@@ -47,7 +47,7 @@ That's it. No credentials needed — it's a public read-only container.
 
 ### A.3 Run
 
-> **Make sure your venv is active** (your prompt should show `(venv)`). If you opened a fresh terminal since A.1, re-run the activate command.
+**Make sure your venv is active** (your prompt should show `(venv)`). If you opened a fresh terminal since A.1, re-run the activate command.
 
 Launch Jupyter (`jupyter notebook` from the `notebooks/` directory) and open [`pipeline/01-assemble.ipynb`](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/01-assemble.ipynb).
 
@@ -76,7 +76,7 @@ After all four notebooks run cleanly:
 
 If any stage errors out: check the install (re-run `pytest` from the repo root), confirm Python is 3.11, and confirm `cloud.json` is in the right place.
 
-> **For full reference**, see [notebooks/README.md](https://github.com/landeconomics/openavmkit/blob/master/notebooks/README.md) for the run-order map and [recipe.md](recipe.md) for what each public function does.
+**For full reference**, see [notebooks/README.md](https://github.com/landeconomics/openavmkit/blob/master/notebooks/README.md) for the run-order map and [recipe.md](recipe.md) for what each public function does.
 
 ---
 
@@ -118,7 +118,7 @@ Place your raw data files (CSV, parquet, shapefile) directly in `in/`. They don'
 
 ### B.3 Profile your raw data
 
-Before writing a settings file, know what you have. Open a Jupyter notebook in your locality folder and look:
+Before writing a settings file, know what you have. Open a blank Jupyter notebook in your locality folder and look:
 
 ```python
 import pandas as pd
@@ -136,7 +136,7 @@ print(parcels.isna().sum())
 print(sales.isna().sum())
 
 # What are the cardinalities of likely categorical fields?
-for col in ["LAND_USE", "ZONING", "GRADE", "SALE_STATUS"]:
+for col in ["LAND_USE", "ZONING", "GRADE", "SALE_STATUS"]: # use your actual fields, these are examples
     if col in parcels.columns:
         print(col, parcels[col].value_counts().head(10))
 ```
@@ -195,7 +195,7 @@ The setting affects:
 - **Modeling features.** Spatial-lag, density, and Somers-units calculations all use the configured small-area unit.
 - **Reports.** Ratio studies and equity studies display areas and distances in the configured units.
 
-> **The conversion principle**: pick the unit system that matches your data (or that you prefer to think in), then map your raw columns into the matching canonical field names. If your raw data is in the *other* system, use a `calc` block at load time to convert: `["*", "TOTAL_ACRES", 43560]` produces `land_area_sqft` from acres, `["*", "AREA_HECTARES", 10000]` produces `land_area_sqm` from hectares, `["/", "AREA_SQM", 0.092903]` would produce sqft from sqm if you really need to swap, and so on. See [The `calc` expression language](calc_reference.md) for the full operator reference.
+**The conversion principle**: pick the unit system that matches your data (or that you prefer to think in), then map your raw columns into the matching canonical field names. If your raw data is in the *other* system, use a `calc` block at load time to convert: `["*", "TOTAL_ACRES", 43560]` produces `land_area_sqft` from acres, `["*", "AREA_HECTARES", 10000]` produces `land_area_sqm` from hectares, `["/", "AREA_SQM", 0.092903]` would produce sqft from sqm if you really need to swap, and so on. See [The `calc` expression language](calc_reference.md) for the full operator reference.
 
 #### data.load
 
@@ -243,9 +243,9 @@ Three patterns to notice:
 
 The `calc` block lets you derive new columns at load time. `["*", "TOTAL_ACRES", 43560]` produces `land_area_sqft = TOTAL_ACRES * 43560`. The expression language is small but expressive — every entry is a list whose first element is an operator and whose remaining elements are operands. Common operators: arithmetic (`+`, `-`, `*`, `/`, `/0` for z-safe), comparison (`==`, `!=`), filters (`?`), string operations (`split_before`, `split_after`, `replace`, `join`, `substr`), type coercion (`asint`, `asfloat`, `asstr`), conditionals (`where`), dictionary lookup (`map`), date parsing (`datetime`), and area-from-geometry (`geo_area`). **For the full operator reference with worked examples, see [The `calc` expression language](calc_reference.md).**
 
-> **The canonical field names** (`key`, `sale_date`, `sale_price`, `bldg_area_finished_sqft`, `land_area_sqft`, `bldg_year_built`, `bldg_quality_num`, `bldg_condition_num`, `neighborhood`, etc.) are what OpenAVMKit's modeling and analysis code looks for. The renaming step in `data.load` is how you bridge from your source schema to OpenAVMKit's. Read [the_basics.md → Terminology](the_basics.md#terminology) for the conceptual model.
+**The canonical field names** (`key`, `sale_date`, `sale_price`, `bldg_area_finished_sqft`, `land_area_sqft`, `bldg_year_built`, `bldg_quality_num`, `bldg_condition_num`, `neighborhood`, etc.) are what OpenAVMKit's modeling and analysis code looks for. The renaming step in `data.load` is how you bridge from your source schema to OpenAVMKit's. Read [the_basics.md → Terminology](the_basics.md#terminology) for the conceptual model.
 
-> **Year built vs. age — load year, model on age.** Map your raw year-built columns to `bldg_year_built` (and `bldg_effective_year_built` if you have it) here in `data.load`. OpenAVMKit's cleaning step automatically derives `bldg_age_years` and `bldg_effective_age_years` from these relative to your `valuation_date`. **Model on the `_age_years` fields, never on the `_year_built` fields.** See [§ B.7 → Age variables](#age-variables-use-age-not-year-built) for the full rationale.
+**Year built vs. age — load year, model on age.** Map your raw year-built columns to `bldg_year_built` (and `bldg_effective_year_built` if you have it) here in `data.load`. OpenAVMKit's cleaning step automatically derives `bldg_age_years` and `bldg_effective_age_years` from these relative to your `valuation_date`. **Model on the `_age_years` fields, never on the `_year_built` fields.** See [§ B.7 → Age variables](#age-variables-use-age-not-year-built) for the full rationale.
 
 #### modeling.metadata
 
@@ -264,7 +264,7 @@ The `calc` block lets you derive new columns at load time. `["*", "TOTAL_ACRES",
 
 #### modeling.model_groups
 
-> **Model group**: a named partition of the parcels in your jurisdiction that share similar characteristics, similar buyers and sellers, and should therefore be modeled together. Single-family residential, commercial, agricultural, and townhomes/condos are typical model groups. The choice of how to split is a real decision — usage and buyer pool matter more than zoning code.
+**Model group**: a named partition of the parcels in your jurisdiction that share similar characteristics, similar buyers and sellers, and should therefore be modeled together. Single-family residential, commercial, agricultural, and townhomes/condos are typical model groups. The choice of how to split is a real decision — usage and buyer pool matter more than zoning code.
 
 Each model group has a name and a filter expression. Filters are nested-list expressions evaluated against universe rows; here's a simple one:
 
@@ -287,7 +287,7 @@ Each model group has a name and a filter expression. Filters are nested-list exp
 
 For more sophisticated splits — handling vacant vs. improved sub-types, common-area exclusions, or filter reuse via `$$ref` — see the [us-nc-guilford settings](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/data/us-nc-guilford/in/settings.json) `model_groups` block.
 
-> **For everything else** — preprocessor syntax (`__` comments, `$$` variable refs, `!` and `+` flags), the full enrichment menu, modeling overrides, ratio study tuning — see [advanced_settings.md](advanced_settings.md). The minimum viable settings above is enough to run notebook 1; layer on advanced features once that's working.
+**For everything else** — preprocessor syntax (`__` comments, `$$` variable refs, `!` and `+` flags), the full enrichment menu, modeling overrides, ratio study tuning — see [advanced_settings.md](advanced_settings.md). The minimum viable settings above is enough to run notebook 1; layer on advanced features once that's working.
 
 ### B.5 Run notebook 1 (Assemble)
 
@@ -415,7 +415,7 @@ Five variables drive most of the predictive power for residential parcels. Get t
 
 Quality and condition are different things: a brand-new poorly-built house is high-condition / low-quality; a well-built but dilapidated house is high-quality / low-condition. Both matter independently.
 
-> **Encoding quality and condition: accuracy beats precision.** A 4-tier scale that's reliably coded ("poor / fair / good / excellent") beats a 16-tier scale where assessors disagree on the boundaries. Aim for ordinal numeric (e.g. 1–4 or a 0–100 scale) so models can interpolate; don't proliferate tiers just to look granular.
+**Encoding quality and condition: accuracy beats precision.** A 4-tier scale that's reliably coded ("poor / fair / good / excellent") beats a 16-tier scale where assessors disagree on the boundaries. Aim for ordinal numeric (e.g. 1–4 or a 0–100 scale) so models can interpolate; don't proliferate tiers just to look granular.
 
 ##### Categorical variables — use them, but judiciously
 
@@ -446,9 +446,9 @@ So use categoricals **deliberately**, not reflexively.
 
 This one's important enough to call out in bold:
 
-> **Model on `bldg_age_years` or `bldg_effective_age_years`. Never on `bldg_year_built` or `bldg_effective_year_built`.**
+**Model on `bldg_age_years` or `bldg_effective_age_years`. Never on `bldg_year_built` or `bldg_effective_year_built`.**
 
-The flow is: **load** the year-built field from your raw data (in `data.load.<id>.load`) → OpenAVMKit's cleaning step automatically derives `bldg_age_years` from it relative to your `valuation_date` (see [openavmkit/cleaning.py:460-466](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py)) → **model** on the derived `bldg_age_years`.
+The flow is: **load** the year-built field from your raw data (in `data.load.<id>.load`) → OpenAVMKit's cleaning step automatically derives `bldg_age_years` from it relative to your `valuation_date` (see `_fill_unknown_values` in [openavmkit/cleaning.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py)) → **model** on the derived `bldg_age_years`.
 
 Why year-built is wrong as a model variable:
 
@@ -458,7 +458,7 @@ Why year-built is wrong as a model variable:
 
 **Effective vs. regular age — pick one, not both.** `bldg_age_years` is calendar age (valuation year minus year built). `bldg_effective_age_years` is the appraiser's judgment of how old the building "feels" given recent renovations, condition, and modernization. Both can be useful, but they measure overlapping concepts and using both as model variables makes them compete — often degrading both their coefficients. Pick whichever is better-recorded in your data: effective age if the assessor actively maintains it, calendar age otherwise.
 
-> **Summary of the age rule:** `_year_built` fields belong in `data.load`. `_age_years` fields belong in your modeling variables. Never reverse this.
+**Summary of the age rule:** `_year_built` fields belong in `data.load`. `_age_years` fields belong in your modeling variables. Never reverse this.
 
 **What to watch for:** large prediction errors on a particular model group usually mean either (a) the model group is too heterogeneous and should be split, or (b) the variables you're feeding the model don't capture what's driving prices in that group.
 

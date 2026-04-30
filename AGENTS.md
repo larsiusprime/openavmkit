@@ -26,7 +26,7 @@ If a notebook reaches into a non-pipeline module directly, that's a sign the wra
 
 ## 2. Settings.json — preprocessor features
 
-Before any code reads `settings.json`, [openavmkit/utilities/settings.py:11-63](openavmkit/utilities/settings.py) runs it through a preprocessor. These features are not standard JSON — they're project-specific, and they're widely used in real settings files. Know them before editing settings.
+Before any code reads `settings.json`, [openavmkit/utilities/settings.py](openavmkit/utilities/settings.py) (`load_settings`) runs it through a preprocessor. These features are not standard JSON — they're project-specific, and they're widely used in real settings files. Know them before editing settings.
 
 ### `__`-prefixed keys are comments
 
@@ -40,13 +40,13 @@ Any key starting with double underscore is stripped before settings are used. JS
 }
 ```
 
-Real example: [notebooks/pipeline/data/us-nc-guilford/in/settings.json:3](notebooks/pipeline/data/us-nc-guilford/in/settings.json#L3) has dozens of `__comment`, `__comment1`, `__commented_out_characteristics`, etc.
+Real example: [notebooks/pipeline/data/us-nc-guilford/in/settings.json](notebooks/pipeline/data/us-nc-guilford/in/settings.json) has dozens of `__comment`, `__comment1`, `__commented_out_characteristics`, etc.
 
 **Don't confuse with single underscore.** A single-underscore key (e.g. `"_run"`) is *not* stripped — it's just a key that doesn't match what the loader looks for. That can have side effects, but it's not a documented disable convention.
 
 ### `$$path.to.value` resolves variable references
 
-A string value beginning with `$$` is replaced by looking up the dotted path within the same settings tree. Resolution is recursive — chains of references work. See [openavmkit/utilities/settings.py:930-989](openavmkit/utilities/settings.py).
+A string value beginning with `$$` is replaced by looking up the dotted path within the same settings tree. Resolution is recursive — chains of references work. See `_replace_variables` in [openavmkit/utilities/settings.py](openavmkit/utilities/settings.py).
 
 ```json
 {
@@ -122,11 +122,11 @@ These three cover the breadth of supported features and idioms. Reach for them b
 
 Patterns, not jurisdictions. Jurisdiction-specific findings belong in agent memory.
 
-- **Assessor data is the default source of truth.** When two fields cover the same concept (e.g. assessor-recorded `land_area_sqft` vs. GIS-derived `land_area_gis_sqft`), prefer the assessor field. Assessors typically encode information that's invisible to a naive GIS polygon read — easements, unusable land, surveyed corrections, etc. The GIS-derived value exists primarily as an automatic backfill: [openavmkit/data.py:2862-2878](openavmkit/data.py#L2862-L2878) substitutes GIS area whenever the assessor area is `0`, negative, or `NaN`, and exposes the deviation as `land_area_gis_delta_<unit>` and `land_area_gis_delta_percent` for diagnostic use. **Only override and prefer the GIS value when you have reason to believe the assessor field is unreliable for a specific jurisdiction or model group.** Record those overrides in your agent memory, not in this file.
-- **Many enrichment steps silently skip if not opted in.** `data.process.enrich.streets.enabled` defaults to `false` (see [openavmkit/data.py:676-691](openavmkit/data.py#L676-L691) — the code prints a hint when it skips). Other enrichments (`census`, `distances`, `permits`, `overture`) are activated by *presence of the key*, not a boolean flag.
+- **Assessor data is the default source of truth.** When two fields cover the same concept (e.g. assessor-recorded `land_area_sqft` vs. GIS-derived `land_area_gis_sqft`), prefer the assessor field. Assessors typically encode information that's invisible to a naive GIS polygon read — easements, unusable land, surveyed corrections, etc. The GIS-derived value exists primarily as an automatic backfill: `_basic_geo_enrichment` in [openavmkit/data.py](openavmkit/data.py) substitutes GIS area whenever the assessor area is `0`, negative, or `NaN`, and exposes the deviation as `land_area_gis_delta_<unit>` and `land_area_gis_delta_percent` for diagnostic use. **Only override and prefer the GIS value when you have reason to believe the assessor field is unreliable for a specific jurisdiction or model group.** Record those overrides in your agent memory, not in this file.
+- **Many enrichment steps silently skip if not opted in.** `data.process.enrich.streets.enabled` defaults to `false` (see `enrich_df_streets` in [openavmkit/data.py](openavmkit/data.py) — the code prints a hint when it skips). Other enrichments (`census`, `distances`, `permits`, `overture`) are activated by *presence of the key*, not a boolean flag.
 - **Street enrichment is computationally expensive but only needs to run once.** It can take a long time the first time, but the result is cached and does not need to be regenerated unless the locality's geometry changes.
-- **`data.validation` defaults to off.** [openavmkit/cleaning.py:253](openavmkit/cleaning.py#L253): `if not s_validation.get("enabled", False)`. Set `data.validation.enabled = true` to actually run validation checks.
-- **Time adjustment can be wholly overridden.** `data.process.time_adjustment.from_file.<model_group>` (see [openavmkit/time_adjustment.py:138-203](openavmkit/time_adjustment.py#L138-L203)) replaces the built-in engine for that model group with a CSV. Check this before debugging unexpected time-adjustment output.
+- **`data.validation` defaults to off.** See `filter_invalid_sales` in [openavmkit/cleaning.py](openavmkit/cleaning.py) — it early-returns when `enabled` is not set. Set `data.validation.enabled = true` to actually run validation checks.
+- **Time adjustment can be wholly overridden.** `data.process.time_adjustment.from_file.<model_group>` (see `read_time_adjustment_from_file` in [openavmkit/time_adjustment.py](openavmkit/time_adjustment.py)) replaces the built-in engine for that model group with a CSV. Check this before debugging unexpected time-adjustment output.
 - **Notebooks accumulate large outputs.** `notebooks/pipeline/03-model.ipynb` is over 1 MB. Strip outputs (`jupyter nbconvert --clear-output --inplace …`) before committing.
 - **Caching is designed to self-invalidate but isn't perfect.** If you change `settings.json` (or any other input) and the next run looks suspiciously like the last one — or if enrichment output is missing fields it should have — **nuke the cache.** Use `delete_checkpoints("<prefix>")` for notebook checkpoints, or delete the locality's `cache/` folder for the enrichment cache. See [docs/docs/advanced_settings.md § 7](docs/docs/advanced_settings.md#7-caching-checkpoints) for full detail.
 - **Saved model parameters are a separate cache layer with different semantics.** Tunable models (XGBoost / LightGBM / CatBoost via Optuna; GWR / kernel regression via bandwidth search) save their tuned hyperparameters under `<locality>/out/models/<model_group>/.../` as `<slug>_params.json`, `<model_name>_bw.json`, or `kernel_bw.pkl`. **Deleting these forces a fresh hyperparameter search** on the next run. **Keeping them skips the search** but constrains the model to the previous run's tuning even though the model still re-fits on current training data. If your training data has meaningfully shifted (different sales window, different features, different model groups), delete the saved params so the next run re-tunes. See [advanced_settings.md § 7.4](docs/docs/advanced_settings.md#74-saved-model-parameters-different-semantics).
@@ -135,7 +135,7 @@ Patterns, not jurisdictions. Jurisdiction-specific findings belong in agent memo
 
 ## 5. Code style
 
-- **Docstrings: NumPy style.** Matches existing code (see [openavmkit/ratio_study.py:23-62](openavmkit/ratio_study.py#L23-L62)) and `mkdocs.yml`'s `mkdocstrings` config. Don't write Google-style docstrings — they will render inconsistently.
+- **Docstrings: NumPy style.** Matches existing code (see the `RatioStudy` class in [openavmkit/ratio_study.py](openavmkit/ratio_study.py)) and `mkdocs.yml`'s `mkdocstrings` config. Don't write Google-style docstrings — they will render inconsistently.
 - **PEP 8** per [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Module-level docstrings** are surfaced as the page header by `mkdocstrings`. New modules should have one.
 - **Don't add comments that restate the code.** The existing code is light on comments by intent — only add one when the *why* is non-obvious.
@@ -176,7 +176,7 @@ See `horizontal_equity_study.py`, `vertical_equity_study.py` as templates. The s
 
 ### Adding a new enrichment source
 
-Add a `_enrich_df_<source>` function in [openavmkit/data.py](openavmkit/data.py), gate it on a settings key under `data.process.enrich.<source>`, and call it from the universe-enrichment block (around `data.py:1090-1130`).
+Add a `_enrich_df_<source>` function in [openavmkit/data.py](openavmkit/data.py), gate it on a settings key under `data.process.enrich.<source>`, and call it from `_enrich_data` alongside the other `_enrich_df_*` calls.
 
 ---
 

@@ -232,7 +232,7 @@ Now you have everything you need to run the basic notebooks on the test data! Fr
 
 You can switch between localities by editing the name of the locality variable at the top of each notebook. If you do this, be sure to reset and clear the notebook after changing the locality.
 
-> **Once this works**, you've confirmed your install is healthy and you've seen what a successful run looks like end-to-end. Now go to **[Build a jurisdiction from scratch](tutorial.md)** — the real walkthrough for onboarding your own data.
+**Once this works**, you've confirmed your install is healthy and you've seen what a successful run looks like end-to-end. Now go to **[Build a jurisdiction from scratch](tutorial.md)** — the real walkthrough for onboarding your own data.
 
 ## Advanced cloud settings
 

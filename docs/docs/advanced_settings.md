@@ -11,7 +11,7 @@ Each setting entry follows the same shape:
 - **Path** — the dotted path inside `settings.json`
 - **Default** — what happens if you don't set it
 - **Effect** — what changing it does
-- **Source** — file:line where the code reads it
+- **Source** — file (and function or class name) where the code reads it
 - **When to use** — practical guidance
 
 ---
@@ -113,14 +113,14 @@ Replace OpenAVMKit's built-in time-adjustment engine with a precomputed CSV for 
 
 - **Default** — not set; built-in engine runs
 - **Effect** — when set, OpenAVMKit reads the CSV at the configured path and uses those multipliers verbatim. The internal model is not run for that model group.
-- **Source** — [openavmkit/time_adjustment.py:138-203](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/time_adjustment.py)
+- **Source** — `read_time_adjustment_from_file` in [openavmkit/time_adjustment.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/time_adjustment.py)
 - **When to use** — your jurisdiction publishes its own time-adjustment factors; you want reproducible adjustments across runs; you're debugging modeling and want to hold time-adjustment constant.
 
 ---
 
 ## 3. Data enrichment
 
-Enrichment runs after data is loaded and before modeling. The orchestrator at [openavmkit/data.py:1080-1160](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py) calls each enrichment step in sequence. The presence (or `enabled` flag) of each subsection of `data.process.enrich` controls what runs.
+Enrichment runs after data is loaded and before modeling. The orchestrator `_enrich_data` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py) calls each enrichment step in sequence. The presence (or `enabled` flag) of each subsection of `data.process.enrich` controls what runs.
 
 ### 3.1 Basic geometric enrichment — `data.process.enrich.basic`
 
@@ -133,7 +133,7 @@ Default-on. Computes from parcel geometry:
 
 Sub-flags (all default `true`): `latlon`, `area`, `shape`, `polar`. Set to `false` to skip individual steps. Set the parent `basic.enabled = false` to skip the entire stage.
 
-- **Source** — [openavmkit/data.py:2802-2900](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
+- **Source** — `_basic_geo_enrichment` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 
 ### 3.2 Spatial joins — `data.process.enrich.spatial_joins`
 
@@ -155,7 +155,7 @@ Spatial-joins parcels to US Census block groups and pulls demographic and income
 
 - **Activation** — set both the section and `census.enabled = true`
 - **Requires** — a Census API key (see [config.md](config.md#configuring-census-api-access))
-- **Source** — [openavmkit/data.py:1163](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
+- **Source** — `_enrich_df_census` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 - **When to use** — you want neighborhood demographics (median income, etc.) as model features.
 
 ### 3.5 Distance & proximity enrichment — `data.process.enrich.distances`
@@ -163,7 +163,7 @@ Spatial-joins parcels to US Census block groups and pulls demographic and income
 For each parcel, computes how close it is to features such as parks, water bodies, schools, transportation, the CBD, or individual landmarks. This is one of the most useful enrichments — and the most worth understanding in detail.
 
 - **Activation** — presence of the `distances` key, **plus** `distances.enabled = true` (defaults to `false` at the inner level)
-- **Source** — [openavmkit/data.py:1259-1507, 3300-3360](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
+- **Source** — `_enrich_df_distances` and `_do_perform_distance_calculations_osm` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 
 #### Two ways to source the geometry
 
@@ -320,7 +320,7 @@ Any other feature name (e.g. `cbd`, `airport`, `university`) is also supported �
 Joins permit records onto sales by parcel ID and date, producing fields like recent renovation activity that explain post-sale price differences.
 
 - **Activation** — presence of the `permits` key
-- **Source** — [openavmkit/data.py:1122-1125](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
+- **Source** — `_enrich_permits` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 - **When to use** — your jurisdiction publishes a permit feed and you want to control for permitted improvements.
 
 ### 3.7 OpenStreetMap streets — `data.process.enrich.streets.enabled`
@@ -328,14 +328,14 @@ Joins permit records onto sales by parcel ID and date, producing fields like rec
 Adds OSM-derived street-network features to each parcel: frontage broken down by street class (motorway, primary, residential, …), street speed limits, lane counts, plus a Somers-unit-normalized land area derived from frontage and depth.
 
 - **Default** — `false`
-- **Source** — [openavmkit/data.py:636-693](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
+- **Source** — `enrich_df_streets` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 - **Performance** — this step is **computationally expensive**. It can take a long time to run on a large locality the first time. However, the result is cached and does not need to be regenerated unless the locality's parcel geometry changes. Plan accordingly: budget time for the first run, and don't worry about subsequent runs.
 
 ### 3.8 Spatial lag — `data.process.enrich.spatial_lag`
 
 For each parcel, computes neighborhood averages of selected fields (sale price, building age, floor-area ratio, bedroom density, etc.). Produces dozens of `spatial_lag_*` columns that capture local context not encoded in categorical location fields.
 
-- **Source** — [openavmkit/data.py:2366](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
+- **Source** — `enrich_sup_spatial_lag` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 - **When to use** — when you want models to see neighborhood smoothing of key signals, especially price.
 
 ### 3.9 Spatial inference (gap fill) — `data.process.enrich.infer`
@@ -343,7 +343,7 @@ For each parcel, computes neighborhood averages of selected fields (sale price, 
 Fills missing values for selected fields using geospatial patterns from nearby parcels. Runs after all other enrichments so it can use enriched fields as predictors.
 
 - **Activation** — presence of the `infer` key
-- **Source** — [openavmkit/data.py:1128-1131](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
+- **Source** — `_enrich_spatial_inference` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 - **When to use** — you have systematically missing data on subsets of parcels and "this parcel probably looks like its neighbors" is a defensible assumption.
 
 ---
@@ -352,7 +352,7 @@ Fills missing values for selected fields using geospatial patterns from nearby p
 
 ### 4.1 Filling missing values — `data.process.fill.<method>`
 
-`data.process.fill` is a dict whose **keys are fill methods** and whose **values are lists of fields** to apply that method to. The cleaner walks each method/field-list pair and applies the named method to each field's missing values. See [openavmkit/cleaning.py:417-499](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py).
+`data.process.fill` is a dict whose **keys are fill methods** and whose **values are lists of fields** to apply that method to. The cleaner walks each method/field-list pair and applies the named method to each field's missing values. See `_fill_unknown_values` in [openavmkit/cleaning.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py).
 
 Available fill methods:
 
@@ -418,14 +418,14 @@ After your configured fills run, the cleaner does a few things automatically:
 
 1. **Year-built / age-years reconciliation.** If `bldg_year_built` exists, `bldg_age_years` is recomputed as `valuation_year - bldg_year_built` (and clamped to `0` for non-positive year-built values). If only `bldg_age_years` exists, `bldg_year_built` is derived from it. The same logic applies to `bldg_effective_year_built` / `bldg_effective_age_years`. After reconciliation, all four year/age fields get a final `zero` fill.
 2. **Categorical auto-fill.** Any categorical field configured via `field_classification.categorical` that still has NaN after all explicit fills is filled with `"UNKNOWN"`. Boolean fields are similarly normalized.
-3. **Per-model-group execution.** All fills are applied per model group, so a `mode` or `median` fill uses the model group's distribution rather than the global one — see `_fill_unknown_values_per_model_group` at [openavmkit/cleaning.py:388](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py).
+3. **Per-model-group execution.** All fills are applied per model group, so a `mode` or `median` fill uses the model group's distribution rather than the global one — see `_fill_unknown_values_per_model_group` in [openavmkit/cleaning.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py).
 
 ### 4.2 `data.process.reconcile`
 
 Post-merge reconciliation rules. After sales and universe data are merged, these rules let you resolve conflicts (e.g. when both sides have a value for the same field) by ID.
 
 - **Default** — empty dict `{}`
-- **Source** — [openavmkit/data.py:3970, 4170-4171](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
+- **Source** — `_merge_dict_of_dfs` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 - **When to use** — your sales and universe both carry overlapping fields and you need deterministic precedence rules.
 
 ### 4.3 `data.validation.enabled`
@@ -434,7 +434,7 @@ Run validation checks after data processing — value ranges, required fields, e
 
 - **Default** — `false`
 - **Effect** — when `true`, validation checks run and report issues. When `false`, they're skipped silently.
-- **Source** — [openavmkit/cleaning.py:253, 269](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py)
+- **Source** — `filter_invalid_sales` in [openavmkit/cleaning.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py)
 - **When to use** — turn on whenever you're onboarding a new locality or have changed cleaning logic. Leave off only for fast inner-loop iteration once you trust the inputs.
 
 ---
@@ -447,14 +447,14 @@ Run validation checks after data processing — value ranges, required fields, e
 
 Explicit list of model names to run for the main, vacant, or hedonic stages. Without it, all models defined under `modeling.models` are run.
 
-- **Source** — [openavmkit/benchmark.py:4246](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py)
+- **Source** — `_run_models` in [openavmkit/benchmark.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py)
 - **When to use** — you want a fast iteration on a single model, or you want to skip slow models (e.g. `gwr`) for a quick run.
 
 ### `modeling.instructions.<main|vacant|hedonic>.skip.<model_group>`
 
 Per-model-group skip list. For the named model group, the listed models are skipped even if they're in `run`.
 
-- **Source** — [openavmkit/benchmark.py:4247, 4280](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py)
+- **Source** — `_run_models` in [openavmkit/benchmark.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py)
 - **When to use** — a particular model is unstable on a particular model group (low sample count, rank-deficient features) and you want to exclude it from that group only.
 
 ### `modeling.instructions.feature_selection.thresholds` and `.weights`
@@ -476,14 +476,14 @@ Fine-tune the variable-selection scoring used during model setup. The thresholds
   }
   ```
 
-- **Source** — [openavmkit/resources/settings/settings.template.json:21-40](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/resources/settings/settings.template.json), consumed in `benchmark.py`.
+- **Source** — `modeling.instructions.feature_selection` in [openavmkit/resources/settings/settings.template.json](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/resources/settings/settings.template.json), consumed in `benchmark.py`.
 - **When to use** — your standard variable-selection results don't reflect domain knowledge. Loosen `correlation` to keep weak-but-meaningful features, or tighten `vif` to drop more multicollinear ones.
 
 ### `modeling.try_variables.variables`
 
 Run a dedicated variable-importance experiment over a custom set of candidate variables before main modeling. Surfaced via [openavmkit.pipeline.try_variables](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/pipeline.py).
 
-- **Source** — [openavmkit/benchmark.py:259-369](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py)
+- **Source** — `try_variables` in [openavmkit/benchmark.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py)
 - **When to use** — you have hypotheses about which variables matter and want a slower, more thorough comparison than the auto-reduction step does inline.
 
 ---
@@ -494,21 +494,21 @@ Run a dedicated variable-importance experiment over a custom set of candidate va
 
 List of model groups to exclude from outlier analysis entirely.
 
-- **Source** — [openavmkit/pipeline.py:1505](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/pipeline.py)
+- **Source** — `identify_outliers` in [openavmkit/pipeline.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/pipeline.py)
 - **When to use** — small or unusual model groups where the outlier heuristics generate too many false positives.
 
 ### `analysis.outliers.model_groups.<id>` and `analysis.outliers.default`
 
 Per-model-group outlier detection config; if no entry exists for a model group, `default` is used. Each entry can specify which model type's predictions to use for each of `main`, `vacant`, `hedonic_land`.
 
-- **Source** — [openavmkit/pipeline.py:1507-1519](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/pipeline.py)
+- **Source** — `identify_outliers` in [openavmkit/pipeline.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/pipeline.py)
 
 ### `analysis.ratio_study.trim.<model_group>.max_percent`
 
 Maximum fraction of records the ratio study is allowed to trim as outliers when computing trimmed statistics (COD-trim, PRD-trim, etc.).
 
 - **Default** — `0.1` (10%)
-- **Source** — [openavmkit/utilities/settings.py:1187-1190](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/utilities/settings.py)
+- **Source** — `_get_max_ratio_study_trim` in [openavmkit/utilities/settings.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/utilities/settings.py)
 - **When to use** — your sales data is unusually noisy and the default 10% trim is masking real volatility, or unusually clean and a tighter cap is appropriate.
 
 ### `analysis.ratio_study.look_back_years`
@@ -516,7 +516,7 @@ Maximum fraction of records the ratio study is allowed to trim as outliers when 
 How many years before the valuation date to include sales from when running the ratio study.
 
 - **Default** — `1` (from template)
-- **Source** — [openavmkit/utilities/settings.py:112-120](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/utilities/settings.py)
+- **Source** — `get_look_back_dates` in [openavmkit/utilities/settings.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/utilities/settings.py)
 - **When to use** — your jurisdiction expects a multi-year ratio-study window, or you want to widen the sample for low-volume model groups.
 
 ---
