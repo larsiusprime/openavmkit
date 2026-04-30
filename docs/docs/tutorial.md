@@ -95,8 +95,8 @@ Now the real work. You have an assessor extract for a jurisdiction OpenAVMKit do
 **Optional but recommended:**
 
 - **Building permits** — for capturing post-sale renovations that explain price differences.
-- **Reference shapefiles** for distance/proximity features — CBD polygon, school district boundaries, airport, employment centers, etc. (See [advanced_settings.md § 3.5](advanced_settings.md#35-distance-proximity-enrichment-dataprocessenrichdistances) for what these unlock.)
-- **Time adjustment factors** if your jurisdiction publishes its own — see [advanced_settings.md § 2](advanced_settings.md#2-time-adjustment).
+- **Reference shapefiles** for distance/proximity features — CBD polygon, school district boundaries, airport, employment centers, etc. (See [advanced_settings.md § 4.5](advanced_settings.md#45-distance-proximity-enrichment-dataprocessenrichdistances) for what these unlock.)
+- **Time adjustment factors** if your jurisdiction publishes its own — see [advanced_settings.md § 3](advanced_settings.md#3-time-adjustment).
 
 **File formats** — CSV, parquet, shapefile, geopackage. OpenAVMKit reads them all. Parquet is fastest; shapefiles work fine for geometry.
 
@@ -191,7 +191,7 @@ This single setting determines the unit system used everywhere downstream. Choos
 The setting affects:
 
 - **Which canonical field names you map your raw columns to.** When `units = "imperial"`, the modeling code looks for `land_area_sqft`, `bldg_area_finished_sqft`, `frontage_ft`, `depth_ft`, etc. When `units = "metric"`, it looks for `land_area_sqm`, `bldg_area_finished_sqm`, `frontage_m`, `depth_m`, etc. **Map your raw columns to the names that match your configured unit system** — if your assessor data reports building area in square feet and you've set `units = "imperial"`, map it to `bldg_area_finished_sqft`; if you've set `units = "metric"`, convert at load time and map to `bldg_area_finished_sqm`.
-- **Enrichment outputs.** GIS-derived land area is written to `land_area_gis_sqft` or `land_area_gis_sqm` depending on the setting. Distance enrichment defaults to `km` regardless, but you can override `unit` per feature (see [advanced_settings.md § 3.5](advanced_settings.md#35-distance-proximity-enrichment-dataprocessenrichdistances)).
+- **Enrichment outputs.** GIS-derived land area is written to `land_area_gis_sqft` or `land_area_gis_sqm` depending on the setting. Distance enrichment defaults to `km` regardless, but you can override `unit` per feature (see [advanced_settings.md § 4.5](advanced_settings.md#45-distance-proximity-enrichment-dataprocessenrichdistances)).
 - **Modeling features.** Spatial-lag, density, and Somers-units calculations all use the configured small-area unit.
 - **Reports.** Ratio studies and equity studies display areas and distances in the configured units.
 
@@ -320,10 +320,10 @@ Open [`02-clean.ipynb`](https://github.com/landeconomics/openavmkit/blob/master/
 
 **What this notebook is doing:**
 
-- **Filling missing values.** OpenAVMKit cannot model on null data, so `data.process.fill.<method>` rules in your settings get applied. Choose methods deliberately: `zero` for "missing means absent" (e.g., building area on vacant parcels — `zero_vacant`), `mode` for categorical defaults, `median` for skewed numerics, `mean` for symmetric numerics. The `_impr` and `_vacant` suffixes scope a fill to improved-only or vacant-only parcels. **Full reference**: [advanced_settings.md § 4.1](advanced_settings.md#41-filling-missing-values-dataprocessfillmethod).
+- **Filling missing values.** OpenAVMKit cannot model on null data, so `data.process.fill.<method>` rules in your settings get applied. Choose methods deliberately: `zero` for "missing means absent" (e.g., building area on vacant parcels — `zero_vacant`), `mode` for categorical defaults, `median` for skewed numerics, `mean` for symmetric numerics. The `_impr` and `_vacant` suffixes scope a fill to improved-only or vacant-only parcels. **Full reference**: [advanced_settings.md § 5.1](advanced_settings.md#51-filling-missing-values-dataprocessfillmethod).
 - **Equity clusters.** Parcels are grouped by similar characteristics + similar location for later horizontal-equity analysis.
 - **Sales scrutiny.** A clustering heuristic flags suspect sales — outlier prices within a peer group, suspicious clusters of identical-looking sales. Your `analysis.sales_scrutiny` settings drive the cluster definitions.
-- **Time adjustment.** Computes a per-day price-adjustment multiplier so historical sales can be compared at the valuation date. The default engine fits a rolling median; if your jurisdiction publishes its own time factors, use `data.process.time_adjustment.from_file.<model_group>` to load them — see [advanced_settings.md § 2](advanced_settings.md#2-time-adjustment).
+- **Time adjustment.** Computes a per-day price-adjustment multiplier so historical sales can be compared at the valuation date. The default engine fits a rolling median; if your jurisdiction publishes its own time factors, use `data.process.time_adjustment.from_file.<model_group>` to load them — see [advanced_settings.md § 3](advanced_settings.md#3-time-adjustment).
 
 **What to watch for:** the `examine_sup` output near the end should show no remaining nulls in fields you intend to use. Time-adjusted prices should be sensible — if every adjustment factor is 1.0, time adjustment didn't run.
 
@@ -357,7 +357,7 @@ The reason these are separate functions is purely **performance**: writing all t
 
 If your goal is reproducibility (the same input produces the same output and you want it persisted), call `finalize_models`. If you're still in the explore-and-tweak phase, use `try_models` to keep the cycle fast.
 
-For configuring which models run for which model groups, see [advanced_settings.md § 5](advanced_settings.md#5-modeling-control). For wiring up a new model class, see [AGENTS.md § 7](https://github.com/landeconomics/openavmkit/blob/master/AGENTS.md).
+For configuring which models run for which model groups, see [advanced_settings.md § 6](advanced_settings.md#6-modeling-control). For wiring up a new model class, see [AGENTS.md § 7](https://github.com/landeconomics/openavmkit/blob/master/AGENTS.md).
 
 #### Modeling best practices
 
@@ -370,7 +370,7 @@ It's tempting to throw every available characteristic at the model and let it so
 1. **It bloats training time.** Especially for tree-based models with hyperparameter tuning, every extra variable is more search space.
 2. **It doesn't actually improve predictive power** past a certain point — and often *degrades* it. Highly correlated variables compete with each other; weakly predictive variables add noise; mostly-empty variables introduce bias from whatever fill rule you used.
 
-Use **`try_variables`** (see [recipe.md](recipe.md) and [advanced_settings.md § 5](advanced_settings.md#5-modeling-control)) to discover which variables actually carry weight before committing them to your final model. `try_variables` runs a battery of statistical tests on each candidate variable and reports two distinct kinds of signal:
+Use **`try_variables`** (see [recipe.md](recipe.md) and [advanced_settings.md § 6](advanced_settings.md#6-modeling-control)) to discover which variables actually carry weight before committing them to your final model. `try_variables` runs a battery of statistical tests on each candidate variable and reports two distinct kinds of signal:
 
 - **Predictive power** — how well does this variable on its own predict sale price? Measured via correlation with the target, R², t-values, p-values, and elastic-net regularization (ENR) coefficients.
 - **Cross-correlation with other variables** — how much does this variable duplicate what other variables already tell you? Measured via Variance Inflation Factor (VIF), which captures multicollinearity. A variable can be highly predictive on its own but redundant with another variable you're already using — keeping both costs you with no benefit.
@@ -395,7 +395,7 @@ Real estate is famously about location — but how you encode location depends o
 - **Kernel regression** is also natively spatially aware as OpenAVMKit invokes it. The runner automatically prepends `longitude` and `latitude` to the variable matrix before fitting, so the kernel always weights by geographic proximity in addition to your other features. You don't need to add them as model variables — they're injected for you.
 - **`LocalAreaModel`** is a special case: it isn't spatial via coordinates, but it's "natively aware" in the sense that you literally cannot invoke it without giving it `location_fields` at construction (e.g. `neighborhood`, `market_region`, `census_tract`). It computes per-area value averages keyed by those region fields and applies them at predict time. Spatial through user-supplied categorical regions, not lat/lon.
 - **Everything else** — MRA (linear regression), XGBoost, LightGBM, CatBoost, and the various baselines — needs location given to them as feature columns. Several options, often used in combination:
-    - **`latitude_norm` / `longitude_norm`** — automatically created by basic-geo enrichment (see [advanced_settings.md § 3.1](advanced_settings.md#31-basic-geometric-enrichment-dataprocessenrichbasic)). These are min-max-normalized to `[0, 1]` over your jurisdiction's bounding box and often perform better in non-spatial models than raw lat/lon (which is on a much larger numeric scale and tends to be hard for tree splits to use efficiently).
+    - **`latitude_norm` / `longitude_norm`** — automatically created by basic-geo enrichment (see [advanced_settings.md § 4.1](advanced_settings.md#41-basic-geometric-enrichment-dataprocessenrichbasic)). These are min-max-normalized to `[0, 1]` over your jurisdiction's bounding box and often perform better in non-spatial models than raw lat/lon (which is on a much larger numeric scale and tends to be hard for tree splits to use efficiently).
     - **`polar_radius` / `polar_angle`** — also auto-created. Polar coordinates relative to your `locality.center`. Useful when value gradients are roughly radial (distance-from-CBD effects, ring suburbs).
     - **Categorical region fields** — neighborhoods, market areas, school districts, ZIP codes (see "Categorical variables" below).
 
@@ -522,9 +522,9 @@ So if you've changed your training data meaningfully (different sales window, di
 - Delete `out/checkpoints/` to wipe all notebook checkpoints for the locality.
 - Delete the relevant `*_params.json`, `*_bw.json`, or `kernel_bw.pkl` under `out/models/<model_group>/.../` to force a fresh hyperparameter search.
 
-**Don't nuke prophylactically** — OSM streets and tuning runs are expensive ([advanced_settings.md § 3.7](advanced_settings.md#37-openstreetmap-streets-dataprocessenrichstreetsenabled), § 7.4). Nuke when something feels off.
+**Don't nuke prophylactically** — OSM streets and tuning runs are expensive ([advanced_settings.md § 4.7](advanced_settings.md#47-openstreetmap-streets-dataprocessenrichstreetsenabled), § 8.4). Nuke when something feels off.
 
-For the full reference, see [advanced_settings.md § 7](advanced_settings.md#7-caching-checkpoints).
+For the full reference, see [advanced_settings.md § 8](advanced_settings.md#8-caching-checkpoints).
 
 ---
 

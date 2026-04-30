@@ -331,7 +331,7 @@ This example, drawn from the [us-nc-guilford settings](https://github.com/landec
 "land_area_sqft": ["geo_area", "str:sqft"]
 ```
 
-(For most use cases, the basic-geo enrichment step in `data.process.enrich.basic` already produces `land_area_gis_<unit>` automatically — see [advanced_settings.md § 3.1](advanced_settings.md#31-basic-geometric-enrichment-dataprocessenrichbasic). Use `geo_area` in a `calc` only when you need it before enrichment runs.)
+(For most use cases, the basic-geo enrichment step in `data.process.enrich.basic` already produces `land_area_gis_<unit>` automatically — see [advanced_settings.md § 4.1](advanced_settings.md#41-basic-geometric-enrichment-dataprocessenrichbasic). Use `geo_area` in a `calc` only when you need it before enrichment runs.)
 
 ---
 

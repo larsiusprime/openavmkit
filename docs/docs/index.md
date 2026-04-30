@@ -20,12 +20,13 @@
 - [Open Street Map API](config.md#configuring-openstreetmap-enrichment)
 ## [Advanced settings reference](advanced_settings.md)
 - [The settings.json preprocessor](advanced_settings.md#1-the-settingsjson-preprocessor) — comments, `$$` references, template merging, `!` and `+` flags
-- [Time adjustment overrides](advanced_settings.md#2-time-adjustment)
-- [Data enrichment toggles](advanced_settings.md#3-data-enrichment)
-- [Data cleaning & validation](advanced_settings.md#4-data-cleaning-validation)
-- [Modeling control](advanced_settings.md#5-modeling-control)
-- [Analysis & QA](advanced_settings.md#6-analysis-qa)
-- [Caching & checkpoints](advanced_settings.md#7-caching-checkpoints) — when self-invalidation is enough, and when to nuke the cache
+- [Data load: `data.load.<id>`](advanced_settings.md#2-data-load-dataloadid) — `dupes` rules and per-field aggregation across duplicate rows
+- [Time adjustment overrides](advanced_settings.md#3-time-adjustment)
+- [Data enrichment toggles](advanced_settings.md#4-data-enrichment)
+- [Data cleaning & validation](advanced_settings.md#5-data-cleaning-validation)
+- [Modeling control](advanced_settings.md#6-modeling-control)
+- [Analysis & QA](advanced_settings.md#7-analysis-qa)
+- [Caching & checkpoints](advanced_settings.md#8-caching-checkpoints) — when self-invalidation is enough, and when to nuke the cache
 ## [The `calc` expression language](calc_reference.md)
 - [Where calc is used](calc_reference.md#1-where-calc-is-used)
 - [Expression syntax](calc_reference.md#2-expression-syntax)

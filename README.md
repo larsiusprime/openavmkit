@@ -30,12 +30,13 @@ See the [Changelog](changelog.md)
   - [Open Street Map API](docs/docs/config.md#configuring-openstreetmap-enrichment)
 ## 5. Advanced settings reference
   - [The settings.json preprocessor](docs/docs/advanced_settings.md#1-the-settingsjson-preprocessor) — comments, `$$` references, template merging, `!`/`+` flags
-  - [Time adjustment overrides](docs/docs/advanced_settings.md#2-time-adjustment)
-  - [Data enrichment toggles](docs/docs/advanced_settings.md#3-data-enrichment) — basic geo, spatial joins, Overture, Census, distance & proximity, OSM streets, spatial lag, spatial inference
-  - [Data cleaning & validation](docs/docs/advanced_settings.md#4-data-cleaning-validation) — full fill-method reference
-  - [Modeling control](docs/docs/advanced_settings.md#5-modeling-control)
-  - [Analysis & QA](docs/docs/advanced_settings.md#6-analysis-qa)
-  - [Caching & checkpoints](docs/docs/advanced_settings.md#7-caching-checkpoints) — when to nuke the cache
+  - [Data load: `data.load.<id>`](docs/docs/advanced_settings.md#2-data-load-dataloadid) — `dupes` rules and per-field aggregation across duplicate rows
+  - [Time adjustment overrides](docs/docs/advanced_settings.md#3-time-adjustment)
+  - [Data enrichment toggles](docs/docs/advanced_settings.md#4-data-enrichment) — basic geo, spatial joins, Overture, Census, distance & proximity, OSM streets, spatial lag, spatial inference
+  - [Data cleaning & validation](docs/docs/advanced_settings.md#5-data-cleaning-validation) — full fill-method reference
+  - [Modeling control](docs/docs/advanced_settings.md#6-modeling-control)
+  - [Analysis & QA](docs/docs/advanced_settings.md#7-analysis-qa)
+  - [Caching & checkpoints](docs/docs/advanced_settings.md#8-caching-checkpoints) — when to nuke the cache
   - [The `calc` expression language](docs/docs/calc_reference.md) — full operator reference for derived columns and filters
   - [Models reference](docs/docs/models_reference.md) — every model engine, name-vs-engine dispatch, multi-variant runs
 ## 6. Notebooks & API

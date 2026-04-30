@@ -4,7 +4,7 @@ OpenAVMKit ships with around 20 prediction models, ranging from production-grade
 
 This page is the authoritative reference for **what each model is**, **how to invoke it**, **what settings it takes**, and **when to use it**. It also explains the model-naming and dispatch system, including how to run multiple variants of the same engine.
 
-For the broader modeling workflow, see [tutorial.md § B.7](tutorial.md#b7-run-notebook-3-model). For where the modeling settings fit in the larger settings tree, see [advanced_settings.md § 5](advanced_settings.md#5-modeling-control).
+For the broader modeling workflow, see [tutorial.md § B.7](tutorial.md#b7-run-notebook-3-model). For where the modeling settings fit in the larger settings tree, see [advanced_settings.md § 6](advanced_settings.md#6-modeling-control).
 
 ---
 
@@ -39,7 +39,7 @@ Two layers, related but distinct:
 
 A model only runs if its name appears in the `run` list. Models defined in `modeling.models` but not listed in `run` sit dormant — useful for keeping configurations on hand without invoking them.
 
-For configuring the `run` list, including per-model-group skip lists, see [advanced_settings.md § 5](advanced_settings.md#5-modeling-control).
+For configuring the `run` list, including per-model-group skip lists, see [advanced_settings.md § 6](advanced_settings.md#6-modeling-control).
 
 ### 1.1 Model name vs. engine
 
@@ -198,7 +198,7 @@ Fits separate MRA models for each unique value of one or more location fields. C
 Production-grade tree-based ensembles. Handle nonlinearities, interactions, and missing data well; fit categorical variables natively in OpenAVMKit's wrappers.
 
 - **Accepts**: `ind_vars`, `n_trials`. CatBoost also accepts `use_gpu`.
-- **Hyperparameter tuning**: yes, via Optuna. Tuned parameters cached at `<outpath>/<slug>_params.json` (see [advanced_settings.md § 7.4](advanced_settings.md#74-saved-model-parameters-different-semantics)).
+- **Hyperparameter tuning**: yes, via Optuna. Tuned parameters cached at `<outpath>/<slug>_params.json` (see [advanced_settings.md § 8.4](advanced_settings.md#84-saved-model-parameters-different-semantics)).
 - **Native spatial awareness**: no — feed location via `latitude_norm`/`longitude_norm`, polar coords, or categorical region fields.
 - **When to use**: most production AVM workloads. Often the strongest single-model performers.
 - **When not to use**: very small training sets; when interpretability is a hard requirement.
@@ -315,7 +315,7 @@ Random predictions (uniform or normal-distributed). Establishes what "literally 
 }
 ```
 
-`type: "default"` does global averaging. `type: "local"` (only for `main`) does per-location averaging. See [advanced_settings.md § 5](advanced_settings.md#5-modeling-control).
+`type: "default"` does global averaging. `type: "local"` (only for `main`) does per-location averaging. See [advanced_settings.md § 6](advanced_settings.md#6-modeling-control).
 
 ---
 
@@ -377,8 +377,8 @@ After a run, compare the test-set metrics across `xgboost_rich`, `xgboost_lean`,
 
 - [Tutorial § B.7 → Modeling best practices](tutorial.md#modeling-best-practices) — variable selection, big five, location encoding
 - [Tutorial § B.7 → `try_models` vs `finalize_models`](tutorial.md#try_models-vs-finalize_models-iterate-fast-then-commit) — workflow for iterating
-- [Advanced settings § 5 — Modeling control](advanced_settings.md#5-modeling-control) — `run` lists, per-group skip, feature-selection thresholds
-- [Advanced settings § 7.4 — Saved model parameters](advanced_settings.md#74-saved-model-parameters-different-semantics) — caching tuned hyperparameters
+- [Advanced settings § 6 — Modeling control](advanced_settings.md#6-modeling-control) — `run` lists, per-group skip, feature-selection thresholds
+- [Advanced settings § 8.4 — Saved model parameters](advanced_settings.md#84-saved-model-parameters-different-semantics) — caching tuned hyperparameters
 - [AGENTS.md § 7 → Adding a new model](https://github.com/landeconomics/openavmkit/blob/master/AGENTS.md) — for contributors wiring up a new engine
 - [openavmkit/utilities/modeling.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/utilities/modeling.py) — model class definitions
 - [openavmkit/benchmark.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py) — dispatch and orchestration

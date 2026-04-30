@@ -105,7 +105,139 @@ The `+` flag must be on every level of the path that should extend rather than r
 
 ---
 
-## 2. Time adjustment
+## 2. Data load: `data.load.<id>`
+
+Each subkey under `data.load` declares one source file: where to read it, how to map source columns onto canonical OpenAVMKit field names, and what to do about duplicate rows. The basic mapping patterns (scalar rename, two-element list with dtype, three-element list with date format, plus the `calc` block) are introduced in [tutorial.md § B.4](tutorial.md#b4-author-a-minimum-viable-settingsjson). This section covers the parts that aren't there: the **`dupes` rule** and its full schema, which is how you handle source files where one parcel spans multiple rows.
+
+### 2.1 The `dupes` rule
+
+A `dupes` value goes alongside `filename` and `load`:
+
+```json
+"parcels": {
+  "filename": "parcels.csv",
+  "dupes": "auto",
+  "load": { "key": ["REID", "string"], "...": "..." }
+}
+```
+
+It can take three forms:
+
+| Value | Meaning |
+| --- | --- |
+| `"auto"` (or omitted for geometry) | OpenAVMKit picks the first usable key column (`key_sale`, then `key`, `key2`, `key3`) for non-geometry data, or the first non-`geometry` column for shapefiles. Sorts ascending by that column and drops later duplicates. |
+| `"allow"` | Pass-through. No dedupe, no aggregation. Use when downstream code is supposed to see the duplicates (rare). |
+| Object | Custom dedupe rule, with optional aggregation. Detailed below. |
+
+For non-geometry dataframes, **omitting `dupes` entirely** is equivalent to `{}` — duplicates are *not* checked. That's almost never what you want; pick `"auto"` unless you're writing a custom rule.
+
+- **Source** — `get_dupes` in [openavmkit/utilities/settings.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/utilities/settings.py), `_handle_duplicated_rows` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py).
+
+### 2.2 Custom dedupe rules
+
+The object form has four keys:
+
+| Key | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `subset` | string or list of strings | `"key"` | Columns whose combined value defines a duplicate. |
+| `sort_by` | `[col, "asc"\|"desc"]` or list of such pairs | none | Sort applied **before** dedupe — controls which row "wins" when `drop: true`. |
+| `drop` | `true`, `false`, `"all"` | `true` | `true` keeps the first row per group; `"all"` drops every row that has a duplicate; `false` keeps everything (use this when you only want aggregation). |
+| `agg` | object | none | Per-field aggregation rules — see § 2.3. |
+
+Subset names are matched against **canonical names** (the post-`load` names), not your source file's column headers, because the `load` mapping has already run by the time `dupes` is applied.
+
+**Worked example.** A jurisdiction's parcels file uses `(REID, CARD_NUMBER)` to identify rows where one parcel has multiple buildings. Keep the lowest card number for each parcel:
+
+```json
+"parcels": {
+  "filename": "parcels.csv",
+  "dupes": {
+    "subset": ["key"],
+    "sort_by": [["card_number", "asc"]],
+    "drop": true
+  },
+  "load": {
+    "key": ["REID", "string"],
+    "card_number": "CARD_NUMBER",
+    "...": "..."
+  }
+}
+```
+
+This is fine when card 1 is the primary building and the per-card fields on cards 2+ are not needed. But if the parcel-level fields (e.g. `assr_market_value`) are repeated identically on every card while per-card fields (`HEATED_AREA`, `YEAR_BUILT`, `BATH_FIXTURES`) carry distinct values per building, plain dedupe throws away real information. That's where `agg` comes in.
+
+### 2.3 Aggregation across duplicate rows — `dupes.agg`
+
+The `agg` block tells OpenAVMKit to compute a per-group summary for one or more fields **before** dedupe-and-merge. The aggregated values overwrite whatever was in those columns on the surviving row.
+
+```json
+"parcels": {
+  "filename": "parcels.csv",
+  "dupes": {
+    "subset": ["key"],
+    "sort_by": [["card_number", "asc"]],
+    "drop": true,
+    "agg": {
+      "bldg_area_finished_sqft":   { "field": "bldg_area_finished_sqft",   "op": "sum" },
+      "bldg_year_built":           { "field": "bldg_year_built",           "op": "min" },
+      "bldg_effective_year_built": { "field": "bldg_effective_year_built", "op": "max" },
+      "bldg_rooms_bath_full":      { "field": "bldg_rooms_bath_full",      "op": "sum" },
+      "bldg_units":                { "field": "bldg_units",                "op": "sum" }
+    }
+  }
+}
+```
+
+How each agg entry resolves:
+
+| Sub-key | Meaning |
+| --- | --- |
+| (the entry's name) | Output column. Usually identical to `field` so the aggregated value lands back in the canonical column. Make it different if you want both raw and aggregated values side-by-side — but note the merge step drops the original column when names collide and warns. |
+| `field` | Source column to aggregate. Canonical name (post-`load`). |
+| `op` | Pandas aggregation function — any string accepted by `DataFrame.groupby(...).agg({col: op})`. Common choices: `"sum"`, `"mean"`, `"median"`, `"min"`, `"max"`, `"first"`, `"last"`, `"count"`, `"nunique"`. |
+| `sort_by` | Optional per-aggregation sort order (same shape as the outer `sort_by`). Only useful with `"first"` / `"last"`, where you want a different sort than the dedupe sort — for example, dedupe by `card_number asc` but pull `"first"` `bldg_quality_txt` from the row with the largest `bldg_area_finished_sqft`. |
+
+Mechanics, in order:
+
+1. The full pre-dedupe dataframe is sorted by the outer `sort_by`.
+2. Duplicates are dropped per `drop`. The result is the **base** — one row per `subset` value.
+3. For each `agg` entry, the **original** (pre-dedupe) dataframe is grouped by `subset` and aggregated. Result column is renamed to the entry's name.
+4. All aggregated tables are merged together on `subset`, then merged onto the base with a left join.
+5. Where aggregated column names collide with base column names, the base columns are dropped first (and a warning is emitted) so the aggregated values win.
+
+**Picking the right `op` per field.** As a rough rule:
+
+- **Building size, room counts, fixtures, units** → `"sum"` (totals across all buildings on the parcel).
+- **Year built** → `"min"` (oldest building governs depreciation curves; a remodel addition shouldn't make a 1920 farmhouse look 1995).
+- **Effective year built / remodel year** → `"max"` (most recent improvement).
+- **Quality / condition / style** when stored as ordinal numerics → `"max"` if you want the best building to set the parcel level, `"first"` with a `sort_by` on building size if you want the largest building to set it.
+- **Categorical fields** with no obvious total — quality letter grades, foundation type, style — usually take `"first"` and live with whatever card 1 reports, unless you're prepared to define a tie-break sort.
+- **Parcel-level fields** that repeat identically across rows (assessed values, sale price, deeded acreage) don't need `agg` at all — `drop: true` will keep the surviving row's copy, which is correct.
+
+### 2.4 Dedupe for sales
+
+Sales tables follow the same shape, but the convention is to dedupe on `key_sale` (a synthesized per-transaction identifier) rather than `key`:
+
+```json
+"sales": {
+  "filename": "sales.csv",
+  "dupes": {
+    "subset": ["key_sale"],
+    "sort_by": [["key_sale", "asc"]],
+    "drop": true
+  }
+}
+```
+
+If a sales dataframe ever lacks `key_sale` in its dedupe `subset`, OpenAVMKit emits a warning at load time — see `_handle_duplicated_rows` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py) — because deduping sales by parcel `key` alone collapses multiple legitimate transactions on the same parcel into one row.
+
+### 2.5 `dupes` at the merged level too
+
+`data.process.dupes.universe` and `data.process.dupes.sales` apply the same schema **after** all per-source tables are merged. This is the right place for cross-table rules — for example, deduping the joined universe by `key` once parcels and a separate building file have been combined. The Guilford locality file uses this pattern via `$$ref.dupes_universe` and `$$ref.dupes_sales`.
+
+---
+
+## 3. Time adjustment
 
 ### `data.process.time_adjustment.from_file.<model_group>`
 
@@ -118,11 +250,11 @@ Replace OpenAVMKit's built-in time-adjustment engine with a precomputed CSV for 
 
 ---
 
-## 3. Data enrichment
+## 4. Data enrichment
 
 Enrichment runs after data is loaded and before modeling. The orchestrator `_enrich_data` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py) calls each enrichment step in sequence. The presence (or `enabled` flag) of each subsection of `data.process.enrich` controls what runs.
 
-### 3.1 Basic geometric enrichment — `data.process.enrich.basic`
+### 4.1 Basic geometric enrichment — `data.process.enrich.basic`
 
 Default-on. Computes from parcel geometry:
 
@@ -135,21 +267,21 @@ Sub-flags (all default `true`): `latlon`, `area`, `shape`, `polar`. Set to `fals
 
 - **Source** — `_basic_geo_enrichment` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 
-### 3.2 Spatial joins — `data.process.enrich.spatial_joins`
+### 4.2 Spatial joins — `data.process.enrich.spatial_joins`
 
 Joins user-provided shapefiles (neighborhoods, school districts, zoning, etc.) onto the universe by spatial intersection.
 
 - **Source** — `_enrich_df_spatial_joins` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 - **When to use** — your locality has area-based reference layers that aren't in the parcel data and you want them as parcel-level fields.
 
-### 3.3 Overture building footprints — `data.process.enrich.overture`
+### 4.3 Overture building footprints — `data.process.enrich.overture`
 
 Pulls building footprints from the Overture Maps dataset and aggregates them onto each parcel.
 
 - **Source** — `_enrich_df_overture` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 - **When to use** — assessor data lacks building footprint counts/areas, or you want an external check on what's there.
 
-### 3.4 Census enrichment — `data.process.enrich.census`
+### 4.4 Census enrichment — `data.process.enrich.census`
 
 Spatial-joins parcels to US Census block groups and pulls demographic and income variables.
 
@@ -158,7 +290,7 @@ Spatial-joins parcels to US Census block groups and pulls demographic and income
 - **Source** — `_enrich_df_census` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 - **When to use** — you want neighborhood demographics (median income, etc.) as model features.
 
-### 3.5 Distance & proximity enrichment — `data.process.enrich.distances`
+### 4.5 Distance & proximity enrichment — `data.process.enrich.distances`
 
 For each parcel, computes how close it is to features such as parks, water bodies, schools, transportation, the CBD, or individual landmarks. This is one of the most useful enrichments — and the most worth understanding in detail.
 
@@ -317,7 +449,7 @@ Any other feature name (e.g. `cbd`, `airport`, `university`) is also supported �
 - You have a small set of known specific landmarks that matter individually (use `store_top` + `top_n`).
 - You want a regression-friendly proximity feature that saturates past a sensible "I no longer care" threshold (set `max_distance`).
 
-### 3.6 Building permits — `data.process.enrich.permits`
+### 4.6 Building permits — `data.process.enrich.permits`
 
 Joins permit records onto sales by parcel ID and date, producing fields like recent renovation activity that explain post-sale price differences.
 
@@ -325,7 +457,7 @@ Joins permit records onto sales by parcel ID and date, producing fields like rec
 - **Source** — `_enrich_permits` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 - **When to use** — your jurisdiction publishes a permit feed and you want to control for permitted improvements.
 
-### 3.7 OpenStreetMap streets — `data.process.enrich.streets.enabled`
+### 4.7 OpenStreetMap streets — `data.process.enrich.streets.enabled`
 
 Adds OSM-derived street-network features to each parcel: frontage broken down by street class (motorway, primary, residential, …), street speed limits, lane counts, plus a Somers-unit-normalized land area derived from frontage and depth.
 
@@ -333,14 +465,14 @@ Adds OSM-derived street-network features to each parcel: frontage broken down by
 - **Source** — `enrich_df_streets` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 - **Performance** — this step is **computationally expensive**. It can take a long time to run on a large locality the first time. However, the result is cached and does not need to be regenerated unless the locality's parcel geometry changes. Plan accordingly: budget time for the first run, and don't worry about subsequent runs.
 
-### 3.8 Spatial lag — `data.process.enrich.spatial_lag`
+### 4.8 Spatial lag — `data.process.enrich.spatial_lag`
 
 For each parcel, computes neighborhood averages of selected fields (sale price, building age, floor-area ratio, bedroom density, etc.). Produces dozens of `spatial_lag_*` columns that capture local context not encoded in categorical location fields.
 
 - **Source** — `enrich_sup_spatial_lag` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 - **When to use** — when you want models to see neighborhood smoothing of key signals, especially price.
 
-### 3.9 Spatial inference (gap fill) — `data.process.enrich.infer`
+### 4.9 Spatial inference (gap fill) — `data.process.enrich.infer`
 
 Fills missing values for selected fields using geospatial patterns from nearby parcels. Runs after all other enrichments so it can use enriched fields as predictors.
 
@@ -384,9 +516,9 @@ Each entry under `infer` is keyed by the field to be filled, and its value is th
 
 ---
 
-## 4. Data cleaning & validation
+## 5. Data cleaning & validation
 
-### 4.1 Filling missing values — `data.process.fill.<method>`
+### 5.1 Filling missing values — `data.process.fill.<method>`
 
 `data.process.fill` is a dict whose **keys are fill methods** and whose **values are lists of fields** to apply that method to. The cleaner walks each method/field-list pair and applies the named method to each field's missing values. See `_fill_unknown_values` in [openavmkit/cleaning.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py).
 
@@ -456,7 +588,7 @@ After your configured fills run, the cleaner does a few things automatically:
 2. **Categorical auto-fill.** Any categorical field configured via `field_classification.categorical` that still has NaN after all explicit fills is filled with `"UNKNOWN"`. Boolean fields are similarly normalized.
 3. **Per-model-group execution (universe only).** Universe fills are applied per model group, so a `mode` or `median` fill uses the model group's distribution rather than the global one — see `_fill_unknown_values_per_model_group` in [openavmkit/cleaning.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py). **Sales-side fills are restricted to sale-metadata fields** (sale price, sale date, sale conditions, etc.) and applied globally — characteristic blanks on sales rows are deliberate overlays on top of the universe and are left alone, so they don't go through per-model-group fills either. See `fill_unknown_values_sup` for the universe-vs-sales split.
 
-### 4.2 `data.process.reconcile`
+### 5.2 `data.process.reconcile`
 
 Post-merge reconciliation rules. After sales and universe data are merged, these rules let you resolve conflicts (e.g. when both sides have a value for the same field) by ID.
 
@@ -464,7 +596,7 @@ Post-merge reconciliation rules. After sales and universe data are merged, these
 - **Source** — `_merge_dict_of_dfs` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 - **When to use** — your sales and universe both carry overlapping fields and you need deterministic precedence rules.
 
-### 4.3 `data.process.invalid_sales.enabled`
+### 5.3 `data.process.invalid_sales.enabled`
 
 Filter out non-arms-length sales after data processing, using the conditions defined in `data.process.invalid_sales.filter`.
 
@@ -475,7 +607,7 @@ Filter out non-arms-length sales after data processing, using the conditions def
 
 ---
 
-## 5. Modeling control
+## 6. Modeling control
 
 > For the **full catalog of model engines** (XGBoost, LightGBM, CatBoost, MRA, GWR, kernel, SLICE, baselines, etc.), the **model-name-vs-engine dispatch** mechanism, and how to run **multiple variants of the same engine** (e.g. two XGBoost configurations side-by-side), see **[Models reference](models_reference.md)**. The settings on this page are the orchestration layer; that page documents each model.
 
@@ -524,7 +656,7 @@ Run a dedicated variable-importance experiment over a custom set of candidate va
 
 ---
 
-## 6. Analysis & QA
+## 7. Analysis & QA
 
 ### `analysis.outliers.skip`
 
@@ -557,9 +689,9 @@ How many years before the valuation date to include sales from when running the 
 
 ---
 
-## 7. Caching & checkpoints
+## 8. Caching & checkpoints
 
-### 7.1 Three cache layers
+### 8.1 Three cache layers
 
 OpenAVMKit caches expensive intermediate results in three places:
 
@@ -567,9 +699,9 @@ OpenAVMKit caches expensive intermediate results in three places:
 - **Enrichment cache** at `<locality>/cache/` — used internally by enrichment steps that pull from remote sources (OpenStreetMap, Census, Overture) or do heavy local computation (street networks, distance calculations).
 - **Saved model parameters** at `<locality>/out/models/<model_group>/.../` — tuned hyperparameters and bandwidths from previous model runs (XGBoost / LightGBM / CatBoost Optuna results, GWR bandwidth, kernel regression bandwidth).
 
-The first two layers are *designed* to self-invalidate when the relevant inputs or settings change. The third layer (saved model parameters) has different semantics — see § 7.4 below.
+The first two layers are *designed* to self-invalidate when the relevant inputs or settings change. The third layer (saved model parameters) has different semantics — see § 8.4 below.
 
-### 7.2 The notebook checkpoint system
+### 8.2 The notebook checkpoint system
 
 Every cell that wraps a function call in `from_checkpoint(...)` saves its result to disk:
 
@@ -591,7 +723,7 @@ On re-run, the cell reads `out/checkpoints/1-assemble-02-process_data.parquet` (
 
 **Source** — [openavmkit/checkpoint.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/checkpoint.py).
 
-### 7.3 The enrichment cache
+### 8.3 The enrichment cache
 
 Enrichment steps that pull from remote sources or do heavy computation (streets, OSM features, Census joins, Overture footprints, distance calculations) cache their intermediate results under `<locality>/cache/`. Each cached entry is written alongside a "signature" — typically the relevant settings subtree — and the cache is invalidated automatically when the signature changes.
 
@@ -609,7 +741,7 @@ Streets in particular benefit from caching — a fresh run on a large jurisdicti
 
 **Source** — [openavmkit/utilities/cache.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/utilities/cache.py).
 
-### 7.4 Saved model parameters — different semantics
+### 8.4 Saved model parameters — different semantics
 
 This is a separate concern from the other two layers. Tunable models (XGBoost, LightGBM, CatBoost via Optuna; GWR via bandwidth search; kernel regression via bandwidth search) can save their tuned parameters to disk after a successful tuning run, so subsequent runs can skip the (expensive) parameter search.
 
@@ -644,7 +776,7 @@ This is a separate concern from the other two layers. Tunable models (XGBoost, L
 - You want fast, reproducible re-runs (e.g. for iterating on downstream analysis without paying the tuning cost again).
 - You're confident the previous tuning is still appropriate — incremental data changes that aren't likely to shift the optimal hyperparameters.
 
-### 7.5 When self-invalidation isn't enough
+### 8.5 When self-invalidation isn't enough
 
 The notebook checkpoint and enrichment cache layers are *designed* to invalidate automatically, but it isn't perfect. Edge cases happen:
 
@@ -669,7 +801,7 @@ Symptoms to watch for:
 | Set `clear_checkpoints = True` at top of notebook | Convention in pipeline notebooks; clears that notebook's checkpoints on re-run |
 | `rm -rf <locality>/out/checkpoints/` | Wipe all notebook checkpoints for the locality |
 | `rm -rf <locality>/cache/` | Wipe the enrichment cache entirely |
-| Delete `<outpath>/<slug>_params.json`, `<model_name>_bw.json`, or `kernel_bw.pkl` | Force a fresh hyperparameter search on next model run (see § 7.4) |
+| Delete `<outpath>/<slug>_params.json`, `<model_name>_bw.json`, or `kernel_bw.pkl` | Force a fresh hyperparameter search on next model run (see § 8.4) |
 
 **Don't nuke prophylactically.** OSM streets and Overture pulls are expensive on a fresh cache — clearing them every run will cost you hours over a project. Hyperparameter searches can also be expensive (Optuna with 100+ trials on a tree-based model can take a long time). Nuke when something feels off, then re-run.
 
