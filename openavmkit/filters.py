@@ -198,8 +198,12 @@ def resolve_filter(df: pd.DataFrame, f: list, rename_map: dict = None) -> pd.Ser
         if operator == "!=":
             return df[field].ne(value)
         if operator == "isin":
+            if isinstance(value, list):
+                value = [x[4:] if isinstance(x, str) and x.startswith("str:") else x for x in value]
             return df[field].isin(value)
         if operator == "notin":
+            if isinstance(value, list):
+                value = [x[4:] if isinstance(x, str) and x.startswith("str:") else x for x in value]
             return ~df[field].isin(value)
         if operator == "isempty":
             return pd.isna(df[field]) | df[field].astype(str).str.strip().eq("")
@@ -227,8 +231,9 @@ def resolve_filter(df: pd.DataFrame, f: list, rename_map: dict = None) -> pd.Ser
             if isinstance(value, str):
                 selection = df[field].str.contains(value, case=False)
             elif isinstance(value, list):
-                selection = df[field].str.contains(value[0], case=False)
-                for v in value[1:]:
+                cleaned = [v[4:] if isinstance(v, str) and v.startswith("str:") else v for v in value]
+                selection = df[field].str.contains(cleaned[0], case=False)
+                for v in cleaned[1:]:
                     selection |= df[field].str.contains(v, case=False)
             else:
                 raise ValueError(
