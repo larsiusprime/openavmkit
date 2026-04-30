@@ -128,7 +128,7 @@ Default-on. Computes from parcel geometry:
 
 - **Lat/lon and normalized lat/lon** — `latitude`, `longitude`, `latitude_norm`, `longitude_norm` (parcel centroids in WGS84, plus min-max normalization)
 - **GIS-derived land area** — `land_area_gis_<unit>`. When the assessor's `land_area_<unit>` is `0`, negative, or `NaN`, GIS area is automatically substituted; the original assessor value is preserved as `land_area_given_<unit>`, and the deviation is exposed as `land_area_gis_delta_<unit>` and `land_area_gis_delta_percent`. Assessor values are preferred by default — see the gotchas section in [AGENTS.md](https://github.com/landeconomics/openavmkit/blob/master/AGENTS.md).
-- **Shape metrics** — `geom_rectangularity_num`, `aspect_ratio`, `geom_vertices`
+- **Shape metrics** — `geom_rectangularity_num`, `geom_aspect_ratio`, `geom_vertices`
 - **Polar coordinates** — `polar_angle`, `polar_radius` (relative to the locality center)
 
 Sub-flags (all default `true`): `latlon`, `area`, `shape`, `polar`. Set to `false` to skip individual steps. Set the parent `basic.enabled = false` to skip the entire stage.
@@ -454,7 +454,7 @@ After your configured fills run, the cleaner does a few things automatically:
 
 1. **Year-built / age-years reconciliation.** If `bldg_year_built` exists, `bldg_age_years` is recomputed as `valuation_year - bldg_year_built` (and clamped to `0` for non-positive year-built values). If only `bldg_age_years` exists, `bldg_year_built` is derived from it. The same logic applies to `bldg_effective_year_built` / `bldg_effective_age_years`. After reconciliation, all four year/age fields get a final `zero` fill.
 2. **Categorical auto-fill.** Any categorical field configured via `field_classification.categorical` that still has NaN after all explicit fills is filled with `"UNKNOWN"`. Boolean fields are similarly normalized.
-3. **Per-model-group execution.** All fills are applied per model group, so a `mode` or `median` fill uses the model group's distribution rather than the global one — see `_fill_unknown_values_per_model_group` in [openavmkit/cleaning.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py).
+3. **Per-model-group execution (universe only).** Universe fills are applied per model group, so a `mode` or `median` fill uses the model group's distribution rather than the global one — see `_fill_unknown_values_per_model_group` in [openavmkit/cleaning.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py). **Sales-side fills are restricted to sale-metadata fields** (sale price, sale date, sale conditions, etc.) and applied globally — characteristic blanks on sales rows are deliberate overlays on top of the universe and are left alone, so they don't go through per-model-group fills either. See `fill_unknown_values_sup` for the universe-vs-sales split.
 
 ### 4.2 `data.process.reconcile`
 
