@@ -315,7 +315,7 @@ Random predictions (uniform or normal-distributed). Establishes what "literally 
 }
 ```
 
-`type: "default"` does global averaging. `type: "local"` (only for `main`) does per-location averaging. See [advanced_settings.md § 6](advanced_settings.md#6-modeling-control).
+`type: "default"` does a global greedy backward-elimination, then combines the surviving subset via per-row **median** (not mean — median is robust to a single outlier prediction). `type: "local"` (only for `main`) picks the *single best* model per location at predict time — no combining; one model wins per neighborhood. See [advanced_settings.md → `modeling.instructions.<stage>.ensemble`](advanced_settings.md#modelinginstructionsmainvacanthedonicensemble) for full configuration including the `locations` list.
 
 ---
 

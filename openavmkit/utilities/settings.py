@@ -1288,10 +1288,28 @@ def get_dupes(entry: dict, df: pd.DataFrame = None, is_geometry: bool = False):
                     )
             else:
                 keys = ["key_sale", "key", "key2", "key3"]
+                matched = False
                 for key in keys:
                     if key in df:
                         dupes = {"subset": [key], "sort_by": [key, "asc"], "drop": True}
+                        matched = True
                         break
+                if not matched:
+                    # Reference tables and other auxiliary loads don't have a canonical
+                    # key column. Fall back to the first column.
+                    cols = list(df.columns.values)
+                    if cols:
+                        col = cols[0]
+                        dupes = {"subset": [col], "sort_by": [col, "asc"], "drop": True}
+                        if dupes_was_none:
+                            warnings.warn(
+                                f"'dupes' not found and no canonical key column "
+                                f"({', '.join(keys)}) present; defaulting to "
+                                f"\"{col}\" as de-dupe key. Set dupes explicitly to "
+                                f"silence this warning."
+                            )
+                    else:
+                        dupes = {"subset": ["key"], "sort_by": ["key", "asc"], "drop": True}
         else:
             dupes = {"subset": ["key"], "sort_by": ["key", "asc"], "drop": True}
     elif dupes == "allow":

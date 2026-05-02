@@ -267,7 +267,7 @@ def _tune_catboost(
 
     if verbose:
         print(
-            f"Best trial #{study.best_trial.number} → MAPE={study.best_trial.value:.4f}"
+            f"Best trial #{study.best_trial.number} -> MAPE={study.best_trial.value:.4f}"
         )
         print("Params:", study.best_trial.params)
 

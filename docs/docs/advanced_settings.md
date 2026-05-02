@@ -768,6 +768,46 @@ Fine-tune the variable-selection scoring used during model setup. The thresholds
 - **Source** — `modeling.instructions.feature_selection` in [openavmkit/resources/settings/settings.template.json](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/resources/settings/settings.template.json), consumed in `benchmark.py`.
 - **When to use** — your standard variable-selection results don't reflect domain knowledge. Loosen `correlation` to keep weak-but-meaningful features, or tighten `vif` to drop more multicollinear ones.
 
+### `modeling.instructions.<main|vacant|hedonic>.ensemble`
+
+Configure how individual model predictions get combined into an `ensemble` prediction. Two types are supported.
+
+#### `type: "default"` — global greedy ensemble
+
+```json
+"main": {
+    "run": ["mra", "multi_mra", "local_area", "lightgbm"],
+    "ensemble": { "type": "default" }
+}
+```
+
+Runs a greedy backward-elimination over the candidate models: starts with all of them combined via per-row **median**, then drops the model whose removal *improves* (lowers) the test MAPE, and repeats until removing any further model would only hurt. The surviving subset is combined element-wise via median (not mean — median is robust to a single model going wild on a particular parcel) and the result is named `ensemble`. Useful when one or two models are weakening the combination and you want them auto-pruned.
+
+- **Optional** `models` — explicit candidate list. Defaults to all models that ran except `assessor` and `ground_truth`.
+- **Source** — `_perform_default_ensemble` in [openavmkit/benchmark.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py)
+
+#### `type: "local"` — best-model-per-location
+
+```json
+"main": {
+    "run": ["mra", "multi_mra", "local_area", "lightgbm"],
+    "ensemble": {
+        "type": "local",
+        "locations": ["neighborhood_filled", "city"]
+    }
+}
+```
+
+For each unique value of each location field, finds the single best-MAPE model on the **training** set and assigns that model's prediction to parcels in that location. When a parcel matches multiple location levels (e.g. a specific neighborhood AND a city), the more specific match wins. Parcels whose location values weren't seen in training fall back to a global best-model pick.
+
+This is **not averaging** — at each parcel, exactly one model's prediction is used. The choice varies across the locality.
+
+- **`locations`** — list of categorical fields to partition by, ordered specific → general (the painter walks the list and the *most specific* match wins). If omitted, falls back to `field_classification.important.locations`.
+- **Only valid for `main`** — vacant and hedonic stages only support `default`.
+- **Source** — `_perform_local_ensemble` and `_run_local_ensemble_test_and_paint` in [openavmkit/benchmark.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py)
+- **When to use** — different sub-markets favor different models (e.g. tree-based dominates dense urban neighborhoods where it has plenty of sales, but multi-MRA wins in rural areas where signals are sparser). Local ensemble lets each neighborhood pick its own winner. Avoid when (a) you have very few sales per location (many locations will pick a model based on noise), or (b) you want a single coherent global prediction for explainability.
+- **Pairs naturally with** — model engines that themselves vary by location (`multi_mra`, `local_area`, `gwr`), since they often dominate in different parts of the locality.
+
 ### `modeling.try_variables.variables`
 
 Run a dedicated variable-importance experiment over a custom set of candidate variables before main modeling. Surfaced via [openavmkit.pipeline.try_variables](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/pipeline.py).
@@ -799,6 +839,7 @@ Maximum fraction of records the ratio study is allowed to trim as outliers when 
 - **Default** — `0.1` (10%)
 - **Source** — `_get_max_ratio_study_trim` in [openavmkit/utilities/settings.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/utilities/settings.py)
 - **When to use** — your sales data is unusually noisy and the default 10% trim is masking real volatility, or unusually clean and a tighter cap is appropriate.
+- **Diagnostic** — if your **untrimmed COD is several multiples of your trimmed COD** (5×–20×), you have a small number of extreme sale-vs-prediction mismatches dragging the means. Don't just raise `max_percent` to silence them — that hides bad data and can mask sales-chasing in the assessor baseline. See [tutorial.md → "When untrimmed COD is much worse than trimmed COD"](tutorial.md#when-untrimmed-cod-is-much-worse-than-trimmed-cod) for the full diagnostic flow including the sales-chasing sub-check.
 
 ### `analysis.ratio_study.look_back_years`
 

@@ -363,19 +363,39 @@ For configuring which models run for which model groups, see [advanced_settings.
 
 The single biggest determinant of model quality is **what variables you feed it.** Picking the right ones — and *not* picking the wrong ones — usually matters more than which model algorithm you use.
 
-##### Variable selection: don't overstuff your model
+##### Variable selection: linear models hate stuffing — tree models tolerate it
 
-It's tempting to throw every available characteristic at the model and let it sort things out. **Don't.** Overstuffing a model with too many variables hurts you in two ways:
+There is no single right answer here; the right number of features depends on the model family. Linear/parametric models (MRA, multi-MRA, kernel, GWR) and tree-based models (XGBoost, LightGBM, CatBoost) react to extra features in opposite directions.
 
-1. **It bloats training time.** Especially for tree-based models with hyperparameter tuning, every extra variable is more search space.
-2. **It doesn't actually improve predictive power** past a certain point — and often *degrades* it. Highly correlated variables compete with each other; weakly predictive variables add noise; mostly-empty variables introduce bias from whatever fill rule you used.
+**For linear/parametric models**, more variables hurts you:
 
-Use **`try_variables`** (see [recipe.md](recipe.md) and [advanced_settings.md § 6](advanced_settings.md#6-modeling-control)) to discover which variables actually carry weight before committing them to your final model. `try_variables` runs a battery of statistical tests on each candidate variable and reports two distinct kinds of signal:
+1. **Multicollinearity destabilizes coefficients.** When two predictors are highly correlated, the linear system has no unique solution and the per-feature coefficients become noisy and uninterpretable. The prediction may still be okay but you lose any ability to read off effects, and small data changes can flip signs.
+2. **Weakly predictive variables add noise.** Linear regression will spend coefficient on anything you give it; if a variable is mostly random with respect to price, the fitted coefficient absorbs whatever spurious correlation exists in your training sample.
+3. **Mostly-empty variables introduce fill-rule bias.** Whatever you put in for missing values becomes a constant disguised as a feature.
 
-- **Predictive power** — how well does this variable on its own predict sale price? Measured via correlation with the target, R², t-values, p-values, and elastic-net regularization (ENR) coefficients.
-- **Cross-correlation with other variables** — how much does this variable duplicate what other variables already tell you? Measured via Variance Inflation Factor (VIF), which captures multicollinearity. A variable can be highly predictive on its own but redundant with another variable you're already using — keeping both costs you with no benefit.
+The right discipline for linear models is **highly predictive but minimally redundant**: each variable carries information the others don't. Three good variables almost always beat ten mediocre ones. **`try_variables`** is calibrated for this case — it runs a battery of tests then prunes via greedy backward elimination, returning the smallest set that does the job:
 
-The goal is to assemble a set of variables that are **highly predictive but minimally redundant**: each one carries information the others don't. `try_variables` produces a ranked list and a report you can use to make this trade-off concretely. Cull aggressively — three good variables almost always beat ten mediocre ones.
+- **Predictive power** — correlation with the target, R², t-values, p-values, elastic-net regularization (ENR) coefficients.
+- **Cross-correlation** — Variance Inflation Factor (VIF) for multicollinearity. A variable can be highly predictive on its own yet redundant with another you're already using; keeping both costs you with no benefit. **For linear models, follow `try_variables`'s recommendation directly** — its CSV output (`out/try/<model_group>/<vacant_status>.csv`) already represents the minimum-sufficient set.
+
+**For tree-based models, the picture is different — and the same `try_variables` advice would mislead you.** XGBoost, LightGBM, and CatBoost split on one feature at a time per node, so multicollinearity doesn't destabilize anything; the model just picks whichever correlated feature gives a better split at each junction. The implementations have built-in regularization (`lambda_l1`, `lambda_l2`, `feature_fraction`, `min_data_in_leaf`) that handles weakly predictive features automatically — anything that doesn't help training gets near-zero weight at that split or gets pruned. And they can extract value from interactions that no linear model would find on its own (e.g. "homes built before 1950 in neighborhood X" via two splits).
+
+What this means in practice for tree models:
+
+1. **Include all moderately predictive features**, even if they look correlated. Don't let `try_variables`'s post-VIF survivors set your tree-model's ind_vars — that's the linear-model recipe.
+2. **Include both raw and derived versions of the same concept** when both have predictive power. For example, `bldg_age_years` (linear scale) AND `bldg_year_built` (categorical-cohort feel) — trees often find non-linear relationships in one that the other can't express.
+3. **Include all flavors of `spatial_lag_sale_price_time_adj`** (the absolute lag, the per-land-sqft lag, the per-impr-sqft lag) — they encode different aspects of local market and the tree picks at each split.
+4. **Include high-cardinality categoricals natively.** LightGBM and CatBoost handle categoricals without one-hot encoding (just declare them as categorical in your dataset). Neighborhood / VCS / school district can be passed as-is.
+5. **Cap is set by training time, not predictive power.** Around 30-100 numeric features is a comfortable working range for typical AVMs. Past that, start by dropping features with near-zero feature-importance after a first fit.
+6. **Diagnose with model-derived importance, not pre-modeling correlation.** Train a model with everything plausible, look at SHAP / gain / split-count importance from the fitted model, and only THEN consider pruning. The fitted model's view of "which features matter" is far more reliable than any correlation test.
+
+How to act on this in OpenAVMKit:
+
+- The `default` ind_vars under `modeling.models.<main|hedonic|vacant>.default` apply to every model that doesn't have its own override. Set this to the lean linear-friendly set returned by `try_variables`.
+- Per-model ind_vars overrides go under `modeling.models.<stage>.<model_name>.ind_vars`. Use this to give tree-based models the broader set. Real example from the Wake County smoke test: `mra` and `multi_mra` use the 3-var default; `lightgbm` overrides with ~25 features and consistently outperforms the default-fed version.
+- After a first `try_models` pass, look at the per-model `params.csv` (linear) or `contributions.csv` (tree). Variables that contribute nothing to predictions in the tree case are pruning candidates. Variables with unstable signs across folds in the linear case should be removed.
+
+The takeaway: **`try_variables` is for the linear-model defaults; tree-based models want more.** A good production setup uses both — small focused defaults plus per-model overrides for trees.
 
 ##### What makes a variable useful
 
@@ -477,6 +497,56 @@ Open [`assessment_quality.ipynb`](https://github.com/landeconomics/openavmkit/bl
 - **Vertical equity study.** Across price quantiles, does the model treat high-value and low-value parcels with the same accuracy? Reports PRD/PRB and per-quantile median ratios.
 
 **What to watch for:** if the assessor's existing values look better than yours by these measures, your model has work to do. Common causes: bad variable selection, model groups that are too coarse, or untreated outliers in sales scrutiny. Iterate.
+
+#### When untrimmed COD is much worse than trimmed COD
+
+If the untrimmed COD is several multiples (5×–20×) of the trimmed COD, you have a small number of extreme sale-vs-prediction mismatches dominating the means. Trimmed metrics tell you the model is mostly fine; untrimmed metrics tell you *something* is rotting the tails. **Investigate before you tune.**
+
+Strong signal: if **all** your models — including the assessor baseline — show the same untrimmed/trimmed gap, the issue is almost certainly in the *data*, not in any one model. The outliers are real records that no honest model can fit, so investigate them as data first.
+
+**Different signal: only your models show the gap; the assessor's untrimmed COD looks fine.** Two readings of this, and they have opposite implications:
+
+1. **Your model genuinely has a problem.** Your features, fill rules, or target definition are letting some sales blow up your tails while the assessor (with more domain knowledge) handles them. Action: look at the same outliers, but in the modeling lens — what does your model see vs. what the assessor sees that you don't?
+2. **The assessor is sales-chasing.** A jurisdiction that revalues parcels to match observed sale prices will look great on a ratio study run against those sales — *because they fit the sales by construction* — even when the underlying mass-appraisal model is no better than yours. You'd be measuring honest predictions against a baseline that has the answer key. Run the sales-chasing diagnostic below before concluding your model is the problem.
+
+##### Sub-diagnostic: is the assessor sales-chasing?
+
+"Sales chasing" means the assessor saw the sale price and revalued the parcel to match. The assessor's ratio statistics will look great on the sold parcels — because they're the parcels whose values got tweaked — but the unsold parcels in the same neighborhood drift away. Signs to look for:
+
+- **COD suspiciously low (< ~4–5).** IAAO standards target COD < 15 for SFR; healthy real-world models land in 5–12. A sustained sub-5 COD on real sales is rare without sales chasing or genuinely homogeneous housing stock.
+- **Median ratio extremely close to 1.00 with a tight spread** (small inter-quartile range on the ratio distribution). Honest predictions have unbiased noise around 1.0; sales-chased predictions look almost too good.
+- **CHD (Coefficient of Horizontal Dispersion) high while COD is low.** This is the smoking gun: similar properties get similar values *if they all sold*, but among the horizontal-equity peer group, the sold parcels match their sales and the unsold ones don't, so within-cluster dispersion balloons. Honest mass appraisal keeps both COD and CHD in range; sales chasing pulls them apart.
+- **Year-over-year value changes concentrated on recently-sold parcels.** If sold parcels jumped 15% YoY while their never-sold neighbors moved 1%, the assessor is rewriting around sales rather than running a uniform model.
+- **`(assessor_value - sale_price)` distribution suspiciously spiked at zero.** A genuine valuation is a noisy estimate; sales chasing produces unnaturally many exact matches.
+- **Tight slope ≈ 1.0 paired with a high `prb` (PRB).** Slope close to 1 looks great, but if PRB is also far from zero, the assessor is hitting the sale on the dollar without actually being uniformly accurate across the price spectrum.
+
+If your assessor baseline is sales-chasing, the right comparison is the assessor's metrics on **prior-year sales the assessor hadn't seen yet at the time of valuation**, not the current cycle. Several jurisdictions also publish the prior-cycle assessed value separately — comparing your model to *that* avoids the chase confound.
+
+##### Diagnostic flow for outlier investigation
+
+Regardless of whether sales chasing is in play, the actual outliers driving the tails need to be looked at:
+
+1. Pull `out/models/<mg>/main/ensemble/outliers.csv` (auto-written by `identify_outliers`).
+2. Sort by `prediction_ratio`. The top tail (`> 2.0`) is over-prediction (sale was suspiciously low); the bottom tail (`< 0.5`) is under-prediction (sale was suspiciously high).
+3. For each tail, join back to your raw `parcels.csv` and `sales.csv` to retrieve fields that didn't survive the canonical-name renaming (e.g. raw deed flags, sale-type indicators, card numbers).
+4. Look for these patterns:
+    - **Over-prediction tail (ratio > 2)** — sale was lower than the parcel "should be" worth. Common causes:
+        - **Mislabeled vacant**: a vacant sale tagged as improved. Check your jurisdiction's sale-type field.
+        - **Invalid sale that scrutiny missed**: family transfer, forced sale, quitclaim deed. Check the raw deed/qualification flag in the assessor file — many jurisdictions publish flags ("disqualified — life estate reservation", "non-warranty deed", etc.) that a separately-published "qualified sales" file may nonetheless leak. **Cross-validate the qualified-sales file against the parcel-level disqualification flag.**
+        - **Distressed sale not flagged**: foreclosure, short sale.
+        - **Token-consideration transfer**: $1, $10, "ten dollars and other valuable consideration." A simple price floor (e.g. exclude sales below $10K for SFR) catches these without harming legitimate transactions.
+    - **Under-prediction tail (ratio < 0.5)** — sale was higher than the parcel "should be" worth. Common causes:
+        - **Multi-parcel sale**: one sale_price covering N parcels, recorded against one. Check whether `deed_book + deed_page` is shared with other sales.
+        - **Misclassification**: parcel actually commercial / multifamily / mixed-use but tagged single_family.
+        - **Genuine luxury**: high-end home with features the model can't see (custom finishes, view, prestige). Consider a luxury model_group or an explicit indicator (assessor grade letter, age + lot size, neighborhood premium).
+    - **Both tails simultaneously** + no obvious pattern: possibly a bad fill rule converting plausible NaN into a constant that the model anchors on.
+5. **Don't silently exclude.** Each outlier exclusion needs a reason you'd defend in a hearing: "this was a $1 family transfer," not "this kills my COD."
+
+What to fix:
+
+- **Bad data with a clear cause** → tighten `data.process.invalid_sales`, add to `in/invalid_sales.csv`, or fix your `valid_sale` / `vacant_sale` calc in `data.load.sales.calc`.
+- **Genuine luxury / unique** → either split into a model_group or add a high-end indicator variable to your tree-based model's `ind_vars`. **Do not use the assessor's market value (or anything derived from it) as a luxury indicator** — that invites circularity, since the assessor's value is what your ratio study is measured against. Use raw structural features instead: GRADE letter, year built + recent remodel year, premium neighborhood codes, lot size relative to neighbors.
+- **Genuine but unfittable** → document and accept. Keep an eye on whether the trimmed metrics also show drift — that's when it stops being just-tail noise.
 
 ### B.9 Iterate
 
