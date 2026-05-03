@@ -5031,8 +5031,12 @@ def _process_permits_sales(
         # Label the teardown sales (sales torn down shortly AFTER the sale date)
         df_demos = df_demos.rename(columns={"date": "demo_date"})
         df = df.merge(df_demos, on="key", how="left")
-        df["days_to_demo"] = (df["sale_date"] - df["demo_date"]).dt.days
-        # Ignore demolitions that happened BEFORE the sale
+        # days_to_demo = days from sale to demolition (positive = demo AFTER sale,
+        # which is the buyer-purchases-then-demolishes pattern we want to flag).
+        df["days_to_demo"] = (df["demo_date"] - df["sale_date"]).dt.days
+        # Ignore demolitions that happened BEFORE the sale (negative or zero
+        # days_to_demo) — those are sales of already-cleared lots, which Wake-style
+        # data already labels as Land/vacant via the sale-type field.
         df.loc[df["days_to_demo"].le(0), "days_to_demo"] = np.nan
 
         # we could have multiple hits, we need to de-duplicate.

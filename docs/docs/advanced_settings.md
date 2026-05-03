@@ -451,11 +451,100 @@ Any other feature name (e.g. `cbd`, `airport`, `university`) is also supported �
 
 ### 4.6 Building permits — `data.process.enrich.permits`
 
-Joins permit records onto sales by parcel ID and date, producing fields like recent renovation activity that explain post-sale price differences.
+Joins permit records onto parcels and sales to detect (a) teardown sales — sales where the buyer demolishes the existing structure shortly after — and (b) recent renovations that explain otherwise-anomalous prices. Solves a class of outliers no model-side trick can: an old small house in an expensive area selling for "land + future construction" money rather than "house" money.
 
-- **Activation** — presence of the `permits` key
-- **Source** — `_enrich_permits` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
-- **When to use** — your jurisdiction publishes a permit feed and you want to control for permitted improvements.
+- **Activation** — `data.process.enrich.permits.sources` is a non-empty list, AND each named source must be present in `data.load`.
+- **Source** — `_enrich_permits` / `_process_permits_sales` / `_process_permits_univ` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py).
+
+#### Required columns in each permits source
+
+The dataframe loaded under `data.load.<source_id>` (after column renaming) must contain:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `key` | string | Parcel key — must match the universe `key`. |
+| `date` | datetime | Permit issue date. Must be a real datetime dtype, not a string. |
+| `is_teardown` | bool | True for demolition permits. |
+| `is_renovation` | bool | True for additions / alterations / major remodels. |
+| `renovation_txt` | string (optional) | Human-readable label for the renovation (logged for diagnostics). |
+| `renovation_num` | int (optional) | Severity score for the renovation. **`3` = major** (significant enough to reset effective year built); lower values mean less. |
+
+Multiple sources can be listed under `sources`; they're concatenated before processing.
+
+#### What it produces
+
+Sales-side fields (added to the sales dataframe):
+
+| Field | Type | Set by |
+| --- | --- | --- |
+| `is_teardown_sale` | bool | True if a demolition permit was issued within `max_days_to_demo` (default 365) **after** the sale date — i.e. the buyer purchased the parcel and then demolished. |
+| `demo_date` | datetime | The matched demolition date (must be *after* the sale). |
+| `days_to_demo` | int | Days from sale to demolition (positive). |
+| `vacant_sale` | bool | **Automatically set to True for `is_teardown_sale` rows.** This is the key behavior — teardown sales get reclassified as vacant-land sales for training, since the buyer paid for the lot, not the house. |
+
+Sales of *already-demolished* parcels (sale_date > demo_date) are intentionally **not** flagged here — those are pre-cleared lot sales, which most jurisdictions already label as `Land` or `Vacant` in their sale-type field. They reach `vacant_sale=True` through that path, not through this enrichment.
+
+Universe-side fields (added to the universe dataframe):
+
+| Field | Type | Set by |
+| --- | --- | --- |
+| `last_permit_was_teardown` | bool | True if the parcel's most recent permit (before the valuation date) was a demolition. |
+| `demo_date` | datetime | Date of that demolition. |
+| `reno_date` | datetime | Date of the most recent significant renovation before the valuation date. |
+| `days_to_reno` | int | Days from valuation date back to that renovation (negative). |
+| `renovation_num` | int | Severity of that renovation. |
+| `renovation_txt` | string | Label of that renovation. |
+
+If `calc_effective_age: true`, the universe-side step ALSO recomputes `bldg_effective_year_built`: parcels with a `renovation_num == 3` (major) renovation have their effective year set to the renovation year. Use this when you trust the permit data more than the assessor's effective-year field.
+
+#### Settings
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `sources` | `[]` | List of dataframe IDs (must each be loaded under `data.load`). |
+| `max_days_to_demo` | `365` | A sale is flagged as a teardown only if a demolition permit follows within this many days. Loosen for slow markets, tighten if you have lots of demos that aren't sale-related. |
+| `calc_effective_age` | `false` | Recompute `bldg_effective_year_built` from major renovations. |
+
+#### Worked example
+
+```json
+{
+  "data": {
+    "load": {
+      "permits": {
+        "filename": "permits.csv",
+        "dupes": "auto",
+        "load": {
+          "key": "REID",
+          "date": ["ISSUE_DATE", "datetime", "%Y-%m-%d"],
+          "is_teardown": "is_teardown",
+          "is_renovation": "is_renovation",
+          "renovation_txt": "WORK_CLASS",
+          "renovation_num": "renovation_num"
+        }
+      }
+    },
+    "process": {
+      "enrich": {
+        "permits": {
+          "sources": ["permits"],
+          "max_days_to_demo": 540,
+          "calc_effective_age": true
+        }
+      }
+    }
+  }
+}
+```
+
+#### Common pitfalls
+
+- **PIN ≠ REID.** Many jurisdictions key permits on `PIN` (the parcel identifier number) but assessor data on `REID` (a sequential real-estate ID). You'll likely need to join PIN → REID via your parcels file before producing the permits CSV. Once produced, the `key` field in the permits dataframe must match whatever your universe uses.
+- **`is_teardown` / `is_renovation` are NOT in raw permit data.** Your jurisdiction publishes `PERMIT_TYPE`, `WORK_CLASS`, or text descriptions. You must classify these into the booleans before loading. A small preprocessor that reads the raw permits and emits a clean CSV is the path of least resistance.
+- **Date alignment.** `date` must be parsed as a real datetime by pandas before reaching the enricher. Spell out the format string in `data.load.<source>.load.date` (e.g. `["ISSUE_DATE", "datetime", "%Y-%m-%d %H:%M:%S"]`) — incorrect parsing silently produces `NaT` and the enricher will skip those rows.
+- **Effective age leakage risk.** If you set `calc_effective_age: true` AND your training data already had `bldg_effective_year_built` from the assessor, you may be replacing one signal with another — verify the new field is sensibly distributed before keeping the override.
+
+- **When to use** — your jurisdiction publishes a permit feed and (a) you want to detect teardown sales for training, or (b) you want to control for permitted renovations.
 
 ### 4.7 OpenStreetMap streets — `data.process.enrich.streets.enabled`
 

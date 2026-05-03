@@ -31,7 +31,7 @@ def select_filter(df: pd.DataFrame, f: list) -> pd.DataFrame:
     return df.loc[resolved_index]
 
 
-def resolve_not_filter(df: pd.DataFrame, f: list) -> pd.Series:
+def resolve_not_filter(df: pd.DataFrame, f: list, rename_map: dict = None) -> pd.Series:
     """
     Resolve a NOT filter.
 
@@ -43,6 +43,9 @@ def resolve_not_filter(df: pd.DataFrame, f: list) -> pd.Series:
         Input DataFrame.
     f : list
         Filter list.
+    rename_map : dict, optional
+        Optional mapping of original-to-renamed column names, propagated
+        to nested filters so atomic comparisons can resolve the original name.
 
     Returns
     -------
@@ -56,11 +59,11 @@ def resolve_not_filter(df: pd.DataFrame, f: list) -> pd.Series:
     if len(values) > 1:
         raise ValueError(f"NOT operator only accepts one argument")
 
-    selected_index = resolve_filter(df, values[0])
+    selected_index = resolve_filter(df, values[0], rename_map)
     return ~selected_index
 
 
-def resolve_bool_filter(df: pd.DataFrame, f: list) -> pd.Series:
+def resolve_bool_filter(df: pd.DataFrame, f: list, rename_map: dict = None) -> pd.Series:
     """
     Resolve a list of filters using a boolean operator.
 
@@ -88,7 +91,7 @@ def resolve_bool_filter(df: pd.DataFrame, f: list) -> pd.Series:
     final_index = None
 
     for v in values:
-        selected_index = resolve_filter(df, v)
+        selected_index = resolve_filter(df, v, rename_map)
 
         if final_index is None:
             final_index = selected_index
@@ -145,9 +148,9 @@ def resolve_filter(df: pd.DataFrame, f: list, rename_map: dict = None) -> pd.Ser
 
     # check if operator is a boolean operator:
     if operator == "not":
-        return resolve_not_filter(df, f)
+        return resolve_not_filter(df, f, rename_map)
     elif _is_bool_operator(operator):
-        return resolve_bool_filter(df, f)
+        return resolve_bool_filter(df, f, rename_map)
     else:
         field = f[1]
         # Handle field name resolution with rename_map
