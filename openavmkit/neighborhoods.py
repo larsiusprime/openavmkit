@@ -1,43 +1,57 @@
 """
-Neighborhood-hierarchy derivation and cascading lookups.
+Neighborhood-cascade infrastructure.
 
 When a finest-grained neighborhood (e.g. an assessor VCS, a CAMA neighborhood
 code, a census block) has too few sales to support a credible local estimate,
-we want to fall back to a coarser geography that's still locally meaningful —
-ideally one that respects real administrative or physical boundaries rather
-than an arbitrary clustering.
+we want to fall back to a coarser geography that's still locally meaningful
+— ideally one that respects real administrative or physical boundaries
+rather than an arbitrary clustering.
 
-This module provides two things:
+This module provides the **cascade walker** infrastructure:
 
-* :func:`probe_neighborhood_naming` — heuristically detects whether a
-  neighborhood column's codes encode a hierarchy in their *naming*
-  (e.g. Wake County's ``15RA093`` decomposes into
-  ``[township][jurisdiction][sub-area]``). Returns a description.
-* :func:`build_neighborhood_hierarchy` — given a DataFrame and a list of
-  natural levels (column names + optional name-prefix splits), returns the
-  DataFrame enriched with derived hierarchy columns plus an ordered cascade
-  list that downstream code can walk.
+* :class:`HierarchySpec` — an ordered list of column names, finest first.
+* :func:`build_neighborhood_hierarchy` — thin convenience wrapper that takes
+  a list of pre-existing column names and returns a :class:`HierarchySpec`.
+  Optionally appends a constant ``__county__`` fallback level.
+* :func:`cascade_aggregate` — aggregate a witness-level value column at every
+  cascade level.
+* :func:`cascade_lookup` — for each parcel, walk the cascade and return the
+  first level whose aggregate meets a minimum-n threshold.
+* :func:`validate_hierarchy_consistency` — sanity-check helper to compare two
+  columns that ought to agree (e.g. a derived prefix column against a
+  canonical administrative column).
 
-The cascade is **ordered finest-first**: the first level is the most local,
-each subsequent level a coarser fallback. Downstream painters (Rung 1+)
-walk this list per-cell when the local witness count is below threshold.
+The columns that make up the cascade are **expected to already exist on the
+DataFrame**. Where they come from is a locality concern:
 
-This module deliberately does **not** invent geographic clusters via K-means
-or similar. Real administrative subdivisions and substring-encoded hierarchies
-already live in most assessor data; if they don't, a queen-contiguity polygon
-merge respects real borders better than flat Euclidean clustering.
+* Existing assessor columns (``planning_jurisdiction``, ``township``,
+  ``city``, ``census_tract``, ...) — declare them in ``data.load`` in your
+  ``settings.json``.
+* Substring-encoded prefixes of a neighborhood code (e.g. Wake's 7-char VCS
+  ``[area:2][juris:2][sub:3]`` decomposes into ``vcs_area_juris`` etc.) —
+  use the ``substr`` calc operator in ``data.load.<id>.calc``::
+
+      "vcs_area_juris": ["substr", "neighborhood", {"left": 0, "right": 4}]
+
+  See ``docs/docs/advanced_settings.md`` for the calc grammar.
+
+This module deliberately does **not** invent geographic clusters via
+K-means or similar. Real administrative subdivisions and substring-encoded
+hierarchies already live in most assessor data; if they don't, a
+queen-contiguity polygon merge respects real borders better than flat
+Euclidean clustering.
 
 See Also
 --------
 openavmkit.land.lycd : LYCD uniform-rate painter that walks the cascade.
 openavmkit.land.evidence : Witness curation that pools across the cascade.
+openavmkit.calculations.perform_calculations : Settings-driven calc engine
+    that derives substring-prefix columns during data load.
 """
 from __future__ import annotations
 
-import re
 import warnings
 from dataclasses import dataclass, field
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
@@ -49,197 +63,78 @@ class HierarchySpec:
     Ordered cascade specification.
 
     ``levels`` is finest-first: walking it climbs from the most local cell
-    upward to broader fallbacks. Each entry is a column name in the enriched
-    DataFrame.
+    upward to broader fallbacks. Each entry is a column name that must be
+    present on the DataFrame the cascade is applied to.
 
     Parameters
     ----------
     levels : list[str]
         Ordered cascade column names, finest first.
-    derived : dict[str, dict]
-        Description of any derived columns, keyed by their name. Each value
-        is a small dict describing the derivation (e.g.
-        ``{"source": "neighborhood", "kind": "prefix", "chars": "0:4"}``).
     notes : list[str]
         Free-form notes about the cascade (used in reports).
     """
     levels: list = field(default_factory=list)
-    derived: dict = field(default_factory=dict)
     notes: list = field(default_factory=list)
-
-
-def probe_neighborhood_naming(
-    df: pd.DataFrame,
-    neighborhood_col: str = "neighborhood",
-    sample_size: int = 5000,
-) -> dict:
-    """
-    Detect whether a neighborhood column's codes share a common length and
-    appear to encode positional substructure.
-
-    A common-length finding is a *necessary* signal that prefix splits are
-    meaningful — variable-length codes are unlikely to encode a positional
-    hierarchy. The function reports the modal length and the % of values
-    that share it. It does not attempt to label the substring meanings;
-    that's locality-specific and is supplied by the caller via
-    :func:`build_neighborhood_hierarchy`.
-
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        Input.
-    neighborhood_col : str, default "neighborhood"
-        Column to probe.
-    sample_size : int, default 5000
-        Sample size for the probe (full pass for diversity stats but only
-        the sample is shown in the report).
-
-    Returns
-    -------
-    dict
-        Keys: ``n_codes`` (distinct), ``modal_length``, ``modal_length_pct``,
-        ``length_distribution`` (Series), ``samples`` (list of strings).
-    """
-    s = df[neighborhood_col].dropna().astype(str).str.strip()
-    s = s[s != ""]
-    if len(s) == 0:
-        return {
-            "n_codes": 0,
-            "modal_length": None,
-            "modal_length_pct": 0.0,
-            "length_distribution": pd.Series(dtype=int),
-            "samples": [],
-        }
-    lengths = s.str.len()
-    dist = lengths.value_counts().sort_index()
-    modal_len = int(dist.idxmax())
-    modal_pct = float((lengths == modal_len).mean())
-    rng = np.random.default_rng(0)
-    uniq = sorted(s.unique().tolist())
-    n_samp = min(sample_size, len(uniq))
-    samples = list(rng.choice(uniq, size=n_samp, replace=False))
-    return {
-        "n_codes": int(s.nunique()),
-        "modal_length": modal_len,
-        "modal_length_pct": modal_pct,
-        "length_distribution": dist,
-        "samples": samples[:20],
-    }
-
-
-def derive_prefix_columns(
-    df: pd.DataFrame,
-    neighborhood_col: str,
-    splits: list,
-    out_col_prefix: str = "vcs_",
-) -> pd.DataFrame:
-    """
-    Add derived prefix-substring columns from a fixed-format neighborhood code.
-
-    Parameters
-    ----------
-    df : pandas.DataFrame
-    neighborhood_col : str
-        Source column.
-    splits : list of dict
-        Each dict has keys:
-
-        * ``name`` — output column name (without prefix)
-        * ``start`` — 0-based start index (inclusive)
-        * ``end`` — 0-based end index (exclusive); use ``None`` for "to end"
-    out_col_prefix : str, default "vcs_"
-        Prefix prepended to each split's ``name``.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Copy with new columns. Empty/NaN source values produce NaN outputs.
-    """
-    out = df.copy()
-    src = out[neighborhood_col].astype("string")
-    for spec in splits:
-        name = f"{out_col_prefix}{spec['name']}"
-        start = spec.get("start", 0)
-        end = spec.get("end", None)
-        if end is None:
-            piece = src.str.slice(start)
-        else:
-            piece = src.str.slice(start, end)
-        # Treat empty strings as NaN
-        piece = piece.where(piece.str.len().fillna(0) > 0)
-        out[name] = piece
-    return out
 
 
 def build_neighborhood_hierarchy(
     df: pd.DataFrame,
     *,
-    neighborhood_col: str = "neighborhood",
-    splits: list | None = None,
-    extra_levels: list | None = None,
+    levels: list,
     add_county: bool = True,
     verbose: bool = False,
 ) -> tuple:
     """
-    Enrich a DataFrame with hierarchy columns and return a cascade spec.
+    Validate a list of cascade column names and return a :class:`HierarchySpec`.
+
+    All columns in ``levels`` must already exist on ``df`` — derive them
+    upstream via ``data.load.<id>.calc`` (for substring prefixes) or by
+    declaring them in ``data.load.<id>.load`` (for existing assessor
+    columns). See the module docstring for an example.
 
     Parameters
     ----------
     df : pandas.DataFrame
-    neighborhood_col : str, default "neighborhood"
-        Finest-grained neighborhood column. This becomes cascade level 0.
-    splits : list of dict, optional
-        Prefix splits to derive. If omitted, no prefix derivation runs.
-        Each split: ``{"name": str, "start": int, "end": int|None}``. The
-        derived columns become cascade levels (in order) right after the
-        finest neighborhood.
-    extra_levels : list of str, optional
-        Additional column names already on ``df`` to append to the cascade
-        in order (typical: ``["planning_jurisdiction", "township"]``).
+        Parcel universe.
+    levels : list of str
+        Cascade column names, finest first. Missing columns are dropped
+        from the cascade with a warning.
     add_county : bool, default True
         If True, append a constant ``"__county__"`` column as the last
-        (broadest) level. Ensures every cell has a fallback.
+        (broadest) level. Ensures every cell has a fallback. The column is
+        added to ``df`` if not already present.
     verbose : bool, default False
         Print cascade summary.
 
     Returns
     -------
     enriched : pandas.DataFrame
-        Copy of ``df`` with derived columns added.
+        Copy of ``df``. Identical to the input unless ``add_county=True``
+        added a ``__county__`` column.
     spec : HierarchySpec
         Cascade specification (finest first).
     """
-    splits = splits or []
-    extra_levels = extra_levels or []
-    enriched = derive_prefix_columns(df, neighborhood_col, splits) if splits else df.copy()
+    enriched = df.copy()
 
-    levels = [neighborhood_col]
-    derived_meta = {}
-    for spec in splits:
-        col = f"vcs_{spec['name']}"
-        levels.append(col)
-        derived_meta[col] = {
-            "source": neighborhood_col,
-            "kind": "prefix",
-            "start": spec.get("start", 0),
-            "end": spec.get("end", None),
-        }
-    for col in extra_levels:
+    valid_levels = []
+    for col in levels:
         if col not in enriched.columns:
             warnings.warn(
-                f"build_neighborhood_hierarchy: extra level '{col}' not in DataFrame, skipping"
+                f"build_neighborhood_hierarchy: level '{col}' not in DataFrame, skipping"
             )
             continue
-        if col in levels:
+        if col in valid_levels:
             continue  # don't duplicate
-        levels.append(col)
-    if add_county:
-        enriched["__county__"] = "ALL"
-        levels.append("__county__")
+        valid_levels.append(col)
 
-    # Validation: log granularity at each level.
+    if add_county:
+        if "__county__" not in enriched.columns:
+            enriched["__county__"] = "ALL"
+        if "__county__" not in valid_levels:
+            valid_levels.append("__county__")
+
     notes = []
-    for col in levels:
+    for col in valid_levels:
         n = enriched[col].nunique(dropna=False)
         notes.append(f"{col}: {n} distinct values")
     if verbose:
@@ -247,7 +142,7 @@ def build_neighborhood_hierarchy(
         for note in notes:
             print(f"  {note}")
 
-    return enriched, HierarchySpec(levels=levels, derived=derived_meta, notes=notes)
+    return enriched, HierarchySpec(levels=valid_levels, notes=notes)
 
 
 def validate_hierarchy_consistency(
@@ -259,11 +154,13 @@ def validate_hierarchy_consistency(
     threshold: float = 0.95,
 ) -> dict:
     """
-    Compare a derived hierarchy column to a canonical column for consistency.
+    Compare two columns expected to agree, and return a small report.
 
-    Useful sanity check when a prefix-derived column should match a
-    pre-existing column (e.g. Wake's VCS chars 3-4 should match
-    ``planning_jurisdiction``). Returns a small report.
+    Useful sanity check when a derived (e.g. substring-decomposed) column
+    should match a pre-existing canonical column. For example, Wake's VCS
+    chars 2-4 (``vcs_juris``) should match ``planning_jurisdiction`` for
+    98%+ of parcels; rows where they disagree expose data-quality issues
+    worth investigating.
 
     Parameters
     ----------
@@ -299,7 +196,6 @@ def validate_hierarchy_consistency(
     both_numeric = left_num.notna() & right_num.notna()
     matches = pd.Series(False, index=sub.index)
     matches.loc[both_numeric] = left_num[both_numeric] == right_num[both_numeric]
-    # For non-numeric rows, fall back to string comparison
     non_num = ~both_numeric
     matches.loc[non_num] = (
         sub.loc[non_num, derived_col].astype(str)
@@ -346,7 +242,7 @@ def cascade_aggregate(
         Witness-level data — one row per piece of evidence (e.g. one row
         per vacant sale).
     spec : HierarchySpec
-        Output of :func:`build_neighborhood_hierarchy`.
+        Cascade specification.
     value_col : str
         Column to aggregate.
     weight_col : str, optional
@@ -358,8 +254,7 @@ def cascade_aggregate(
     -------
     dict[str, pandas.Series]
         Keyed by level column name; each Series indexed by that level's
-        values, with the aggregated value plus an ``n`` attribute via
-        ``.attrs``.
+        values, with the count vector attached via ``.attrs["n"]``.
     """
     out = {}
     for level in spec.levels:
@@ -415,8 +310,8 @@ def cascade_lookup(
         that met ``min_n`` for that row.
     levels_used : pandas.Series
         Length matches ``df``; the level column name actually used (or
-        ``None`` if no level matched — should not happen if county-level
-        is included).
+        ``None`` if no level matched — should not happen if a county-level
+        constant is included).
     """
     values = pd.Series(np.nan, index=df.index, dtype=float)
     levels_used = pd.Series([None] * len(df), index=df.index, dtype=object)
@@ -429,14 +324,11 @@ def cascade_lookup(
             continue
         agg_series = aggregates[level]
         n_series = agg_series.attrs.get("n", None)
-        # Build a key->(value, n) lookup
         if n_series is None:
-            # Treat as unbounded n — use everywhere available
             keys = df[level]
             looked = keys.map(agg_series)
             ok = looked.notna() & unfilled
         else:
-            # Restrict to keys with sufficient n
             usable_keys = n_series[n_series >= min_n].index
             agg_subset = agg_series.loc[agg_series.index.isin(usable_keys)]
             keys = df[level]
@@ -448,5 +340,3 @@ def cascade_lookup(
         unfilled.loc[ok] = False
 
     return values, levels_used
-
-

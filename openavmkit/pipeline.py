@@ -2109,9 +2109,7 @@ def enrich_with_empirical_zoning(
 def build_land_hierarchy(
     universe: pd.DataFrame,
     *,
-    neighborhood_col: str = "neighborhood",
-    splits: list | None = None,
-    extra_levels: list | None = None,
+    levels: list,
     add_county: bool = True,
     verbose: bool = False,
 ) -> tuple:
@@ -2119,10 +2117,26 @@ def build_land_hierarchy(
     Build the cascade hierarchy walked by the land painters when a finest-
     grained cell has too few witnesses to support a credible local estimate.
 
+    All ``levels`` columns must already exist on ``universe``. Derive any
+    substring-prefix columns (e.g. ``vcs_area_juris`` from a 7-char VCS
+    code) via the ``substr`` calc operator in ``data.load.<id>.calc`` so
+    they're populated during the assemble step. See
+    :mod:`openavmkit.neighborhoods` for the calc-grammar example.
+
+    Parameters
+    ----------
+    universe : pandas.DataFrame
+    levels : list of str
+        Cascade column names, finest first. Missing columns are dropped
+        from the cascade with a warning.
+    add_county : bool, default True
+        Append a constant ``__county__`` fallback level.
+
     Returns
     -------
     enriched_universe : pandas.DataFrame
-        Copy of ``universe`` with prefix-derived columns added.
+        Copy of ``universe``. Identical to the input unless
+        ``add_county=True`` added a ``__county__`` column.
     spec : openavmkit.neighborhoods.HierarchySpec
         Cascade specification, finest first.
     """
@@ -2130,9 +2144,7 @@ def build_land_hierarchy(
 
     return build_neighborhood_hierarchy(
         universe,
-        neighborhood_col=neighborhood_col,
-        splits=splits,
-        extra_levels=extra_levels,
+        levels=levels,
         add_county=add_county,
         verbose=verbose,
     )
