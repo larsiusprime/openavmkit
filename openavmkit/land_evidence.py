@@ -70,6 +70,54 @@ DEFAULT_WEIGHTS = {
 LEAKED_DISQ_FLAGS = ("D", "E", "F", "G")
 
 
+# -----------------------------------------------------------------------------
+# Anomaly-filter constants
+# -----------------------------------------------------------------------------
+#
+# These thresholds gate whether an improved-sale witness is treated as
+# arms-length market evidence. Each is calibrated against a physical or
+# logical lower bound rather than against statistical outlier-ness, so the
+# rules are defensible without reference to our own model's predictions.
+#
+# Mild negative residuals (sale 0–25% below depreciated cost) are NOT
+# anomalies — they reflect the normal market spread for older homes
+# trading slightly under cost basis (~5–8% per the Holding-interview PDF
+# cited in the planning doc). The diagnostic_findings.md report shows
+# 169 of 237 negative residuals fall into this benign band; only the
+# severe + very_neg tails need filtering. See also SUMMARY.md, "Known
+# noise patterns".
+TOKEN_PRICE_THRESHOLD_USD = 5000
+"""Sales priced below this are token-consideration recordings for
+non-arms-length transfers (gift deeds, family transfers, $1 conveyances).
+Convention rooted in real-estate recording practice."""
+
+MIN_PHYSICAL_BUILDING_PSF_USD = 30
+"""Wake's 2024 Schedule of Values publishes residential base prices
+ranging from ~$36/sqft (Class D, lowest finished construction) up to
+~$280/sqft (A+25 luxury). The lowest plausible residential sale-per-sqft
+for a real arms-length transaction in Wake should clear ~$30/sqft —
+this is below the cost floor for any habitable construction and
+indicates non-arms-length conveyance. Used by the anomaly filter to
+flag sales below the physical cost basis."""
+
+BELOW_COST_FLOOR_RATIO = 0.5
+"""Sale-to-depreciated-cost ratio below which a newish good-condition
+sale is considered anomalous. A 30-year-old home in 0.7+ condition can't
+rationally sell for less than half its replacement cost in a market like
+Wake — both the land and the (still-functional) structure are worth
+something."""
+
+PRIOR_XFER_INCONSISTENT_RATIO = 0.5
+"""Sale price below this fraction of the time-adjusted prior xfer is
+flagged as inconsistent. Wake-area land doesn't fall 50% in absolute
+nominal price across a 10-year window."""
+
+PRIOR_XFER_LOOKBACK_YEARS = 10
+
+BELOW_COST_FLOOR_MAX_AGE_YEARS = 30
+BELOW_COST_FLOOR_MIN_CONDITION = 0.7
+
+
 @dataclass
 class WitnessConfig:
     """
@@ -353,6 +401,7 @@ def curate_w3_extraction(
     land_area_col: str,
     zoning_min_col: str,
     nbhd_median_size: pd.Series,
+    flagged_out: list | None = None,
     verbose: bool = False,
 ) -> pd.DataFrame:
     """
@@ -394,9 +443,34 @@ def curate_w3_extraction(
     base["__assr_impr_value__"] = base[sales_join_key].map(
         universe_keyed["assr_impr_value"]
     )
+    base["assr_impr_value"] = base["__assr_impr_value__"]
+    # Bring building age + condition for anomaly evaluation
+    for c in ("bldg_age_years", "bldg_condition_num", "prior_land_xfer_price",
+              "prior_land_xfer_date"):
+        if c in universe.columns and c not in base.columns:
+            base[c] = base[sales_join_key].map(universe_keyed[c])
     sp = base.get("sale_price_time_adj", base["sale_price"])
     base["__land_residual__"] = sp - base["__assr_impr_value__"].fillna(0)
     base = base[base["__land_residual__"] > 0]
+
+    # Anomaly filter — drop flagged sales but capture for audit trail
+    anom = evaluate_sale_anomaly_flags(base)
+    base = base.join(anom)
+    flagged_mask = base["anomaly_flags"].astype("string").str.len() > 0
+    n_flagged = int(flagged_mask.fillna(False).sum())
+    if n_flagged and flagged_out is not None:
+        flagged_audit = base.loc[flagged_mask].copy()
+        flagged_audit["__source_witness__"] = "W3_extraction"
+        flagged_out.append(flagged_audit)
+    base = base[~flagged_mask.fillna(False)]
+    if verbose and n_flagged:
+        rule_counts = (
+            anom.loc[flagged_mask, "anomaly_flags"].str.split(";")
+            .explode().value_counts()
+        )
+        print(f"  W3 extraction: anomaly filter dropped {n_flagged} sales:")
+        for rule, n in rule_counts.items():
+            print(f"    - {rule}: {n}")
 
     base = _attach_contamination_columns(
         base, universe=universe, parcel_key=parcel_key, join_key=sales_join_key,
@@ -421,6 +495,7 @@ def curate_w3_extraction(
         "notes": f"extraction: sale_price - assr_impr_value (bldg <= {cfg.w3_max_age_years}y)",
     })
     out["land_value_per_sqft"] = out["land_value"] / out["land_area_sqft"]
+    out.index = base.index
     return out
 
 
@@ -436,6 +511,7 @@ def curate_w4_low_far(
     zoning_min_col: str,
     nbhd_median_size: pd.Series,
     far_col: str = "floor_area_ratio",
+    flagged_out: list | None = None,
     verbose: bool = False,
 ) -> pd.DataFrame:
     """
@@ -486,11 +562,35 @@ def curate_w4_low_far(
             print("  W4 low_far: universe lacks assr_impr_value, skipping")
         return _empty_witness_frame()
     base["__assr_impr_value__"] = base[sales_join_key].map(universe_keyed["assr_impr_value"])
+    base["assr_impr_value"] = base["__assr_impr_value__"]
+    for c in ("bldg_age_years", "bldg_condition_num", "prior_land_xfer_price",
+              "prior_land_xfer_date"):
+        if c in universe.columns and c not in base.columns:
+            base[c] = base[sales_join_key].map(universe_keyed[c])
     sp = base.get("sale_price_time_adj", base["sale_price"])
     base["__land_residual__"] = sp - base["__assr_impr_value__"].fillna(0)
     base = base[base["__land_residual__"] > 0]
     if len(base) == 0:
         return _empty_witness_frame()
+
+    # Anomaly filter — same rules as W3
+    anom = evaluate_sale_anomaly_flags(base)
+    base = base.join(anom)
+    flagged_mask = base["anomaly_flags"].astype("string").str.len() > 0
+    n_flagged = int(flagged_mask.fillna(False).sum())
+    if n_flagged and flagged_out is not None:
+        flagged_audit = base.loc[flagged_mask].copy()
+        flagged_audit["__source_witness__"] = "W4_low_far"
+        flagged_out.append(flagged_audit)
+    base = base[~flagged_mask.fillna(False)]
+    if verbose and n_flagged:
+        rule_counts = (
+            anom.loc[flagged_mask, "anomaly_flags"].str.split(";")
+            .explode().value_counts()
+        )
+        print(f"  W4 low_far: anomaly filter dropped {n_flagged} sales:")
+        for rule, n in rule_counts.items():
+            print(f"    - {rule}: {n}")
 
     base = _attach_contamination_columns(
         base, universe=universe, parcel_key=parcel_key, join_key=sales_join_key,
@@ -687,6 +787,85 @@ def curate_w6_pred_residual(
     return out
 
 
+def evaluate_sale_anomaly_flags(
+    sales_with_universe: pd.DataFrame,
+    *,
+    sale_price_col: str = "sale_price_time_adj",
+    impr_value_col: str = "assr_impr_value",
+    bldg_age_col: str = "bldg_age_years",
+    bldg_condition_col: str = "bldg_condition_num",
+    bldg_area_col: str = "bldg_area_finished_sqft",
+    prior_xfer_price_col: str = "prior_land_xfer_price",
+    prior_xfer_date_col: str = "prior_land_xfer_date",
+    sale_date_col: str = "sale_date",
+    annual_growth_rate: float = 0.04,
+) -> pd.DataFrame:
+    """
+    Evaluate the four anomaly-flag rules for each row.
+
+    Each rule corresponds to a physically or logically implausible sale
+    pattern, not a statistical outlier. A row triggering ANY rule is an
+    anomaly candidate; downstream code should drop it from calibration
+    pools but log the firing rules to a flagged-sales artifact for
+    audit / human review.
+
+    Returns a DataFrame indexed identically to the input with one column:
+    ``anomaly_flags`` — a semicolon-separated string of rule names that
+    fired (empty string if none).
+    """
+    df = sales_with_universe
+    out = pd.DataFrame(index=df.index)
+    flags = pd.Series([""] * len(df), index=df.index, dtype="object")
+
+    def _add_flag(mask: pd.Series, name: str) -> None:
+        nonlocal flags
+        mask = mask.fillna(False)
+        flags.loc[mask] = flags.loc[mask].apply(
+            lambda existing: f"{existing};{name}" if existing else name
+        )
+
+    sale = pd.to_numeric(df.get(sale_price_col), errors="coerce")
+    impr = pd.to_numeric(df.get(impr_value_col), errors="coerce")
+    age = pd.to_numeric(df.get(bldg_age_col), errors="coerce")
+    cond = pd.to_numeric(df.get(bldg_condition_col), errors="coerce")
+    area = pd.to_numeric(df.get(bldg_area_col), errors="coerce")
+    prior_p = pd.to_numeric(df.get(prior_xfer_price_col), errors="coerce")
+    prior_d = pd.to_datetime(df.get(prior_xfer_date_col), errors="coerce")
+    sale_d = pd.to_datetime(df.get(sale_date_col), errors="coerce")
+
+    # Rule 1: BELOW_COST_FLOOR
+    rule_1 = (
+        (sale < BELOW_COST_FLOOR_RATIO * impr)
+        & (age < BELOW_COST_FLOOR_MAX_AGE_YEARS)
+        & (cond >= BELOW_COST_FLOOR_MIN_CONDITION)
+        & impr.notna()
+    )
+    _add_flag(rule_1, "BELOW_COST_FLOOR")
+
+    # Rule 2: PRIOR_XFER_INCONSISTENT (time-adjusted)
+    age_yrs = (sale_d - prior_d).dt.days / 365.25
+    in_window = (age_yrs > 0) & (age_yrs <= PRIOR_XFER_LOOKBACK_YEARS)
+    prior_adj = prior_p * ((1.0 + annual_growth_rate) ** age_yrs)
+    rule_2 = (
+        (prior_p > 0)
+        & in_window
+        & (sale < PRIOR_XFER_INCONSISTENT_RATIO * prior_adj)
+    )
+    _add_flag(rule_2, "PRIOR_XFER_INCONSISTENT")
+
+    # Rule 3: TOKEN_PRICE
+    rule_3 = sale < TOKEN_PRICE_THRESHOLD_USD
+    _add_flag(rule_3, "TOKEN_PRICE")
+
+    # Rule 4: BELOW_PHYSICAL_PSF (per-sqft of building below physical floor)
+    psf = sale / area.replace(0, np.nan)
+    rule_4 = (area > 0) & (psf < MIN_PHYSICAL_BUILDING_PSF_USD)
+    _add_flag(rule_4, "BELOW_PHYSICAL_PSF")
+
+    out["anomaly_flags"] = flags
+    return out
+
+
 def _empty_witness_frame() -> pd.DataFrame:
     """Return an empty witness DataFrame with the canonical schema."""
     return pd.DataFrame(
@@ -714,6 +893,7 @@ def curate_witnesses(
     land_area_col: str = "land_area_sqft",
     zoning_min_col: str = "zoning_emp_min_lot_sqft",
     valuation_date: pd.Timestamp | None = None,
+    flagged_out: list | None = None,
     verbose: bool = False,
 ) -> pd.DataFrame:
     """
@@ -779,8 +959,8 @@ def curate_witnesses(
     parts = []
     parts.append(curate_w1_clean_vacant(sales, universe, **common_kwargs))
     parts.append(curate_w2_teardown(sales, universe, **common_kwargs))
-    parts.append(curate_w3_extraction(sales, universe, **common_kwargs))
-    parts.append(curate_w4_low_far(sales, universe, **common_kwargs))
+    parts.append(curate_w3_extraction(sales, universe, flagged_out=flagged_out, **common_kwargs))
+    parts.append(curate_w4_low_far(sales, universe, flagged_out=flagged_out, **common_kwargs))
     parts.append(
         curate_w5_prior_xfer(
             universe,
