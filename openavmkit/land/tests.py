@@ -40,8 +40,8 @@ The harness runs all six and writes a single Markdown report.
 
 See Also
 --------
-openavmkit.zoning_empirical : Provides L6's empirical zoning floor.
-openavmkit.land_evidence : Provides the witness pool for L1/L4 baselines.
+openavmkit.zoning : Provides L6's empirical zoning floor.
+openavmkit.land.evidence : Provides the witness pool for L1/L4 baselines.
 openavmkit.horizontal_equity_study : Provides L2's clusters.
 """
 from __future__ import annotations

@@ -29,8 +29,8 @@ merge respects real borders better than flat Euclidean clustering.
 
 See Also
 --------
-openavmkit.land_lycd : Right-Way painter that walks the cascade.
-openavmkit.land_evidence : Witness curation that pools across the cascade.
+openavmkit.land.lycd : LYCD uniform-rate painter that walks the cascade.
+openavmkit.land.evidence : Witness curation that pools across the cascade.
 """
 from __future__ import annotations
 
@@ -450,48 +450,3 @@ def cascade_lookup(
     return values, levels_used
 
 
-def wake_county_splits() -> list:
-    """
-    Wake County NC's cascade-meaningful VCS substring splits.
-
-    Wake codes are exactly 7 characters: ``[area][juris][sub]`` =
-    ``[2 chars][2 chars][3 chars]``. ``area`` is a 2-digit township number
-    (01-20) for ~95% of parcels, or a 2-letter special-area code (DT, CB,
-    EW, ...) for the rest. ``juris`` matches ``planning_jurisdiction`` 98.4%
-    of the time. ``sub`` is the 3-char in-VCS sub-identifier.
-
-    Only ``area_juris`` (chars 0:4) is returned because it's the only split
-    that's strictly hierarchical above the full VCS code (every full VCS
-    rolls up cleanly into exactly one ``area_juris``). The components
-    ``area``, ``juris``, ``sub`` are not returned here because they cross-cut
-    rather than nest. Callers needing those for validation can derive them
-    separately via :func:`derive_prefix_columns`.
-
-    Returns
-    -------
-    list of dict
-        One split, suitable for :func:`build_neighborhood_hierarchy`.
-    """
-    return [
-        {"name": "area_juris", "start": 0, "end": 4},
-    ]
-
-
-def wake_county_validation_splits() -> list:
-    """
-    Wake County VCS splits for validation/diagnostic purposes only.
-
-    Returns derivations of ``vcs_area``, ``vcs_juris``, ``vcs_sub`` for
-    cross-checking against the canonical ``township`` and
-    ``planning_jurisdiction`` columns via
-    :func:`validate_hierarchy_consistency`. These are NOT cascade levels.
-
-    Returns
-    -------
-    list of dict
-    """
-    return [
-        {"name": "area", "start": 0, "end": 2},
-        {"name": "juris", "start": 2, "end": 4},
-        {"name": "sub", "start": 4, "end": 7},
-    ]

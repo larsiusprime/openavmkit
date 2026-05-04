@@ -26,8 +26,8 @@ zoning cap. They are a substitute for, not equivalent to, real UDO data.
 
 See Also
 --------
-openavmkit.land_evidence : Uses this table to filter vacant-sale witnesses.
-openavmkit.land_tests : Uses this table for the L6 (excess vs. surplus) test.
+openavmkit.land.evidence : Uses this table to filter vacant-sale witnesses.
+openavmkit.land.tests : Uses this table for the L6 (excess vs. surplus) test.
 """
 from __future__ import annotations
 

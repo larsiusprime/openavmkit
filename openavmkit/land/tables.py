@@ -1,6 +1,5 @@
 """
-Per-neighborhood land tables — the production-grade output of the
-Right-Way painter.
+Per-neighborhood land tables — the production-grade per-cell painter.
 
 Each neighborhood gets one of three rule structures:
 
@@ -43,10 +42,10 @@ The artifacts written by the painter (driven from the run script):
 
 See Also
 --------
-openavmkit.land_lycd : Simpler uniform-rate painter (this module is
+openavmkit.land.lycd : Simpler uniform-rate painter (this module is
     the production-grade replacement when audit-ability is required).
-openavmkit.land_evidence : Witness curation feeding the calibration.
-openavmkit.neighborhood_hierarchy : Cascade walked for evidence-thin
+openavmkit.land.evidence : Witness curation feeding the calibration.
+openavmkit.neighborhoods : Cascade walked for evidence-thin
     neighborhoods.
 """
 from __future__ import annotations
@@ -59,7 +58,7 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-from openavmkit.neighborhood_hierarchy import HierarchySpec
+from openavmkit.neighborhoods import HierarchySpec
 from openavmkit.utilities.stats import calc_cod
 
 
@@ -604,7 +603,7 @@ def build_all_tables(
     ----------
     universe : pandas.DataFrame
     witnesses : pandas.DataFrame
-        From :func:`land_evidence.curate_witnesses`. Must have
+        From :func:`openavmkit.land.evidence.curate_witnesses`. Must have
         ``parcel_key``, ``witness_kind``, ``land_value``, ``event_date``.
     spec : HierarchySpec
     prediction_col, impr_value_col : str
@@ -783,34 +782,6 @@ class AdjustmentSpec:
     description: str
     n_supporting_pairs: int = 0
     source: str = "manual"  # 'manual' | 'paired_sales' | 'shap'
-
-
-def default_wake_adjustments() -> list:
-    """
-    Wake-specific v1 adjustment factors. These are conservative defaults
-    based on the SOV's published influence codes and Wake's data
-    coverage. Refinement via paired-sales or SHAP is future work.
-    """
-    return [
-        AdjustmentSpec(
-            feature="puv",
-            factor=0.05,
-            description="Land in PUV deferral (agriculture/horticulture/forestry)",
-            source="manual",
-        ),
-        AdjustmentSpec(
-            feature="historic_deferred",
-            factor=0.50,
-            description="Historic-preservation deferred parcel",
-            source="manual",
-        ),
-        AdjustmentSpec(
-            feature="utilities_partial",
-            factor=0.85,
-            description="Partial utilities (E only, no water/sewer) — well/septic rural",
-            source="manual",
-        ),
-    ]
 
 
 def apply_adjustments(

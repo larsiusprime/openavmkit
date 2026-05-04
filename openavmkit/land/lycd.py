@@ -1,36 +1,30 @@
 """
-Right-Way uniform-rate land painter ("Least You Can Do" / Rung 1).
+LYCD uniform-rate land painter — "Least You Can Do" / Rung 1.
 
-The user's *Valuing Land: The Simplest Viable Method* essay distinguishes
-two ways to apply a land-allocation percentage:
+Implements the user's *Valuing Land: The Simplest Viable Method* essay
+allocation rule (the so-called "Right Way", contrasted with the "Wrong Way"
+``pct × per_parcel_total_value`` that ties land value to improvements):
 
-* **Wrong Way:** ``land_value = pct × per_parcel_total_value``. Generates
-  side-by-side land-value differences that depend on improvements. Breaks
-  the LVT incentives.
-* **Right Way:** within a neighborhood, derive ONE land rate from the
-  *prevailing* (median) improved-property total value, and paint that
-  uniform rate on every parcel in the neighborhood.
+  Within each neighborhood, derive ONE ``$/sqft`` rate from the prevailing
+  improved-property value, and paint that uniform rate on every parcel in
+  the cell.
 
-This module implements the Right Way. It computes one ``$/sqft`` rate per
-neighborhood-cell and applies it to every parcel in the cell, regardless
-of what's built on it.
-
-The "Least You Can Do" (LYCD) variant — Rung 1 — uses a single global
-allocation %. Rung 2 calibrates per-neighborhood, but the painter is the
-same; only the source of the allocation % differs. Both rungs share this
-module.
+This is the simplest viable painter — Rung 1.0 uses a single global
+allocation %, Rung 1.1 calibrates per-neighborhood. Both share this code.
+The production-grade :mod:`openavmkit.land.tables` painter (Rung 1.5+)
+extends the same allocation rule with per-cell tables and zoning-anchored
+size curves.
 
 Inputs:
 
 * A parcel universe with ``land_area_sqft``, neighborhood code, and
   optional ``zoning_emp_min_lot_sqft`` from
-  :func:`zoning_empirical.join_empirical_zoning`.
-* A witness pool from :mod:`openavmkit.land_evidence`. Used to derive
+  :func:`openavmkit.zoning.join_empirical_zoning`.
+* A witness pool from :mod:`openavmkit.land.evidence`. Used to derive
   the local allocation % when the caller wants per-neighborhood
   calibration; ignored if the caller passes a fixed global allocation.
-* A neighborhood :class:`HierarchySpec` from
-  :mod:`openavmkit.neighborhood_hierarchy` for cascading fallback when
-  the finest-grained cell has too few witnesses.
+* A :class:`HierarchySpec` from :mod:`openavmkit.neighborhoods` for
+  cascading fallback when the finest-grained cell has too few witnesses.
 
 Outputs (added to a copy of the universe):
 
@@ -42,13 +36,13 @@ Outputs (added to a copy of the universe):
 
 See Also
 --------
-openavmkit.land_evidence : Provides the witness pool used to derive
+openavmkit.land.evidence : Provides the witness pool used to derive
     allocation percentages and direct land rates.
-openavmkit.neighborhood_hierarchy : Provides the cascade walked when
+openavmkit.neighborhoods : Provides the cascade walked when
     a neighborhood is evidence-thin.
-openavmkit.zoning_empirical : Provides the de-facto zoning floor used
+openavmkit.zoning : Provides the de-facto zoning floor used
     in the excess/surplus split.
-openavmkit.land_tests : Lars-Tests harness used to score the output.
+openavmkit.land.tests : Lars-Tests harness used to score the output.
 """
 from __future__ import annotations
 
@@ -58,7 +52,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from openavmkit.neighborhood_hierarchy import (
+from openavmkit.neighborhoods import (
     HierarchySpec,
     cascade_aggregate,
     cascade_lookup,
@@ -74,13 +68,13 @@ DEFAULT_ALLOCATION_PRIOR_RANGE = (0.10, 0.40)
 @dataclass
 class LycdConfig:
     """
-    Knobs for the Right-Way painter.
+    Knobs for the LYCD painter.
 
     Parameters
     ----------
     global_allocation_pct : float, default 0.20
         Used by Rung 1 (LYCD): single county-wide allocation % applied
-        the Right Way. Wake's SOV-implied prior is ~0.20 (15-25% range).
+        uniformly per cell. Wake's SOV-implied prior is ~0.20 (15-25% range).
     allocation_pct_clip : tuple[float, float], default (0.10, 0.40)
         Clip the per-neighborhood allocation % to this range (used in
         Rung 2 calibration to avoid numerical blowups in evidence-thin
@@ -121,7 +115,7 @@ def _per_cell_prevailing(
     """
     For each cascade level, compute the *prevailing* improved-property
     median total value AND median improved-property land size. The
-    Right-Way local rate is then::
+    LYCD local rate is then::
 
         local_rate = (allocation_pct × prevailing_total_value) / prevailing_land_size
 
@@ -166,7 +160,7 @@ def derive_allocation_pct(
     Parameters
     ----------
     witnesses : pandas.DataFrame
-        Output of :func:`land_evidence.curate_witnesses`. Must contain
+        Output of :func:`openavmkit.land.evidence.curate_witnesses`. Must contain
         ``parcel_key``, ``land_value_per_sqft``, ``weight``.
     universe : pandas.DataFrame
         Parcel universe. Must contain ``market_value_col``,
@@ -266,7 +260,7 @@ def _clip_alloc(pct: float, cfg: LycdConfig) -> float:
     return float(min(max(pct, lo), hi))
 
 
-def paint_right_way(
+def paint_lycd(
     universe: pd.DataFrame,
     *,
     spec: HierarchySpec,
@@ -292,9 +286,9 @@ def paint_right_way(
     spec : HierarchySpec
         Cascade ladder. The first level is the finest neighborhood.
     allocation_pct : float
-        Land-allocation percentage to apply (the Right Way: applied to
-        the prevailing improved-property value at each cascade level,
-        not per parcel).
+        Land-allocation percentage to apply: multiplied by the prevailing
+        improved-property value at each cascade level (uniform per cell),
+        not per parcel.
     cfg : LycdConfig
     market_value_col : str
     land_area_col, bldg_area_col, zoning_emp_min_col : str
@@ -360,7 +354,7 @@ def paint_right_way(
         n_painted = out[out_value_col].notna().sum()
         n_zero = (out[out_value_col] == 0).sum()
         print(
-            f"paint_right_way: painted {n_painted:,}/{len(out):,} parcels; "
+            f"paint_lycd: painted {n_painted:,}/{len(out):,} parcels; "
             f"{n_zero:,} got 0 (no rate available)"
         )
         if "land_value_cell_level" in out.columns:

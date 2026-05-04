@@ -43,9 +43,9 @@ Contamination filters applied across all streams:
 
 See Also
 --------
-openavmkit.zoning_empirical : Provides the de-facto zoning floor.
-openavmkit.land_lycd : Right-Way painter that pools the witnesses.
-openavmkit.land_tests : Lars-Tests that reuse the witness pool.
+openavmkit.zoning : Provides the de-facto zoning floor.
+openavmkit.land.lycd : LYCD uniform-rate painter that pools the witnesses.
+openavmkit.land.tests : Lars-Tests that reuse the witness pool.
 """
 from __future__ import annotations
 
@@ -735,7 +735,7 @@ def curate_w6_pred_residual(
 
     Caveat: W6 doesn't represent an actual transaction; it's a
     model-derived synthetic. It should NOT be used to validate the
-    Right-Way painter's calibration (that would be circular). Used as
+    painter's calibration (that would be circular). Used as
     fallback evidence when the witness pool is sparse, and as a
     full-universe sanity check for the painter's own output.
     """
@@ -909,7 +909,7 @@ def curate_witnesses(
         ``bldg_year_built``.
     universe : pandas.DataFrame
         Parcel universe. Should already have empirical-zoning columns
-        joined (typically by calling :func:`zoning_empirical.join_empirical_zoning`)
+        joined (typically by calling :func:`openavmkit.zoning.join_empirical_zoning`)
         and ``floor_area_ratio`` computed.
     cfg : WitnessConfig, optional
         Knobs. Defaults to ``WitnessConfig()``.

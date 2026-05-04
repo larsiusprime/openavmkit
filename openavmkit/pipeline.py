@@ -2033,3 +2033,311 @@ def _set_locality(nbs, locality: str):
     print(f"base path = {nbs.base_path}")
     print(f"current path = {os.getcwd()}")
     return nbs
+
+
+# =============================================================================
+# Land valuation
+# =============================================================================
+#
+# Notebook-facing wrappers for the land flow. The five steps below correspond
+# to the five logical stages of the land pipeline:
+#
+#   1. Build the empirical (jurisdiction, zoning) reference table and join its
+#      lookups onto the parcel universe.
+#   2. Build the neighborhood-cascade hierarchy (VCS prefix splits + extra
+#      administrative levels) used by all painters.
+#   3. Curate the witness pool (W1-W6) — the calibration evidence.
+#   4. Paint per-parcel land values using either the LYCD uniform-rate painter
+#      (Rung 1.0/1.1) or the production table painter (Rung 1.5).
+#   5. Score the painted output against the Lars-Tests (L1-L6).
+#
+# Wake County's `run_05_land.py` and `run_06_land_tables.py` drive these in
+# order. Other jurisdictions can compose the same wrappers with their own
+# zoning conventions and adjustment factors.
+
+
+def enrich_with_empirical_zoning(
+    universe: pd.DataFrame,
+    *,
+    jurisdiction_col: str = "planning_jurisdiction",
+    zoning_col: str = "zoning",
+    land_area_col: str = "land_area_sqft",
+    bldg_area_col: str = "bldg_area_finished_sqft",
+    far_col: str = "floor_area_ratio",
+    min_built_per_pair: int = 30,
+    min_built_per_jurisdiction: int = 50,
+    out_prefix: str = "zoning_emp_",
+    verbose: bool = False,
+) -> tuple:
+    """
+    Build the de-facto ``(jurisdiction, zoning)`` reference table and join
+    its lookups onto the universe.
+
+    Returns
+    -------
+    enriched_universe : pandas.DataFrame
+        Copy of ``universe`` with ``zoning_emp_min_lot_sqft``,
+        ``zoning_emp_max_far``, ``zoning_emp_median_lot_sqft``,
+        ``zoning_emp_median_far``, ``zoning_emp_fallback_level`` added.
+    zoning_table : pandas.DataFrame
+        The reference table itself, indexed by ``(jurisdiction, zoning)``.
+        Useful to write out as an artifact for audit.
+    """
+    from openavmkit.zoning import build_empirical_zoning_table, join_empirical_zoning
+
+    table = build_empirical_zoning_table(
+        universe,
+        jurisdiction_col=jurisdiction_col,
+        zoning_col=zoning_col,
+        land_area_col=land_area_col,
+        bldg_area_col=bldg_area_col,
+        far_col=far_col,
+        min_built_parcels_per_pair=min_built_per_pair,
+        min_built_parcels_per_jurisdiction=min_built_per_jurisdiction,
+        verbose=verbose,
+    )
+    enriched = join_empirical_zoning(
+        universe,
+        table,
+        jurisdiction_col=jurisdiction_col,
+        zoning_col=zoning_col,
+        out_prefix=out_prefix,
+    )
+    return enriched, table
+
+
+def build_land_hierarchy(
+    universe: pd.DataFrame,
+    *,
+    neighborhood_col: str = "neighborhood",
+    splits: list | None = None,
+    extra_levels: list | None = None,
+    add_county: bool = True,
+    verbose: bool = False,
+) -> tuple:
+    """
+    Build the cascade hierarchy walked by the land painters when a finest-
+    grained cell has too few witnesses to support a credible local estimate.
+
+    Returns
+    -------
+    enriched_universe : pandas.DataFrame
+        Copy of ``universe`` with prefix-derived columns added.
+    spec : openavmkit.neighborhoods.HierarchySpec
+        Cascade specification, finest first.
+    """
+    from openavmkit.neighborhoods import build_neighborhood_hierarchy
+
+    return build_neighborhood_hierarchy(
+        universe,
+        neighborhood_col=neighborhood_col,
+        splits=splits,
+        extra_levels=extra_levels,
+        add_county=add_county,
+        verbose=verbose,
+    )
+
+
+def curate_land_witnesses(
+    sales: pd.DataFrame,
+    universe: pd.DataFrame,
+    *,
+    cfg: "openavmkit.land.WitnessConfig | None" = None,
+    parcel_key: str = "key",
+    sales_join_key: str = "key",
+    neighborhood_col: str = "neighborhood",
+    land_area_col: str = "land_area_sqft",
+    zoning_min_col: str = "zoning_emp_min_lot_sqft",
+    valuation_date: pd.Timestamp | None = None,
+    flagged_out: list | None = None,
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """
+    Curate the witness pool (W1 vacant, W2 teardown, W3 extraction, W4 low-FAR,
+    W5 prior-xfer, W6 pred-residual) consumed by the painters.
+    """
+    from openavmkit.land import WitnessConfig, curate_witnesses
+
+    return curate_witnesses(
+        sales,
+        universe,
+        cfg=cfg or WitnessConfig(),
+        parcel_key=parcel_key,
+        sales_join_key=sales_join_key,
+        neighborhood_col=neighborhood_col,
+        land_area_col=land_area_col,
+        zoning_min_col=zoning_min_col,
+        valuation_date=valuation_date,
+        flagged_out=flagged_out,
+        verbose=verbose,
+    )
+
+
+def run_land_painter_lycd(
+    universe: pd.DataFrame,
+    *,
+    spec,
+    allocation_pct: float,
+    cfg=None,
+    market_value_col: str = "assr_market_value",
+    land_area_col: str = "land_area_sqft",
+    bldg_area_col: str = "bldg_area_finished_sqft",
+    zoning_emp_min_col: str = "zoning_emp_min_lot_sqft",
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """
+    Paint per-parcel land value using the LYCD uniform-rate painter
+    (Rung 1.0/1.1).
+
+    One ``$/sqft`` per cascade cell, derived from the prevailing
+    improved-property value × ``allocation_pct``. Used as the simplest viable
+    baseline — for production-grade output use :func:`run_land_painter_tables`.
+    """
+    from openavmkit.land import paint_lycd
+
+    return paint_lycd(
+        universe,
+        spec=spec,
+        allocation_pct=allocation_pct,
+        cfg=cfg,
+        market_value_col=market_value_col,
+        land_area_col=land_area_col,
+        bldg_area_col=bldg_area_col,
+        zoning_emp_min_col=zoning_emp_min_col,
+        verbose=verbose,
+    )
+
+
+def run_land_painter_tables(
+    universe: pd.DataFrame,
+    witnesses: pd.DataFrame,
+    *,
+    spec,
+    adjustments: list | None = None,
+    prediction_col: str = "prediction",
+    impr_value_col: str = "assr_impr_value",
+    valuation_date: pd.Timestamp | None = None,
+    fit_breakpoints: bool = True,
+    bp1_mult: float | None = None,
+    bp2_mult: float | None = None,
+    verbose: bool = False,
+) -> tuple:
+    """
+    Paint per-parcel land value using the production table painter (Rung 1.5).
+
+    Builds per-cell ``LandTable`` rules (``base_lot`` / ``size_curve`` / ``puv``)
+    with zoning-anchored size-curve breakpoints, then walks the cascade and
+    paints every parcel.
+
+    By default fits ``(bp1_mult, bp2_mult)`` empirically from the witness pool
+    via :func:`openavmkit.land.fit_pooled_zoning_breakpoints` — pass
+    ``fit_breakpoints=False`` and explicit values to skip the fit.
+
+    Returns
+    -------
+    painted : pandas.DataFrame
+        Copy of ``universe`` with land-value columns added.
+    tables : dict
+        ``{(level, cell_key) -> LandTable}`` produced by the painter.
+    fit_diag : dict
+        Diagnostic from the breakpoint fit (binned medians, SSE landscape).
+        ``None`` when ``fit_breakpoints=False``.
+    """
+    from openavmkit.land import (
+        DEFAULT_ZONING_BP1_MULT,
+        DEFAULT_ZONING_BP2_MULT,
+        build_all_tables,
+        fit_pooled_zoning_breakpoints,
+        paint_from_tables,
+    )
+
+    fit_diag = None
+    if fit_breakpoints:
+        fit_diag = fit_pooled_zoning_breakpoints(
+            witnesses, universe, verbose=verbose,
+        )
+        bp1_mult = fit_diag["bp1_mult"]
+        bp2_mult = fit_diag["bp2_mult"]
+    else:
+        bp1_mult = bp1_mult if bp1_mult is not None else DEFAULT_ZONING_BP1_MULT
+        bp2_mult = bp2_mult if bp2_mult is not None else DEFAULT_ZONING_BP2_MULT
+
+    tables = build_all_tables(
+        universe,
+        witnesses,
+        spec=spec,
+        prediction_col=prediction_col,
+        impr_value_col=impr_value_col,
+        valuation_date=valuation_date,
+        bp1_mult=bp1_mult,
+        bp2_mult=bp2_mult,
+        verbose=verbose,
+    )
+    painted = paint_from_tables(
+        universe,
+        tables=tables,
+        spec=spec,
+        adjustments=adjustments,
+        verbose=verbose,
+    )
+    return painted, tables, fit_diag
+
+
+def run_land_lars_tests(
+    universe: pd.DataFrame,
+    *,
+    candidates: list | None = None,
+    candidate_col: str = "land_value",
+    sales_with_far: pd.DataFrame | None = None,
+    out_path: str | None = None,
+    verbose: bool = False,
+) -> list:
+    """
+    Score one or more land-value columns against the L1-L6 Lars-Tests.
+
+    Parameters
+    ----------
+    candidates : list of (name, column) tuples, optional
+        Each tuple identifies a column on ``universe`` to score and the
+        friendly name used in reports. If ``None``, scores ``candidate_col``
+        as a single anonymous candidate.
+    candidate_col : str
+        Used only when ``candidates`` is None. Defaults to ``"land_value"``.
+    sales_with_far : pandas.DataFrame, optional
+        Forwarded to the underlying tests for L4's market-side Spearman.
+    out_path : str, optional
+        If provided, write a side-by-side Markdown report.
+
+    Returns
+    -------
+    list[LarsTestsResult]
+        Results in the order given.
+    """
+    from openavmkit.land import run_lars_tests as _run_lars_tests, write_lars_tests_report
+
+    if candidates is None:
+        candidates = [(candidate_col, candidate_col)]
+
+    results = []
+    for name, col in candidates:
+        if col not in universe.columns:
+            warnings.warn(
+                f"run_land_lars_tests: column {col!r} missing for candidate "
+                f"{name!r}; skipping"
+            )
+            continue
+        results.append(
+            _run_lars_tests(
+                universe,
+                candidate_col=col,
+                candidate_name=name,
+                sales_with_far=sales_with_far,
+                verbose=verbose,
+            )
+        )
+
+    if out_path is not None and results:
+        write_lars_tests_report(results, out_path)
+
+    return results
+
