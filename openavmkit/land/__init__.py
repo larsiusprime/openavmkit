@@ -16,7 +16,8 @@ This package consolidates the land-side of the AVM:
   Used at Rung 1.0/1.1.
 * :mod:`~openavmkit.land.tests` — Lars-Tests harness (L1 improvement-
   neutrality, L2 within-cluster uniformity, L3 vacant-burden flip,
-  L4 desirability Spearman, L5 consistent-use, L6 excess/surplus).
+  L4 desirability Spearman, L5 density-FAR ordering, L6 per-cell size
+  decay, L7 improvement-cost-table COD).
 
 The package re-exports the principal public symbols so callers can write
 ``from openavmkit.land import curate_witnesses, build_all_tables, ...``
@@ -66,6 +67,7 @@ from openavmkit.land.lycd import (
 from openavmkit.land.tests import (
     LarsTestsResult,
     run_lars_tests,
+    run_holdout_vacant_test,
     write_lars_tests_report,
 )
 
@@ -104,5 +106,6 @@ __all__ = [
     # tests (Lars-Tests)
     "LarsTestsResult",
     "run_lars_tests",
+    "run_holdout_vacant_test",
     "write_lars_tests_report",
 ]

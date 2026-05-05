@@ -2049,7 +2049,8 @@ def _set_locality(nbs, locality: str):
 #   3. Curate the witness pool (W1-W6) — the calibration evidence.
 #   4. Paint per-parcel land values using either the LYCD uniform-rate painter
 #      (Rung 1.0/1.1) or the production table painter (Rung 1.5).
-#   5. Score the painted output against the Lars-Tests (L1-L6).
+#   5. Score the painted output against the Lars-Tests (L1-L7: six
+#      LVT-incentive checks plus an improvement-cost-table consistency check).
 #
 # Wake County's `run_05_land.py` and `run_06_land_tables.py` drive these in
 # order. Other jurisdictions can compose the same wrappers with their own
@@ -2301,11 +2302,26 @@ def run_land_lars_tests(
     candidates: list | None = None,
     candidate_col: str = "land_value",
     sales_with_far: pd.DataFrame | None = None,
+    improved_sales: pd.DataFrame | None = None,
+    sale_price_col: str = "sale_price_time_adj",
+    sales_join_key: str = "key",
+    parcel_lat_col: str = "latitude",
+    parcel_lon_col: str = "longitude",
+    holdout_result: dict | None = None,
+    holdout_for_candidate: str | None = None,
     out_path: str | None = None,
     verbose: bool = False,
 ) -> list:
     """
-    Score one or more land-value columns against the L1-L6 Lars-Tests.
+    Score one or more land-value columns against the L1-L7 Lars-Tests.
+
+    L1 (improvement-neutrality), L2 (within-cluster uniformity), L3 (vacant-
+    burden flip), L4 (desirability tracking), L5 (density-FAR ordering), and
+    L6 (per-cell size decay) evaluate the candidate land-value column. L7
+    (improvement-cost-table COD) evaluates the consistency of
+    ``assr_impr_value`` across geography after controlling for building
+    characteristics, and is identical across candidates that share the same
+    underlying assessment data.
 
     Parameters
     ----------
@@ -2338,12 +2354,27 @@ def run_land_lars_tests(
                 f"{name!r}; skipping"
             )
             continue
+        # L8 (held-out vacant test) is painter-specific: it only applies to
+        # the candidate produced by our painter. If the user named one
+        # candidate via ``holdout_for_candidate`` we apply the holdout result
+        # only there; otherwise it applies to all candidates (legacy behavior).
+        candidate_holdout = (
+            holdout_result
+            if (holdout_for_candidate is None or name == holdout_for_candidate)
+            else None
+        )
         results.append(
             _run_lars_tests(
                 universe,
                 candidate_col=col,
                 candidate_name=name,
                 sales_with_far=sales_with_far,
+                improved_sales=improved_sales,
+                sale_price_col=sale_price_col,
+                sales_join_key=sales_join_key,
+                parcel_lat_col=parcel_lat_col,
+                parcel_lon_col=parcel_lon_col,
+                holdout_result=candidate_holdout,
                 verbose=verbose,
             )
         )

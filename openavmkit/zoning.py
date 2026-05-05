@@ -16,9 +16,11 @@ This module derives a *de facto* lookup from the parcel data itself:
 * Pairs with too few built parcels fall back to a jurisdiction-level
   aggregate, then to a global aggregate.
 
-The resulting table feeds two downstream uses: the L6 Lars-Test (excess vs.
-surplus correctness) and the W1 vacant-sale contamination filter (drop
-sales of parcels smaller than the local de facto minimum).
+The resulting table feeds three downstream uses: the L5 Lars-Test
+(density-FAR ordering, via ``zoning_emp_max_far``), the L6 Lars-Test
+(per-cell size decay, via ``zoning_emp_min_lot_sqft``), and the W1
+vacant-sale contamination filter (drop sales of parcels smaller than
+the local de facto minimum).
 
 The known limitation: empirical values bake in current built-out reality, so
 they understate the legal maximum where the market hasn't built up to the
@@ -27,7 +29,8 @@ zoning cap. They are a substitute for, not equivalent to, real UDO data.
 See Also
 --------
 openavmkit.land.evidence : Uses this table to filter vacant-sale witnesses.
-openavmkit.land.tests : Uses this table for the L6 (excess vs. surplus) test.
+openavmkit.land.tests : Uses this table for L5 (density-FAR ordering)
+    and L6 (per-cell size decay).
 """
 from __future__ import annotations
 

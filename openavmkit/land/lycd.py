@@ -40,8 +40,8 @@ openavmkit.land.evidence : Provides the witness pool used to derive
     allocation percentages and direct land rates.
 openavmkit.neighborhoods : Provides the cascade walked when
     a neighborhood is evidence-thin.
-openavmkit.zoning : Provides the de-facto zoning floor used
-    in the excess/surplus split.
+openavmkit.zoning : Provides the de-facto zoning floor and FAR ceiling
+    used in the surplus-discount split.
 openavmkit.land.tests : Lars-Tests harness used to score the output.
 """
 from __future__ import annotations
