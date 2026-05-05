@@ -25,6 +25,7 @@ import geopandas as gpd
 import xgboost as xgb
 import lightgbm as lgb
 import catboost
+from layeredcompmodel import LayeredCompBaggingModel as LCBModel
 from catboost import CatBoostRegressor, Pool
 from lightgbm import Booster
 from matplotlib import pyplot as plt
@@ -77,6 +78,7 @@ from openavmkit.utilities.modeling import (
     XGBoostModel,
     LightGBMModel,
     CatBoostModel,
+    LayeredCompBaggingModel,
     MultiMRAModel,
     GroundTruthModel,
     SpatialLagModel,
@@ -3038,8 +3040,10 @@ def predict_gwr(
     model_name = ds.name
     
     # Organize the parameters
-    
+
     ## Generate column names, accounting for the intercept
+    missing = [c for c in ds.ind_vars if c not in ds.X_train.columns]
+    assert len(missing) == 0, f"Missing variables from dataframe: {missing}"
     cols = (["intercept"] + list(ds.ind_vars)) if intercept else list(ds.ind_vars)
     
     ## Get the key/key sale values to accompany each row
@@ -3048,7 +3052,7 @@ def predict_gwr(
     sales_list_key_sale = ds.df_sales["key_sale"].values.tolist()
     sales_list_key = ds.df_sales["key"].values.tolist()
     univ_list_key = ds.df_universe["key"].values.tolist()
-    
+
     ## Generate dataframes for each set of parameters, and add the keys
     df_params_test = pd.DataFrame(params_test, columns=cols)
     df_params_test.insert(0, "key_sale", test_list_key_sale)
@@ -3776,6 +3780,142 @@ def run_slice(
     timing.stop("train")
 
     return predict_slice(ds, slice_model, timing, verbose)
+
+
+def run_layeredcompbagging(
+    ds: DataSplit,
+    outpath: str,
+    save_params: bool = False,
+    use_saved_params: bool = False,
+    n_trials: int = 50,
+    verbose: bool = False,
+) -> SingleModelResults:
+    """
+    Run a LayeredCompBagging model by training and predicting.
+
+    Parameters
+    ----------
+    ds : DataSplit
+        DataSplit object.
+    outpath : str
+        Output path for saving parameters.
+    save_params : bool, optional
+        Whether to save trained model. Defaults to False.
+    use_saved_params : bool, optional
+        Whether to load saved model. Defaults to False.
+    n_trials : int, optional
+        Not used for LayeredCompBagging. Kept for API consistency. Defaults to 50.
+    verbose : bool, optional
+        If True, print verbose output. Defaults to False.
+    
+    Returns
+    -------
+    SingleModelResults
+        Prediction results from the LayeredCompBagging model.
+    """
+
+    timing = TimingData()
+
+    timing.start("total")
+
+    timing.start("setup")
+    ds.split()
+
+    # layeredcompmodel internally calls fillna("NaN"); this fails on pandas
+    # Categorical unless "NaN" is a declared category. Coerce categories
+    # to plain object dtype for all splits before fit/predict.
+    ds.X_train = _coerce_categoricals_to_object(ds.X_train)
+    ds.X_test = _coerce_categoricals_to_object(ds.X_test)
+    ds.X_sales = _coerce_categoricals_to_object(ds.X_sales)
+    ds.X_univ = _coerce_categoricals_to_object(ds.X_univ)
+    timing.stop("setup")
+
+    timing.start("parameter_search")
+    timing.stop("parameter_search")
+
+    timing.start("train")
+    
+    # Train the LayeredCompBagging model
+    lcb_model = LCBModel(tree_count=10, sample_pct=0.95, random_state=42, n_jobs=4)
+    lcb_model.fit(ds.X_train, ds.y_train)
+    
+    # Wrap it in our wrapper class
+    wrapped_model = LayeredCompBaggingModel(lcb_model)
+    
+    timing.stop("train")
+
+    return predict_layeredcompbagging(ds, wrapped_model, timing, verbose)
+
+
+def predict_layeredcompbagging(
+    ds: DataSplit,
+    lcb_model: LayeredCompBaggingModel,
+    timing: TimingData,
+    verbose: bool = False,
+) -> SingleModelResults:
+    """
+    Generate predictions using a LayeredCompBagging model.
+
+    Parameters
+    ----------
+    ds : DataSplit
+        DataSplit object containing train/test/universe splits.
+    lcb_model : LayeredCompBaggingModel
+        Trained LayeredCompBaggingModel instance.
+    timing : TimingData
+        TimingData object for recording performance metrics.
+    verbose : bool, optional
+        If True, print verbose output. Defaults to False.
+
+    Returns
+    -------
+    SingleModelResults
+        Prediction results from the LayeredCompBagging model.
+    """
+
+    regressor = lcb_model.model
+
+    timing.start("predict_test")
+    if len(ds.y_test) == 0:
+        y_pred_test = np.array([])
+    else:
+        y_pred_test = regressor.predict(ds.X_test)
+    timing.stop("predict_test")
+
+    timing.start("predict_sales")
+    if len(ds.y_sales) == 0:
+        y_pred_sales = np.array([])
+    else:
+        y_pred_sales = regressor.predict(ds.X_sales)
+    timing.stop("predict_sales")
+
+    timing.start("predict_univ")
+    if len(ds.X_univ) == 0:
+        y_pred_univ = np.array([])
+    else:
+        y_pred_univ = regressor.predict(ds.X_univ)
+    timing.stop("predict_univ")
+
+    timing.stop("total")
+
+    model_name = ds.name
+    model_engine = "layeredcompbagging"
+
+    results = SingleModelResults(
+        ds,
+        "prediction",
+        "he_id",
+        model_name,
+        model_engine,
+        lcb_model,
+        y_pred_test,
+        y_pred_sales,
+        y_pred_univ,
+        timing,
+        verbose=verbose,
+    )
+
+    return results
 
 
 def predict_garbage(
@@ -6358,6 +6498,9 @@ def write_model_parameters(
         write_shaps(model, outpath, smr, location, do_plot, verbose=verbose)
     elif isinstance(model, LocalAreaModel):
         write_local_area_params(model, smr, outpath, do_plot)
+    elif isinstance(model, LayeredCompBaggingModel):
+        # TODO
+        pass
     # ...and so on
     else:
         raise TypeError(f"Unexpected model type: {type(model).__name__}")
@@ -6369,6 +6512,18 @@ def _sanitize_categoricals(X: pd.DataFrame) -> pd.DataFrame:
         cats = X[c].cat.categories
         if "string" in str(cats.dtype):
             X[c] = X[c].cat.rename_categories(cats.astype("object"))
+    return X
+
+
+def _coerce_categoricals_to_object(X: pd.DataFrame) -> pd.DataFrame:
+    """Convert pandas Categorical columns to object dtype.
+
+    This avoids setitem/fillna category errors in libraries that write string
+    missing tokens into categorical series.
+    """
+    X = X.copy()
+    for c in X.select_dtypes(["category"]).columns:
+        X[c] = X[c].astype("object")
     return X
 
 ##############################
