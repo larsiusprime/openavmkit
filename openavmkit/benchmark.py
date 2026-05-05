@@ -36,6 +36,7 @@ from openavmkit.modeling import (
     run_lightgbm,
     run_catboost,
     run_slice,
+    run_layeredcompbagging,
     run_garbage,
     run_average,
     run_naive_area,
@@ -57,6 +58,7 @@ from openavmkit.modeling import (
     predict_catboost,
     predict_lightgbm,
     predict_slice,
+    predict_layeredcompbagging,
     predict_ground_truth,
     predict_spatial_lag,
     GarbageModel,
@@ -1154,6 +1156,8 @@ def get_data_split_for(
         df_sales = _clean_categoricals(df_sales, fields_cat, settings)
         df_universe = _clean_categoricals(df_universe, fields_cat, settings)
         _ind_vars = ind_vars
+    elif model_engine == "layeredcompbagging":
+        _ind_vars = ind_vars
     else:
         _ind_vars = ind_vars
         if model_engine == "gwr" or model_engine == "kernel":
@@ -1420,6 +1424,10 @@ def run_one_model(
     elif model_engine == "catboost":
         results = run_catboost(
             ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, use_gpu=use_gpu
+        )
+    elif model_engine == "layeredcompbagging":
+        results = run_layeredcompbagging(
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
     elif model_engine == "slice":
         results = run_slice(ds, verbose=verbose)
