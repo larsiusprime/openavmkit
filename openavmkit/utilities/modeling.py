@@ -23,7 +23,7 @@ import numpy as np
 from statsmodels.regression.linear_model import RegressionResults
 from pygam import LinearGAM, s, te
 import pandas as pd
-from typing import Any
+from typing import Any, Dict
 
 from dataclasses import dataclass
 from itertools import combinations
@@ -575,6 +575,28 @@ class CatBoostModel:
     def __init__(self, regressor, cat_data):
         self.regressor = regressor
         self.cat_data = cat_data
+
+
+class LayeredCompBaggingModel:
+    """Layered Comp Bagging Model
+
+    A bagging ensemble version of the LayeredCompModel algorithm that reduces variance
+    and automatically optimizes the weight_falloff for each tree in the ensemble.
+
+    Attributes
+    ----------
+    model: layeredcompmodel.LayeredCompBaggingModel
+        The trained LayeredCompBaggingModel from the layeredcompmodel package
+    """
+    def __init__(self, model):
+        """Initialize a LayeredCompBaggingModel
+
+        Parameters
+        ----------
+        model : layeredcompmodel.LayeredCompBaggingModel
+            The trained LayeredCompBaggingModel instance
+        """
+        self.model = model
 
 
 class MRAModel:
