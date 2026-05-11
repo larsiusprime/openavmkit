@@ -4461,41 +4461,34 @@ def _perform_canonical_split(
             remaining_test_frac = remaining_test_count / count_look_back
 
         if count_look_back > 0 and remaining_test_frac <= 1.0:
+            
             # We can sample the lookback sales alone to fill the test set
-            n_v = max(test_set_count_v, np.floor(len(df_v_look_back) * remaining_test_frac).astype(int))
-            n_i = max(test_set_count_i, np.floor(len(df_i_look_back) * remaining_test_frac).astype(int))
+            def _fix_sample(test_set_count: int, remaining_test_frac: float, df_look_back: pd.DataFrame, df_test: pd.DataFrame, rseed:int):
+                
+                n = max(test_set_count, np.floor(len(df_look_back) * remaining_test_frac).astype(int))
+                remaining_test_count = test_set_count - len(df_test)
+                diff = remaining_test_count - n
+                
+                while diff > 0:
+                    old_diff = diff
+                    if len(df_look_back) > n:
+                        n += 1
+                        diff -= 1
+                    if diff == old_diff:
+                        break
+                
+                if n > 0 and len(df_look_back) > 0:
+                    n = min(n, len(df_look_back))
+                    _df_test = df_look_back.sample(n=n, random_state=rseed)
+                    df_test = pd.concat([df_test, _df_test])
+                
+                return df_test
             
-            remaining_test_count_v = test_set_count_v - len(df_v_test)
-            remaining_test_count_i = test_set_count_i - len(df_i_test)
-
-            diff_v = remaining_test_count_v - n_v
-            diff_i = remaining_test_count_i - n_i
-
-            while diff_v > 0:
-                old_diff = diff_v
-                if len(df_v_look_back) > n_v:
-                    n_v += 1
-                    diff_v -= 1
-                if diff_v == old_diff:
-                    break
-    
-            while diff_i > 0:
-                old_diff = diff_i
-                if len(df_i_look_back) > n_i:
-                    n_i += 1
-                    diff_i -= 1
-                if diff_i == old_dif:
-                    break
+            df_v_test = _fix_sample(test_set_count_v, remaining_test_frac, df_v_look_back, df_v_test, random_seed)
+            df_i_test = _fix_sample(test_set_count_i, remaining_test_frac, df_i_look_back, df_i_test, random_seed)
             
-            if n_v > 0 and len(df_v_look_back) > 0:
-                n_v = min(n_v, len(df_v_look_back))
-                _df_v_test = df_v_look_back.sample(n=n_v, random_state=random_seed)
-                df_v_test = pd.concat([df_v_test, _df_v_test])
-            if n_i > 0 and len(df_i_look_back) > 0:
-                n_i = min(n_i, len(df_i_look_back))
-                _df_i_test = df_i_look_back.sample(n=n_i, random_state=random_seed)
-                df_i_test = pd.concat([df_i_test, _df_i_test])
         else:
+            
             # We need to sample ALL the lookback sales to start with...
             df_v_test = pd.concat([df_v_test, df_v_look_back])
             df_i_test = pd.concat([df_i_test, df_i_look_back])
@@ -4503,56 +4496,44 @@ def _perform_canonical_split(
             if len(df_v_test) > test_set_count_v:
                 # in case we already have enough vacant sales in the test set
                 df_v_test = df_v_test.sample(n=test_set_count_v, random_state=random_seed)
-           
-            # ...and then we need to sample the pre-valuation sales to fill the remainder of the test set
-            remaining_test_count_v = test_set_count_v - len(df_v_test)
-            remaining_test_count_i = test_set_count_i - len(df_i_test)
-
-            # Figure out how many sales we haven't touched yet
-            untouched_sales_count_v = count_sales_all_v - len(df_v_test)
-            untouched_sales_count_i = count_sales_all_i - len(df_i_test)
-
-            df_v_untouched = df_v[~df_v["key_sale"].isin(df_v_test["key_sale"])]
-            df_i_untouched = df_i[~df_i["key_sale"].isin(df_i_test["key_sale"])]
-
-            # Express how many more we need as a fraction of the untouched sales
-            remaining_test_frac_i = 0 if untouched_sales_count_i == 0 else remaining_test_count_i / untouched_sales_count_i
-            remaining_test_frac_v = 0 if untouched_sales_count_v == 0 else remaining_test_count_v / untouched_sales_count_v
-
-            n_v = np.floor(len(df_v_untouched) * remaining_test_frac_v).astype(int)
-            n_i = np.floor(len(df_i_untouched) * remaining_test_frac_i).astype(int)
             
-            diff_v = remaining_test_count_v - n_v
-            diff_i = remaining_test_count_i - n_i
-            
-            while diff_v > 0:
-                old_diff = diff_v
-                if len(df_v_look_back) > n_v:
-                    n_v += 1
-                    diff_v -= 1
-                if diff_v == old_diff:
-                    break
-    
-            while diff_i > 0:
-                old_diff = diff_i
-                if len(df_i_look_back) > n_i:
-                    n_i += 1
-                    diff_i -= 1
-                if diff_i == old_diff:
-                    break
+            def _fix_sample_2(df: pd.DataFrame, df_test: pd.DataFrame, test_set_count: int, count_sales_all: int, ):
+               
+                # ...and then we need to sample the pre-valuation sales to fill the remainder of the test set
+                remaining_test_count = test_set_count - len(df_test)
+                
+                # Figure out how many sales we haven't touched yet
+                untouched_sales_count = count_sales_all - len(df_test)
+                
+                df_untouched = df[~df["key_sale"].isin(df_test["key_sale"])]
+                
+                # Express how many more we need as a fraction of the untouched sales
+                remaining_test_frac = 0 if untouched_sales_count == 0 else remaining_test_count / untouched_sales_count
 
-            n_v = min(n_v, len(df_v_untouched))
-            n_i = min(n_i, len(df_i_untouched))
-
-            # Sample the untouched sales to fill the test set
-            # Then, add the untouched sales to the test set -- we're finally done
-            if n_v > 0:
-                _df_v_test = df_v_untouched.sample(n=n_v, random_state=random_seed)
-                df_v_test = pd.concat([df_v_test, _df_v_test])
+                n = np.floor(len(df_untouched) * remaining_test_frac).astype(int)
+                
+                diff = remaining_test_count - n
+                
+                while diff > 0:
+                    old_diff = diff
+                    if len(df_look_back) > n:
+                        n += 1
+                        diff -= 1
+                    if diff == old_diff:
+                        break
+                
+                n = min(n, len(df_untouched))
+                
+                # Sample the untouched sales to fill the test set
+                # Then, add the untouched sales to the test set -- we're finally done
+                if n > 0:
+                    _df_test = df_untouched.sample(n=n, random_state=random_seed)
+                    df_test = pd.concat([df_test, _df_test])
+                
+                return df_test
             
-            if n_i > 0:
-                _df_i_test = df_i_untouched.sample(n=n_i, random_state=random_seed)
-                df_i_test = pd.concat([df_i_test, _df_i_test])
+            df_v_test = _fix_sample_2(df_v, df_v_test, test_set_count_v, count_sales_all_v)
+            df_i_test = _fix_sample_2(df_i, df_i_test, test_set_count_i, count_sales_all_i)
             
         # Training set is whatever is not in the test set
         df_v_train = df_v_pre_val[~df_v_pre_val["key_sale"].isin(df_v_test["key_sale"])]

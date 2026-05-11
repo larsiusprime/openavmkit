@@ -94,6 +94,15 @@ def calculate_time_adjustment(
     sale_field = f"sale_price_per_{per}_{unit}"
 
     df_per = df_sales[df_sales[sale_field].gt(0)]
+    # Exclude the wrong-side sales from the per-area median: vacant sales for an
+    # impr-driven index, improved sales for a land-driven index. Without this,
+    # vacant sales (land-only prices) divided by the parcel's currently-recorded
+    # bldg_area pull the impr-PPSF median down by orders of magnitude.
+    if "vacant_sale" in df_per.columns:
+        if per == "impr":
+            df_per = df_per[~df_per["vacant_sale"].eq(True)]
+        elif per == "land":
+            df_per = df_per[df_per["vacant_sale"].eq(True)]
 
     # Determine the time resolution (Month, Quarter, Year) -- "M", "Q", or "Y":
     period = _determine_time_resolution(df_per, sale_field, min_sale_count, period)
