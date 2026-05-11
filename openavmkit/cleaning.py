@@ -89,7 +89,7 @@ def clean_valid_sales(sup: SalesUniversePair, settings: dict) -> SalesUniversePa
     df_sales = df_sales.merge(df_univ_vacant, on="key", how="left")
 
     print(f"After univ merge len = {len(df_sales)}")
-
+    
     oldest_sale_threshold = min(use_sales_from_impr, use_sales_from_vacant)
 
     # mark which sales are to be used (only those that are valid and within the specified time frame)

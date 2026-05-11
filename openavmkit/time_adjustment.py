@@ -93,16 +93,47 @@ def calculate_time_adjustment(
     per = _determine_value_driver(df_sales, settings)
     sale_field = f"sale_price_per_{per}_{unit}"
 
-    df_per = df_sales[df_sales[sale_field].gt(0)]
+    df_per_unfiltered = df_sales[df_sales[sale_field].gt(0)]
     # Exclude the wrong-side sales from the per-area median: vacant sales for an
     # impr-driven index, improved sales for a land-driven index. Without this,
     # vacant sales (land-only prices) divided by the parcel's currently-recorded
     # bldg_area pull the impr-PPSF median down by orders of magnitude.
-    if "vacant_sale" in df_per.columns:
+    df_per = df_per_unfiltered
+    if "vacant_sale" in df_per_unfiltered.columns and len(df_per_unfiltered) > 0:
         if per == "impr":
-            df_per = df_per[~df_per["vacant_sale"].eq(True)]
+            df_per_filtered = df_per_unfiltered[~df_per_unfiltered["vacant_sale"].eq(True)]
         elif per == "land":
-            df_per = df_per[df_per["vacant_sale"].eq(True)]
+            df_per_filtered = df_per_unfiltered[df_per_unfiltered["vacant_sale"].eq(True)]
+        else:
+            df_per_filtered = df_per_unfiltered
+        # If the V/I filter would empty the dataset, fall back to no filter rather
+        # than producing a broken time-adjustment curve. This happens when a model
+        # group has only one side (e.g. an apartment group with no vacant sales but
+        # _determine_value_driver picked "land", or vice versa).
+        if len(df_per_filtered) == 0:
+            warnings.warn(
+                f"Time-adjustment V/I filter for per={per!r} would leave 0 sales "
+                f"(of {len(df_per_unfiltered)} candidates). Falling back to the "
+                "unfiltered set — the resulting index may be biased."
+            )
+        else:
+            df_per = df_per_filtered
+
+    # If we still have no usable sales, return a flat (no-op) multiplier schedule
+    # covering the sales date range. Downstream code applies the multiplier via
+    # `sale_price * value`, so value=1.0 leaves prices unchanged.
+    if len(df_per) == 0:
+        warnings.warn(
+            "Time adjustment: no sales with a positive "
+            f"{sale_field} remain. Returning a flat multiplier=1.0 schedule."
+        )
+        if len(df_sales) > 0 and df_sales["sale_date"].notna().any():
+            start = df_sales["sale_date"].min()
+            end = df_sales["sale_date"].max()
+            dates = pd.date_range(start=start, end=end, freq="D")
+        else:
+            dates = pd.DatetimeIndex([pd.Timestamp.today().normalize()])
+        return pd.DataFrame({"period": dates, "value": np.ones(len(dates))})
 
     # Determine the time resolution (Month, Quarter, Year) -- "M", "Q", or "Y":
     period = _determine_time_resolution(df_per, sale_field, min_sale_count, period)
@@ -359,6 +390,7 @@ def _get_expected_periods(df: pd.DataFrame, period: str):
     min_year = date_min.year
     max_year = date_max.year
     years = [year for year in range(min_year, max_year + 1)]
+    years = [year for year in range(int(min_year), int(max_year + 1))]
     periods = []
     if period == "Y":
         periods = years
@@ -494,7 +526,10 @@ def _crunch_time_adjustment(
     normalizes the values.
     """
     df = df_in[df_in[field].gt(0)].copy()
-
+    
+    if len(df) == 0:
+        return None
+    
     if period == "Y":
         # group by year
         df_grouped = df.groupby("sale_year")
@@ -515,6 +550,7 @@ def _crunch_time_adjustment(
 
     # get unique periods:
     periods_actual = df_median.index.values
+    
     periods_expected = _get_expected_periods(df, period)
 
     values = _interpolate_missing_periods(periods_expected, periods_actual, df_median)

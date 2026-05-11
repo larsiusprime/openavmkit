@@ -59,6 +59,7 @@ import warnings
 import traceback
 
 from shapely.strtree import STRtree
+from sklearn.model_selection import train_test_split
 
 from openavmkit.calculations import (
     _crawl_calc_dict_for_fields,
@@ -4303,6 +4304,191 @@ def _write_canonical_splits(sup: SalesUniversePair, settings: dict, verbose: boo
         )
 
 
+def compute_lookback_test_size(
+    test_count: int,
+    lb_size: int,
+    nlb_size: int,
+    floor: int | None = None,
+    cap_ratio: float | None = None,
+) -> int:
+    """Decide how many test sales should come from the lookback period.
+
+    Two constraints:
+      - ``cap_ratio``: lookback's test-share is capped at this multiple of the
+        non-lookback test-share. This is the upper bound — it prevents the lookback
+        period from dominating the test set when other years are available.
+      - ``floor``: never less than this many lookback sales in test (capped by what's
+        actually available). The floor is a hard minimum: if cap_ratio would otherwise
+        push us below floor, floor wins and cap is silently violated. The purpose of
+        the floor is to guarantee enough lookback sales for a usable IAAO-style ratio
+        study CI.
+
+    The function returns as many lookback sales as cap_ratio and availability allow,
+    bumped up to floor if needed. When ``cap_ratio`` is None or there are no
+    non-lookback sales to compare against, the cap is disabled and the function falls
+    back to ``min(test_count, lb_size)`` — i.e. fill the test set from lookback.
+    """
+    if test_count <= 0 or lb_size <= 0:
+        return 0
+    if cap_ratio is None or nlb_size == 0:
+        cap_l = test_count  # cap disabled — let availability bind
+    else:
+        cap_l = int(cap_ratio * test_count * lb_size / (nlb_size + cap_ratio * lb_size))
+    n = min(test_count, lb_size, cap_l)
+    if floor is not None:
+        n = max(n, min(floor, lb_size, test_count))
+    return int(n)
+
+
+def _resolve_strat_fields_improved(
+    df: pd.DataFrame, settings: dict, user_override: list | None = None
+) -> list[str]:
+    """Resolve the stratification field list for improved sales.
+
+    If ``user_override`` is None, defaults to the best-available age field and the
+    finished-area field for the locality's area unit. ``sale_year`` is always appended.
+    Fields not present in ``df`` are silently dropped.
+    """
+    if user_override is None:
+        unit = area_unit(settings)
+        age_field = (
+            "bldg_effective_age_years"
+            if "bldg_effective_age_years" in df.columns
+            else "bldg_age_years"
+        )
+        area_field = f"bldg_area_finished_{unit}"
+        fields = [age_field, area_field]
+    else:
+        fields = list(user_override)
+    if "sale_year" not in fields:
+        fields.append("sale_year")
+    return [f for f in fields if f in df.columns]
+
+
+def _build_strat_label(
+    df: pd.DataFrame, fields: list[str], n_bins: int = 4
+) -> pd.Series | None:
+    """Combine multiple fields into a single string label for sklearn ``stratify``.
+
+    Numeric continuous fields (those with more distinct values than ``n_bins``) are
+    quantile-binned. Categorical and discrete-numeric fields are used as-is.
+    Returns ``None`` if no fields are usable.
+    """
+    if not fields or len(df) == 0:
+        return None
+    parts = []
+    for f in fields:
+        if f not in df.columns:
+            continue
+        s = df[f]
+        if pd.api.types.is_numeric_dtype(s) and s.nunique(dropna=True) > n_bins:
+            try:
+                binned = pd.qcut(s, q=n_bins, duplicates="drop", labels=False)
+            except (ValueError, TypeError):
+                parts.append(s.astype(str))
+                continue
+            parts.append(binned.fillna(-1).astype(int).astype(str))
+        else:
+            parts.append(s.astype(str))
+    if not parts:
+        return None
+    label = parts[0]
+    for p in parts[1:]:
+        label = label + "_" + p
+    return label
+
+
+def _stratified_test_sample(
+    df: pd.DataFrame,
+    n_test: int,
+    random_seed: int,
+    strat_fields: list[str] | None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Sklearn-backed stratified split, with graceful degradation when strata are too thin.
+
+    Returns ``(train_part, test_part)``. If ``n_test`` is 0 or there's nothing to draw
+    from, returns the input as train and an empty test. If a stratum has fewer than
+    2 samples, the most-granular field is dropped and stratification retried.
+    """
+    if n_test <= 0:
+        return df, df.iloc[:0]
+    if len(df) == 0:
+        return df, df.iloc[:0]
+    if n_test >= len(df):
+        return df.iloc[:0], df
+
+    fields = list(strat_fields) if strat_fields else []
+    while True:
+        strat = _build_strat_label(df, fields) if fields else None
+        if strat is None or strat.value_counts().min() >= 2:
+            try:
+                return train_test_split(
+                    df,
+                    test_size=n_test,
+                    stratify=strat,
+                    random_state=random_seed,
+                )
+            except ValueError:
+                pass
+        if not fields:
+            return train_test_split(df, test_size=n_test, random_state=random_seed)
+        fields = fields[:-1]
+
+
+def _three_tier_split(
+    df: pd.DataFrame,
+    test_count: int,
+    look_back_days: int,
+    floor: int | None,
+    cap_ratio: float | None,
+    strat_fields: list[str] | None,
+    random_seed: int,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split one stratum (typically vacant or improved) into test/train using three tiers.
+
+    Tier 1: all post-valuation sales go to test (no training leakage).
+    Tier 2: sample from the lookback window using the floor/cap_ratio rule.
+    Tier 3: fill any remaining test slots from pre-lookback sales, stratified.
+    The training set is everything *not* in test, except post-valuation sales (which
+    never train).
+    """
+    if len(df) == 0:
+        return df.iloc[:0], df.iloc[:0]
+
+    df_post = df[df["sale_age_days"].lt(0)]
+    df_lb = df[
+        df["sale_age_days"].le(look_back_days) & df["sale_age_days"].ge(0)
+    ]
+    df_pre = df[df["sale_age_days"].gt(look_back_days)]
+
+    test_parts: list[pd.DataFrame] = []
+    train_parts: list[pd.DataFrame] = []
+
+    # Tier 1: post-val to test (no leakage)
+    test_parts.append(df_post)
+    remaining = max(0, test_count - len(df_post))
+
+    # Tier 2: lookback (capped by floor/cap_ratio)
+    n_lb = compute_lookback_test_size(
+        remaining, len(df_lb), len(df_pre), floor, cap_ratio
+    )
+    lb_train, lb_test = _stratified_test_sample(df_lb, n_lb, random_seed, strat_fields)
+    train_parts.append(lb_train)
+    test_parts.append(lb_test)
+    remaining = test_count - sum(len(p) for p in test_parts)
+
+    # Tier 3: pre-lookback (random stratified fill)
+    pre_train, pre_test = _stratified_test_sample(
+        df_pre, remaining, random_seed, strat_fields
+    )
+    train_parts.append(pre_train)
+    test_parts.append(pre_test)
+
+    df_test = pd.concat(test_parts) if test_parts else df.iloc[:0]
+    df_train = pd.concat(train_parts) if train_parts else df.iloc[:0]
+    return df_test, df_train
+
+
 def _perform_canonical_split(
     model_group: str,
     df_sales_in: pd.DataFrame,
@@ -4406,138 +4592,46 @@ def _perform_canonical_split(
 
     test_share = 1.0 - test_train_fraction
 
-    # This is how many test sales we need
-    test_set_count = np.ceil(len(df) * test_share).astype(int)
-    if len(df) <= 30:
-        test_set_count_v = np.ceil(len(df_v) * test_share).astype(int)
-    else:
-        test_set_count_v = max(15, np.ceil(len(df_v) * test_share).astype(int))
+    # How many test sales we need overall, and split between V and I to honor each stratum's share.
+    test_set_count = int(np.ceil(len(df) * test_share))
+    test_set_count_v = int(np.ceil(len(df_v) * test_share))
     test_set_count_i = test_set_count - test_set_count_v
-    
-    # Sales in general
-    count_sales_all = len(df)
-    count_sales_all_v = len(df_v)
-    count_sales_all_i = len(df_i)
 
-    # Sales after the val date
-    count_post_val = len(df_v_post_val) + len(df_i_post_val)
-
-    # Sales within the look back period
-    count_look_back = len(df_v_look_back) + len(df_i_look_back)
-    
     np.random.seed(random_seed)
 
-    df_v_test: pd.DataFrame | None = None
-    df_i_test: pd.DataFrame | None = None
-    df_v_train: pd.DataFrame | None = None
-    df_i_train: pd.DataFrame | None = None
+    instr = settings.get("modeling", {}).get("instructions", {})
+    # Defaults aim at a useful ratio-study holdout: floor=15 ensures enough lookback
+    # sales in test for valid IAAO-style CIs; cap_ratio=2.0 prevents the lookback
+    # period from being more than 2x overrepresented in test versus other years.
+    # Set either to None to disable the constraint. The fill rule is "take as many
+    # lookback sales as cap and availability allow, never below floor."
+    cfg_floor = instr.get("test_lookback_floor", 15)
+    cfg_cap_ratio = instr.get("test_lookback_cap_ratio", 2.0)
+    cfg_strat_improved = instr.get("test_strat_fields_improved", None)
 
-    if count_post_val >= test_set_count:
-        # The post-valuation set is GREATER than or EQUAL to the test set
-        # We will use the whole post-valuation set exclusively for the test set, and the pre-valuation set exclusively for the training set
-        # (We do not train on post-valuation sales, to maintain the integrity of post-valuation data)
+    # V gets stratified by sale_year only; I gets the resolved field list (defaults to
+    # age + finished-area + sale_year).
+    strat_fields_v = [f for f in ["sale_year"] if f in df_v.columns]
+    strat_fields_i = _resolve_strat_fields_improved(df_i, settings, cfg_strat_improved)
 
-        # The test set is exactly equal to the post-valuation set:
-        df_v_test = df_v_post_val
-        df_i_test = df_i_post_val
-
-        # The train set is exactly equal to the pre-valuation set:
-        df_v_train = df_v_pre_val
-        df_i_train = df_i_pre_val
-
-    elif count_post_val < test_set_count:
-        # The post-valuation set is SMALLER than the test set
-        # We consume the whole post-valuation set for the test set
-
-        df_v_test = df_v_post_val
-        df_i_test = df_i_post_val
-
-        # How many more sales do we need to fill the test set?
-        remaining_test_count = test_set_count - count_post_val
-        remaining_test_frac = None
-
-        if count_look_back > 0:
-            # Express that as a fraction of the lookback sales if they exist
-            remaining_test_frac = remaining_test_count / count_look_back
-
-        if count_look_back > 0 and remaining_test_frac <= 1.0:
-            
-            # We can sample the lookback sales alone to fill the test set
-            def _fix_sample(test_set_count: int, remaining_test_frac: float, df_look_back: pd.DataFrame, df_test: pd.DataFrame, rseed:int):
-                
-                n = max(test_set_count, np.floor(len(df_look_back) * remaining_test_frac).astype(int))
-                remaining_test_count = test_set_count - len(df_test)
-                diff = remaining_test_count - n
-                
-                while diff > 0:
-                    old_diff = diff
-                    if len(df_look_back) > n:
-                        n += 1
-                        diff -= 1
-                    if diff == old_diff:
-                        break
-                
-                if n > 0 and len(df_look_back) > 0:
-                    n = min(n, len(df_look_back))
-                    _df_test = df_look_back.sample(n=n, random_state=rseed)
-                    df_test = pd.concat([df_test, _df_test])
-                
-                return df_test
-            
-            df_v_test = _fix_sample(test_set_count_v, remaining_test_frac, df_v_look_back, df_v_test, random_seed)
-            df_i_test = _fix_sample(test_set_count_i, remaining_test_frac, df_i_look_back, df_i_test, random_seed)
-            
-        else:
-            
-            # We need to sample ALL the lookback sales to start with...
-            df_v_test = pd.concat([df_v_test, df_v_look_back])
-            df_i_test = pd.concat([df_i_test, df_i_look_back])
-            
-            if len(df_v_test) > test_set_count_v:
-                # in case we already have enough vacant sales in the test set
-                df_v_test = df_v_test.sample(n=test_set_count_v, random_state=random_seed)
-            
-            def _fix_sample_2(df: pd.DataFrame, df_test: pd.DataFrame, test_set_count: int, count_sales_all: int, ):
-               
-                # ...and then we need to sample the pre-valuation sales to fill the remainder of the test set
-                remaining_test_count = test_set_count - len(df_test)
-                
-                # Figure out how many sales we haven't touched yet
-                untouched_sales_count = count_sales_all - len(df_test)
-                
-                df_untouched = df[~df["key_sale"].isin(df_test["key_sale"])]
-                
-                # Express how many more we need as a fraction of the untouched sales
-                remaining_test_frac = 0 if untouched_sales_count == 0 else remaining_test_count / untouched_sales_count
-
-                n = np.floor(len(df_untouched) * remaining_test_frac).astype(int)
-                
-                diff = remaining_test_count - n
-                
-                while diff > 0:
-                    old_diff = diff
-                    if len(df_look_back) > n:
-                        n += 1
-                        diff -= 1
-                    if diff == old_diff:
-                        break
-                
-                n = min(n, len(df_untouched))
-                
-                # Sample the untouched sales to fill the test set
-                # Then, add the untouched sales to the test set -- we're finally done
-                if n > 0:
-                    _df_test = df_untouched.sample(n=n, random_state=random_seed)
-                    df_test = pd.concat([df_test, _df_test])
-                
-                return df_test
-            
-            df_v_test = _fix_sample_2(df_v, df_v_test, test_set_count_v, count_sales_all_v)
-            df_i_test = _fix_sample_2(df_i, df_i_test, test_set_count_i, count_sales_all_i)
-            
-        # Training set is whatever is not in the test set
-        df_v_train = df_v_pre_val[~df_v_pre_val["key_sale"].isin(df_v_test["key_sale"])]
-        df_i_train = df_i_pre_val[~df_i_pre_val["key_sale"].isin(df_i_test["key_sale"])]
+    df_v_test, df_v_train = _three_tier_split(
+        df_v,
+        test_set_count_v,
+        look_back_days,
+        floor=cfg_floor,
+        cap_ratio=cfg_cap_ratio,
+        strat_fields=strat_fields_v,
+        random_seed=random_seed,
+    )
+    df_i_test, df_i_train = _three_tier_split(
+        df_i,
+        test_set_count_i,
+        look_back_days,
+        floor=cfg_floor,
+        cap_ratio=cfg_cap_ratio,
+        strat_fields=strat_fields_i,
+        random_seed=random_seed,
+    )
 
     df_test = pd.concat([df_v_test, df_i_test]).reset_index(drop=True)
     df_train = pd.concat([df_v_train, df_i_train]).reset_index(drop=True)

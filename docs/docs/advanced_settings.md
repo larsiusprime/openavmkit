@@ -835,6 +835,72 @@ Per-model-group skip list. For the named model group, the listed models are skip
 - **Source** — `_run_models` in [openavmkit/benchmark.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py)
 - **When to use** — a particular model is unstable on a particular model group (low sample count, rank-deficient features) and you want to exclude it from that group only.
 
+### Train / test split rules
+
+The canonical train/test split lives in `_perform_canonical_split` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py). It splits each model group's valid sales into a test set (default 20%) and a training set (default 80%), maintaining vacant/improved balance and respecting three constraints:
+
+1. **No leakage.** Post-valuation-date sales never appear in the training set.
+2. **Sufficient lookback representation in test, without overrepresentation.** The lookback period (sales within `analysis.ratio_study.look_back_years` of the valuation date) gets a hard floor in the test set so the resulting ratio study has a defensible IAAO-aligned sample size, and a cap that prevents the lookback period from dominating the test set when other years are available.
+3. **Stratified random sampling** within each tier. Vacant sales are stratified by `sale_year` only; improved sales are stratified by age, finished area, and `sale_year` (user-configurable). Stratification uses `sklearn.model_selection.train_test_split` with graceful fallback when strata are too thin.
+
+#### `modeling.instructions.test_train_frac`
+
+Fraction of total sales that go to **training** (the test set is the complement).
+
+- **Default** — `0.8` (80% train, 20% test)
+- **Source** — `_write_canonical_splits` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
+
+#### `modeling.instructions.test_lookback_cap_ratio`
+
+The lookback period's test-share is capped at this multiple of the non-lookback test-share. Prevents the test set from being dominated by lookback sales when there are also older sales available to draw from.
+
+- **Default** — `2.0` (lookback can be at most 2× overrepresented in test relative to the rest)
+- **Set to `null`** to disable the cap.
+- **Worked example** — with `test_count=53`, `lookback_size=75`, `non_lookback_size=188` (the Petersburg single-family-suburban shape), the cap allows at most `2 × 53 × 75 / (188 + 150) = 23` lookback sales in test. Training keeps the remaining 52 lookback sales — substantially more recent training signal than the legacy "fill test first" approach would give.
+- **Disabled when there is no non-lookback** — if all sales are inside the lookback window there's nothing to overrepresent against, so the cap is silently disabled and the function falls back to filling the test set from lookback.
+- **Source** — `compute_lookback_test_size` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
+
+#### `modeling.instructions.test_lookback_floor`
+
+Hard floor: never put fewer than this many lookback sales in the test set (subject to availability — if lookback only has 10 sales, the floor is silently 10). When the cap above would push the lookback count below the floor, the cap is overridden — the floor is treated as a hard requirement for a usable ratio-study sample, and a slight overrepresentation is preferred to a too-thin holdout.
+
+- **Default** — `15` (rule-of-thumb minimum for IAAO-style COD confidence intervals)
+- **Set to `null`** to disable the floor.
+
+The floor doesn't act as a ceiling: when the cap allows more lookback than the floor (the common case), the function takes as much lookback as cap and availability allow — well above the floor.
+
+#### `modeling.instructions.test_strat_fields_improved`
+
+List of fields to stratify improved-sales splits by. `sale_year` is always appended automatically. Numeric continuous fields are quantile-binned to 4 strata before being used as labels.
+
+- **Default** — `null`, which auto-resolves to:
+  - `bldg_effective_age_years` if the column exists, otherwise `bldg_age_years`
+  - `bldg_area_finished_<unit>` where `<unit>` is `sqft` or `sqm` per the locality's `units` setting
+- **User override example** —
+
+  ```json
+  "test_strat_fields_improved": ["neighborhood", "bldg_quality_num"]
+  ```
+
+  The defaults are *not* added when an explicit list is provided. `sale_year` is still appended.
+
+- **Source** — `_resolve_strat_fields_improved` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
+
+#### Disabling the rule entirely
+
+To revert to the pre-rule behavior ("test set is filled from the lookback period first, then from older sales") for a single jurisdiction, set both knobs to `null`:
+
+```json
+"modeling": {
+  "instructions": {
+    "test_lookback_floor": null,
+    "test_lookback_cap_ratio": null
+  }
+}
+```
+
+This is rarely useful in production but is the right setting for synthetic-data tests where there are no non-lookback sales to draw from.
+
 ### `modeling.instructions.feature_selection.thresholds` and `.weights`
 
 Fine-tune the variable-selection scoring used during model setup. The thresholds gate inclusion (correlation, VIF, p-value, t-value, ENR coefficient, adjusted R²); the weights control how each test contributes to the composite score.
