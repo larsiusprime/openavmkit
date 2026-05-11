@@ -698,31 +698,37 @@ def test_permits_teardown_sales():
 	}
 
 	nan = float('nan')
+	# A teardown sale = buyer purchases, then demolishes within max_days_to_demo (default 365).
+	# Demos BEFORE the sale are sales of already-cleared lots and are not flagged.
 	permits = {
 		"key": ["0", "1", "2", "3", "3", "3"],
 		"is_teardown": [True, True, True, True, True, True],
 		"date": [
-			              # Demo dates for keys 1, 2, and 3
-			"2020-07-01", # too early: one month AFTER the sale
-			"2020-01-01", # just right: five months BEFORE the sale
-			"2021-07-01", # too late: thirteen months AFTER the sale
+			              # One demo each for keys 0, 1, 2
+			"2020-07-01", # IN-WINDOW:  1 month AFTER sale  -> teardown
+			"2020-01-01", # BEFORE:     5 months BEFORE sale -> not a teardown (cleared lot)
+			"2021-07-01", # OUT-WINDOW: 13 months AFTER sale -> not a teardown (too late)
 
-			              # 3 demo dates, all for key 3 -- should de-duplicate and pick the middle one
-			"2020-07-01", # too early
-			"2020-01-01", # just right
+			              # 3 demo dates for key 3 -- de-duplicate to the closest valid demo
+			              # AFTER the sale, which is 2020-07-01 (30 days out).
+			"2020-07-01", # in-window
+			"2020-01-01", # before sale (ignored)
 			"2021-07-01"  # too late
 		]
 	}
 	expected = {
 		"key": ["0", "1", "2", "3"],
 		"valid_sale": [True, True, True, True],
-		"vacant_sale": [False, True, False, True],
+		# is_teardown_sale=True flips vacant_sale to True (sale of effectively land-only)
+		"vacant_sale": [True, False, False, True],
 		"sale_price": [1, 1, 1, 1],
 		"sale_date": ["2020-06-01", "2020-06-01", "2020-06-01", "2020-06-01"],
 		"key_sale": ["0---2020-06-01", "1---2020-06-01", "2---2020-06-01", "3---2020-06-01"],
-		"is_teardown_sale": [False, True, False, True],
-		"demo_date": ["2020-07-01", "2020-01-01", "2021-07-01", "2020-01-01"],
-		"days_to_demo":[nan, 152.0, nan, 152.0]
+		"is_teardown_sale": [True, False, False, True],
+		# demo_date is preserved for every key that had any matching permit, even if
+		# the demo was before the sale (days_to_demo gets NaN'd, demo_date stays).
+		"demo_date": ["2020-07-01", "2020-01-01", "2021-07-01", "2020-07-01"],
+		"days_to_demo":[30.0, nan, 395.0, 30.0]
 	}
 
 	df_expected = pd.DataFrame(data=expected)
