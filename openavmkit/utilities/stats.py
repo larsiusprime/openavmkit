@@ -694,8 +694,11 @@ def calc_correlations(
     while True:
         naive_corr = corr_full.loc[remaining, remaining]
 
+        if naive_corr.empty or len(naive_corr.columns) == 0:
+            break
+
         # --- NEW: compute one explicit order and apply to both axes
-        order = _order_by_target_corr(naive_corr, target_col=naive_corr.columns[0])
+        order = _order_by_target_corr(naive_corr, target_col=naive_corr.columns.tolist()[0])
         naive_corr = naive_corr.loc[order, order]
         # -----------------------------------------------
 
@@ -713,6 +716,8 @@ def calc_correlations(
 
         score = strength * clarity * clarity
 
+        if score.isna().all():
+            break
         min_score_idx = score.idxmin()
         try:
             min_score = score[min_score_idx]
@@ -736,6 +741,11 @@ def calc_correlations(
     # drop all other variables that are more correlated with current_variable than
     # they are with the target.
     # ------------------------------------------------------------------
+    if len(remaining) <= 1:
+        # Only target variable (or nothing) remains — skip second pass
+        _empty = pd.DataFrame(columns=["variable", "corr_strength", "corr_clarity", "corr_score"])
+        _stub = first_run if first_run is not None else _empty
+        return {"initial": _stub, "final": _empty, "bad_vars": bad_vars}
     target_col = remaining[0]
 
     # process in descending strength-to-target order (excluding target itself)
@@ -777,7 +787,7 @@ def calc_correlations(
 
     # Recompute scores for the *final* remaining set (same math as above)
     naive_corr = corr_full.loc[remaining, remaining]
-    order = _order_by_target_corr(naive_corr, target_col=naive_corr.columns[0])
+    order = _order_by_target_corr(naive_corr, target_col=naive_corr.columns.tolist()[0])
     naive_corr = naive_corr.loc[order, order]
 
     naive_corr_sans_target = naive_corr.iloc[1:, 1:]
@@ -803,7 +813,7 @@ def calc_correlations(
     final_corr = corr_full.loc[remaining, remaining]
 
     # --- NEW: order final_corr the same way (by target corr within remaining set)
-    final_order = _order_by_target_corr(final_corr, target_col=final_corr.columns[0])
+    final_order = _order_by_target_corr(final_corr, target_col=final_corr.columns.tolist()[0])
     final_corr = final_corr.loc[final_order, final_order]
     # -----------------------------------------------
 

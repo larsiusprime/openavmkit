@@ -270,11 +270,11 @@ def write_cached_df(
 
             is_different = False
             if len(col_new) == len(col_orig):
-                values_equal = col_new.values == col_orig.values
+                values_equal = col_new.eq(col_orig)
                 na_equal = col_new.isna() & col_orig.isna()
 
-                count_na_equal = na_equal.sum()
-                count_values_equal = values_equal.sum()
+                count_na_equal = int(na_equal.sum())
+                count_values_equal = int(values_equal.sum())
 
                 count_to_match = len(col_new)
 

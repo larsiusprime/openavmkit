@@ -485,6 +485,8 @@ def _catboost_rolling_origin_cv(
 
 
 def _lightgbm_rolling_origin_cv(X, y, params, n_splits=5, random_state=42, cat_vars=None):
+    if len(X) < n_splits:
+        return float("inf")
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     mape_scores = []
 

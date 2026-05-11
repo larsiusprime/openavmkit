@@ -27,7 +27,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 import geopandas as gpd
 
-from scipy.spatial._ckdtree import cKDTree
+from scipy.spatial import cKDTree
 from shapely.geometry import Polygon
 from shapely.geometry import LineString
 from shapely.ops import unary_union
@@ -2866,13 +2866,14 @@ def _basic_geo_enrichment(
             gdf[f"land_area_{unit}"] = gdf[f"land_area_{unit}"].combine_first(
                 gdf[f"land_area_gis_{unit}"]
             )
-            gdf[f"land_area_{unit}"] = np.round(
-                gdf[f"land_area_{unit}"].combine_first(gdf[f"land_area_gis_{unit}"])
-            ).astype(int)
+            gdf[f"land_area_{unit}"] = gdf[f"land_area_{unit}"].combine_first(
+                gdf[f"land_area_gis_{unit}"]
+            )
             gdf.loc[
                 gdf[f"land_area_given_{unit}"].le(0) | gdf[f"land_area_given_{unit}"].isna(),
                 f"land_area_{unit}",
             ] = gdf[f"land_area_gis_{unit}"]
+            gdf[f"land_area_{unit}"] = np.round(gdf[f"land_area_{unit}"]).astype(int)
 
             # Calculate difference
             gdf[f"land_area_gis_delta_{unit}"] = gdf[f"land_area_gis_{unit}"] - gdf[f"land_area_{unit}"]
