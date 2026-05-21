@@ -1,3 +1,13 @@
+"""
+OpenStreetMap data fetching service.
+
+Wraps ``osmnx`` to download tagged OSM features (parks, water bodies, schools,
+streets, transportation networks, etc.) for a given bounding box, with
+caching to avoid re-downloading on subsequent runs. Used by the distance
+enrichment (``data.process.enrich.distances``) and the streets enrichment
+(``data.process.enrich.streets``) when ``osm: true`` is configured for a
+feature.
+"""
 from typing import Dict, Tuple
 import pandas as pd
 import geopandas as gpd

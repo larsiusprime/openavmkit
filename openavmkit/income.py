@@ -1,3 +1,12 @@
+"""
+Income-approach calculations.
+
+Helpers for the income approach to valuation: deriving NOI (Net Operating
+Income) from price and cap rate, projecting entry/exit prices from a target
+IRR via discounted cash-flow analysis, and related conversions. Useful for
+income-producing property models where market value is anchored to expected
+cash flows rather than comparable sales.
+"""
 import numpy as np
 import pandas as pd
 from scipy.optimize import brentq

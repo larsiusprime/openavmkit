@@ -1,3 +1,14 @@
+"""
+Hyperparameter tuning for tree-based models.
+
+Uses Optuna to search hyperparameter spaces for XGBoost, LightGBM, and
+CatBoost models with k-fold cross-validation, optimizing for mean absolute
+percentage error. Called from :mod:`openavmkit.modeling` when a model entry
+requests tuning rather than fixed parameters.
+
+All public APIs are private (underscore-prefixed) — tuning is invoked
+indirectly through model setup, not as a user-facing operation.
+"""
 import xgboost as xgb
 import lightgbm as lgb
 import numpy as np
@@ -256,7 +267,7 @@ def _tune_catboost(
 
     if verbose:
         print(
-            f"Best trial #{study.best_trial.number} → MAPE={study.best_trial.value:.4f}"
+            f"Best trial #{study.best_trial.number} -> MAPE={study.best_trial.value:.4f}"
         )
         print("Params:", study.best_trial.params)
 

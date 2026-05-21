@@ -1,3 +1,21 @@
+"""
+Model benchmarking and ensembling.
+
+Orchestrates running multiple predictive models (MRA, GWR, XGBoost, LightGBM,
+CatBoost, kernel regression, ensembles, and several "naive" baselines) across
+each model group, with optional variable-importance experiments. Compares model
+outputs and produces ensemble predictions.
+
+This module is the high-level coordinator that drives :mod:`openavmkit.modeling`.
+The main entry points (``run_models``, ``try_variables``, ensemble runners) are
+exposed as wrappers in :mod:`openavmkit.pipeline`.
+
+Notes
+-----
+The list of models to run for each main/vacant/hedonic stage is configured in
+``settings.json`` under ``modeling.instructions.<stage>.run``. Per-model-group
+skip lists live under ``modeling.instructions.<stage>.skip.<model_group>``.
+"""
 import os
 import pickle
 import warnings
@@ -36,6 +54,7 @@ from openavmkit.modeling import (
     run_lightgbm,
     run_catboost,
     run_slice,
+    run_layeredcompbagging,
     run_garbage,
     run_average,
     run_naive_area,
@@ -57,6 +76,7 @@ from openavmkit.modeling import (
     predict_catboost,
     predict_lightgbm,
     predict_slice,
+    predict_layeredcompbagging,
     predict_ground_truth,
     predict_spatial_lag,
     GarbageModel,
@@ -1154,6 +1174,8 @@ def get_data_split_for(
         df_sales = _clean_categoricals(df_sales, fields_cat, settings)
         df_universe = _clean_categoricals(df_universe, fields_cat, settings)
         _ind_vars = ind_vars
+    elif model_engine == "layeredcompbagging":
+        _ind_vars = ind_vars
     else:
         _ind_vars = ind_vars
         if model_engine == "gwr" or model_engine == "kernel":
@@ -1420,6 +1442,10 @@ def run_one_model(
     elif model_engine == "catboost":
         results = run_catboost(
             ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, use_gpu=use_gpu
+        )
+    elif model_engine == "layeredcompbagging":
+        results = run_layeredcompbagging(
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
     elif model_engine == "slice":
         results = run_slice(ds, verbose=verbose)

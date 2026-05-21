@@ -3,7 +3,9 @@ import pandas as pd
 from IPython.display import display
 
 from openavmkit.data import _perform_canonical_split, _handle_duplicated_rows, _perform_ref_tables, _merge_dict_of_dfs, \
-	_do_enrich_year_built, enrich_time, SalesUniversePair, get_hydrated_sales_from_sup, _enrich_permits
+	_do_enrich_year_built, enrich_time, SalesUniversePair, get_hydrated_sales_from_sup, _enrich_permits, \
+	compute_lookback_test_size, _resolve_strat_fields_improved, _build_strat_label, _stratified_test_sample, \
+	_three_tier_split
 from openavmkit.modeling import DataSplit
 from openavmkit.utilities.assertions import dfs_are_equal, series_are_equal
 from openavmkit.utilities.data import div_df_z_safe, merge_and_stomp_dfs, combine_dfs
@@ -696,31 +698,37 @@ def test_permits_teardown_sales():
 	}
 
 	nan = float('nan')
+	# A teardown sale = buyer purchases, then demolishes within max_days_to_demo (default 365).
+	# Demos BEFORE the sale are sales of already-cleared lots and are not flagged.
 	permits = {
 		"key": ["0", "1", "2", "3", "3", "3"],
 		"is_teardown": [True, True, True, True, True, True],
 		"date": [
-			              # Demo dates for keys 1, 2, and 3
-			"2020-07-01", # too early: one month AFTER the sale
-			"2020-01-01", # just right: five months BEFORE the sale
-			"2021-07-01", # too late: thirteen months AFTER the sale
+			              # One demo each for keys 0, 1, 2
+			"2020-07-01", # IN-WINDOW:  1 month AFTER sale  -> teardown
+			"2020-01-01", # BEFORE:     5 months BEFORE sale -> not a teardown (cleared lot)
+			"2021-07-01", # OUT-WINDOW: 13 months AFTER sale -> not a teardown (too late)
 
-			              # 3 demo dates, all for key 3 -- should de-duplicate and pick the middle one
-			"2020-07-01", # too early
-			"2020-01-01", # just right
+			              # 3 demo dates for key 3 -- de-duplicate to the closest valid demo
+			              # AFTER the sale, which is 2020-07-01 (30 days out).
+			"2020-07-01", # in-window
+			"2020-01-01", # before sale (ignored)
 			"2021-07-01"  # too late
 		]
 	}
 	expected = {
 		"key": ["0", "1", "2", "3"],
 		"valid_sale": [True, True, True, True],
-		"vacant_sale": [False, True, False, True],
+		# is_teardown_sale=True flips vacant_sale to True (sale of effectively land-only)
+		"vacant_sale": [True, False, False, True],
 		"sale_price": [1, 1, 1, 1],
 		"sale_date": ["2020-06-01", "2020-06-01", "2020-06-01", "2020-06-01"],
 		"key_sale": ["0---2020-06-01", "1---2020-06-01", "2---2020-06-01", "3---2020-06-01"],
-		"is_teardown_sale": [False, True, False, True],
-		"demo_date": ["2020-07-01", "2020-01-01", "2021-07-01", "2020-01-01"],
-		"days_to_demo":[nan, 152.0, nan, 152.0]
+		"is_teardown_sale": [True, False, False, True],
+		# demo_date is preserved for every key that had any matching permit, even if
+		# the demo was before the sale (days_to_demo gets NaN'd, demo_date stays).
+		"demo_date": ["2020-07-01", "2020-01-01", "2021-07-01", "2020-07-01"],
+		"days_to_demo":[30.0, nan, 395.0, 30.0]
 	}
 
 	df_expected = pd.DataFrame(data=expected)
@@ -877,3 +885,404 @@ def test_boolify_series():
 	series_are_equal(expected_series, str_series_1)
 	series_are_equal(expected_series, str_series_2)
 	series_are_equal(expected_series, str_series_3)
+
+
+# ---------------------------------------------------------------------------
+# Tests for the new canonical-split helpers: 30/15/2x rule, three-tier split,
+# stratification. Each test names the high-level behavior it pins down.
+# ---------------------------------------------------------------------------
+
+
+def test_lookback_size_defaults_preserve_legacy_fill():
+	# With no constraints set, the function takes as many lookback sales as the test
+	# set needs (capped by availability). This preserves the legacy behavior of
+	# "fill the test set from lookback first."
+	assert compute_lookback_test_size(test_count=53, lb_size=75, nlb_size=188) == 53
+	assert compute_lookback_test_size(test_count=200, lb_size=75, nlb_size=188) == 75
+
+
+def test_lookback_size_cap_limits_overrepresentation():
+	# 2x cap: lookback share should not exceed 2x the non-lookback share.
+	# With test=53, LB=75, NLB=188: cap = 2*53*75 / (188 + 2*75) = 23.5 -> 23
+	n = compute_lookback_test_size(53, 75, 188, cap_ratio=2.0)
+	assert n == 23
+
+	# Verify the cap actually keeps overrepresentation at ≤ 2x:
+	non_lb_test = 53 - n
+	lb_share = n / 75
+	nlb_share = non_lb_test / 188
+	assert lb_share <= 2.0 * nlb_share + 1e-9
+
+
+def test_lookback_size_petersburg_15_2x():
+	# Petersburg shape (53, 75, 188) with floor=15, cap=2.0 → cap binds at 23.
+	# Floor (15) is well below cap (23), so cap is what determines the result.
+	n = compute_lookback_test_size(53, 75, 188, floor=15, cap_ratio=2.0)
+	assert n == 23
+
+
+def test_lookback_size_floor_wins_when_cap_would_go_too_low():
+	# 20 lookback, 200 non-lb, test=44, floor=15, cap=2.0
+	# cap_l = 2*44*20 / (200+40) = 7.3 -> 7  (would violate the 15 floor)
+	# floor wins → returns 15 even though it violates 2x slightly. The floor is a
+	# hard requirement for a usable ratio-study sample size.
+	n = compute_lookback_test_size(44, 20, 200, floor=15, cap_ratio=2.0)
+	assert n == 15
+
+
+def test_lookback_size_thin_lookback_returns_all_available():
+	# 10 lookback total. Even with floor=15, we can only return 10.
+	n = compute_lookback_test_size(42, 10, 200, floor=15, cap_ratio=2.0)
+	assert n == 10
+
+
+def test_lookback_size_abundant_lookback_takes_more_than_typical_floor():
+	# Big lookback (500), small non-lb (100), floor=15, cap=2.0.
+	# cap_l = 2 * 120 * 500 / (100 + 1000) = 109.
+	# We take as many as cap allows — 109 — well above any reasonable floor.
+	# Floor is a *minimum*, not a ceiling; abundance is fine.
+	n = compute_lookback_test_size(120, 500, 100, floor=15, cap_ratio=2.0)
+	assert n == 109
+
+
+def test_lookback_size_no_non_lookback_disables_cap():
+	# When there are no non-lookback sales, the cap can't be meaningfully computed
+	# (no other group to overrepresent against). The cap is disabled and the function
+	# fills the test set from lookback up to the available count. This is the case
+	# the legacy synthetic test_split_keys exercises.
+	assert compute_lookback_test_size(180, 900, 0, floor=15, cap_ratio=2.0) == 180
+	assert compute_lookback_test_size(20, 100, 0, floor=15, cap_ratio=2.0) == 20
+
+
+def test_lookback_size_edge_cases():
+	assert compute_lookback_test_size(0, 75, 188) == 0
+	assert compute_lookback_test_size(53, 0, 188) == 0
+
+
+def test_resolve_strat_fields_improved_defaults_prefer_effective_age():
+	df = pd.DataFrame({
+		"bldg_age_years": [10, 20, 30],
+		"bldg_effective_age_years": [5, 15, 25],
+		"bldg_area_finished_sqft": [1000, 2000, 3000],
+		"sale_year": [2023, 2024, 2025],
+	})
+	settings = {"locality": {"units": "imperial"}}
+	fields = _resolve_strat_fields_improved(df, settings, user_override=None)
+	# Effective age preferred when present; sqft chosen for imperial units;
+	# sale_year always appended.
+	assert "bldg_effective_age_years" in fields
+	assert "bldg_age_years" not in fields
+	assert "bldg_area_finished_sqft" in fields
+	assert "sale_year" in fields
+
+
+def test_resolve_strat_fields_improved_falls_back_to_actual_age():
+	df = pd.DataFrame({
+		"bldg_age_years": [10, 20, 30],
+		"bldg_area_finished_sqft": [1000, 2000, 3000],
+		"sale_year": [2023, 2024, 2025],
+	})
+	settings = {"locality": {"units": "imperial"}}
+	fields = _resolve_strat_fields_improved(df, settings, user_override=None)
+	# No effective_age → fall back to actual age
+	assert "bldg_age_years" in fields
+	assert "bldg_effective_age_years" not in fields
+
+
+def test_resolve_strat_fields_improved_user_override_respected():
+	df = pd.DataFrame({
+		"neighborhood": ["A", "B", "C"],
+		"bldg_quality_num": [3, 4, 5],
+		"sale_year": [2023, 2024, 2025],
+	})
+	settings = {}
+	fields = _resolve_strat_fields_improved(df, settings,
+		user_override=["neighborhood", "bldg_quality_num"])
+	assert fields == ["neighborhood", "bldg_quality_num", "sale_year"]
+	# Defaults (age, area) are NOT included when user overrides.
+	assert "bldg_age_years" not in fields
+
+
+def test_resolve_strat_fields_improved_drops_missing_columns():
+	df = pd.DataFrame({"sale_year": [2023, 2024]})
+	settings = {}
+	fields = _resolve_strat_fields_improved(df, settings, user_override=None)
+	# Defaults reference age and area which don't exist in this df → dropped.
+	# sale_year survives.
+	assert fields == ["sale_year"]
+
+
+def test_build_strat_label_numeric_is_quantile_binned():
+	df = pd.DataFrame({"x": list(range(100))})
+	label = _build_strat_label(df, ["x"], n_bins=4)
+	# 100 distinct values quantile-binned to 4 strata → 4 unique label values.
+	assert label.nunique() == 4
+
+
+def test_build_strat_label_categorical_preserved_as_is():
+	df = pd.DataFrame({"cat": ["A", "B", "A", "C"]})
+	label = _build_strat_label(df, ["cat"], n_bins=4)
+	assert set(label.unique()) == {"A", "B", "C"}
+
+
+def test_build_strat_label_combined_uses_cross_product():
+	df = pd.DataFrame({
+		"year": [2023, 2024, 2023, 2024],
+		"cat": ["A", "A", "B", "B"],
+	})
+	label = _build_strat_label(df, ["year", "cat"], n_bins=4)
+	# 2 years × 2 categories, all distinct combinations → 4 unique labels.
+	assert label.nunique() == 4
+
+
+def test_build_strat_label_empty_fields_returns_none():
+	df = pd.DataFrame({"x": [1, 2, 3]})
+	assert _build_strat_label(df, [], n_bins=4) is None
+	assert _build_strat_label(df, ["nonexistent_field"], n_bins=4) is None
+
+
+def test_stratified_test_sample_preserves_class_proportion():
+	rng = np.random.RandomState(0)
+	df = pd.DataFrame({
+		"key_sale": [f"k{i}" for i in range(200)],
+		"sale_year": [2023] * 100 + [2024] * 100,
+	})
+	train, test = _stratified_test_sample(df, n_test=40, random_seed=1337,
+		strat_fields=["sale_year"])
+	# Each year's representation in test should be proportional (20 each, ±1 from
+	# sklearn's rounding).
+	test_counts = test["sale_year"].value_counts()
+	assert abs(test_counts.get(2023, 0) - 20) <= 1
+	assert abs(test_counts.get(2024, 0) - 20) <= 1
+	# And train+test = total
+	assert len(train) + len(test) == len(df)
+	assert len(test) == 40
+
+
+def test_stratified_test_sample_falls_back_when_strata_too_thin():
+	# Each combination of (year, cat) has only 1 sample — sklearn would raise.
+	# Helper should drop fields and fall back gracefully.
+	df = pd.DataFrame({
+		"key_sale": [f"k{i}" for i in range(4)],
+		"sale_year": [2023, 2024, 2025, 2026],
+		"cat": ["A", "B", "C", "D"],
+	})
+	train, test = _stratified_test_sample(df, n_test=2, random_seed=1337,
+		strat_fields=["sale_year", "cat"])
+	assert len(test) == 2
+	assert len(train) == 2
+
+
+def test_three_tier_split_post_val_goes_to_test():
+	# A jurisdiction where all sales are post-valuation: they should ALL go to test,
+	# and the training set is empty (no leakage).
+	df = pd.DataFrame({
+		"key_sale": [f"k{i}" for i in range(10)],
+		"sale_age_days": [-30] * 10,  # all post-val
+		"sale_year": [2026] * 10,
+		"vacant_sale": [False] * 10,
+		"bldg_area_finished_sqft": [1500.0] * 10,
+	})
+	test, train = _three_tier_split(df, test_count=5, look_back_days=365,
+		floor=15, cap_ratio=2.0,
+		strat_fields=["sale_year"], random_seed=1337)
+	# We never train on post-val sales; all 10 are reserved.
+	assert len(train) == 0
+	# Test got all 10 (even though we only asked for 5) — post-val takes priority
+	# and is not down-sampled.
+	assert len(test) == 10
+
+
+def test_three_tier_split_cap_balances_train_share():
+	# Petersburg-like: 117 pre-lookback (2023-24), 75 lookback (2025), test_count=53.
+	# With cap=2.0, lookback contribution to test is limited; some 2025 sales go
+	# to training where the model needs them.
+	rng = np.random.RandomState(0)
+	rows = []
+	val_date = pd.Timestamp("2026-01-01")
+	for yr, n in [(2023, 117), (2024, 71), (2025, 75)]:
+		for i in range(n):
+			sd = pd.Timestamp(f"{yr}-06-15")
+			rows.append({
+				"key_sale": f"{yr}-{i:04d}",
+				"sale_age_days": (val_date - sd).days,
+				"sale_year": yr,
+				"vacant_sale": False,
+				"bldg_area_finished_sqft": 1500.0,
+			})
+	df = pd.DataFrame(rows)
+	test, train = _three_tier_split(df, test_count=53, look_back_days=365,
+		floor=15, cap_ratio=2.0,
+		strat_fields=["sale_year"], random_seed=1337)
+
+	test_2025 = (test["sale_year"] == 2025).sum()
+	train_2025 = (train["sale_year"] == 2025).sum()
+	# At the 2x cap: 23 lookback → test, 52 lookback → train. The exact split is
+	# determined by the cap math; we assert the cap is binding (23) and the floor
+	# (15) is not binding for this shape.
+	assert test_2025 == 23
+	assert train_2025 == 52
+	# 2025 is no longer 100% of test — older years contribute the remaining 30.
+	assert len(test) == 53
+	assert (test["sale_year"] < 2025).sum() == 30
+
+
+def test_three_tier_split_legacy_default_fills_test_from_lookback():
+	# With both constraints disabled (floor=None, cap_ratio=None), three-tier split
+	# reproduces the old "lookback fills test first" behavior. For sf_suburban this
+	# puts all 53 test slots into 2025.
+	val_date = pd.Timestamp("2026-01-01")
+	rows = []
+	for yr, n in [(2023, 117), (2024, 71), (2025, 75)]:
+		for i in range(n):
+			sd = pd.Timestamp(f"{yr}-06-15")
+			rows.append({
+				"key_sale": f"{yr}-{i:04d}",
+				"sale_age_days": (val_date - sd).days,
+				"sale_year": yr,
+				"vacant_sale": False,
+				"bldg_area_finished_sqft": 1500.0,
+			})
+	df = pd.DataFrame(rows)
+	test, train = _three_tier_split(df, test_count=53, look_back_days=365,
+		floor=None, cap_ratio=None,
+		strat_fields=["sale_year"], random_seed=1337)
+	test_2025 = (test["sale_year"] == 2025).sum()
+	# Legacy fill: all 53 test slots come from lookback.
+	assert test_2025 == 53
+	assert len(test) == 53
+
+
+def test_canonical_split_petersburg_30_15_2x_end_to_end():
+	# Builds a Petersburg-like sf_suburban dataset and verifies that the new
+	# settings produce a temporally balanced split.
+	val_date = pd.Timestamp("2026-01-01")
+	rows = []
+	for yr, n in [(2023, 117), (2024, 71), (2025, 75)]:
+		for i in range(n):
+			sd = pd.Timestamp(f"{yr}-06-15")
+			rows.append({
+				"key": f"{yr}-{i:04d}",
+				"key_sale": f"{yr}-{i:04d}---{sd.date()}",
+				"model_group": "sf",
+				"valid_sale": True,
+				"vacant_sale": False,
+				"is_vacant": False,
+				"sale_price": 200000.0,
+				"sale_date": sd,
+				"sale_year": yr,
+				"sale_month": 6,
+				"sale_day": 15,
+				"sale_age_days": (val_date - sd).days,
+				"bldg_area_finished_sqft": 1500.0,
+				"land_area_sqft": 5000.0,
+			})
+	df = pd.DataFrame(rows)
+	settings = {
+		"modeling": {
+			"metadata": {"valuation_date": "2026-01-01"},
+			"instructions": {
+				"test_lookback_floor": 15,
+				"test_lookback_cap_ratio": 2.0,
+			},
+		},
+		"analysis": {"ratio_study": {"look_back_years": 1}},
+	}
+	df_test, df_train = _perform_canonical_split("sf", df, settings,
+		test_train_fraction=0.8)
+	assert len(df_test) == 53
+	assert len(df_train) == 210
+
+	test_2025 = (df_test["sale_year"] == 2025).sum()
+	train_2025 = (df_train["sale_year"] == 2025).sum()
+	# The cap is the binding constraint; 23 lookback in test, 52 lookback in train.
+	assert test_2025 == 23
+	assert train_2025 == 52
+	# 2025 share of training is now meaningful (~25%), not the ~10% from the
+	# legacy fill.
+	assert train_2025 / len(df_train) > 0.20
+
+
+def test_canonical_split_default_applies_15_2x_rule():
+	# The default constants (floor=15, cap_ratio=2.0) are baked into
+	# _perform_canonical_split so jurisdictions get a sensible holdout shape without
+	# having to opt in. With Petersburg-like proportions the cap is binding at 23.
+	val_date = pd.Timestamp("2026-01-01")
+	rows = []
+	for yr, n in [(2023, 117), (2024, 71), (2025, 75)]:
+		for i in range(n):
+			sd = pd.Timestamp(f"{yr}-06-15")
+			rows.append({
+				"key": f"{yr}-{i:04d}",
+				"key_sale": f"{yr}-{i:04d}---{sd.date()}",
+				"model_group": "sf",
+				"valid_sale": True,
+				"vacant_sale": False,
+				"is_vacant": False,
+				"sale_price": 200000.0,
+				"sale_date": sd,
+				"sale_year": yr,
+				"sale_month": 6,
+				"sale_day": 15,
+				"sale_age_days": (val_date - sd).days,
+				"bldg_area_finished_sqft": 1500.0,
+				"land_area_sqft": 5000.0,
+			})
+	df = pd.DataFrame(rows)
+	# NO modeling.instructions block — defaults should apply.
+	settings = {
+		"modeling": {"metadata": {"valuation_date": "2026-01-01"}},
+		"analysis": {"ratio_study": {"look_back_years": 1}},
+	}
+	df_test, df_train = _perform_canonical_split("sf", df, settings,
+		test_train_fraction=0.8)
+	# Default rule kicks in: 23 lookback (2025) test, 52 lookback train.
+	test_2025 = (df_test["sale_year"] == 2025).sum()
+	train_2025 = (df_train["sale_year"] == 2025).sum()
+	assert test_2025 == 23
+	assert train_2025 == 52
+
+
+def test_canonical_split_explicit_none_disables_default_rule():
+	# Setting all three knobs to None in settings explicitly opts out of the default
+	# rule and restores the legacy "fill test from lookback first" behavior.
+	val_date = pd.Timestamp("2026-01-01")
+	rows = []
+	for yr, n in [(2023, 117), (2024, 71), (2025, 75)]:
+		for i in range(n):
+			sd = pd.Timestamp(f"{yr}-06-15")
+			rows.append({
+				"key": f"{yr}-{i:04d}",
+				"key_sale": f"{yr}-{i:04d}---{sd.date()}",
+				"model_group": "sf",
+				"valid_sale": True,
+				"vacant_sale": False,
+				"is_vacant": False,
+				"sale_price": 200000.0,
+				"sale_date": sd,
+				"sale_year": yr,
+				"sale_month": 6,
+				"sale_day": 15,
+				"sale_age_days": (val_date - sd).days,
+				"bldg_area_finished_sqft": 1500.0,
+				"land_area_sqft": 5000.0,
+			})
+	df = pd.DataFrame(rows)
+	settings = {
+		"modeling": {
+			"metadata": {"valuation_date": "2026-01-01"},
+			"instructions": {
+				"test_lookback_floor": None,
+				"test_lookback_cap_ratio": None,
+			},
+		},
+		"analysis": {"ratio_study": {"look_back_years": 1}},
+	}
+	df_test, df_train = _perform_canonical_split("sf", df, settings,
+		test_train_fraction=0.8)
+	test_2025 = (df_test["sale_year"] == 2025).sum()
+	train_2025 = (df_train["sale_year"] == 2025).sum()
+	# Legacy fill: all 53 test slots come from lookback; only 22 of 75 lookback
+	# sales remain for training.
+	assert test_2025 == 53
+	assert train_2025 == 22

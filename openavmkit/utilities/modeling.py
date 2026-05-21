@@ -1,9 +1,29 @@
+"""
+Model class definitions.
+
+Defines the model classes used by :mod:`openavmkit.modeling` to train and
+predict property values. Includes:
+
+- **Tree-based wrappers** — ``XGBoostModel``, ``LightGBMModel``, ``CatBoostModel``
+- **Linear models** — ``MRAModel``, ``MultiMRAModel``
+- **Geographic models** — ``GWRModel``, ``LocalAreaModel``, ``SpatialLagModel``
+- **GAM-based** — ``LandSLICEModel`` ("Smooth Location with Increasing-Concavity Equation")
+- **Baselines** — ``GarbageModel``, ``AverageModel``, ``NaiveAreaModel``,
+  ``PassThroughModel``, ``GroundTruthModel``
+
+Plus helpers (``greedy_forward_loocv``, ``TreeBasedCategoricalData``)
+shared across model fitting routines.
+
+When adding a new model, subclass here and follow the existing pattern;
+register the prediction wrapper in :mod:`openavmkit.benchmark` and the
+params/contribs writer in :mod:`openavmkit.modeling`.
+"""
 from __future__ import annotations
 import numpy as np
 from statsmodels.regression.linear_model import RegressionResults
 from pygam import LinearGAM, s, te
 import pandas as pd
-from typing import Any
+from typing import Any, Dict
 
 from dataclasses import dataclass
 from itertools import combinations
@@ -555,6 +575,28 @@ class CatBoostModel:
     def __init__(self, regressor, cat_data):
         self.regressor = regressor
         self.cat_data = cat_data
+
+
+class LayeredCompBaggingModel:
+    """Layered Comp Bagging Model
+
+    A bagging ensemble version of the LayeredCompModel algorithm that reduces variance
+    and automatically optimizes the weight_falloff for each tree in the ensemble.
+
+    Attributes
+    ----------
+    model: layeredcompmodel.LayeredCompBaggingModel
+        The trained LayeredCompBaggingModel from the layeredcompmodel package
+    """
+    def __init__(self, model):
+        """Initialize a LayeredCompBaggingModel
+
+        Parameters
+        ----------
+        model : layeredcompmodel.LayeredCompBaggingModel
+            The trained LayeredCompBaggingModel instance
+        """
+        self.model = model
 
 
 class MRAModel:

@@ -1,3 +1,10 @@
+"""
+Lightweight performance profiling.
+
+Provides :class:`TimingData`, a simple multi-stopwatch class used throughout
+OpenAVMKit to track how long individual pipeline steps take. Not a profiler
+— just a convenience for surfacing timing in verbose output.
+"""
 import time
 
 

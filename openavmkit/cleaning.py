@@ -1,3 +1,20 @@
+"""
+Data cleaning and missing-value handling.
+
+Operates on a :class:`openavmkit.data.SalesUniversePair` to produce a
+modeling-ready dataset. Responsibilities include:
+
+- Filling missing values per the rules under ``data.process.fill.*`` in
+  ``settings.json`` (see :doc:`/advanced_settings` for the full method
+  reference: ``zero``, ``unknown``, ``none``, ``false``, ``mode``, ``median``,
+  ``mean``, ``max``, ``min``, ``custom``, plus ``_impr`` / ``_vacant`` suffixes).
+- Reconciling year-built / age-years pairs against the valuation date.
+- Auto-filling residual categorical and boolean fields.
+- Validating sales arms-length-ness when ``data.validation.enabled = true``.
+- Cleaning and filtering invalid sales.
+
+Public entry points are surfaced through :mod:`openavmkit.pipeline`.
+"""
 from warnings import warn
 
 import pandas as pd
@@ -72,7 +89,7 @@ def clean_valid_sales(sup: SalesUniversePair, settings: dict) -> SalesUniversePa
     df_sales = df_sales.merge(df_univ_vacant, on="key", how="left")
 
     print(f"After univ merge len = {len(df_sales)}")
-
+    
     oldest_sale_threshold = min(use_sales_from_impr, use_sales_from_vacant)
 
     # mark which sales are to be used (only those that are valid and within the specified time frame)

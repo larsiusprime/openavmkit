@@ -1,3 +1,10 @@
+"""
+Equality and validation helpers.
+
+Tolerant comparison utilities for objects, dicts, and DataFrames — used
+primarily by the cache layer to decide when a cached result still matches
+the current inputs, and by tests that need approximate-equality checks.
+"""
 import numpy as np
 import pandas as pd
 

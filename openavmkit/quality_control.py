@@ -1,3 +1,11 @@
+"""
+Quality control checks on predicted values.
+
+Sanity checks applied to model output before it's used downstream — verifying
+that land values are non-negative, do not exceed market value, and otherwise
+satisfy basic constraints. Returns corrected DataFrames with adjustments
+applied where checks fail.
+"""
 import warnings
 
 import pandas as pd
