@@ -1676,7 +1676,7 @@ def identify_outliers(
             settings.get("modeling", {})
             .get("models", {})
             .get("main", {})
-            .get("layeredcompbagging", {})
+            .get("lcomp", {})
             .get("ind_vars", [])
         )
         if not isinstance(ind_vars_lc, list):

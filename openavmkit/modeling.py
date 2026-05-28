@@ -56,7 +56,7 @@ import geopandas as gpd
 import xgboost as xgb
 import lightgbm as lgb
 import catboost
-from layeredcompmodel import LayeredCompBaggingModel as LCBModel
+from layeredcompmodel import LayeredCompBaggingModel as LCompModel
 from catboost import CatBoostRegressor, Pool
 from lightgbm import Booster
 from matplotlib import pyplot as plt
@@ -109,7 +109,7 @@ from openavmkit.utilities.modeling import (
     XGBoostModel,
     LightGBMModel,
     CatBoostModel,
-    LayeredCompBaggingModel,
+    LayeredCompModel,
     MultiMRAModel,
     GroundTruthModel,
     SpatialLagModel,
@@ -3813,7 +3813,7 @@ def run_slice(
     return predict_slice(ds, slice_model, timing, verbose)
 
 
-def run_layeredcompbagging(
+def run_layeredcomp(
     ds: DataSplit,
     outpath: str,
     save_params: bool = False,
@@ -3822,7 +3822,7 @@ def run_layeredcompbagging(
     verbose: bool = False,
 ) -> SingleModelResults:
     """
-    Run a LayeredCompBagging model by training and predicting.
+    Run a LayeredComp model by training and predicting.
 
     Parameters
     ----------
@@ -3835,14 +3835,14 @@ def run_layeredcompbagging(
     use_saved_params : bool, optional
         Whether to load saved model. Defaults to False.
     n_trials : int, optional
-        Not used for LayeredCompBagging. Kept for API consistency. Defaults to 50.
+        Not used for LayeredComp. Kept for API consistency. Defaults to 50.
     verbose : bool, optional
         If True, print verbose output. Defaults to False.
     
     Returns
     -------
     SingleModelResults
-        Prediction results from the LayeredCompBagging model.
+        Prediction results from the LayeredComp model.
     """
 
     timing = TimingData()
@@ -3866,33 +3866,33 @@ def run_layeredcompbagging(
 
     timing.start("train")
     
-    # Train the LayeredCompBagging model
-    lcb_model = LCBModel(tree_count=10, sample_pct=0.95, random_state=42, n_jobs=4)
-    lcb_model.fit(ds.X_train, ds.y_train)
+    # Train the LayeredComp model
+    lcomp_model = LCompModel(tree_count=10, sample_pct=0.95, random_state=42, n_jobs=4)
+    lcomp_model.fit(ds.X_train, ds.y_train)
     
     # Wrap it in our wrapper class
-    wrapped_model = LayeredCompBaggingModel(lcb_model)
+    wrapped_model = LayeredCompModel(lcomp_model)
     
     timing.stop("train")
 
-    return predict_layeredcompbagging(ds, wrapped_model, timing, verbose)
+    return predict_layeredcomp(ds, wrapped_model, timing, verbose)
 
 
-def predict_layeredcompbagging(
+def predict_layeredcomp(
     ds: DataSplit,
-    lcb_model: LayeredCompBaggingModel,
+    lcomp_model: LayeredCompModel,
     timing: TimingData,
     verbose: bool = False,
 ) -> SingleModelResults:
     """
-    Generate predictions using a LayeredCompBagging model.
+    Generate predictions using a LayeredComp model.
 
     Parameters
     ----------
     ds : DataSplit
         DataSplit object containing train/test/universe splits.
-    lcb_model : LayeredCompBaggingModel
-        Trained LayeredCompBaggingModel instance.
+    lcomp_model : LayeredCompModel
+        Trained LayeredCompModel instance.
     timing : TimingData
         TimingData object for recording performance metrics.
     verbose : bool, optional
@@ -3901,10 +3901,10 @@ def predict_layeredcompbagging(
     Returns
     -------
     SingleModelResults
-        Prediction results from the LayeredCompBagging model.
+        Prediction results from the LayeredComp model.
     """
 
-    regressor = lcb_model.model
+    regressor = lcomp_model.model
 
     timing.start("predict_test")
     if len(ds.y_test) == 0:
@@ -3930,7 +3930,7 @@ def predict_layeredcompbagging(
     timing.stop("total")
 
     model_name = ds.name
-    model_engine = "layeredcompbagging"
+    model_engine = "lcomp"
 
     results = SingleModelResults(
         ds,
@@ -3938,7 +3938,7 @@ def predict_layeredcompbagging(
         "he_id",
         model_name,
         model_engine,
-        lcb_model,
+        lcomp_model,
         y_pred_test,
         y_pred_sales,
         y_pred_univ,
@@ -6529,7 +6529,7 @@ def write_model_parameters(
         write_shaps(model, outpath, smr, location, do_plot, verbose=verbose)
     elif isinstance(model, LocalAreaModel):
         write_local_area_params(model, smr, outpath, do_plot)
-    elif isinstance(model, LayeredCompBaggingModel):
+    elif isinstance(model, LayeredCompModel):
         # TODO
         pass
     # ...and so on

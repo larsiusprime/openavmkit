@@ -577,24 +577,24 @@ class CatBoostModel:
         self.cat_data = cat_data
 
 
-class LayeredCompBaggingModel:
-    """Layered Comp Bagging Model
+class LayeredCompModel:
+    """Layered Comp Model
 
     A bagging ensemble version of the LayeredCompModel algorithm that reduces variance
     and automatically optimizes the weight_falloff for each tree in the ensemble.
 
     Attributes
     ----------
-    model: layeredcompmodel.LayeredCompBaggingModel
-        The trained LayeredCompBaggingModel from the layeredcompmodel package
+    model: layeredcompmodel.LayeredCompModel
+        The trained LayeredCompModel from the layeredcompmodel package
     """
     def __init__(self, model):
-        """Initialize a LayeredCompBaggingModel
+        """Initialize a LayeredCompModel
 
         Parameters
         ----------
-        model : layeredcompmodel.LayeredCompBaggingModel
-            The trained LayeredCompBaggingModel instance
+        model : layeredcompmodel.LayeredCompModel
+            The trained LayeredCompModel instance
         """
         self.model = model
 
