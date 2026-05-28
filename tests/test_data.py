@@ -134,7 +134,6 @@ def test_split_keys():
 		test_keys=test_keys,
 		train_keys=train_keys,
 		vacant_only=False,
-		hedonic=False
 	)
 	ds.split()
 
@@ -152,35 +151,14 @@ def test_split_keys():
 		test_keys=test_keys,
 		train_keys=train_keys,
 		vacant_only=True,
-		hedonic=False
 	)
 	ds_v.split()
 
-	ds_h = DataSplit(
-		name="",
-		df_sales=df_sales,
-		df_universe=df,
-		model_group="residential_sf",
-		settings={},
-		dep_var="sale_price",
-		dep_var_test="sale_price",
-		ind_vars=["bldg_area_finished_sqft", "land_area_sqft"],
-		categorical_vars=[],
-		interactions={},
-		test_keys=test_keys,
-		train_keys=train_keys,
-		vacant_only=False,
-		hedonic=True
-	)
-	ds_h.split()
-
-	# Assert that all three flavors of splits generated the expected lengths
+	# Assert that both flavors of splits generated the expected lengths
 	assert(ds.df_train.shape[0] == expected_train)
 	assert(ds.df_test.shape[0] == expected_test)
 	assert(ds_v.df_train.shape[0] == expected_train_vacant)
 	assert(ds_v.df_test.shape[0] == expected_test_vacant)
-	assert(ds_h.df_train.shape[0] == expected_train_vacant)
-	assert(ds_h.df_test.shape[0] == expected_test_vacant)
 
 	def a_equals_b(a: pd.DataFrame, b: pd.DataFrame):
 		a_keys = a["key"].tolist()
@@ -201,20 +179,11 @@ def test_split_keys():
 
 	# Assert that the test sets obey certain relationships:
 
-	# ds_v.test is equivalent to ds_h.test (they both test against vacant sales)
-	assert a_equals_b(ds_v.df_test, ds_h.df_test)
-
 	# ds_v.test is a strict subset of ds.test (vacant test sales only has sales also found in the vacant+improved test sales)
 	assert a_is_subset_of_b(ds_v.df_test, ds.df_test)
 
 	# ds.test is a strict superset of ds_v.test (vacant+improved test sales includes all sales found in vacant test sales)
 	assert a_is_superset_of_b(ds.df_test, ds_v.df_test)
-
-	# ds_h.test is a strict subset of ds.test (hedonic test sales only has sales also found in the vacant+improved test sales)
-	assert a_is_subset_of_b(ds_h.df_test, ds.df_test)
-
-	# ds.test is a strict superset of ds_h.test (vacant+improved test sales includes all sales found in hedonic test sales)
-	assert a_is_superset_of_b(ds.df_test, ds_h.df_test)
 
 	# now intentionally screw up the data and assert the tests are FALSE (guard against broken tests yielding false positives)
 
@@ -233,11 +202,8 @@ def test_split_keys():
 	ds.df_test = ds.df_test[ds.df_test["key_sale"] != second_key_in_both_ds_v_and_ds]
 
 	# All of these should return false now:
-	assert a_equals_b(ds_v.df_test, ds_h.df_test) == False
 	assert a_is_subset_of_b(ds_v.df_test, ds.df_test) == False
 	assert a_is_superset_of_b(ds.df_test, ds_v.df_test) == False
-	assert a_is_subset_of_b(ds_h.df_test, ds.df_test) == False
-	assert a_is_superset_of_b(ds.df_test, ds_h.df_test) == False
 
 
 def test_duplicates():

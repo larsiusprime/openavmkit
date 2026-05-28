@@ -822,7 +822,7 @@ def get_locations(settings: dict, df: pd.DataFrame = None) -> list[str]:
     return locations
     
 
-def get_ensemble_instructions(settings: dict, mvh: str) -> dict:
+def get_ensemble_instructions(settings: dict, mv: str) -> dict:
     """
     Retrieves ensemble instructions for a particular modeling section
     
@@ -830,8 +830,8 @@ def get_ensemble_instructions(settings: dict, mvh: str) -> dict:
     ----------
     settings : dict
         Settings dictionary.
-    mvh : string
-        Which section -- "main", "vacant", or "hedonic"
+    mv : string
+        Which section -- "main" or "vacant"
         
     Returns
     -------
@@ -839,7 +839,7 @@ def get_ensemble_instructions(settings: dict, mvh: str) -> dict:
         Dictionary object containing ensemble settings
     """
     
-    instructions = settings.get("modeling", {}).get("instructions", {}).get(mvh, {})
+    instructions = settings.get("modeling", {}).get("instructions", {}).get(mv, {})
     
     ensemble = instructions.get("ensemble", {})
     type = ensemble.get("type", "default")

@@ -10,7 +10,7 @@ For the broader modeling workflow, see [tutorial.md § B.7](tutorial.md#b7-run-n
 
 ## 1. How model invocation works
 
-Models live in `settings.json` under `modeling.models.<stage>`, where `<stage>` is one of `main`, `vacant`, or `hedonic`. The list of which models actually run for each stage is configured separately under `modeling.instructions.<stage>.run`.
+Models live in `settings.json` under `modeling.models.<stage>`, where `<stage>` is one of `main` or `vacant`. The list of which models actually run for each stage is configured separately under `modeling.instructions.<stage>.run`.
 
 Two layers, related but distinct:
 
@@ -223,15 +223,6 @@ Nonparametric regression using local-window weighting. As OpenAVMKit invokes it,
 - **When to use**: smooth nonlinear value surfaces with a moderate number of features.
 - **When not to use**: high-dimensional feature spaces (curse of dimensionality); large datasets (slow).
 
-#### `slice` — Land SLICE (Smooth Location with Increasing-Concavity Equation)
-
-GAM-based land-value model that captures concave size effects (the value-per-acre of a 10-acre lot differs from a 1-acre lot in a predictable way). Uses lat/lon and land area.
-
-- **Accepts**: `ind_vars` are fixed to `[land_area_<unit>, latitude, longitude]` regardless of what you set
-- **Native spatial awareness**: yes — uses raw lat/lon
-- **When to use**: vacant-only modeling, or hedonic land-value modeling on vacant land
-- **When not to use**: improved-property modeling
-
 #### `spatial_lag` and `spatial_lag_area`
 
 Use spatial-lag features as the predictor — the average sale price (or price-per-area) of a parcel's neighbors becomes the prediction. Requires `data.process.enrich.spatial_lag` to have run.
@@ -257,7 +248,7 @@ Not "predictive" in the algorithmic sense — they pass through an existing fiel
 
 #### `assessor`
 
-Uses the assessor's recorded value (`assr_market_value` for main, `assr_land_value` for hedonic) as the prediction. Lets you compare your model's accuracy to the existing assessor's.
+Uses the assessor's recorded value (`assr_market_value` for main, `assr_land_value` for vacant) as the prediction. Lets you compare your model's accuracy to the existing assessor's.
 
 - **Accepts**: nothing model-specific
 - **When to use**: always, in fact — it's the natural benchmark.

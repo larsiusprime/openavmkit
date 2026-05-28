@@ -903,7 +903,7 @@ def load_model_results(
         - ``'test'``: test split
     model_type : str, default "main"
         Subdirectory under ``model_group`` for model variations
-        (e.g., "main", "vacant", "hedonic").
+        (e.g., "main", "vacant").
 
     Returns
     -------

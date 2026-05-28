@@ -4,9 +4,9 @@ Predictive model training and prediction.
 Defines the model classes and training/prediction routines that produce
 property-value predictions across model groups. Supports MRA (linear
 regression), GWR (geographically-weighted regression), tree-based models
-(XGBoost, LightGBM, CatBoost), kernel regression, GAM-based land models
-(SLICE), spatial-lag models, and several "naive" baselines (Garbage,
-Average, NaiveArea, LocalArea, GroundTruth, PassThrough) used for benchmarking.
+(XGBoost, LightGBM, CatBoost), kernel regression, spatial-lag models,
+and several "naive" baselines (Garbage, Average, NaiveArea, LocalArea,
+GroundTruth, PassThrough) used for benchmarking.
 
 Each model produces three standard outputs per subset (test/sales/universe):
 
@@ -40,9 +40,6 @@ from joblib import Parallel, delayed
 from typing import Union, Any, Dict
 
 from pandas.core.dtypes.common import is_numeric_dtype
-from pygam import LinearGAM, s, te
-from scipy.optimize import curve_fit
-from pygam.callbacks import CallBack
 
 from scipy.spatial._ckdtree import cKDTree
 from sklearn.preprocessing import OneHotEncoder
@@ -113,7 +110,6 @@ from openavmkit.utilities.modeling import (
     MultiMRAModel,
     GroundTruthModel,
     SpatialLagModel,
-    LandSLICEModel,
     greedy_forward_loocv,
     TreeBasedCategoricalData
 )
@@ -156,7 +152,6 @@ PredictionModel = Union[
     SpatialLagModel,
     GroundTruthModel,
     GWRModel,
-    LandSLICEModel,
     str,
     None,
 ]
@@ -551,10 +546,6 @@ class DataSplit:
         Object that maps one-hot encoded fields to the original field they descend from
     vacant_only : bool
         Whether this is a vacant-land-only data set
-    hedonic : bool
-        Whether this is a hedonic (land-value-predicting) DataSplit
-    hedonic_test_against_vacant_sales : bool
-        If hedonic, whether it should also test against vacant sales or not
     days_field : str
         Name of the field that represents days since sale
     """
@@ -576,9 +567,7 @@ class DataSplit:
         test_keys: list[str],
         train_keys: list[str],
         vacant_only: bool = False,
-        hedonic: bool = False,
         days_field: str = "sale_age_days",
-        hedonic_test_against_vacant_sales: bool = True,
         init: bool = True,
     ):
         """
@@ -621,12 +610,8 @@ class DataSplit:
             List of keys for the training set.
         vacant_only : bool, optional
             Whether to consider only vacant sales. Defaults to False.
-        hedonic : bool, optional
-            Whether to use hedonic adjustments. Defaults to False.
         days_field : str, optional
             Field name for sale age in days. Defaults to "sale_age_days".
-        hedonic_test_against_vacant_sales : bool, optional
-            Whether to test hedonic models against vacant sales. Defaults to True.
         init : bool, optional
             Whether to perform initialization. Defaults to True.
 
@@ -689,11 +674,6 @@ class DataSplit:
         self.df_test: pd.DataFrame | None = None
         self.df_train: pd.DataFrame | None = None
 
-        if hedonic:
-            # transform df_universe & df_sales such that all improved characteristics are removed
-            self.df_universe = _simulate_removed_buildings(self.df_universe, settings)
-            self.df_sales = _simulate_removed_buildings(self.df_sales, settings)
-
         # we also need to limit the sales set, but we can't do that AFTER we've split
 
         # Pre-sort dataframes so that rolling origin cross-validation can assume oldest observations first:
@@ -715,13 +695,11 @@ class DataSplit:
         self.interactions = interactions.copy()
         self.one_hot_descendants = {}
         self.vacant_only = vacant_only
-        self.hedonic = hedonic
-        self.hedonic_test_against_vacant_sales = hedonic_test_against_vacant_sales
         self.days_field = days_field
         self.split()
-    
+
     def is_land_predictions(self)->bool:
-        return self.vacant_only or self.hedonic
+        return self.vacant_only
 
     def copy(self):
         """
@@ -733,7 +711,7 @@ class DataSplit:
             A deep copy of the current DataSplit.
         """
         ds = DataSplit(
-            None, None, None, "", {}, "", "", [], [], {}, [], [], False, False, "", init=False
+            None, None, None, "", {}, "", "", [], [], {}, [], [], False, "", init=False
         )
         # manually copy every field:
         ds.name = self.name
@@ -759,8 +737,6 @@ class DataSplit:
         ds.train_land_he_ids = self.train_land_he_ids.copy()
         ds.train_impr_he_ids = self.train_impr_he_ids.copy()
         ds.vacant_only = self.vacant_only
-        ds.hedonic = self.hedonic
-        ds.hedonic_test_against_vacant_sales = self.hedonic_test_against_vacant_sales
         ds.dep_var = self.dep_var
         ds.dep_var_test = self.dep_var_test
         ds.ind_vars = self.ind_vars.copy()
@@ -1114,8 +1090,7 @@ class DataSplit:
         Split the sales DataFrame into training and test sets based on provided keys.
 
         Uses the `test_keys` and `train_keys` to partition the sales data. Also sorts the splits
-        by the specified `days_field`. If the model is hedonic, further filters the sales set
-        to vacant records.
+        by the specified `days_field`.
         """
 
         test_keys = self.test_keys
@@ -1159,33 +1134,6 @@ class DataSplit:
         # sort again because sampling shuffles order:
         self.df_test.sort_values(by=self.days_field, ascending=False, inplace=True)
         self.df_train.sort_values(by=self.days_field, ascending=False, inplace=True)
-
-        if self.hedonic and self.hedonic_test_against_vacant_sales:
-            # if it's a hedonic model, we're predicting land value, and are thus testing against vacant land only:
-            # we have to do this here, AFTER the split, to ensure that the selected rows are from the same subsets
-
-            # get the sales that are actually vacant, from the original set of sales
-            _df_sales = _get_sales(self._df_sales, self.settings, True).reset_index(
-                drop=True
-            )
-
-            # now, select only those records from the modified base sales set that are also in the above set,
-            # but use the rows from the modified base sales set
-            _df_sales = self.df_sales[
-                self.df_sales["key_sale"].isin(_df_sales["key_sale"])
-            ].reset_index(drop=True)
-
-            # use these as our sales
-            self.df_sales = _df_sales
-
-            # set df_test/train to only those rows that are also in sales:
-            # we don't need to use get_sales() because they've already been transformed to vacant
-            self.df_test = self.df_test[
-                self.df_test["key_sale"].isin(self.df_sales["key_sale"])
-            ].reset_index(drop=True)
-            self.df_train = self.df_train[
-                self.df_train["key_sale"].isin(self.df_sales["key_sale"])
-            ].reset_index(drop=True)
 
         _df_univ = self.df_universe.copy()
         _df_sales = self.df_sales.copy()
@@ -2497,7 +2445,7 @@ def predict_spatial_lag(
         # predict on test set:
         timing.start("predict_test")
         idx_vacant_test = ds.X_test[f"bldg_area_finished_{ds.unit}"].le(0)
-        if ds.vacant_only or ds.hedonic:
+        if ds.vacant_only:
             y_pred_test = (
                 ds.X_test[field_land_area].to_numpy()
                 * ds.X_test[f"land_area_{ds.unit}"].to_numpy()
@@ -2516,7 +2464,7 @@ def predict_spatial_lag(
         # predict on the sales set:
         timing.start("predict_sales")
         idx_vacant_sales = ds.X_sales[f"bldg_area_finished_{ds.unit}"].le(0)
-        if ds.vacant_only or ds.hedonic:
+        if ds.vacant_only:
             y_pred_sales = (
                 ds.X_sales[field_land_area].to_numpy()
                 * ds.X_sales[f"land_area_{ds.unit}"].to_numpy()
@@ -2536,7 +2484,7 @@ def predict_spatial_lag(
         timing.start("predict_univ")
         idx_vacant_univ = ds.X_univ[f"bldg_area_finished_{ds.unit}"].le(0)
 
-        if ds.vacant_only or ds.hedonic:
+        if ds.vacant_only:
             y_pred_univ = (
                 ds.X_univ[field_land_area].to_numpy()
                 * ds.X_univ[f"land_area_{ds.unit}"].to_numpy()
@@ -2583,8 +2531,8 @@ def predict_pass_through(
     """
     Generate predictions using an assessor model.
 
-    Uses the specified field from the assessor model (or the first dependent variable if
-    hedonic) to extract predictions directly from the input DataFrames.
+    Uses the specified field from the assessor model to extract predictions directly from
+    the input DataFrames.
 
     Parameters
     ----------
@@ -2604,9 +2552,6 @@ def predict_pass_through(
     """
 
     field = model.field
-
-    if ds.hedonic:
-        field = ds.ind_vars[0]
 
     # predict on test set:
     timing.start("predict_test")
@@ -3732,87 +3677,6 @@ def run_catboost(
     return predict_catboost(ds, model, timing, verbose)
 
 
-def predict_slice(
-    ds: DataSplit,
-    slice_model: LandSLICEModel, 
-    timing: TimingData,
-    verbose: bool = False
-) -> SingleModelResults:
-    
-    timing.start("predict_test")
-    if len(ds.y_test) == 0:
-        y_pred_test = np.array([])
-    else:
-        y_pred_test = slice_model.predict(ds.df_test)
-    timing.stop("predict_test")
-
-    timing.start("predict_sales")
-    if len(ds.y_sales) == 0:
-        y_pred_sales = np.array([])
-    else:
-        y_pred_sales = slice_model.predict(ds.df_sales)
-    timing.stop("predict_sales")
-
-    timing.start("predict_univ")
-    if len(ds.X_univ) == 0:
-        y_pred_univ = np.array([])
-    else:
-        y_pred_univ = slice_model.predict(ds.df_universe)
-    timing.stop("predict_univ")
-
-    timing.stop("total")
-    
-    model_name = ds.name
-    model_engine = "slice"
-    
-    results = SingleModelResults(
-        ds,
-        "prediction",
-        "he_id",
-        model_name,
-        model_engine,
-        slice_model,
-        y_pred_test,
-        y_pred_sales,
-        y_pred_univ,
-        timing,
-        verbose=verbose,
-    )
-
-    return results
-
-
-def run_slice(
-    ds: DataSplit,
-    verbose: bool = False
-) -> SingleModelResults:
-    
-    timing = TimingData()
-    
-    timing.start("total")
-    
-    timing.start("setup")
-    ds = ds.encode_categoricals_with_one_hot()
-    ds.split()
-    timing.stop("setup")
-
-    timing.start("parameter_search")
-    timing.stop("parameter_search")
-
-    timing.start("train")
-    
-    df_in = ds.df_train[[f"land_area_{ds.unit}",ds.dep_var,"latitude","longitude"]].copy()
-    slice_model = fit_land_SLICE_model(
-        df_in,
-        f"land_area_{ds.unit}",
-        ds.dep_var,
-        verbose
-    )
-    timing.stop("train")
-
-    return predict_slice(ds, slice_model, timing, verbose)
-
-
 def run_layeredcomp(
     ds: DataSplit,
     outpath: str,
@@ -4519,8 +4383,6 @@ def predict_local_area(
         #   path = "main"
         #   if ds.vacant_only:
         #     path = "vacant"
-        #   elif ds.hedonic:
-        #     path = "hedonic"
         #
         #   out_path = f"out/models/{ds.model_group}/{path}/local_area"
         #   df_area_land.to_csv(f"{out_path}/debug_local_area_{len(location_fields)}_{location_field}_area_land.csv", index=False)
@@ -4555,7 +4417,7 @@ def predict_local_area(
     )
     X_test["prediction_land"] = X_test[f"land_area_{ds.unit}"] * X_test[f"per_land_{ds.unit}"]
 
-    if ds.vacant_only or ds.hedonic:
+    if ds.vacant_only:
         X_test["prediction"] = X_test["prediction_land"]
     else:
         X_test["prediction"] = np.where(
@@ -4601,7 +4463,7 @@ def predict_local_area(
     )
     X_sales["prediction_land"] = X_sales[f"land_area_{ds.unit}"] * X_sales[f"per_land_{ds.unit}"]
 
-    if ds.vacant_only or ds.hedonic:
+    if ds.vacant_only:
         X_sales["prediction"] = X_sales["prediction_land"]
     else:
         X_sales["prediction"] = np.where(
@@ -4655,7 +4517,7 @@ def predict_local_area(
     )
     X_univ["prediction_land"] = X_univ[f"land_area_{ds.unit}"] * X_univ[f"per_land_{ds.unit}"]
 
-    if ds.vacant_only or ds.hedonic:
+    if ds.vacant_only:
         X_univ["prediction"] = X_univ["prediction_land"]
     else:
         X_univ["prediction"] = np.where(
@@ -5576,176 +5438,6 @@ def _calc_spatial_lag(
     return df
 
 
-def _derive_land_values(
-    sup: SalesUniversePair,
-    bldg_fields: list[str],
-    model_group: str,
-    settings: dict,
-    log: bool = True,
-    verbose: bool = False,
-):
-    # TODO: Experimental
-
-    df_sales = get_hydrated_sales_from_sup(sup)
-
-    # Filter only to our current model group
-    df_sales = df_sales[df_sales["model_group"].eq(model_group)].copy()
-
-    # Filter out outliers in terms of price:
-    sale_field = get_sale_field(settings)
-    df_sales = df_sales[
-        df_sales[sale_field].gt(df_sales[sale_field].quantile(0.05))
-        & df_sales[sale_field].lt(df_sales[sale_field].quantile(0.95))
-    ]
-
-    # Filter out outliers in terms of size:
-    df_sales = df_sales[
-        df_sales[f"land_area_{ds.unit}"].ge(df_sales[f"land_area_{ds.unit}"].quantile(0.05))
-        & df_sales[f"land_area_{ds.unit}"].le(df_sales[f"land_area_{ds.unit}"].quantile(0.95))
-    ]
-
-    train_keys, test_keys = get_train_test_keys(df_sales, settings)
-    df_train = df_sales[df_sales["key_sale"].isin(test_keys)]
-    df_test = df_sales[df_sales["key_sale"].isin(train_keys)]
-
-    results, df = _kolbe_yatchew(
-        df_train,
-        df_test,
-        sup.universe,
-        bldg_fields,
-        settings,
-        log=log,
-        verbose=verbose,
-    )
-
-    if verbose:
-        print(results.summary())
-
-    return results, df
-
-
-def fit_land_SLICE_model(
-    df_in : pd.DataFrame,
-    size_field: str = "land_area_sqft",
-    value_field: str = "land_value",
-    verbose: bool = False
-)->LandSLICEModel:
-    """
-    Fits land values using SLICE: "Smooth Location with Increasing-Concavity Equation"
-    
-    This model takes already-existing raw per-parcel land values and separates the contribution of land size and locational premium.
-    It also enforces three constraints: 
-    1. Locational premium must change smoothly over space
-    2. Land value in any fixed location must increase monotonically with land size
-    3. The marginal value of each additional unit of land size must decrease monotonically
-    
-    The output is an object that encodes the final fitted land values, the locational premiums, and the local land factors. Fitted land
-    values are derived by simply multiplying locational premium times local land factor.
-    
-    Parameters
-    ----------
-    df_in : pd.DataFrame
-        Input data
-    size_field : str
-        The name of your land size field
-    value_field : str
-        The name of your land value field
-    verbose : bool
-        Whether to print verbose output
-    """
-    
-    
-    class Progress(CallBack):
-        def on_loop_end(self, diff):
-            # self.iter is automatically tracked inside Callback
-            print(f"iter {self.iter:>3d}   dev.change={diff:9.3e}")
-    
-    if verbose:
-        print("Fitting land SLICE model...")
-
-
-    df = df_in[[value_field, size_field, "latitude", "longitude"]].copy()
-    med_land_size = float(np.median(df[size_field]))
-
-    # Y = Size-detrended location factor
-    df["Y"] = div_series_z_safe(
-        df[value_field],
-        np.sqrt(
-            df[size_field] / med_land_size
-        )
-    )
-
-    if verbose:
-        print("-->fitting thin-plate spline for location factor...")
-        
-    # Fit a thin-plate spline for location factor L(lat, lon)
-    basis = te(0, 1, n_splines=40, spline_order=3)
-    gam_L : LinearGAM = LinearGAM(
-        basis,
-        max_iter=40,
-        callbacks=[Progress()],
-        verbose=verbose
-    )
-    gam_L.fit(
-        df[['latitude', 'longitude']].values,
-        np.log(df['Y']).values
-    )
-
-    if verbose:
-        print("-->estimating initial location factor...")
-    # L_hat = Initial estimated location factor (mostly depends on latitude/longitude)
-    df['L_hat'] = np.exp(gam_L.predict(df[['latitude', 'longitude']].values))
-
-    # Z = Location-detrended land values (mostly depends on size)
-    df["Z"] = df[value_field] / df["L_hat"]
-
-    # Define a power law curve function
-    def power_curve(s, alpha, beta):
-        return alpha * (s / med_land_size)**beta
-
-    # Solve for location-detrended-land-value and observed size to fit the power law curve
-    # - with bounds: alpha>0 (always positive), 0<beta<1 (monotonic-up & concave)
-    # - this enforces that land increases in value with size, but with diminishing returns to marginal size
-    if verbose:
-        print("-->fitting power law curve for size factor...")
-    popt, _ = curve_fit(
-        f=power_curve,
-        p0=[np.median(df["Z"]),0.5],
-        xdata=df[size_field].values,
-        ydata=df["Z"].values,
-        bounds=([0, 1e-6], [np.inf, 0.999])
-    )
-
-    # Coefficients for the power law curve:
-    alpha_hat, beta_hat = popt
-
-    # Function to call the power law curve with memorized coefficients and a given size
-    def F_hat(s):
-        return power_curve(np.asarray(s), alpha_hat, beta_hat)
-
-    if verbose:
-        print("-->tightening up values with one more iteration...")
-
-    # Tighten up our values with an extra iteration
-    df["Y2"] = df[value_field] / F_hat(df[size_field])
-    gam_L2 : LinearGAM = gam_L.fit(df[["latitude", "longitude"]], np.log(df["Y2"]))   # refit L
-
-    if verbose:
-        print("-->estimating final location factor...")
-
-    # L_hat = Final estimated location factor
-    df["L_hat"] = np.exp( gam_L2.predict(df[["latitude", "longitude"]]))
-
-    # could refit L_hat once more here if desired
-    return LandSLICEModel(
-        alpha_hat,
-        beta_hat,
-        gam_L2,
-        med_land_size,
-        size_field
-    )
-
-
 def write_tree_based_params(model: PredictionModel, df: pd.DataFrame, outpath: str, location: str = None):
     
     # model is either XGBoost, LightBGM, or CatBoost
@@ -6514,9 +6206,6 @@ def write_model_parameters(
          isinstance(model, SpatialLagModel):
         pass
     elif isinstance(model, KernelReg):
-        # TODO
-        pass
-    elif isinstance(model, LandSLICEModel):
         # TODO
         pass
     elif isinstance(model, MRAModel):

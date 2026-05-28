@@ -22,7 +22,6 @@ import geopandas as gpd
 import openavmkit
 import openavmkit.data
 import openavmkit.benchmark
-import openavmkit.land
 import openavmkit.checkpoint
 import openavmkit.ratio_study
 import openavmkit.horizontal_equity_study
@@ -1425,7 +1424,6 @@ def try_models(
     verbose: bool = False,
     run_main: bool = True,
     run_vacant: bool = True,
-    run_hedonic: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
     do_plots: bool = False
@@ -1439,11 +1437,9 @@ def try_models(
     saving the results. It performs basic statistic analysis on each model, and optionally
     combines results into an ensemble model.
 
-    If "run_main" is true, it will run normal models as well as hedonic models (if the
-    user so specifies), "hedonic" in this context meaning models that attempt to generate
-    a land value and an improvement value separately. If "run_vacant" is true, it will run
-    vacant models as well -- models that only use vacant models as evidence to generate
-    land values.
+    If "run_main" is true, it will run normal (full market value) models. If "run_vacant"
+    is true, it will run vacant models as well -- models that only use vacant sales as
+    evidence to generate land values.
 
     This function delegates the model execution to `openavmkit.benchmark.run_models`
     with the given settings.
@@ -1464,8 +1460,6 @@ def try_models(
         Flag to run main models. Defaults to True.
     run_vacant : bool, optional
         Flag to run vacant models. Defaults to True.
-    run_hedonic : bool, optional
-        Flag to run hedonic models. Defaults to True.
     run_ensemble : bool, optional
         Flag to run ensemble models. Defaults to True.
     do_shaps : bool, optional
@@ -1483,7 +1477,6 @@ def try_models(
         verbose=verbose,
         run_main=run_main,
         run_vacant=run_vacant,
-        run_hedonic=run_hedonic,
         run_ensemble=run_ensemble,
         do_shaps=do_shaps,
         do_plots=do_plots
@@ -1692,7 +1685,7 @@ def identify_outliers(
             print(f"  Skipping comp-analysis: missing ind_vars / sale_price_time_adj / vacant_sale for {id}")
         m_price, m_ppsf_impr, m_ppsf_land, feat_cols = comp_models
 
-        for mtype in ["main","vacant","hedonic_land"]:
+        for mtype in ["main","vacant"]:
             model = entry.get("mtype", "ensemble")
             print(f"model type = {mtype}, model = {model}")
             
@@ -1734,7 +1727,7 @@ def identify_outliers(
             elif model == "assessor":
                 # We can use the assessor fields directly
                 the_field = "assr_market_value"
-                if mtype == "vacant" or "hedonic_land":
+                if mtype == "vacant":
                     the_field = "assr_land_value"
                 print(f"--> for assessor model, using \"{the_field}\" as prediction field...")
                 dfm = df_sub.copy()
@@ -1836,7 +1829,7 @@ def identify_outliers(
                                 continue
                             df_out = _select_outlier_keys(df_pred)
                             if mtype != "main":
-                                # vacant / hedonic_land: only score vacant sales
+                                # vacant: only score vacant sales
                                 df_out = df_out.merge(
                                     df_sub[["key_sale", "vacant_sale"]].drop_duplicates("key_sale"),
                                     on="key_sale", how="left", suffixes=("", "_sub"),
@@ -1899,7 +1892,7 @@ def finalize_models(
     details like splitting the data, training the models, and saving the results. It performs basic statistic analysis
     on each model, and optionally combines results into an ensemble model.
 
-    This function iterates over model groups and runs models for main, hedonic and vacant cases.
+    This function iterates over model groups and runs models for main and vacant cases.
 
     It delegates the model execution to `openavmkit.benchmark.run_models` with the given settings.
 
@@ -1931,7 +1924,6 @@ def finalize_models(
         verbose=verbose,
         run_main=True,
         run_vacant=True,
-        run_hedonic=True,
         run_ensemble=True,
         do_shaps=False,
         do_plots=False
@@ -1947,7 +1939,6 @@ def run_models(
     verbose: bool = False,
     run_main: bool = True,
     run_vacant: bool = True,
-    run_hedonic: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
     do_plots: bool = False
@@ -1959,9 +1950,8 @@ def run_models(
     details like splitting the data, training the models, and saving the results. It performs basic statistic analysis
     on each model, and optionally combines results into an ensemble model.
 
-    If "run_main" is true, it will run normal models as well as hedonic models (if the user so specifies),
-    "hedonic" in this context meaning models that attempt to generate a land value and an improvement value separately.
-    If "run_vacant" is true, it will run vacant models as well -- models that only use vacant models as evidence
+    If "run_main" is true, it will run normal (full market value) models.
+    If "run_vacant" is true, it will run vacant models as well -- models that only use vacant sales as evidence
     to generate land values.
 
     This function iterates over model groups and runs models for both main and vacant cases.
@@ -1984,8 +1974,6 @@ def run_models(
         Whether to run main (non-vacant) models.
     run_vacant : bool, optional
         Whether to run vacant models.
-    run_hedonic : bool, optional
-        Whether to run hedonic models.
     run_ensemble : bool, optional
         Whether to run ensemble models.
     do_shaps : bool, optional
@@ -2007,7 +1995,6 @@ def run_models(
         verbose,
         run_main,
         run_vacant,
-        run_hedonic,
         run_ensemble,
         do_shaps,
         do_plots
@@ -2265,377 +2252,3 @@ def _set_locality(nbs, locality: str):
     print(f"base path = {nbs.base_path}")
     print(f"current path = {os.getcwd()}")
     return nbs
-
-
-# =============================================================================
-# Land valuation
-# =============================================================================
-#
-# Notebook-facing wrappers for the land flow. The five steps below correspond
-# to the five logical stages of the land pipeline:
-#
-#   1. Build the empirical (jurisdiction, zoning) reference table and join its
-#      lookups onto the parcel universe.
-#   2. Build the neighborhood-cascade hierarchy (VCS prefix splits + extra
-#      administrative levels) used by all painters.
-#   3. Curate the witness pool (W1-W6) — the calibration evidence.
-#   4. Paint per-parcel land values using either the LYCD uniform-rate painter
-#      (Rung 1.0/1.1) or the production table painter (Rung 1.5).
-#   5. Score the painted output against the Lars-Tests (L1-L7: six
-#      LVT-incentive checks plus an improvement-cost-table consistency check).
-#
-# Wake County's `run_05_land.py` and `run_06_land_tables.py` drive these in
-# order. Other jurisdictions can compose the same wrappers with their own
-# zoning conventions and adjustment factors.
-
-
-def enrich_with_empirical_zoning(
-    universe: pd.DataFrame,
-    *,
-    jurisdiction_col: str = "planning_jurisdiction",
-    zoning_col: str = "zoning",
-    land_area_col: str = "land_area_sqft",
-    bldg_area_col: str = "bldg_area_finished_sqft",
-    far_col: str = "floor_area_ratio",
-    min_built_per_pair: int = 30,
-    min_built_per_jurisdiction: int = 50,
-    out_prefix: str = "zoning_emp_",
-    verbose: bool = False,
-) -> tuple:
-    """
-    Build the de-facto ``(jurisdiction, zoning)`` reference table and join
-    its lookups onto the universe.
-
-    Returns
-    -------
-    enriched_universe : pandas.DataFrame
-        Copy of ``universe`` with ``zoning_emp_min_lot_sqft``,
-        ``zoning_emp_max_far``, ``zoning_emp_median_lot_sqft``,
-        ``zoning_emp_median_far``, ``zoning_emp_fallback_level`` added.
-    zoning_table : pandas.DataFrame
-        The reference table itself, indexed by ``(jurisdiction, zoning)``.
-        Useful to write out as an artifact for audit.
-    """
-    from openavmkit.zoning import build_empirical_zoning_table, join_empirical_zoning
-
-    table = build_empirical_zoning_table(
-        universe,
-        jurisdiction_col=jurisdiction_col,
-        zoning_col=zoning_col,
-        land_area_col=land_area_col,
-        bldg_area_col=bldg_area_col,
-        far_col=far_col,
-        min_built_parcels_per_pair=min_built_per_pair,
-        min_built_parcels_per_jurisdiction=min_built_per_jurisdiction,
-        verbose=verbose,
-    )
-    enriched = join_empirical_zoning(
-        universe,
-        table,
-        jurisdiction_col=jurisdiction_col,
-        zoning_col=zoning_col,
-        out_prefix=out_prefix,
-    )
-    return enriched, table
-
-
-def build_land_hierarchy(
-    universe: pd.DataFrame,
-    *,
-    levels: list,
-    add_county: bool = True,
-    verbose: bool = False,
-) -> tuple:
-    """
-    Build the cascade hierarchy walked by the land painters when a finest-
-    grained cell has too few witnesses to support a credible local estimate.
-
-    All ``levels`` columns must already exist on ``universe``. Derive any
-    substring-prefix columns (e.g. ``vcs_area_juris`` from a 7-char VCS
-    code) via the ``substr`` calc operator in ``data.load.<id>.calc`` so
-    they're populated during the assemble step. See
-    :mod:`openavmkit.neighborhoods` for the calc-grammar example.
-
-    Parameters
-    ----------
-    universe : pandas.DataFrame
-    levels : list of str
-        Cascade column names, finest first. Missing columns are dropped
-        from the cascade with a warning.
-    add_county : bool, default True
-        Append a constant ``__county__`` fallback level.
-
-    Returns
-    -------
-    enriched_universe : pandas.DataFrame
-        Copy of ``universe``. Identical to the input unless
-        ``add_county=True`` added a ``__county__`` column.
-    spec : openavmkit.neighborhoods.HierarchySpec
-        Cascade specification, finest first.
-    """
-    from openavmkit.neighborhoods import build_neighborhood_hierarchy
-
-    return build_neighborhood_hierarchy(
-        universe,
-        levels=levels,
-        add_county=add_county,
-        verbose=verbose,
-    )
-
-
-def curate_land_witnesses(
-    sales: pd.DataFrame,
-    universe: pd.DataFrame,
-    *,
-    cfg: "openavmkit.land.WitnessConfig | None" = None,
-    parcel_key: str = "key",
-    sales_join_key: str = "key",
-    neighborhood_col: str = "neighborhood",
-    land_area_col: str = "land_area_sqft",
-    zoning_min_col: str = "zoning_emp_min_lot_sqft",
-    valuation_date: pd.Timestamp | None = None,
-    flagged_out: list | None = None,
-    verbose: bool = False,
-) -> pd.DataFrame:
-    """
-    Curate the witness pool (W1 vacant, W2 teardown, W3 extraction, W4 low-FAR,
-    W5 prior-xfer, W6 pred-residual) consumed by the painters.
-    """
-    from openavmkit.land import WitnessConfig, curate_witnesses
-
-    return curate_witnesses(
-        sales,
-        universe,
-        cfg=cfg or WitnessConfig(),
-        parcel_key=parcel_key,
-        sales_join_key=sales_join_key,
-        neighborhood_col=neighborhood_col,
-        land_area_col=land_area_col,
-        zoning_min_col=zoning_min_col,
-        valuation_date=valuation_date,
-        flagged_out=flagged_out,
-        verbose=verbose,
-    )
-
-
-def run_land_painter_lycd(
-    universe: pd.DataFrame,
-    *,
-    spec,
-    allocation_pct: float,
-    cfg=None,
-    market_value_col: str = "assr_market_value",
-    land_area_col: str = "land_area_sqft",
-    bldg_area_col: str = "bldg_area_finished_sqft",
-    zoning_emp_min_col: str = "zoning_emp_min_lot_sqft",
-    verbose: bool = False,
-) -> pd.DataFrame:
-    """
-    Paint per-parcel land value using the LYCD uniform-rate painter
-    (Rung 1.0/1.1).
-
-    One ``$/sqft`` per cascade cell, derived from the prevailing
-    improved-property value × ``allocation_pct``. Used as the simplest viable
-    baseline — for production-grade output use :func:`run_land_painter_tables`.
-    """
-    from openavmkit.land import paint_lycd
-
-    return paint_lycd(
-        universe,
-        spec=spec,
-        allocation_pct=allocation_pct,
-        cfg=cfg,
-        market_value_col=market_value_col,
-        land_area_col=land_area_col,
-        bldg_area_col=bldg_area_col,
-        zoning_emp_min_col=zoning_emp_min_col,
-        verbose=verbose,
-    )
-
-
-def run_land_painter_tables(
-    universe: pd.DataFrame,
-    witnesses: pd.DataFrame,
-    *,
-    spec,
-    adjustments: list | None = None,
-    prediction_col: str = "prediction",
-    impr_value_col: str = "assr_impr_value",
-    valuation_date: pd.Timestamp | None = None,
-    fit_breakpoints: bool = True,
-    bp1_mult: float | None = None,
-    bp2_mult: float | None = None,
-    verbose: bool = False,
-) -> tuple:
-    """
-    Paint per-parcel land value using the production table painter (Rung 1.5).
-
-    Builds per-cell ``LandTable`` rules (``base_lot`` / ``size_curve`` / ``puv``)
-    with zoning-anchored size-curve breakpoints, then walks the cascade and
-    paints every parcel.
-
-    By default fits ``(bp1_mult, bp2_mult)`` empirically from the witness pool
-    via :func:`openavmkit.land.fit_pooled_zoning_breakpoints` — pass
-    ``fit_breakpoints=False`` and explicit values to skip the fit.
-
-    Returns
-    -------
-    painted : pandas.DataFrame
-        Copy of ``universe`` with land-value columns added.
-    tables : dict
-        ``{(level, cell_key) -> LandTable}`` produced by the painter.
-    fit_diag : dict
-        Diagnostic from the breakpoint fit (binned medians, SSE landscape).
-        ``None`` when ``fit_breakpoints=False``.
-    """
-    from openavmkit.land import (
-        DEFAULT_ZONING_BP1_MULT,
-        DEFAULT_ZONING_BP2_MULT,
-        build_all_tables,
-        fit_pooled_zoning_breakpoints,
-        paint_from_tables,
-    )
-
-    fit_diag = None
-    if fit_breakpoints:
-        fit_diag = fit_pooled_zoning_breakpoints(
-            witnesses, universe, verbose=verbose,
-        )
-        bp1_mult = fit_diag["bp1_mult"]
-        bp2_mult = fit_diag["bp2_mult"]
-    else:
-        bp1_mult = bp1_mult if bp1_mult is not None else DEFAULT_ZONING_BP1_MULT
-        bp2_mult = bp2_mult if bp2_mult is not None else DEFAULT_ZONING_BP2_MULT
-
-    tables = build_all_tables(
-        universe,
-        witnesses,
-        spec=spec,
-        prediction_col=prediction_col,
-        impr_value_col=impr_value_col,
-        valuation_date=valuation_date,
-        bp1_mult=bp1_mult,
-        bp2_mult=bp2_mult,
-        verbose=verbose,
-    )
-    painted = paint_from_tables(
-        universe,
-        tables=tables,
-        spec=spec,
-        adjustments=adjustments,
-        verbose=verbose,
-    )
-    return painted, tables, fit_diag
-
-
-def run_land_lars_tests(
-    universe: pd.DataFrame,
-    *,
-    candidates: list | None = None,
-    candidate_col: str = "land_value",
-    sales_with_far: pd.DataFrame | None = None,
-    improved_sales: pd.DataFrame | None = None,
-    witnesses: pd.DataFrame | None = None,
-    sale_price_col: str = "sale_price_time_adj",
-    sales_join_key: str = "key",
-    parcel_lat_col: str = "latitude",
-    parcel_lon_col: str = "longitude",
-    holdout_result: dict | None = None,
-    holdout_for_candidate: str | None = None,
-    out_path: str | None = None,
-    verbose: bool = False,
-) -> list:
-    """
-    Score one or more land-value columns against the L1-L7 Lars-Tests.
-
-    L1 (improvement-neutrality), L2 (within-cluster uniformity), L3 (vacant-
-    burden flip), L4 (desirability tracking), L5 (density-FAR ordering), and
-    L6 (per-cell size decay) evaluate the candidate land-value column. L7
-    (improvement-cost-table COD) evaluates the consistency of
-    ``assr_impr_value`` across geography after controlling for building
-    characteristics, and is identical across candidates that share the same
-    underlying assessment data.
-
-    Parameters
-    ----------
-    candidates : list of (name, column) tuples, optional
-        Each tuple identifies a column on ``universe`` to score and the
-        friendly name used in reports. If ``None``, scores ``candidate_col``
-        as a single anonymous candidate.
-    candidate_col : str
-        Used only when ``candidates`` is None. Defaults to ``"land_value"``.
-    sales_with_far : pandas.DataFrame, optional
-        Forwarded to the underlying tests for L4's market-side Spearman.
-    out_path : str, optional
-        If provided, write a side-by-side Markdown report.
-
-    Returns
-    -------
-    list[LarsTestsResult]
-        Results in the order given.
-    """
-    from openavmkit.land import (
-        run_lars_tests as _run_lars_tests,
-        run_vacant_ratio_study,
-        write_lars_tests_report,
-        build_normalized_scores_table,
-        build_cod_scores_table,
-    )
-
-    if candidates is None:
-        candidates = [(candidate_col, candidate_col)]
-
-    results = []
-    for name, col in candidates:
-        if col not in universe.columns:
-            warnings.warn(
-                f"run_land_lars_tests: column {col!r} missing for candidate "
-                f"{name!r}; skipping"
-            )
-            continue
-        # L8 has two modes. The rigorous one (`run_holdout_vacant_test`)
-        # re-paints the universe with a held-out fold of W1 vacant witnesses
-        # and evaluates predicted vs actual sale price on that fold. It needs
-        # a paint_callback and at least ~10 W1 vacants. If `holdout_result`
-        # wasn't passed in but `witnesses` was, we fall back to a full
-        # ratio study against all vacant+teardown witnesses — less rigorous
-        # but informative on thin pools where the holdout isn't feasible.
-        candidate_holdout = (
-            holdout_result
-            if (holdout_for_candidate is None or name == holdout_for_candidate)
-            else None
-        )
-        if candidate_holdout is None and witnesses is not None:
-            candidate_holdout = run_vacant_ratio_study(
-                universe, witnesses, candidate_col=col,
-            )
-        results.append(
-            _run_lars_tests(
-                universe,
-                candidate_col=col,
-                candidate_name=name,
-                sales_with_far=sales_with_far,
-                improved_sales=improved_sales,
-                sale_price_col=sale_price_col,
-                sales_join_key=sales_join_key,
-                parcel_lat_col=parcel_lat_col,
-                parcel_lon_col=parcel_lon_col,
-                holdout_result=candidate_holdout,
-                verbose=verbose,
-            )
-        )
-
-    if out_path is not None and results:
-        write_lars_tests_report(results, out_path)
-
-    # Side-by-side comparison tables: normalized scores and CODs. These
-    # render as proper notebook tables when this function is called from a
-    # Jupyter context; outside one, `display` falls back to a plain repr.
-    if results:
-        print("\nNormalized scores (0% bad -> 100% perfect):")
-        display(build_normalized_scores_table(results))
-        print("\nCOD scores (lower = better):")
-        display(build_cod_scores_table(results))
-
-    return results
-

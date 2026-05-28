@@ -391,7 +391,7 @@ What this means in practice for tree models:
 
 How to act on this in OpenAVMKit:
 
-- The `default` ind_vars under `modeling.models.<main|hedonic|vacant>.default` apply to every model that doesn't have its own override. Set this to the lean linear-friendly set returned by `try_variables`.
+- The `default` ind_vars under `modeling.models.<main|vacant>.default` apply to every model that doesn't have its own override. Set this to the lean linear-friendly set returned by `try_variables`.
 - Per-model ind_vars overrides go under `modeling.models.<stage>.<model_name>.ind_vars`. Use this to give tree-based models the broader set. Real example from the Wake County smoke test: `mra` and `multi_mra` use the 3-var default; `lightgbm` overrides with ~25 features and consistently outperforms the default-fed version.
 - After a first `try_models` pass, look at the per-model `params.csv` (linear) or `contributions.csv` (tree). Variables that contribute nothing to predictions in the tree case are pruning candidates. Variables with unstable signs across folds in the linear case should be removed.
 

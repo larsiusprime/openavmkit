@@ -204,9 +204,6 @@ In any OpenAVMKit model run, the "main" model is the primary model. It operates 
 **Vacant**  
 In any OpenAVMKit model run, the "vacant" model is a secondary model that trains and predicts separately. It is trained only on sales of vacant land, but is used to predict the value of all parcels. The prediction it generates is solely for land value, not full market value.
 
-**Hedonic**  
-In our specific usage, a "hedonic" model is a variant of the main model used to predict land value. In this case, the main model is re-used for a second set of predictions, but the universe dataset is manipulated to remove all the improvement characteristics. This causes the main model to predict the full market of each parcel *as if it was a vacant lot*.
-
 ### Avoid these terms
 
 These terms are ambiguous and can refer to different things in different contexts, so we avoid them in our documentation.

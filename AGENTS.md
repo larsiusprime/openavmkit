@@ -162,7 +162,7 @@ Models live in [openavmkit/utilities/modeling.py](openavmkit/utilities/modeling.
 
 1. Subclass the appropriate base class in `utilities/modeling.py`.
 2. Wire it into the dispatch in [openavmkit/benchmark.py](openavmkit/benchmark.py) (search for the existing tree-based model handling).
-3. Add a config entry under `modeling.models.<main|vacant|hedonic>` in the template.
+3. Add a config entry under `modeling.models.<main|vacant>` in the template.
 4. Add a public wrapper to `pipeline.py` if it should be runnable directly from a notebook.
 5. **Wire up params and contribs.** Every model must produce two outputs per subset (`test`, `sales`, `universe`):
    - **`params_<subset>.csv`** — per-feature **parameters**. For linear models these are regression coefficients; for tree-based models they are SHAP values normalized by value size. Conceptually: "what is each feature's per-unit effect on the prediction?"

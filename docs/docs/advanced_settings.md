@@ -821,14 +821,14 @@ Filter out non-arms-length sales after data processing, using the conditions def
 
 > For the **full catalog of model engines** (XGBoost, LightGBM, CatBoost, MRA, GWR, kernel, SLICE, baselines, etc.), the **model-name-vs-engine dispatch** mechanism, and how to run **multiple variants of the same engine** (e.g. two XGBoost configurations side-by-side), see **[Models reference](models_reference.md)**. The settings on this page are the orchestration layer; that page documents each model.
 
-### `modeling.instructions.<main|vacant|hedonic>.run`
+### `modeling.instructions.<main|vacant>.run`
 
-Explicit list of model names to run for the main, vacant, or hedonic stages. Without it, all models defined under `modeling.models.<main|vacant|hedonic>` are run.
+Explicit list of model names to run for the main or vacant stages. Without it, all models defined under `modeling.models.<main|vacant>` are run.
 
 - **Source** — `_run_models` in [openavmkit/benchmark.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py)
 - **When to use** — you want a fast iteration on a single model, or you want to skip slow models (e.g. `gwr`) for a quick run.
 
-### `modeling.instructions.<main|vacant|hedonic>.skip.<model_group>`
+### `modeling.instructions.<main|vacant>.skip.<model_group>`
 
 Per-model-group skip list. For the named model group, the listed models are skipped even if they're in `run`.
 
@@ -923,7 +923,7 @@ Fine-tune the variable-selection scoring used during model setup. The thresholds
 - **Source** — `modeling.instructions.feature_selection` in [openavmkit/resources/settings/settings.template.json](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/resources/settings/settings.template.json), consumed in `benchmark.py`.
 - **When to use** — your standard variable-selection results don't reflect domain knowledge. Loosen `correlation` to keep weak-but-meaningful features, or tighten `vif` to drop more multicollinear ones.
 
-### `modeling.instructions.<main|vacant|hedonic>.ensemble`
+### `modeling.instructions.<main|vacant>.ensemble`
 
 Configure how individual model predictions get combined into an `ensemble` prediction. Two types are supported.
 
@@ -958,7 +958,7 @@ For each unique value of each location field, finds the single best-MAPE model o
 This is **not averaging** — at each parcel, exactly one model's prediction is used. The choice varies across the locality.
 
 - **`locations`** — list of categorical fields to partition by, ordered specific → general (the painter walks the list and the *most specific* match wins). If omitted, falls back to `field_classification.important.locations`.
-- **Only valid for `main`** — vacant and hedonic stages only support `default`.
+- **Only valid for `main`** — the vacant stage only supports `default`.
 - **Source** — `_perform_local_ensemble` and `_run_local_ensemble_test_and_paint` in [openavmkit/benchmark.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py)
 - **When to use** — different sub-markets favor different models (e.g. tree-based dominates dense urban neighborhoods where it has plenty of sales, but multi-MRA wins in rural areas where signals are sparser). Local ensemble lets each neighborhood pick its own winner. Avoid when (a) you have very few sales per location (many locations will pick a model based on noise), or (b) you want a single coherent global prediction for explainability.
 - **Pairs naturally with** — model engines that themselves vary by location (`multi_mra`, `local_area`, `gwr`), since they often dominate in different parts of the locality.
@@ -983,7 +983,7 @@ List of model groups to exclude from outlier analysis entirely.
 
 ### `analysis.outliers.model_groups.<id>` and `analysis.outliers.default`
 
-Per-model-group outlier detection config; if no entry exists for a model group, `default` is used. Each entry can specify which model type's predictions to use for each of `main`, `vacant`, `hedonic_land`.
+Per-model-group outlier detection config; if no entry exists for a model group, `default` is used. Each entry can specify which model type's predictions to use for each of `main`, `vacant`.
 
 - **Source** — `identify_outliers` in [openavmkit/pipeline.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/pipeline.py)
 
