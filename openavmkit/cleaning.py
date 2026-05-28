@@ -57,15 +57,12 @@ def clean_valid_sales(sup: SalesUniversePair, settings: dict) -> SalesUniversePa
     # load metadata
     val_date = get_valuation_date(settings)
     val_year = val_date.year
-    metadata = settings.get("modeling", {}).get("metadata", {})
-    use_sales_from = metadata.get("use_sales_from", {})
-
-    if isinstance(use_sales_from, int):
-        use_sales_from_impr = use_sales_from
-        use_sales_from_vacant = use_sales_from
-    else:
-        use_sales_from_impr = use_sales_from.get("improved", val_year - 5)
-        use_sales_from_vacant = use_sales_from.get("vacant", val_year - 5)
+    from openavmkit.utilities.settings import resolve_use_sales_from
+    use_sales_from_impr, use_sales_from_vacant = resolve_use_sales_from(settings)
+    if use_sales_from_impr is None:
+        use_sales_from_impr = val_year - 5
+    if use_sales_from_vacant is None:
+        use_sales_from_vacant = val_year - 5
 
     df_sales = sup["sales"].copy()
     df_univ = sup["universe"]
@@ -90,16 +87,17 @@ def clean_valid_sales(sup: SalesUniversePair, settings: dict) -> SalesUniversePa
 
     print(f"After univ merge len = {len(df_sales)}")
     
-    oldest_sale_threshold = min(use_sales_from_impr, use_sales_from_vacant)
-
-    # mark which sales are to be used (only those that are valid and within the specified time frame)
+    # Apply per-type sale-age thresholds. ``use_sales_from`` can be either an
+    # int (same cutoff for both) or a dict ``{improved: ..., vacant: ...}`` —
+    # the latter lets a jurisdiction keep its improved-sale ratio-study window
+    # tight while still allowing older vacant/teardown sales into the land flow.
     df_sales.loc[
-        df_sales["sale_year"].lt(oldest_sale_threshold)
+        df_sales["sale_year"].lt(use_sales_from_impr)
         & df_sales["vacant_sale"].eq(False),
         "valid_sale",
     ] = False
     df_sales.loc[
-        df_sales["sale_year"].lt(oldest_sale_threshold)
+        df_sales["sale_year"].lt(use_sales_from_vacant)
         & df_sales["vacant_sale"].eq(True),
         "valid_sale",
     ] = False

@@ -68,7 +68,10 @@ from openavmkit.land.tests import (
     LarsTestsResult,
     run_lars_tests,
     run_holdout_vacant_test,
+    run_vacant_ratio_study,
     write_lars_tests_report,
+    build_normalized_scores_table,
+    build_cod_scores_table,
 )
 
 __all__ = [
@@ -107,5 +110,8 @@ __all__ = [
     "LarsTestsResult",
     "run_lars_tests",
     "run_holdout_vacant_test",
+    "run_vacant_ratio_study",
     "write_lars_tests_report",
+    "build_normalized_scores_table",
+    "build_cod_scores_table",
 ]

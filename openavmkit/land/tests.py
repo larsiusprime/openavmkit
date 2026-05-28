@@ -157,6 +157,15 @@ class LarsTestsResult:
     L11_residual_morans_i: float | None = None
     L11_morans_p_value: float | None = None
     L11_n_residuals: int = 0
+    # L12 — Depreciation localization. Within (neighborhood, size, quality)
+    # clusters, building $/sqft should fall with age (L12a strongly negative)
+    # but candidate land $/sqft should NOT (L12b near zero). The score is the
+    # differential — depreciation signal localizes in buildings, doesn't bleed
+    # into land.
+    L12a_bldg_age_spearman: float | None = None
+    L12b_land_age_spearman_abs: float | None = None
+    L12_localization_score: float | None = None
+    L12_n_clusters: int = 0
     notes: list = None
 
     def __post_init__(self):
@@ -183,6 +192,7 @@ def run_lars_tests(
     zoning_emp_min_col: str = "zoning_emp_min_lot_sqft",
     zoning_emp_max_far_col: str = "zoning_emp_max_far",
     bldg_year_built_col: str = "bldg_year_built",
+    bldg_age_col: str = "bldg_age_years",
     bldg_quality_col: str = "bldg_quality_num",
     bldg_condition_col: str = "bldg_condition_num",
     improved_sales: pd.DataFrame | None = None,
@@ -365,6 +375,27 @@ def run_lars_tests(
                 k=moran_k,
                 n_permutations=moran_n_permutations,
             )
+
+    # ---- L12: Depreciation localization ----
+    # "Buildings depreciate, land doesn't." Within (neighborhood, size,
+    # quality) clusters, implied building $/sqft should fall with age (L12a
+    # strongly negative) but candidate land $/sqft should not (L12b near
+    # zero). Score = |L12a| - L12b.
+    (
+        res.L12a_bldg_age_spearman,
+        res.L12b_land_age_spearman_abs,
+        res.L12_localization_score,
+        res.L12_n_clusters,
+    ) = _l12_depreciation_localization(
+        universe,
+        candidate_col=candidate_col,
+        neighborhood_col=neighborhood_col,
+        bldg_area_col=bldg_area_col,
+        land_area_col=land_area_col,
+        bldg_age_col=bldg_age_col,
+        bldg_quality_col=bldg_quality_col,
+        assr_market_col=assr_market_col,
+    )
 
     if verbose:
         _print_summary(res)
@@ -1159,6 +1190,197 @@ def run_holdout_vacant_test(
     }
 
 
+def run_vacant_ratio_study(
+    painted: pd.DataFrame,
+    witnesses: pd.DataFrame,
+    *,
+    witness_kinds: list | None = None,
+    universe_key_col: str = "key",
+    candidate_col: str = "land_value",
+    witness_key_col: str = "parcel_key",
+    witness_value_col: str = "land_value",
+) -> dict:
+    """L8 — no-holdout variant. Sales-ratio study of the painted land value
+    against the actual sale price for all vacant + teardown witnesses.
+
+    Less rigorous than :func:`run_holdout_vacant_test` because the witness
+    pool was used to calibrate the painter — but on thin witness pools
+    (e.g. jurisdictions with very few clean vacant sales) the holdout
+    variant isn't feasible and this is the next-best signal.
+
+    Returns the same dict shape as :func:`run_holdout_vacant_test` so the
+    result can be passed straight to :func:`run_lars_tests` via the
+    ``holdout_result`` arg.
+
+    Parameters
+    ----------
+    painted : DataFrame
+        The painted universe with per-parcel ``candidate_col`` populated.
+    witnesses : DataFrame
+        The witness pool. ``witness_value_col`` carries each witness's
+        time-adjusted sale price.
+    witness_kinds : list[str], optional
+        Witness kinds to include. Defaults to ``["W1_vacant", "W2_teardown"]``
+        — sales where the building had ~zero value at the time of sale,
+        making the sale price effectively a land-only transaction.
+    """
+    if witness_kinds is None:
+        witness_kinds = ["W1_vacant", "W2_teardown"]
+
+    empty = {"median_ratio": None, "cod": None, "n": 0, "p10": None, "p90": None}
+
+    if "witness_kind" not in witnesses.columns:
+        return empty
+    w = witnesses[witnesses["witness_kind"].isin(witness_kinds)].copy()
+    if len(w) == 0:
+        return empty
+
+    p = painted[[universe_key_col, candidate_col]].rename(
+        columns={universe_key_col: "__pk__"}
+    )
+    h = w[[witness_key_col, witness_value_col]].rename(
+        columns={witness_key_col: "__pk__", witness_value_col: "__sale__"}
+    )
+    merged = h.merge(p, on="__pk__", how="inner")
+    if len(merged) == 0:
+        return empty
+
+    ratio = (merged[candidate_col] / merged["__sale__"]).replace(
+        [np.inf, -np.inf], np.nan
+    ).dropna()
+    ratio = ratio[ratio > 0]
+    if len(ratio) == 0:
+        return empty
+
+    try:
+        cod = float(calc_cod(ratio.values))
+    except Exception:
+        cod = None
+    return {
+        "median_ratio": float(ratio.median()),
+        "cod": cod,
+        "n": int(len(ratio)),
+        "p10": float(ratio.quantile(0.10)),
+        "p90": float(ratio.quantile(0.90)),
+    }
+
+
+# ------------------------------------------------------------------ L12
+
+def _l12_depreciation_localization(
+    universe: pd.DataFrame,
+    *,
+    candidate_col: str,
+    neighborhood_col: str,
+    bldg_area_col: str,
+    land_area_col: str,
+    bldg_age_col: str,
+    bldg_quality_col: str,
+    assr_market_col: str,
+    size_quantiles: int = 3,
+    min_per_cluster: int = 5,
+):
+    """
+    Depreciation localization — "buildings depreciate, land doesn't."
+
+    Within (neighborhood, size_bucket, quality_bucket) clusters — i.e.
+    controlling for everything except age — check that:
+
+    * the **implied building $/sqft** is negatively correlated with age
+      (depreciation is real and shows up where expected); and
+    * the **candidate land $/sqft** is uncorrelated with age (no leakage
+      of the depreciation signal into the land component).
+
+    For each cluster with >= ``min_per_cluster`` parcels we compute two
+    Spearman rank correlations. Aggregating across clusters:
+
+    * **L12a** — median Spearman(age, bldg_implied_psf). Expected strongly
+      negative; this is the sanity check.
+    * **L12b** — median |Spearman(age, candidate_land_psf)|. Expected near
+      zero; this is the discriminating metric.
+    * **L12 score** — |L12a| - L12b. Higher = depreciation localizes in
+      buildings; lower (or negative) = candidate land values are
+      contaminated by building-age signal.
+
+    Returns ``(L12a, L12b, score, n_clusters)``. Any value can be ``None``
+    if data is insufficient (missing age column, < 1 valid cluster, etc.).
+    """
+    needed = [
+        candidate_col, bldg_age_col, bldg_area_col, land_area_col,
+        assr_market_col, neighborhood_col,
+    ]
+    for c in needed:
+        if c not in universe.columns:
+            return None, None, None, 0
+
+    df = universe.copy()
+    df = df[
+        df[bldg_area_col].fillna(0).gt(0)
+        & df[land_area_col].fillna(0).gt(0)
+        & df[bldg_age_col].notna()
+        & df[assr_market_col].notna()
+        & df[candidate_col].notna()
+    ]
+    if len(df) < min_per_cluster:
+        return None, None, None, 0
+
+    df["__bldg_implied__"] = df[assr_market_col] - df[candidate_col]
+    df = df[df["__bldg_implied__"].gt(0)]
+    if len(df) < min_per_cluster:
+        return None, None, None, 0
+
+    df["__bldg_psf__"] = df["__bldg_implied__"] / df[bldg_area_col]
+    df["__land_psf__"] = df[candidate_col] / df[land_area_col]
+
+    # Build cluster key: neighborhood × size_bin × quality_bin
+    df["__size_bin__"] = df.groupby(neighborhood_col, dropna=False)[bldg_area_col] \
+        .transform(lambda s: pd.qcut(s, q=size_quantiles, labels=False, duplicates="drop"))
+    if bldg_quality_col in df.columns:
+        df["__qual_bin__"] = df[bldg_quality_col]
+        cluster_cols = [neighborhood_col, "__size_bin__", "__qual_bin__"]
+    else:
+        cluster_cols = [neighborhood_col, "__size_bin__"]
+
+    bldg_rhos: list[float] = []
+    land_rhos: list[float] = []
+
+    for _, sub in df.groupby(cluster_cols, dropna=False):
+        if len(sub) < min_per_cluster:
+            continue
+        age = sub[bldg_age_col].astype(float)
+        # Spearman is undefined if either side has zero variance
+        if age.nunique() < 2:
+            continue
+        # Use scipy if available for a proper Spearman; otherwise fall back to
+        # numpy via pandas rank-then-pearson, which is equivalent.
+        bldg_psf = sub["__bldg_psf__"].astype(float)
+        land_psf = sub["__land_psf__"].astype(float)
+        if bldg_psf.nunique() >= 2:
+            rho_b = age.rank().corr(bldg_psf.rank())
+            if pd.notna(rho_b):
+                bldg_rhos.append(float(rho_b))
+        if land_psf.nunique() >= 2:
+            rho_l = age.rank().corr(land_psf.rank())
+            if pd.notna(rho_l):
+                land_rhos.append(float(rho_l))
+
+    if not bldg_rhos and not land_rhos:
+        return None, None, None, 0
+
+    # Use building-side cluster count as the headline n (the test only makes
+    # sense when both rhos are present per cluster, but in practice they
+    # almost always are).
+    n_clusters = min(len(bldg_rhos), len(land_rhos)) if (bldg_rhos and land_rhos) else 0
+    l12a = float(np.median(bldg_rhos)) if bldg_rhos else None
+    l12b_abs = float(np.median(np.abs(land_rhos))) if land_rhos else None
+    if l12a is not None and l12b_abs is not None:
+        score = abs(l12a) - l12b_abs
+    else:
+        score = None
+
+    return l12a, l12b_abs, score, n_clusters
+
+
 # ------------------------------------------------------------------ output
 
 def _print_summary(res: LarsTestsResult) -> None:
@@ -1196,6 +1418,16 @@ def _print_summary(res: LarsTestsResult) -> None:
         print(f"  L11 residual Moran's I:     "
               f"I={_numfmt(res.L11_residual_morans_i)}, "
               f"p={_numfmt(res.L11_morans_p_value)} (n={res.L11_n_residuals:,} residuals)")
+    if res.L12_n_clusters > 0:
+        print(f"  L12 depreciation localiz.:  "
+              f"score={_numfmt(res.L12_localization_score)} "
+              f"(bldg rho={_numfmt(res.L12a_bldg_age_spearman)}, "
+              f"land |rho|={_numfmt(res.L12b_land_age_spearman_abs)}, "
+              f"n={res.L12_n_clusters:,} clusters)")
+    # Side-by-side normalized + COD comparison tables are rendered separately
+    # by `build_normalized_scores_table` / `build_cod_scores_table` (called
+    # from the pipeline wrapper). The per-candidate text printout would just
+    # be a one-column slice of those tables, so we don't duplicate it here.
 
 
 def _pctfmt(x):
@@ -1208,6 +1440,105 @@ def _numfmt(x):
     if x is None:
         return "n/a"
     return f"{x:.3f}"
+
+
+def _normalize_lars_metrics(res: LarsTestsResult) -> tuple[list, list]:
+    """
+    Compute the unified "0% bad / 100% perfect" view alongside the raw COD
+    group. Returns (normalized_rows, cod_rows) where each row is a
+    ``(label, value)`` tuple. ``value`` is float in [0, 1] for normalized
+    rows, or float COD for COD rows; either may be ``None`` when not
+    available.
+
+    Normalization rules — see the design table; in short: native % stays
+    native, Spearman shifts/flips into [0, 1], Moran's I uses 1-|I|,
+    median ratios use 1-|r-1| (clamped). L7 is candidate-invariant so it
+    lives in the COD group only; L11 p-value is not normalized.
+    """
+    def _shift(rho):
+        if rho is None:
+            return None
+        return max(0.0, min(1.0, (rho + 1.0) / 2.0))
+
+    def _flip_shift(rho):  # target rho = -1 -> 1.0
+        if rho is None:
+            return None
+        return max(0.0, min(1.0, (1.0 - rho) / 2.0))
+
+    def _moran(i):
+        if i is None:
+            return None
+        return max(0.0, min(1.0, 1.0 - abs(i)))
+
+    def _ratio_to_one(r):
+        if r is None:
+            return None
+        return max(0.0, min(1.0, 1.0 - abs(r - 1.0)))
+
+    def _inv(v):
+        if v is None:
+            return None
+        return max(0.0, min(1.0, 1.0 - v))
+
+    normalized = [
+        ("L1  improvement-neutrality",     res.L1_neutrality_pct),
+        ("L3  vacant-burden flip",         res.L3_vacant_burden_flip_pct),
+        ("L4a desirability vs assr",       _shift(res.L4_spearman_assr)),
+        ("L4b desirability vs pred",       _shift(res.L4_spearman_pred)),
+        ("L5  density-FAR ordering",       res.L5_density_pair_pct),
+        ("L6  per-cell size decay",        res.L6_size_decay_pct),
+        ("L8  holdout vacant ratio",       _ratio_to_one(res.L8_holdout_vacant_median_ratio)),
+        ("L9  boundary smoothness cross",  res.L9_cross_cell_smooth_pct),
+        ("L9  boundary smoothness within", res.L9_within_cell_smooth_pct),
+        ("L10 reconciliation ratio",       _ratio_to_one(res.L10_recon_median_ratio)),
+        ("L11 spatial-residual cleanness", _moran(res.L11_residual_morans_i)),
+        ("L12a bldg depreciation",         _flip_shift(res.L12a_bldg_age_spearman)),
+        ("L12b land temporal stability",   _inv(res.L12b_land_age_spearman_abs)),
+        ("L12 localization score",         _shift(res.L12_localization_score)),
+    ]
+
+    cods = [
+        ("L2  within-cluster",  res.L2_uniformity_cod,        ""),
+        ("L7  impr-cost-table", res.L7_impr_uniformity_cod,   "(candidate-invariant)"),
+        ("L8  holdout vacant",  res.L8_holdout_vacant_cod,    ""),
+        ("L10 reconciliation",  res.L10_recon_cod,            ""),
+    ]
+
+    return normalized, cods
+
+
+def build_normalized_scores_table(results: list) -> pd.DataFrame:
+    """Side-by-side normalized scores. Rows = stats, columns = candidates.
+
+    Values rendered as ``"NN.N%"`` strings (or ``"n/a"``). Pass straight
+    to ``IPython.display.display(...)`` to render as a notebook table.
+    """
+    if not results:
+        return pd.DataFrame()
+    all_norm = [_normalize_lars_metrics(r)[0] for r in results]
+    labels = [label for label, _ in all_norm[0]]
+    data = {
+        r.candidate: [_pctfmt(v) for _, v in rows]
+        for r, rows in zip(results, all_norm)
+    }
+    return pd.DataFrame(data, index=pd.Index(labels, name="stat"))
+
+
+def build_cod_scores_table(results: list) -> pd.DataFrame:
+    """Side-by-side COD scores (lower = better). Rows = stats, columns = candidates.
+
+    Values rendered as ``"NN.NNN"`` strings (or ``"n/a"``). L7 is
+    candidate-invariant — the same value appears in every column.
+    """
+    if not results:
+        return pd.DataFrame()
+    all_cods = [_normalize_lars_metrics(r)[1] for r in results]
+    labels = [label for label, _, _ in all_cods[0]]
+    data = {
+        r.candidate: [_numfmt(v) for _, v, _ in rows]
+        for r, rows in zip(results, all_cods)
+    }
+    return pd.DataFrame(data, index=pd.Index(labels, name="stat (lower = better)"))
 
 
 def write_lars_tests_report(
@@ -1224,11 +1555,12 @@ def write_lars_tests_report(
     """
     lines = ["# Lars-Tests Report\n"]
     lines.append(
-        "Eleven incentive-and-equity tests on a candidate land-value column. "
+        "Twelve incentive-and-equity tests on a candidate land-value column. "
         "L1-L6 evaluate the land-side decomposition. L7 evaluates the "
         "underlying improvement-cost-table consistency. L8-L11 evaluate the "
         "decomposition against ground truth (vacant + improved sales) and "
-        "geographic smoothness.\n"
+        "geographic smoothness. L12 checks that depreciation localizes in "
+        "buildings rather than bleeding into land.\n"
     )
     lines.append("## Internal-consistency tests (L1-L7)\n")
     lines.append(
@@ -1268,7 +1600,7 @@ def write_lars_tests_report(
     if has_external:
         lines.append("\n## Ground-truth and smoothness tests (L8-L11)\n")
         lines.append(
-            "**L8** held-out vacant-sale ratio - median painted_land / sale_price on a held-out fold of W1 vacant sales (target ~1.0; COD lower better). Catches systematic level-bias the internal tests can't. "
+            "**L8** vacant-sale ratio - median painted_land / sale_price on vacant + teardown sales (target ~1.0; COD lower better). Catches systematic level-bias the internal tests can't. Two modes: a rigorous holdout variant (re-paints with a held-out fold of W1 vacants, requires a paint_callback and >=10 W1 vacants) or a no-holdout ratio study against the full W1+W2 witness pool (less rigorous but works on thin pools — Petersburg uses this). "
             "**L9** boundary smoothness % - share of nearby cross-cell parcel pairs whose $/sqft differs by less than 25%. Compared to within-cell pairs as a control. Cross-cell << within-cell means the cells create artificial discontinuities. "
             "**L10** reconciliation - median (painted_land + assr_impr) / sale_price on improved sales (target ~1.0; COD lower better). The improved-side mirror of L8. "
             "**L11** residual Moran's I (closer to 0 better) - spatial autocorrelation of `(sale - painted_total) / sale` across improved sales. Significantly > 0 means missed location signal clusters in identifiable pockets - an equity concern even when overall accuracy looks fine.\n"
@@ -1292,11 +1624,38 @@ def write_lars_tests_report(
                 ]) + " |"
             )
 
+    # L12 — depreciation-localization section. Always shown if any candidate
+    # has L12 populated; depends only on universe data, so usually present.
+    has_l12 = any(r.L12_n_clusters > 0 for r in results)
+    if has_l12:
+        lines.append("\n## Depreciation localization (L12)\n")
+        lines.append(
+            "**L12** depreciation localization (higher better) - within "
+            "(neighborhood, size, quality) clusters, building $/sqft should "
+            "fall with age (L12a strongly negative) while candidate land "
+            "$/sqft should NOT (L12b near zero). Score = |L12a| - L12b. "
+            "A high score means the candidate correctly localizes the "
+            "depreciation signal in buildings; a low/negative score means "
+            "the candidate is contaminated by building-age signal "
+            "(typical of `sale - depreciated_cost` style land valuations).\n"
+        )
+        lines.append("\n| Candidate | L12 score | L12a bldg rho | L12b land &#124;rho&#124; |")
+        lines.append("|---|---:|---:|---:|")
+        for r in results:
+            lines.append(
+                "| " + " | ".join([
+                    r.candidate,
+                    _numfmt(r.L12_localization_score),
+                    _numfmt(r.L12a_bldg_age_spearman),
+                    _numfmt(r.L12b_land_age_spearman_abs),
+                ]) + " |"
+            )
+
     lines.append("\n## Sample sizes")
     lines.append(
-        "| Candidate | L1 pairs | L2 clusters | L3 vacant | L4 nbhds | L5 zoning-pairs | L6 large lots | L7 clusters | L8 held out | L9 cross-pairs | L10 sales | L11 residuals |"
+        "| Candidate | L1 pairs | L2 clusters | L3 vacant | L4 nbhds | L5 zoning-pairs | L6 large lots | L7 clusters | L8 held out | L9 cross-pairs | L10 sales | L11 residuals | L12 clusters |"
     )
-    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for r in results:
         lines.append(
             "| " + " | ".join([
@@ -1312,7 +1671,45 @@ def write_lars_tests_report(
                 f"{r.L9_n_cross_pairs:,}",
                 f"{r.L10_n_improved_sales:,}",
                 f"{r.L11_n_residuals:,}",
+                f"{r.L12_n_clusters:,}",
             ]) + " |"
         )
+
+    # ---- Normalized scores section ----
+    # Every metric on a unified "0% bad -> 100% perfect" scale (except CODs,
+    # which live in their own section below).
+    all_norm = [_normalize_lars_metrics(r) for r in results]
+    # Use the first candidate's labels as the column order (they're identical
+    # across candidates).
+    norm_labels = [label for label, _ in all_norm[0][0]]
+    lines.append("\n## Normalized scores (0% bad -> 100% perfect)\n")
+    lines.append(
+        "Every test that maps cleanly to a single quality axis, rescaled to "
+        "[0%, 100%] with 100% = perfect. CODs are reported separately below.\n"
+    )
+    header = "| Candidate | " + " | ".join(norm_labels) + " |"
+    lines.append(header)
+    lines.append("|---" + "|---:" * len(norm_labels) + "|")
+    for r, (norm_rows, _) in zip(results, all_norm):
+        cells = [r.candidate] + [_pctfmt(v) for _, v in norm_rows]
+        lines.append("| " + " | ".join(cells) + " |")
+
+    # ---- COD scores section ----
+    lines.append("\n## COD scores (lower = better)\n")
+    lines.append(
+        "Coefficient of Dispersion: median absolute deviation of a "
+        "per-cluster ratio from the cluster's median, expressed as a "
+        "percent. IAAO residential ratio-study benchmark is roughly 15 or "
+        "below. L7 is candidate-invariant (depends only on the assessor's "
+        "improvement values, not on the candidate land column).\n"
+    )
+    cod_labels = [label for label, _, _ in all_norm[0][1]]
+    cod_header = "| Candidate | " + " | ".join(cod_labels) + " |"
+    lines.append(cod_header)
+    lines.append("|---" + "|---:" * len(cod_labels) + "|")
+    for r, (_, cod_rows) in zip(results, all_norm):
+        cells = [r.candidate] + [_numfmt(v) for _, v, _ in cod_rows]
+        lines.append("| " + " | ".join(cells) + " |")
+
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))

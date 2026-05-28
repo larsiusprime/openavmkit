@@ -1226,59 +1226,65 @@ def _enrich_df_census(
     year = census_settings.get("year", 2022)
     if verbose:
         print("Getting Census Data...")
-    
-    # Get Census data with boundaries
-    census_data, census_boundaries = census_service.get_census_data_with_boundaries(
-        fips_code=fips_code, year=year, census_settings=census_settings
-    )
+
+    # The Census API can return non-JSON (HTML error pages, rate-limit responses,
+    # transient 5xx) which crashes deep inside the `census` package. Don't let
+    # that take down the whole assembly run — warn and skip, leaving downstream
+    # to handle missing Census fields gracefully.
+    try:
+        census_data, census_boundaries = census_service.get_census_data_with_boundaries(
+            fips_code=fips_code, year=year, census_settings=census_settings
+        )
+    except Exception as e:
+        warnings.warn(
+            f"Census API call failed ({type(e).__name__}: {e}); "
+            f"skipping Census enrichment. Re-run to retry, or set "
+            f"data.process.enrich.census.enabled=false to silence."
+        )
+        return df_in
 
     # Spatial join with universe data only
     if not isinstance(df, gpd.GeoDataFrame):
         warnings.warn("DataFrame is not a GeoDataFrame, skipping Census enrichment")
         return df
-    
-    # Get census columns to keep
-    field_map = census_service.get_census_map(census_settings)
-    census_cols_to_keep = ["std_geoid"] + [field_map[key] for key in field_map]
-    
-    # Ensure all census columns exist in the census_boundaries
-    missing_cols = [
-        col for col in census_cols_to_keep if col not in census_boundaries.columns
-    ]
-    if missing_cols:
-        # Filter to only include columns that exist
+
+    try:
+        field_map = census_service.get_census_map(census_settings)
+        census_cols_to_keep = ["std_geoid"] + [field_map[key] for key in field_map]
+
+        # Filter to columns that actually exist on the boundaries
         census_cols_to_keep = [
             col for col in census_cols_to_keep if col in census_boundaries.columns
         ]
-    
-    # Create a copy of census_boundaries with only the columns we need
-    census_boundaries_subset = census_boundaries[
-        ["geometry"] + census_cols_to_keep
-    ].copy()
-    
-    # Replace all -666666666.0 sentinel values with None
-    for col in census_cols_to_keep:
-        if pd.api.types.is_numeric_dtype(census_boundaries_subset[col]):
-            census_boundaries_subset.loc[
-                abs(census_boundaries_subset[col] + 666666666.0).le(1e6), col
-            ] = None
-    
-    if verbose:
-        print("Performing spatial join with Census Data...")
 
-    # Perform the spatial join
-    df = match_to_census_blockgroups(
-        gdf=df, census_gdf=census_boundaries_subset, join_type="left"
-    )
-    df = df.drop(columns="std_geoid")
+        census_boundaries_subset = census_boundaries[
+            ["geometry"] + census_cols_to_keep
+        ].copy()
+
+        # Replace all -666666666.0 sentinel values with None
+        for col in census_cols_to_keep:
+            if pd.api.types.is_numeric_dtype(census_boundaries_subset[col]):
+                census_boundaries_subset.loc[
+                    abs(census_boundaries_subset[col] + 666666666.0).le(1e6), col
+                ] = None
+
+        if verbose:
+            print("Performing spatial join with Census Data...")
+
+        df = match_to_census_blockgroups(
+            gdf=df, census_gdf=census_boundaries_subset, join_type="left"
+        )
+        df = df.drop(columns="std_geoid")
+    except Exception as e:
+        warnings.warn(
+            f"Census enrichment failed after fetch ({type(e).__name__}: {e}); "
+            f"returning unenriched universe."
+        )
+        return df_in
 
     write_cached_df(df_in, df, "census", "key", census_settings)
-    
-    return df
 
-    # except Exception as e:
-        # warnings.warn(f"Failed to enrich with Census data: {str(e)}")
-    #return df
+    return df
 
 
 def _enrich_df_distances(
@@ -4522,10 +4528,10 @@ def _perform_canonical_split(
     
     rs = settings.get("analysis", {}).get("ratio_study", {})
     look_back_years = rs.get("look_back_years", 1)
-    
-    md = settings.get("modeling", {}).get("metadata", {})
-    use_sales_from = md.get("use_sales_from", None)
-    
+
+    from openavmkit.utilities.settings import resolve_use_sales_from
+    use_sales_from_impr, use_sales_from_vacant = resolve_use_sales_from(settings)
+
     val_date = get_valuation_date(settings)
 
     # Look back N years BEFORE the valuation date
@@ -4536,10 +4542,18 @@ def _perform_canonical_split(
 
     # Get our sales dataframe for this model group and split it into vacant and improved sales
     df = df_sales_in[df_sales_in["model_group"].eq(model_group)].copy()
-    
-    # Only use sales on or after the use_sales_from year
-    if use_sales_from is not None:
-        df = df[df["sale_year"].ge(use_sales_from)]
+
+    # Apply per-type ``use_sales_from`` thresholds. Improved and vacant sales
+    # often need different cutoffs (e.g. tight 3-year ratio-study window on
+    # improved, looser window on vacant when the W2 pool is thin).
+    if use_sales_from_impr is not None or use_sales_from_vacant is not None:
+        is_vac = df["vacant_sale"].fillna(False)
+        keep = pd.Series(True, index=df.index)
+        if use_sales_from_impr is not None:
+            keep &= is_vac | df["sale_year"].ge(use_sales_from_impr)
+        if use_sales_from_vacant is not None:
+            keep &= ~is_vac | df["sale_year"].ge(use_sales_from_vacant)
+        df = df[keep]
     
     df_v = get_vacant_sales(df, settings)
     df_i = df.drop(df_v.index)

@@ -76,20 +76,16 @@ class OpenStreetMapService:
         if thing == "water_bodies":
             return {
                 "natural": ["water", "bay", "strait"],
-                "water": ["river", "lake", "reservoir", "canal", "stream"],
+                "water": ["river", "reservoir", "canal", "stream"],
             }
         elif thing == "rivers":
             return {
                 "water": ["river", "stream"]
             }
-        elif thing == "lake":
-            return {
-                "water": ["lake"]
-            }
         elif thing == "water":
             return {
                 "natural": ["water", "bay", "strait"],
-                "water": ["lake", "reservoir", "canal"]
+                "water": ["reservoir", "canal"]
             }
         elif thing == "transportation":
             return {"railway": ["rail", "subway", "light_rail", "monorail", "tram"]}

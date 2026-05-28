@@ -137,11 +137,44 @@ def get_look_back_dates(s: dict):
     rs = s.get("analysis", {}).get("ratio_study", {})
     look_back_years = rs.get("look_back_years", 1)
     val_date = get_valuation_date(s)
-        
+
     # Look back N years BEFORE the valuation date
     look_back_date = val_date - pd.DateOffset(years=look_back_years)
-    
+
     return look_back_date, val_date
+
+
+def resolve_use_sales_from(s: dict) -> tuple[int | None, int | None]:
+    """Resolve ``modeling.metadata.use_sales_from`` into per-type year thresholds.
+
+    The setting can take three forms:
+
+      * ``None`` (missing) — returns ``(None, None)``; callers should treat
+        as "no threshold".
+      * ``int`` — single cutoff applied to both improved and vacant sales.
+      * ``dict`` — ``{"improved": YYYY, "vacant": YYYY}`` for per-type cutoffs.
+        Missing keys fall back to ``val_year - 5``.
+
+    Returns a tuple ``(improved_year, vacant_year)``. Always use this helper
+    instead of parsing ``use_sales_from`` inline — the dict form needs careful
+    branching, and naïve scalar comparisons against a ``Series`` crash with
+    "TypeError: len() of unsized object".
+    """
+    md = s.get("modeling", {}).get("metadata", {})
+    if "use_sales_from" not in md:
+        return None, None
+    use_sales_from = md["use_sales_from"]
+    if use_sales_from is None:
+        return None, None
+    if isinstance(use_sales_from, int):
+        return use_sales_from, use_sales_from
+    if isinstance(use_sales_from, dict):
+        val_year = get_valuation_date(s).year
+        impr = use_sales_from.get("improved", val_year - 5)
+        vac = use_sales_from.get("vacant", val_year - 5)
+        return impr, vac
+    # Fall through: malformed value — return None/None and let callers no-op.
+    return None, None
 
 
 def get_center(s: dict, gdf: gpd.GeoDataFrame = None) -> tuple[float, float]:
@@ -1200,11 +1233,20 @@ def _is_series_all_bools(series: pd.Series) -> bool:
     dtype = series.dtype
     if dtype == bool:
         return True
-    # check all unique values:
-    uniques = series.unique()
-    for unique in uniques:
-        if type(unique) != bool:
-            return False
+    # Also accept pandas' nullable BooleanDtype and any other bool dtype
+    # variants. Earlier this function compared ``type(unique)`` to the built-in
+    # ``bool``, which rejected ``np.bool_`` and ``pandas.BooleanDtype`` arrays
+    # even though their values are unambiguous booleans — which broke
+    # cleaning whenever a source merged in vacant_sale as a nullable boolean.
+    if pd.api.types.is_bool_dtype(dtype):
+        return True
+    import numpy as _np
+    for unique in series.unique():
+        if pd.isna(unique):
+            continue
+        if isinstance(unique, (bool, _np.bool_)):
+            continue
+        return False
     return True
 
 

@@ -824,14 +824,30 @@ def evaluate_sale_anomaly_flags(
             lambda existing: f"{existing};{name}" if existing else name
         )
 
-    sale = pd.to_numeric(df.get(sale_price_col), errors="coerce")
-    impr = pd.to_numeric(df.get(impr_value_col), errors="coerce")
-    age = pd.to_numeric(df.get(bldg_age_col), errors="coerce")
-    cond = pd.to_numeric(df.get(bldg_condition_col), errors="coerce")
-    area = pd.to_numeric(df.get(bldg_area_col), errors="coerce")
-    prior_p = pd.to_numeric(df.get(prior_xfer_price_col), errors="coerce")
-    prior_d = pd.to_datetime(df.get(prior_xfer_date_col), errors="coerce")
-    sale_d = pd.to_datetime(df.get(sale_date_col), errors="coerce")
+    # When a column is absent, df.get() returns None and pd.to_numeric/to_datetime
+    # collapse to a scalar (NaN / None). Downstream arithmetic then either crashes
+    # (DatetimeArray - None) or silently broadcasts garbage. Force a same-length
+    # Series of NaN/NaT instead so the rule masks simply don't fire.
+    def _num(col):
+        s = df.get(col)
+        if s is None:
+            return pd.Series(np.nan, index=df.index)
+        return pd.to_numeric(s, errors="coerce")
+
+    def _dt(col):
+        s = df.get(col)
+        if s is None:
+            return pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+        return pd.to_datetime(s, errors="coerce")
+
+    sale = _num(sale_price_col)
+    impr = _num(impr_value_col)
+    age = _num(bldg_age_col)
+    cond = _num(bldg_condition_col)
+    area = _num(bldg_area_col)
+    prior_p = _num(prior_xfer_price_col)
+    prior_d = _dt(prior_xfer_date_col)
+    sale_d = _dt(sale_date_col)
 
     # Rule 1: BELOW_COST_FLOOR
     rule_1 = (

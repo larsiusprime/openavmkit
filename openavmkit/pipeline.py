@@ -2215,15 +2215,12 @@ def _clip_sales_to_use(
 
     val_year = get_valuation_date(settings).year
 
-    metadata = settings.get("modeling", {}).get("metadata", {})
-    use_sales_from = metadata.get("use_sales_from", {})
-
-    if isinstance(use_sales_from, int):
-        use_sales_from_impr = use_sales_from
-        use_sales_from_vacant = use_sales_from
-    else:
-        use_sales_from_impr = use_sales_from.get("improved", val_year - 5)
-        use_sales_from_vacant = use_sales_from.get("vacant", val_year - 5)
+    from openavmkit.utilities.settings import resolve_use_sales_from
+    use_sales_from_impr, use_sales_from_vacant = resolve_use_sales_from(settings)
+    if use_sales_from_impr is None:
+        use_sales_from_impr = val_year - 5
+    if use_sales_from_vacant is None:
+        use_sales_from_vacant = val_year - 5
 
     # mark which sales are to be used (only those that are valid and within the specified time frame)
     df_sales.loc[
@@ -2538,6 +2535,7 @@ def run_land_lars_tests(
     candidate_col: str = "land_value",
     sales_with_far: pd.DataFrame | None = None,
     improved_sales: pd.DataFrame | None = None,
+    witnesses: pd.DataFrame | None = None,
     sale_price_col: str = "sale_price_time_adj",
     sales_join_key: str = "key",
     parcel_lat_col: str = "latitude",
@@ -2576,7 +2574,13 @@ def run_land_lars_tests(
     list[LarsTestsResult]
         Results in the order given.
     """
-    from openavmkit.land import run_lars_tests as _run_lars_tests, write_lars_tests_report
+    from openavmkit.land import (
+        run_lars_tests as _run_lars_tests,
+        run_vacant_ratio_study,
+        write_lars_tests_report,
+        build_normalized_scores_table,
+        build_cod_scores_table,
+    )
 
     if candidates is None:
         candidates = [(candidate_col, candidate_col)]
@@ -2589,15 +2593,22 @@ def run_land_lars_tests(
                 f"{name!r}; skipping"
             )
             continue
-        # L8 (held-out vacant test) is painter-specific: it only applies to
-        # the candidate produced by our painter. If the user named one
-        # candidate via ``holdout_for_candidate`` we apply the holdout result
-        # only there; otherwise it applies to all candidates (legacy behavior).
+        # L8 has two modes. The rigorous one (`run_holdout_vacant_test`)
+        # re-paints the universe with a held-out fold of W1 vacant witnesses
+        # and evaluates predicted vs actual sale price on that fold. It needs
+        # a paint_callback and at least ~10 W1 vacants. If `holdout_result`
+        # wasn't passed in but `witnesses` was, we fall back to a full
+        # ratio study against all vacant+teardown witnesses — less rigorous
+        # but informative on thin pools where the holdout isn't feasible.
         candidate_holdout = (
             holdout_result
             if (holdout_for_candidate is None or name == holdout_for_candidate)
             else None
         )
+        if candidate_holdout is None and witnesses is not None:
+            candidate_holdout = run_vacant_ratio_study(
+                universe, witnesses, candidate_col=col,
+            )
         results.append(
             _run_lars_tests(
                 universe,
@@ -2616,6 +2627,15 @@ def run_land_lars_tests(
 
     if out_path is not None and results:
         write_lars_tests_report(results, out_path)
+
+    # Side-by-side comparison tables: normalized scores and CODs. These
+    # render as proper notebook tables when this function is called from a
+    # Jupyter context; outside one, `display` falls back to a plain repr.
+    if results:
+        print("\nNormalized scores (0% bad -> 100% perfect):")
+        display(build_normalized_scores_table(results))
+        print("\nCOD scores (lower = better):")
+        display(build_cod_scores_table(results))
 
     return results
 
