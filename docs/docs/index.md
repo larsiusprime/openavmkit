@@ -4,7 +4,10 @@
 - [Install from PyPI](getting_started.md#option-1-install-from-pypi)
 - [Install from Git](getting_started.md#option-2-install-from-git)
 - [Running Tests](getting_started.md#running-tests)
-- [Running your first locality](getting_started.md#running-your-first-locality)
+- [Smoke test with sample data](getting_started.md#smoke-test-with-sample-data)
+## [Build a jurisdiction from scratch (tutorial)](tutorial.md)
+- [Smoke test with sample data](tutorial.md#part-a-smoke-test-with-sample-data)
+- [Onboard your own jurisdiction](tutorial.md#part-b-onboard-your-own-jurisdiction)
 ## [The basics](the_basics.md)
 - [Creating a new locality](the_basics.md#creating-a-new-locality)
 - [Code modules](the_basics.md#code-modules)
@@ -13,5 +16,25 @@
 ## [Configuration](config.md)
 - [Cloud storage](config.md#configuring-cloud-storage)
 - [PDF report generation](config.md#configuring-pdf-report-generation)
-- [US Census API](config.md#configuring-census-api-access)
+- [US Census API](config.md#configuring-us-census-api-access)
 - [Open Street Map API](config.md#configuring-openstreetmap-enrichment)
+## [Advanced settings reference](advanced_settings.md)
+- [The settings.json preprocessor](advanced_settings.md#1-the-settingsjson-preprocessor) — comments, `$$` references, template merging, `!` and `+` flags
+- [Data load: `data.load.<id>`](advanced_settings.md#2-data-load-dataloadid) — `dupes` rules and per-field aggregation across duplicate rows
+- [Time adjustment overrides](advanced_settings.md#3-time-adjustment)
+- [Data enrichment toggles](advanced_settings.md#4-data-enrichment)
+- [Data cleaning & validation](advanced_settings.md#5-data-cleaning-validation)
+- [Modeling control](advanced_settings.md#6-modeling-control)
+- [Analysis & QA](advanced_settings.md#7-analysis-qa)
+- [Caching & checkpoints](advanced_settings.md#8-caching-checkpoints) — when self-invalidation is enough, and when to nuke the cache
+## [The `calc` expression language](calc_reference.md)
+- [Where calc is used](calc_reference.md#1-where-calc-is-used)
+- [Expression syntax](calc_reference.md#2-expression-syntax)
+- [Operator reference](calc_reference.md#3-operator-reference)
+- [Worked examples](calc_reference.md#4-worked-examples)
+- [Tweaks](calc_reference.md#5-tweaks)
+## [Models reference](models_reference.md)
+- [How model invocation works](models_reference.md#1-how-model-invocation-works) — name vs engine, multi-variant runs, the `default` entry
+- [Common entry fields](models_reference.md#2-common-entry-fields)
+- [Engine reference](models_reference.md#3-engine-reference) — predictive models, reference / pass-through, naive baselines, ensemble
+- [Worked example: ablation study](models_reference.md#4-worked-example-ablation-study)

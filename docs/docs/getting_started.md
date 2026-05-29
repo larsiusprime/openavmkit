@@ -1,5 +1,12 @@
 # Getting Started
 
+## Choose your path
+
+OpenAVMKit can be used three ways. Pick the one that fits, then follow the corresponding install option below.
+
+- **Notebook user** — you want to run the pipeline notebooks on a locality (assess, clean, model, evaluate). Most users start here. After install, do the [smoke test below](#smoke-test-with-sample-data) to confirm everything works, then jump to the [tutorial](tutorial.md) for an end-to-end walkthrough of building a jurisdiction from your own data.
+- **Python library user** — you want to import `openavmkit` modules into your own Python code (analysis scripts, custom pipelines, dashboards). After install, see [The Basics → Code modules](the_basics.md#code-modules), then the [API reference](api/) for what's available.
+- **Contributor / coding agent** — you want to extend OpenAVMKit. Install from Git (option 2 below), then read [AGENTS.md](https://github.com/landeconomics/openavmkit/blob/master/AGENTS.md) at the repo root for conventions and gotchas, plus [CONTRIBUTING.md](https://github.com/landeconomics/openavmkit/blob/master/CONTRIBUTING.md) for the PR workflow.
 
 ## Option 1 - Install from PyPI
 
@@ -33,7 +40,7 @@ This command will clone the repository to your local machine, store it under a f
 
 If you don't have Python on your machine, you'll need to install it.
 
-OpenAVMKit is tested on **Python 3.11**.
+OpenAVMKit requires **Python 3.11 or newer**; 3.11 and 3.12 are tested.
 
 If you already have Python installed, but you're not sure which version of Python you have installed, you can check by running this command:
 
@@ -43,9 +50,11 @@ python --version
 
 If you have Python installed, you should see the version number printed to the console.
 
-If you don't have Python installed, you can get the supported version here:
+If you don't have Python installed, you can get a supported version here:
 
-- [Download Python 3.11.9](https://www.python.org/downloads/release/python-3119/)  
+- [Download Python 3.11.9](https://www.python.org/downloads/release/python-3119/)
+- [Python 3.12 — pick the latest patch from the Python release page](https://www.python.org/downloads/)
+
 
 If you have the wrong version of Python installed, you can download the correct version from one of the links above, and then install it. Be very careful to make sure that the new version of Python is available in your `PATH`. (If you don't know what the means, here is a [handy tutorial on the subject](https://realpython.com/add-python-to-path/)).
 
@@ -161,9 +170,9 @@ pytest
 
 This will run all the unit tests and provide feedback on any errors or failed tests.
 
-## Running your first locality
+## Smoke test with sample data
 
-Okay, you've got the library installed, and you have notebooks running. Let's get you started running a test locality.
+Okay, you've got the library installed, and you have notebooks running. Before tackling your own jurisdiction, do this 10–15 minute smoke test to confirm everything works and to see what successful output looks like at each stage.
 
 First, you need to download an example dataset to work with. The Center for Land Economics has provided one based off of public domain data posted freely on local government websites. Let's download it.
 
@@ -216,17 +225,16 @@ Next, run the cloud synchronization cell:
 
 ![](../assets/images/jupyter_06.png)
 
-If you set everything up correctly, you should see a log of all the files being downloaded, and your `notebooks/pipeline/data/nc-us-guilford/` folder should now have two folders inside it:
+If you set everything up correctly, you should see a log of all the files being downloaded, and your `notebooks/pipeline/data/us-nc-guilford/` folder should now have two folders inside it:
 
 - `in/` --> contains all your input files, including `settings.json`
 - `out/` --> will contain all the output the notebook files generate
 
-Now you have everything you need to run the basic notebooks on the test data! From here you should be able to just run the notebooks themselves. 
-
-You can create your own locality datasets by creating a unique folder for them with a settings file and input data. This is regardless of whether you are syncing that data to a cloud service or not.
+Now you have everything you need to run the basic notebooks on the test data! From here you should be able to just run the notebooks themselves.
 
 You can switch between localities by editing the name of the locality variable at the top of each notebook. If you do this, be sure to reset and clear the notebook after changing the locality.
 
+**Once this works**, you've confirmed your install is healthy and you've seen what a successful run looks like end-to-end. Now go to **[Build a jurisdiction from scratch](tutorial.md)** — the real walkthrough for onboarding your own data.
 
 ## Advanced cloud settings
 
@@ -272,7 +280,6 @@ Azure:
 HuggingFace:
 
 `HF_ACCESS`: `read_only` or `read_write`  
-`HF_REPO_ID`: a string  
 `HF_TOKEN`: a string  
 
 SFTP:

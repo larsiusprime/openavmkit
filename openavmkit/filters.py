@@ -1,3 +1,13 @@
+"""
+Filter-list evaluator for ``settings.json`` selection rules.
+
+Filters are expressed as nested lists: the first element is an operator
+(``"=="``, ``"!="``, ``">"``, ``"and"``, ``"or"``, ``"not"``, ``"in"``, etc.)
+and the rest are operands. Operands may be column names (resolved against
+the DataFrame), constants, or further filter lists. This lets users
+specify "valid sale" criteria, model-group membership, exclusion rules,
+and similar conditions declaratively in settings.
+"""
 import pandas as pd
 from openavmkit.utilities.data import is_column_of_type
 
@@ -21,7 +31,7 @@ def select_filter(df: pd.DataFrame, f: list) -> pd.DataFrame:
     return df.loc[resolved_index]
 
 
-def resolve_not_filter(df: pd.DataFrame, f: list) -> pd.Series:
+def resolve_not_filter(df: pd.DataFrame, f: list, rename_map: dict = None) -> pd.Series:
     """
     Resolve a NOT filter.
 
@@ -33,6 +43,9 @@ def resolve_not_filter(df: pd.DataFrame, f: list) -> pd.Series:
         Input DataFrame.
     f : list
         Filter list.
+    rename_map : dict, optional
+        Optional mapping of original-to-renamed column names, propagated
+        to nested filters so atomic comparisons can resolve the original name.
 
     Returns
     -------
@@ -46,11 +59,11 @@ def resolve_not_filter(df: pd.DataFrame, f: list) -> pd.Series:
     if len(values) > 1:
         raise ValueError(f"NOT operator only accepts one argument")
 
-    selected_index = resolve_filter(df, values[0])
+    selected_index = resolve_filter(df, values[0], rename_map)
     return ~selected_index
 
 
-def resolve_bool_filter(df: pd.DataFrame, f: list) -> pd.Series:
+def resolve_bool_filter(df: pd.DataFrame, f: list, rename_map: dict = None) -> pd.Series:
     """
     Resolve a list of filters using a boolean operator.
 
@@ -78,7 +91,7 @@ def resolve_bool_filter(df: pd.DataFrame, f: list) -> pd.Series:
     final_index = None
 
     for v in values:
-        selected_index = resolve_filter(df, v)
+        selected_index = resolve_filter(df, v, rename_map)
 
         if final_index is None:
             final_index = selected_index
@@ -135,9 +148,9 @@ def resolve_filter(df: pd.DataFrame, f: list, rename_map: dict = None) -> pd.Ser
 
     # check if operator is a boolean operator:
     if operator == "not":
-        return resolve_not_filter(df, f)
+        return resolve_not_filter(df, f, rename_map)
     elif _is_bool_operator(operator):
-        return resolve_bool_filter(df, f)
+        return resolve_bool_filter(df, f, rename_map)
     else:
         field = f[1]
         # Handle field name resolution with rename_map
@@ -188,8 +201,12 @@ def resolve_filter(df: pd.DataFrame, f: list, rename_map: dict = None) -> pd.Ser
         if operator == "!=":
             return df[field].ne(value)
         if operator == "isin":
+            if isinstance(value, list):
+                value = [x[4:] if isinstance(x, str) and x.startswith("str:") else x for x in value]
             return df[field].isin(value)
         if operator == "notin":
+            if isinstance(value, list):
+                value = [x[4:] if isinstance(x, str) and x.startswith("str:") else x for x in value]
             return ~df[field].isin(value)
         if operator == "isempty":
             return pd.isna(df[field]) | df[field].astype(str).str.strip().eq("")
@@ -217,8 +234,9 @@ def resolve_filter(df: pd.DataFrame, f: list, rename_map: dict = None) -> pd.Ser
             if isinstance(value, str):
                 selection = df[field].str.contains(value, case=False)
             elif isinstance(value, list):
-                selection = df[field].str.contains(value[0], case=False)
-                for v in value[1:]:
+                cleaned = [v[4:] if isinstance(v, str) and v.startswith("str:") else v for v in value]
+                selection = df[field].str.contains(cleaned[0], case=False)
+                for v in cleaned[1:]:
                     selection |= df[field].str.contains(v, case=False)
             else:
                 raise ValueError(

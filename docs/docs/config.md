@@ -24,37 +24,72 @@ That's just an example of the format; here are the actual variables that it reco
 | Variable Name                     | Description                                                                                                                                                             |
 |-----------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `AZURE_ACCESS`                    | The type of access your azure account has.<br>Legal values are: `read_only`, `read_write`.                                                                              |
-| `AZURE_STORAGE_CONTAINER_NAME`    | The name of the Azure storage container                                                                                                                                 |
 | `AZURE_STORAGE_CONNECTION_STRING` | The connection string for the Azure storage account                                                                                                                     |
 | `HF_ACCESS`                       | The type of access your huggingface account has.<br>Legal values are: `read_only`, `read_write`.                                                                        |
 | `HF_TOKEN`                        | The Hugging Face API token                                                                                                                                              |
-| `HF_REPO_ID`                      | The Hugging Face repository ID                                                                                                                                          |
 | `SFTP_ACCESS`                     | The type of access your SFTP account has.<br>Legal values are: `read_only`, `read_write`.                                                                               |
-| `SFTP_HOST`                       | The hostname of the SFTP server                                                                                                                                         |
+| `SFTP_HOSTNAME`                   | The hostname of the SFTP server                                                                                                                                         |
 | `SFTP_USERNAME`                   | The username for the SFTP server                                                                                                                                        |
 | `SFTP_PASSWORD`                   | The password for the SFTP server                                                                                                                                        |
 | `SFTP_PORT`                       | The port number for the SFTP server                                                                                                                                     |
 
-You only need to provide values for the service that you're actually using. For instance, here's what the file might look like if you are using Hugging Face:
+You only need to provide values for the service that you're actually using. For instance, here's what the file might look like if you are using Azure:
 
 ```
-HF_ACCESS=read_write
-HF_REPO_ID=landeconomics/localities-public
-HF_TOKEN=<YOUR_HUGGING_FACE_API_TOKEN>
+AZURE_ACCESS=read_write
+AZURE_STORAGE_CONNECTION_STRING=<YOUR_AZURE_CONNECTION_STRING>
 ```
 
-If you're just getting started, you can just use read-only access to an existing public repository. Here's an example of how to access the public datasets provided by the [The Center for Land Economics](https://landeconomics.org):
+If you're just getting started, you can use read-only anonymous access to a public Azure container:
 
 ```
-HF_ACCESS=read_only
-HF_REPO_ID=landeconomics/localities
+AZURE_ACCESS=read_only
 ```
 
-This will let you download the inputs for any of the Center for Land Economics' public datasets. Note that you will be unable to upload your changes and outputs to repositories that you have read-only access to.
+This will let you download the inputs for any of the public datasets provided by [The Center for Land Economics](https://landeconomics.org), which are hosted in an Azure container at `https://landeconomics.blob.core.windows.net/localities-public`. Point a locality's `cloud.json` at that URL (see below) and you can pull the data without any credentials. Note that you will be unable to upload your changes and outputs to containers that you have read-only access to.
 
 If you want to sync with your own cloud storage, you will need to set up your own hosting account and then provide the appropriate credentials in the `.env` file.
 
-If you have multiple projects stored on different cloud services, you can set the `CLOUD_TYPE` and `CLOUD_ACCESS` variables in your settings.json. This will allow you to switch between cloud services on a per-project basis. **Do not ever store credentials in your settings.json, however, as this file is uploaded to the cloud!**
+### Per-locality `cloud.json`
+
+Cloud destinations are configured **per locality** in a `cloud.json` file alongside the locality's `settings.json`, at `notebooks/pipeline/data/<locality>/cloud.json`. This file selects which cloud service the locality syncs with and supplies the (non-sensitive) destination identifiers. Sensitive credentials still live in `.env` — never put them here, since `cloud.json` may itself be synced to the cloud.
+
+| Key                              | Cloud type    | Required for | Description                                                                                       |
+|----------------------------------|---------------|--------------|---------------------------------------------------------------------------------------------------|
+| `type`                           | (any)         | always       | Which cloud service this locality uses. One of `azure`, `huggingface`, `sftp`.                    |
+| `azure_storage_container_name`   | `azure`       | `read_write` | Name of the Azure storage container.                                                              |
+| `azure_storage_container_url`    | `azure`       | `read_only`  | URL of the Azure storage container (used for anonymous read-only access).                         |
+| `hf_repo_id`                     | `huggingface` | always       | The Hugging Face repository ID, e.g. `<your-org>/<your-repo>`.                                    |
+| `hf_revision`                    | `huggingface` | optional     | A specific revision/branch to pull from. Defaults to the repo's default branch.                   |
+
+Example `cloud.json` for a locality syncing with the public Center for Land Economics Azure container (read-only access, no credentials needed):
+
+```json
+{
+    "type": "azure",
+    "azure_storage_container_url": "https://landeconomics.blob.core.windows.net/localities-public"
+}
+```
+
+Example for Azure read-write to your own container:
+
+```json
+{
+    "type": "azure",
+    "azure_storage_container_name": "<your-container-name>"
+}
+```
+
+Example for Hugging Face:
+
+```json
+{
+    "type": "huggingface",
+    "hf_repo_id": "<your-org>/<your-repo>"
+}
+```
+
+Because the cloud destination is stored per locality in `cloud.json`, you can have different localities pointing at different services (one at Azure, another at Hugging Face, etc.) — `.env` just needs the credentials for whichever services you actually use.
 
 ## Configuring PDF report generation
 
@@ -78,7 +113,7 @@ The idea is that you want the `wkhtmltopdf` executable to be available from any 
 
 Here's how to do that:
 
-1. Find the folder where `wkhtmltopdf` was installed. It's probably in `C:\Program Files\wkhtmltopdf\bin`, but it could be somewhere else. Pay attention when you install it.
+1. Find the folder where `wkhtmltopdf` was installed. On Windows it's probably in `C:\Program Files\wkhtmltopdf\bin`, but it could be somewhere else. Pay attention when you install it.
 2. Follow this [tutorial](https://web.archive.org/web/20250131024033/https://www.architectryan.com/2018/03/17/add-to-the-path-on-windows-10/) to edit your PATH environment variable. You want to add the folder from step 1 to the PATH variable.
 3. Open a new command prompt and type `wkhtmltopdf --version`. If you see a version number, you're all set!
 
@@ -99,31 +134,31 @@ Ensure you have [Homebrew](https://brew.sh) installed. Then run:
 brew install wkhtmltopdf
 ```
 
-## Configuring Census API Access
+## Configuring US Census API Access
 
-OpenAVMKit can enrich your data with Census information using the Census API. To use this feature, you'll need to:
+OpenAVMKit can enrich your data with US Census information using the Census API. To use this feature, you'll need to:
 
-1. Get a Census API key from [api.census.gov/data/key_signup.html](https://api.census.gov/data/key_signup.html)
-2. Add your Census API key to the `.env` file in the `notebooks/` directory
+1. Get a US Census API key from [api.census.gov/data/key_signup.html](https://api.census.gov/data/key_signup.html)
+2. Add your US Census API key to the `.env` file in the `notebooks/` directory
 
-### Getting a Census API Key
+### Getting a US Census API Key
 
 1. Visit [api.census.gov/data/key_signup.html](https://api.census.gov/data/key_signup.html)
 2. Fill out the form with your information
-3. Agree to the Census terms of service
+3. Agree to the US Census terms of service
 4. You will receive your API key via email
 
-### Configuring the Census API Key
+### Configuring the US Census API Key
 
-Add your Census API key to the `.env` file in the `notebooks/` directory:
+Add your US Census API key to the `.env` file in the `notebooks/` directory:
 
 ```
 CENSUS_API_KEY=your_api_key_here
 ```
 
-### Using Census Enrichment
+### Using US Census Enrichment
 
-To enable Census enrichment in your locality settings, add the following to your `settings.json`:
+To enable US Census enrichment in your locality settings, add the following to your `settings.json`:
 
 ```json
 {
@@ -150,7 +185,7 @@ Key settings:
 - `fips`: The 5-digit FIPS code for your locality (state + county)
 - `fields`: List of Census fields to include
 
-The Census enrichment will automatically join Census block group data to your parcels using spatial joins, adding demographic information to your dataset.
+The Census enrichment will automatically join Census block group data to your parcels using spatial joins, adding geographic and demographic information to your dataset.
 
 ## Configuring OpenStreetMap Enrichment
 
@@ -158,7 +193,7 @@ OpenAVMKit can enrich your data with geographic features from OpenStreetMap, suc
 
 ### Using OpenStreetMap Enrichment
 
-To enable OpenStreetMap enrichment in your locality settings, add the following to your `settings.json`:
+To enable OpenStreetMap enrichment in your locality settings, add something like the following to your `settings.json` (this is just an example, open street map enrichment is highly configurable):
 
 ```json
 {

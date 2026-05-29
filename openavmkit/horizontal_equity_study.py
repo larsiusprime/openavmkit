@@ -1,3 +1,15 @@
+"""
+Horizontal equity analysis.
+
+Implements the IAAO horizontal-equity study: clusters parcels with similar
+characteristics and similar locations, then measures the dispersion of
+predicted-to-sale-price ratios within each cluster (CHD — Coefficient of
+Horizontal Dispersion). Low CHD means similar properties are valued similarly,
+which is the goal.
+
+Cluster definitions come from ``settings.json`` (see
+``analysis.horizontal_equity.fields_categorical`` and ``...fields_numeric``).
+"""
 import numpy as np
 import pandas as pd
 import warnings

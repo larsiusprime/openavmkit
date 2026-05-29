@@ -1,3 +1,22 @@
+"""
+Model class definitions.
+
+Defines the model classes used by :mod:`openavmkit.modeling` to train and
+predict property values. Includes:
+
+- **Tree-based wrappers** — ``XGBoostModel``, ``LightGBMModel``, ``CatBoostModel``
+- **Linear models** — ``MRAModel``, ``MultiMRAModel``
+- **Geographic models** — ``GWRModel``, ``LocalAreaModel``, ``SpatialLagModel``
+- **Baselines** — ``GarbageModel``, ``AverageModel``, ``NaiveAreaModel``,
+  ``PassThroughModel``, ``GroundTruthModel``
+
+Plus helpers (``greedy_forward_loocv``, ``TreeBasedCategoricalData``)
+shared across model fitting routines.
+
+When adding a new model, subclass here and follow the existing pattern;
+register the prediction wrapper in :mod:`openavmkit.benchmark` and the
+params/contribs writer in :mod:`openavmkit.modeling`.
+"""
 from __future__ import annotations
 import numpy as np
 from statsmodels.regression.linear_model import RegressionResults
@@ -330,98 +349,6 @@ class GWRModel:
         self.df_params_test = None
 
 
-class LandSLICEModel:
-
-    """
-    SLICE stands for "Smooth Location w/ Increasing-Concavity Equation."
-    
-    Attributes
-    ----------
-    alpha : float
-    beta : float
-    gam_L : LinearGAM
-    med_size : float
-    size_field : str
-    """
-
-    def __init__(
-        self,
-        alpha: float,
-        beta: float,
-        gam_L: LinearGAM,
-        med_size: float,
-        size_field: str
-    ):
-        """
-        ...
-        
-        Parameters
-        ----------
-        alpha: float
-        beta : float
-        gam_L : LinearGAM
-        med_size : float
-        size_field : str
-        """
-        self.alpha = alpha
-        self.beta = beta
-        self.gam_L = gam_L
-        self.med_size = med_size
-        self.size_field = size_field
-
-
-    def predict_size_factor(size_value: float):
-        return self.alpha * (size_value / self.med_size)**self.beta
-
-    
-    def predict(
-        self,
-        df_in: pd.DataFrame,
-        location_factor: str = "location_factor",
-        size_factor: str = "size_factor",
-        prediction: str = "land_value"
-    ):
-        df = df_in.copy()
-        for field in ["latitude", "longitude", self.size_field]:
-            if field not in df:
-                raise ValueError(f"Required field {field} is missing from dataframe!")
-
-        # Get location factor from Lat & Lon
-        df[location_factor] = np.exp(
-            self.gam_L.predict(df[["latitude", "longitude"]])
-        )
-
-        # Get size factor from power curve
-        df[size_factor] = self.alpha * (np.asarray(df[self.size_field]) / self.med_size)**self.beta
-
-        # Prediction is simply location premium times size factor
-        return df[location_factor] * df[size_factor]
-        
-
-    def predict_df(
-        self,
-        df: pd.DataFrame,
-        location_factor: str = "location_factor",
-        size_factor: str = "size_factor",
-        prediction: str = "land_value"
-    ) -> pd.DataFrame:
-        for field in ["latitude", "longitude", self.size_field]:
-            if field not in df:
-                raise ValueError(f"Required field {field} is missing from dataframe!")
-
-        # Get location factor from Lat & Lon
-        df[location_factor] = np.exp(
-            self.gam_L.predict(df[["latitude", "longitude"]])
-        )
-
-        # Get size factor from power curve
-        df[size_factor] = self.alpha * (np.asarray(df[self.size_field]) / self.med_size)**self.beta
-
-        # Prediction is simply location premium times size factor
-        df[prediction] = df[location_factor] * df[size_factor]
-        return df
-
-
 @dataclass
 class TreeBasedCategoricalData:
     """
@@ -557,24 +484,24 @@ class CatBoostModel:
         self.cat_data = cat_data
 
 
-class LayeredCompBaggingModel:
-    """Layered Comp Bagging Model
+class LayeredCompModel:
+    """Layered Comp Model
 
     A bagging ensemble version of the LayeredCompModel algorithm that reduces variance
     and automatically optimizes the weight_falloff for each tree in the ensemble.
 
     Attributes
     ----------
-    model: layeredcompmodel.LayeredCompBaggingModel
-        The trained LayeredCompBaggingModel from the layeredcompmodel package
+    model: layeredcompmodel.LayeredCompModel
+        The trained LayeredCompModel from the layeredcompmodel package
     """
     def __init__(self, model):
-        """Initialize a LayeredCompBaggingModel
+        """Initialize a LayeredCompModel
 
         Parameters
         ----------
-        model : layeredcompmodel.LayeredCompBaggingModel
-            The trained LayeredCompBaggingModel instance
+        model : layeredcompmodel.LayeredCompModel
+            The trained LayeredCompModel instance
         """
         self.model = model
 

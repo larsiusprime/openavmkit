@@ -1,3 +1,15 @@
+"""
+Vertical equity analysis.
+
+Implements :class:`VerticalEquityStudy`, which measures whether high-value
+parcels and low-value parcels are valued with the same accuracy — the
+"vertical equity" question. Computes PRD and PRB (with bootstrap confidence
+intervals) plus per-quantile median ratios.
+
+Together with :mod:`openavmkit.horizontal_equity_study` and
+:mod:`openavmkit.ratio_study`, this module forms OpenAVMKit's IAAO-aligned
+equity analysis suite.
+"""
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
