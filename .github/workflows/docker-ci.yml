@@ -45,7 +45,7 @@ jobs:
 
       # Set up Buildx to allow for multi-platform builds
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # This step uses [docker/metadata-action](https://github.com/docker/metadata-action#about) to extract tags and labels that will be applied to the specified image. The `id` "meta" allows the output of this step to be referenced in a subsequent step. The `images` value provides the base name for the tags and labels.
       # The labels it will output are short sha, semantic version (if present), branch, and latest if on main
