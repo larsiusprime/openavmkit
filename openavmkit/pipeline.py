@@ -2119,7 +2119,7 @@ def run_vertical_equity_study(
 ):
     # Filter to just the designated model group
     sup = get_sup_model_group(sup, model_group)
-    
+
     # Merge universe characteristics onto sales to create one combined dataframe
     df_sales = get_hydrated_sales_from_sup(sup)
 
@@ -2129,9 +2129,17 @@ def run_vertical_equity_study(
         df_sales["sale_date"].le(end_date)
     ]
 
-    # Get predictions and sales
-    predictions = df_sales[field_prediction]
-    sales = df_sales[field_sales]
+    # If no usable rows survive (empty model-group / date window, or no finite
+    # positive sales), skip the study — mirrors `run_horizontal_equity_study`.
+    if len(df_sales) == 0:
+        return None
+    usable = (
+        np.isfinite(df_sales[field_prediction])
+        & np.isfinite(df_sales[field_sales])
+        & df_sales[field_sales].gt(0)
+    )
+    if not usable.any():
+        return None
 
     # Run the vertical equity study and print the results
     return VerticalEquityStudy(
