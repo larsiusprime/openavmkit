@@ -1,3 +1,13 @@
+"""
+On-disk caching layer.
+
+Provides ``write_cache`` / ``read_cache`` / ``check_cache`` plus DataFrame
+variants. Each cached entry is keyed by both filename and a "signature"
+(typically the relevant settings or input hash); the cache is invalidated
+automatically when the signature changes. Used heavily by enrichment steps
+that do expensive remote pulls (OpenStreetMap, Overture, Census) or
+heavy local computation (street networks).
+"""
 import os
 import json
 import pickle

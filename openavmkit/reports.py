@@ -1,3 +1,15 @@
+"""
+Report generation infrastructure.
+
+Builds Markdown / HTML / PDF reports from templates (see
+``openavmkit/resources/templates/``) by substituting variables collected
+during pipeline runs. Used by ratio studies, equity studies, and
+modeling benchmarks to emit human-readable summaries.
+
+Output formats are configured via ``analysis.report.formats`` in
+``settings.json``. PDF generation requires ``wkhtmltopdf`` — see the
+configuration docs.
+"""
 import importlib.resources
 import os
 import warnings

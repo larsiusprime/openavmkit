@@ -1,3 +1,11 @@
+"""
+Geospatial utilities.
+
+Coordinate-reference-system handling (``get_crs`` for selecting an appropriate
+projection given a region and target use), geometry sanitization, ESRI/WKT/WKB
+I/O, and geometry-aware DataFrame helpers. Centralizes CRS decisions so
+downstream enrichment and modeling can stay agnostic to the input projection.
+"""
 import binascii
 import math
 import warnings

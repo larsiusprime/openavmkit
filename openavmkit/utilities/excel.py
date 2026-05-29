@@ -1,3 +1,10 @@
+"""
+Excel export utilities.
+
+Writes pandas DataFrames to ``.xlsx`` workbooks using XlsxWriter, with
+support for per-column number formats, conditional formatting rules,
+and styled headers. Used by the report generation pipeline.
+"""
 import pandas as pd
 from xlsxwriter import Workbook
 from xlsxwriter.format import Format

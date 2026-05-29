@@ -1,3 +1,11 @@
+"""
+Hierarchical clustering for equity studies.
+
+Partitions parcels into nested clusters by location, vacancy status, and
+configurable categorical / numeric similarity fields. The resulting cluster
+IDs are used as the unit of analysis in horizontal equity studies (parcels
+in the same cluster should have similar predicted-to-sale-price ratios).
+"""
 import numpy as np
 import pandas as pd
 

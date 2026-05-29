@@ -38,9 +38,15 @@ See [License Philosophy](LICENSE-PHILOSOPHY.md) for more information on why we u
 5. **Run Tests**
    - Ensure all existing and new tests pass before submitting your changes:
    ```bash
+   pytest tests/
+   ```
+
+6. **Open a Pull Request**
+   - Push your branch to your fork:
+   ```bash
    git push origin feature/my-new-feature
    ```
-   - Open a pull request on the main repository. Include a clear title and description of your changes.
+   - Open a pull request against the main repository. Include a clear title and description of your changes.
 
 ## Style Guide
    - Follow PEP 8 for Python Code
