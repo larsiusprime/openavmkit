@@ -10,11 +10,61 @@ Together with :mod:`openavmkit.horizontal_equity_study` and
 :mod:`openavmkit.ratio_study`, this module forms OpenAVMKit's IAAO-aligned
 equity analysis suite.
 """
+from typing import Dict
+import scipy.stats as stats
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import warnings
 from openavmkit.utilities.stats import ConfidenceStat, calc_ratio_stats_bootstrap, calc_prb
+
+def get_vertical_equity_scores(df, sale_field: str, valuation_field: str) -> Dict[str, float]:
+    df = df.copy()
+    df["ratio"] = df[valuation_field] / df[sale_field]
+    median_ratio = df["ratio"].median()
+    df["market_proxy"] = (df[sale_field] * 0.5) + (df[valuation_field]/median_ratio)
+    observation_count = len(df)
+    if 20 <= observation_count <= 50:
+        percentile_group_count = 2
+    elif 51 <= observation_count <= 500:
+        percentile_group_count = 4
+    elif observation_count > 501:
+        percentile_group_count = 10
+    else:
+        # VEI cannot be calculated for less than 20 observations
+        return {
+            "vei": np.nan,
+            "vei_significance": np.nan,
+            "group_stats": None
+        }
+
+    def ci_90_lower(x):
+        if len(x) <= 1: return np.nan
+        # 90% CI uses the 95th percentile for a two-tailed test
+        return np.mean(x) - stats.sem(x) * stats.t.ppf(0.95, df=len(x) - 1)
+
+    def ci_90_upper(x):
+        if len(x) <= 1: return np.nan
+        return np.mean(x) + stats.sem(x) * stats.t.ppf(0.95, df=len(x) - 1)
+
+    #split the df into percentile_group_count groups based on the market proxy
+    df["percentile_group"] = pd.qcut(df["market_proxy"], q=percentile_group_count, labels=False)
+    grouped = df.groupby("percentile_group")
+    group_stats = grouped['ratio'].agg(
+        ratio='median',
+        lower=ci_90_lower,
+        upper=ci_90_upper
+    )
+    #VEI is 100 * (median of last percentile grop - median of first percentile group)/median_ratio
+    vei_score = 100 * (group_stats[group_stats.index == (percentile_group_count - 1)].iloc[0]["ratio"] - group_stats[group_stats.index == 0].iloc[0]["ratio"]) / median_ratio
+    # VEI significance = 100 * (Lower CI for Highest PG - Upper CI for Lowest PG)/median
+    vei_significance = 100 * (group_stats[group_stats.index == (percentile_group_count -1)].iloc[0]["lower"] - group_stats[group_stats.index == 0].iloc[0]["upper"]) / median_ratio
+    return {
+        "vei": vei_score,
+        "vei_significance": vei_significance,
+        "group_stats": group_stats
+    }
+
 
 class VerticalEquityStudy:
     """
@@ -57,7 +107,10 @@ class VerticalEquityStudy:
         sales = df_sales[field_sales].to_numpy()
         
         results = calc_ratio_stats_bootstrap(predictions, sales, confidence_interval, iterations=iterations, seed=seed)
-        self.prd = results["prd"]
+        if results is not None:
+            self.prd = results["prd"]
+        else:
+            self.prd = ConfidenceStat(np.nan, confidence_interval, np.nan, np.nan)
         
         prb_point, prb_low, prb_high = calc_prb(predictions, sales, confidence_interval)
         
@@ -70,6 +123,17 @@ class VerticalEquityStudy:
         df = _assemble_quantile_df(df_sales, field_sales, field_prediction, confidence_interval, iterations, seed)
         self.quantiles = df
         
+        # Calculate VEI (Vertical Equity Indicator)
+        # ----------------------------------------
+        # VEI is defined as the percentage of price quantiles within ±5% of the overall median ratio (1.0)
+        # Note: Since the median ratio of the whole set might not be exactly 1.0, 
+        # we check how many quantile medians are within 0.95 and 1.05.
+        if len(df) > 0:
+            within_range = df['ratio'].between(0.95, 1.05).sum()
+            self.vei = within_range / len(df)
+        else:
+            self.vei = np.nan
+
         # Calculate quantiles (grouped price)
         #------------------------------------------
         
@@ -124,6 +188,14 @@ class VerticalEquityStudy:
         data["IAAO recommended"].append(prb_iaao_ok)
         data["IAAO passing"].append(prb_iaao_pass)
         
+        data["Statistic"].append("VEI")
+        data["Point value"].append(self.vei)
+        data[upper].append(np.nan)
+        data[lower].append(np.nan)
+        data[stat_sig].append(np.nan)
+        data["IAAO recommended"].append(np.nan)
+        data["IAAO passing"].append(np.nan)
+
         return pd.DataFrame(data=data)
     
     
@@ -164,6 +236,8 @@ class VerticalEquityStudy:
         
 
 def _calc_quantiles(df: pd.DataFrame, field: str):
+    if df[field].isna().all():
+        return pd.Series([np.nan] * len(df), index=df.index)
     bins = [0]
     labels = []
     last_value = 0
@@ -185,7 +259,20 @@ def _calc_quantiles(df: pd.DataFrame, field: str):
 def _calc_grouped_quantiles(df_in: pd.DataFrame, value_field: str, group_field: str):
     df = df_in.copy()
     df["quantile"] = _calc_quantiles(df, value_field)
-    df_group_to_quantile = df.groupby(group_field)["quantile"].agg(lambda x: pd.Series.mode(x)[0]).reset_index()
+    
+    # Filter out NaNs before calculating mode
+    df_valid = df.dropna(subset=["quantile"])
+    
+    if df_valid.empty:
+        df_in["quantile"] = np.nan
+        return df_in["quantile"]
+
+    def get_mode(x):
+        m = pd.Series.mode(x)
+        return m.iloc[0] if not m.empty else np.nan
+
+    df_group_to_quantile = df_valid.groupby(group_field)["quantile"].agg(get_mode).reset_index()
+    
     df2 = df_in.merge(df_group_to_quantile, on=group_field, how="left")
     return df2["quantile"]
 

@@ -87,6 +87,7 @@ from openavmkit.data import (
 )
 from openavmkit.filters import select_filter
 from openavmkit.ratio_study import RatioStudy
+from openavmkit.vertical_equity_study import VerticalEquityStudy, get_vertical_equity_scores
 from openavmkit.utilities.plotting import plot_scatterplot
 from openavmkit.utilities.somers import (
     get_unit_ft,
@@ -1405,6 +1406,12 @@ class SingleModelResults:
         
         timing.stop("stats_sales")
 
+        timing.start("vertical_equity")
+        self.ve_test = get_vertical_equity_scores(df_test, self.dep_var_test, field_prediction)
+        if y_pred_sales is not None:
+            self.ve_sales_lookback = get_vertical_equity_scores(self.df_sales_lookback, self.dep_var_test, field_prediction)
+        timing.stop("vertical_equity")
+
         self.pred_univ = y_pred_univ
         self._deal_with_log_and_area()
 
@@ -1490,6 +1497,7 @@ class SingleModelResults:
         str += f"---->COD    : {self.pred_test.ratio_study.cod:8.4f}\n"
         str += f"---->PRD    : {self.pred_test.ratio_study.prd:8.4f}\n"
         str += f"---->PRB    : {self.pred_test.ratio_study.prb:8.4f}\n"
+        str += f"---->VEI    : {self.ve_test.vei:8.4f}\n"
         str += f"\n"
         str += f"-->All sales set, rows: {len(self.pred_sales.y)}\n"
         str += f"---->RMSE   : {self.pred_sales_lookback.rmse:8.0f}\n"
@@ -1500,6 +1508,7 @@ class SingleModelResults:
         str += f"---->COD    : {self.pred_sales_lookback.ratio_study.cod:8.4f}\n"
         str += f"---->PRD    : {self.pred_sales_lookback.ratio_study.prd:8.4f}\n"
         str += f"---->PRB    : {self.pred_sales_lookback.ratio_study.prb:8.4f}\n"
+        str += f"---->VEI    : {self.ve_sales_lookback.vei:8.4f}\n"
         str += f"---->CHD    : {self.chd:8.4f}\n"
         str += f"\n"
         return str

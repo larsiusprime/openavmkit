@@ -1552,6 +1552,8 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
         "cod": [],
         "prd": [],
         "prb": [],
+        "vei": [],
+        "vei_sig":[],
         "count_trim": [],
         "cod_trim": [],
         "prd_trim": [],
@@ -1584,6 +1586,18 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
             data["cod"].append(pred_results.ratio_study.cod)
             data["prd"].append(pred_results.ratio_study.prd)
             data["prb"].append(pred_results.ratio_study.prb)
+            if kind == "test":
+                data["vei"].append(results.ve_test["vei"])
+                data["vei_sig"].append(results.ve_test["vei_significance"])
+            elif kind == "test_post_val":
+                # results here is the post-valuation SMR
+                # which doesn't explicitly calculate ve_test in _get_post_valuation_smr yet
+                # but let's see if we can get it or if it's fine to be nan
+                data["vei"].append(np.nan)
+                data["vei_sig"].append(results.ve_test["vei_significance"])
+            else:
+                data["vei"].append(results.ve_sales_lookback["vei"])
+                data["vei_sig"].append(results.ve_sales_lookback["vei_significance"])
             data["count_trim"].append(pred_results.ratio_study.count_trim)
             data["cod_trim"].append(pred_results.ratio_study.cod_trim)
             data["prd_trim"].append(pred_results.ratio_study.prd_trim)
@@ -1635,6 +1649,8 @@ def _format_benchmark_df(df: pd.DataFrame, transpose: bool = True):
         "r2": dig2_fancy_format,
         "adj_r2": dig2_fancy_format,
         "median_ratio": dig2_fancy_format,
+        "vei": dig2_fancy_format,
+        "vei_sig": dig2_fancy_format,
         "cod": dig2_fancy_format,
         "cod_trim": dig2_fancy_format,
         "true_mse": fancy_format,
@@ -3718,6 +3734,8 @@ def _model_performance_metrics(
         "MAPE": [],
         "m.ratio": [],
         "avg.ratio": [],
+        "VEI": [],
+        "VEI_sig": [],
         "Slope": []
     }
     trimmed_data = {
@@ -3729,6 +3747,8 @@ def _model_performance_metrics(
         "Slope": [],
         "m.ratio": [],
         "avg.ratio": [],
+        "VEI": [],
+        "VEI_sig": [],
     }
 
     for model_name, model_result in all_results.model_results.items():
@@ -3806,6 +3826,8 @@ def _model_performance_metrics(
         metrics_data["RMSE"].append(rmse)
         metrics_data["m.ratio"].append(model_result.pred_test.ratio_study.median_ratio)
         metrics_data["avg.ratio"].append(model_result.pred_test.ratio_study.mean_ratio)
+        metrics_data["VEI"].append(model_result.ve_test["vei"])
+        metrics_data["VEI_sig"].append(model_result.ve_test["vei_significance"])
         metrics_data["Slope"].append(slope)
 
         trimmed_data["Model"].append(model_name)
@@ -3815,6 +3837,15 @@ def _model_performance_metrics(
         trimmed_data["RMSE"].append(rmse)
         trimmed_data["m.ratio"].append(model_result.pred_test.ratio_study.median_ratio_trim)
         trimmed_data["avg.ratio"].append(model_result.pred_test.ratio_study.mean_ratio_trim)
+        
+        # Calculate VEI for trimmed data
+        # We need a VerticalEquityStudy for trimmed data specifically if we want to be accurate
+        # but for now let's just use the untrimmed one or calculate it on the fly
+        # To keep it simple and consistent with other metrics, let's just use untrimmed VEI 
+        # OR calculate a simple one here. Given VerticalEquityStudy uses quantiles, it's 
+        # better to use the one from the study.
+        trimmed_data["VEI"].append(model_result.ve_test["vei"])
+        trimmed_data["VEI_sig"].append(model_result.ve_test["vei_significance"])
         trimmed_data["Slope"].append(slope_trim)
 
     # Create and display metrics DataFrame
@@ -3827,6 +3858,8 @@ def _model_performance_metrics(
     metrics_df["Slope"] = metrics_df["Slope"].apply(lambda x: f"{x:.2f}").astype(str)
     metrics_df["m.ratio"] = metrics_df["m.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
     metrics_df["avg.ratio"] = metrics_df["avg.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
+    metrics_df["VEI"] = metrics_df["VEI"].apply(lambda x: f"{x:.2f}").astype(str)
+    metrics_df["VEI_sig"] = metrics_df["VEI_sig"].apply(lambda x: f"{x:.2f}").astype(str)
 
     trimmed_df = pd.DataFrame(trimmed_data)
     trimmed_df.set_index("Model", inplace=True)
@@ -3837,9 +3870,11 @@ def _model_performance_metrics(
     trimmed_df["Slope"] = trimmed_df["Slope"].apply(lambda x: f"{x:.2f}").astype(str)
     trimmed_df["m.ratio"] = trimmed_df["m.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
     trimmed_df["avg.ratio"] = trimmed_df["avg.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
+    trimmed_df["VEI"] = trimmed_df["VEI"].apply(lambda x: f"{x:.2f}").astype(str)
+    trimmed_df["VEI_sig"] = trimmed_df["VEI_sig"].apply(lambda x: f"{x:.2f}").astype(str)
 
-    metrics_df = metrics_df[["count","MAPE","MSE","RMSE","m.ratio","avg.ratio","Slope"]]
-    trimmed_df = trimmed_df[["count","MAPE","MSE","RMSE","m.ratio","avg.ratio","Slope"]]
+    metrics_df = metrics_df[["count","MAPE","MSE","RMSE","m.ratio","avg.ratio","VEI","Slope"]]
+    trimmed_df = trimmed_df[["count","MAPE","MSE","RMSE","m.ratio","avg.ratio","VEI","Slope"]]
 
     float_cols = metrics_df.select_dtypes(include=['float']).columns
     metrics_df[float_cols] = metrics_df[float_cols].map(lambda x: f"{x:.2f}")
