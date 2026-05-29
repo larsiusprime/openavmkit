@@ -1685,7 +1685,6 @@ def _predict_one_model(
     smr: SingleModelResults,
     model_name: str,
     model_engine: str,
-    model_group: str,
     outpath: str,
     settings: dict,
     save_results: bool = False,
