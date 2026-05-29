@@ -5,7 +5,6 @@ on:
   pull_request_target:
     types: [opened,closed,synchronize]
 
-# Explicitly configure permissions
 permissions:
   actions: write
   contents: write
@@ -16,10 +15,63 @@ jobs:
   CLAAssistant:
     runs-on: ubuntu-latest
     steps:
-      - name: "CLA Assistant"
-        # Combined conditions with logical AND (&&) between the two sets of conditions
+      # Maintainer-only flow: the contributor-assistant action only signs the
+      # comment author, so we pre-populate signatures/version1/cla.json with
+      # every unsigned PR committer when a maintainer posts the affirm phrase.
+      # The contributor-assistant step below then sees everyone as signed.
+      - name: Record PR committers on maintainer affirmation
         if: >-
-          ((github.event.comment.body == 'recheck' || github.event.comment.body == 'I affirm that this contributor has signed the CLA') || github.event_name == 'pull_request_target') &&
+          github.event_name == 'issue_comment' &&
+          startsWith(github.event.comment.body, 'I affirm that this contributor has signed the CLA') &&
+          (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_ID: ${{ github.event.repository.id }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          set -e
+
+          committers=$(gh api graphql \
+            -f query='query($owner:String!,$repo:String!,$pr:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr){commits(first:100){nodes{commit{author{user{databaseId login}}}}}}}}' \
+            -f owner="$REPO_OWNER" -f repo="$REPO_NAME" -F pr="$PR_NUMBER" \
+            | jq -c '[.data.repository.pullRequest.commits.nodes[].commit.author.user
+                      | select(. != null) | {name: .login, id: .databaseId}]
+                     | unique_by(.id)')
+
+          file_meta=$(gh api "/repos/$REPO_OWNER/$REPO_NAME/contents/signatures/version1/cla.json?ref=master")
+          file_sha=$(echo "$file_meta" | jq -r '.sha')
+          file_content=$(echo "$file_meta" | jq -r '.content' | base64 -d)
+
+          signed=$(echo "$file_content" | jq '.signedContributors // []')
+          ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          new=$(echo "$committers" | jq \
+            --argjson signed "$signed" --arg ts "$ts" \
+            --argjson repoid "$REPO_ID" --argjson pr "$PR_NUMBER" --argjson cid "$COMMENT_ID" \
+            '[.[] | select(.id as $i | ($signed | map(.id) | index($i) | not)) |
+              {name:.name, id:.id, comment_id:$cid, created_at:$ts, repoId:$repoid, pullRequestNo:$pr}]')
+
+          if [ "$(echo "$new" | jq 'length')" = "0" ]; then
+            echo "All PR committers already signed; nothing to do."
+            exit 0
+          fi
+
+          updated=$(echo "$file_content" | jq --argjson new "$new" \
+            '.signedContributors = ((.signedContributors // []) + $new)')
+          encoded=$(printf '%s' "$updated" | base64 -w 0)
+
+          gh api -X PUT "/repos/$REPO_OWNER/$REPO_NAME/contents/signatures/version1/cla.json" \
+            -f message="Sign CLA for PR #$PR_NUMBER committers via maintainer affirmation" \
+            -f content="$encoded" \
+            -f sha="$file_sha" \
+            -f branch="master"
+
+      - name: "CLA Assistant"
+        if: >-
+          ((startsWith(github.event.comment.body, 'recheck') || startsWith(github.event.comment.body, 'I affirm that this contributor has signed the CLA')) || github.event_name == 'pull_request_target') &&
           (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event_name == 'pull_request_target')
         uses: contributor-assistant/github-action@v2.6.1
         env:
@@ -28,7 +80,7 @@ jobs:
           path-to-signatures: 'signatures/version1/cla.json'
           path-to-document: 'https://docuseal.com/d/4iF7pn89f5v914'
           branch: 'master'
-          # Custom messages for the new workflow
-          custom-notsigned-prcomment: 'Thank you for your contribution.<br>Please sign our CLA at the following link:<br>[Click here to sign the CLA](https://docuseal.com/d/4iF7pn89f5v914).<br>A maintainer will verify your signature and confirm it here by commenting with the following sentence:'
+          allowlist: 'dependabot[bot]'
+          custom-notsigned-prcomment: 'Thank you for your contribution.<br>Please sign our CLA at the following link:<br>[Click here to sign the CLA](https://docuseal.com/d/4iF7pn89f5v914).<br><br>**No action is required from you in this PR thread.** Once you have signed the CLA externally, a maintainer will verify your signature and record it here on your behalf by commenting:'
           custom-pr-sign-comment: 'I affirm that this contributor has signed the CLA'
           custom-allsigned-prcomment: 'A maintainer has confirmed that all contributors have signed the CLA.'
