@@ -507,6 +507,7 @@ def get_variable_recommendations(
     settings_model = settings.get("modeling", {})
     vacant_status = "vacant" if vacant_only else "main"
     model_entries = settings_model.get("models", {}).get(vacant_status, {})
+    model_entries = model_entries.get(model_group, model_entries)
     entry: dict | None = model_entries.get("model", model_entries.get("default", {}))
     if variables_to_use is None:
         variables_to_use: list | None = entry.get("ind_vars", None)
@@ -1437,7 +1438,7 @@ def run_one_model(
     if save_results:
         t.start("write")
         main_vacant = "vacant" if vacant_only else "main"
-        location = get_model_location(settings, main_vacant, model_name)
+        location = get_model_location(settings, main_vacant, model_name, model_group)
         _write_model_results(results, outpath, settings, location, verbose=verbose)
         t.stop("write")
 
@@ -1694,93 +1695,6 @@ def _format_benchmark_df(df: pd.DataFrame, transpose: bool = True):
     if transpose:
         df = df.transpose()
     return df.to_markdown()
-
-
-def _predict_one_model(
-    smr: SingleModelResults,
-    model_name: str,
-    model_engine: str,
-    outpath: str,
-    settings: dict,
-    save_results: bool = False,
-    verbose: bool = False,
-) -> SingleModelResults:
-    """
-    Predict results for one model, using saved results if available.
-    """
-    ds = smr.ds
-
-    timing = TimingData()
-    timing.start("total")
-    
-    main_vacant = "vacant" if ds.vacant_only else "main"
-
-    results: SingleModelResults | None = None
-
-    if model_engine == "garbage":
-        garbage_model: GarbageModel = smr.model
-        results = predict_garbage(ds, garbage_model, timing, verbose)
-    elif model_engine == "garbage_normal":
-        garbage_model: GarbageModel = smr.model
-        results = predict_garbage(ds, garbage_model, timing, verbose)
-    elif model_engine == "mean":
-        mean_model: AverageModel = smr.model
-        results = predict_average(ds, mean_model, timing, verbose)
-    elif model_engine == "median":
-        median_model: AverageModel = smr.model
-        results = predict_average(ds, median_model, timing, verbose)
-    elif model_engine == "naive_area":
-        area_model: NaiveAreaModel = smr.model
-        results = predict_naive_area(ds, area_model, timing, verbose)
-    elif model_engine == "local_area":
-        area_model: LocalAreaModel = smr.model
-        results = predict_local_area(ds, area_model, timing, verbose)
-    elif model_engine == "assessor" or model_engine == "pass_through":
-        assr_model: PassThroughModel = smr.model
-        results = predict_pass_through(ds, assr_model, timing, verbose)
-    elif model_engine == "ground_truth":
-        ground_truth_model: GroundTruthModel = smr.model
-        results = predict_ground_truth(ds, ground_truth_model, timing, verbose)
-    elif model_engine == "spatial_lag" or model_engine == "spatial_lag_area":
-        lag_model: SpatialLagModel = smr.model
-        results = predict_spatial_lag(ds, lag_model, timing, verbose)
-    elif model_engine == "mra":
-        # MRA is a special case where we have to call run_ instead of predict_, because there's delicate state mangling.
-        # We pass the pretrained `model` object to run_mra() to get it to skip training and move straight to prediction
-        mra_model: MRAModel = smr.model
-        results = run_mra(ds, mra_model.intercept, verbose, mra_model)
-    elif model_engine == "multi_mra":
-        multi_mra_model: MultiMRAModel = smr.model
-        results = predict_multi_mra(ds, multi_mra_model, timing, verbose)
-    elif model_engine == "kernel":
-        kernel_reg: KernelReg = smr.model
-        results = predict_kernel(ds, kernel_reg, timing, verbose)
-    elif model_engine == "gwr":
-        gwr_model: GWRModel = smr.model
-        results = predict_gwr(ds, gwr_model, timing, verbose)
-    elif model_engine == "xgboost":
-        xgb_model: XGBoostModel = smr.model
-        results = predict_xgboost(ds, xgb_model, timing, verbose)
-    elif model_engine == "lightgbm":
-        lgbm_model: LightGBMModel = smr.model
-        results = predict_lightgbm(ds, lgbm_model, timing, verbose)
-    elif model_engine == "catboost":
-        catboost_model: CatBoostModel = smr.model
-        results = predict_catboost(ds, catboost_model, timing, verbose)
-
-    if save_results:
-        
-        mv = settings.get("modeling", {}).get("models", {}).get(main_vacant, {})
-        model_entry = mv.get("model_name", mv.get("default", {}))
-        location = model_entry.get("location", None)
-        if location is None:
-            location = get_important_field(settings, "loc_neighborhood")
-        
-        location = get_model_location(settings, main_vacant, model_name)
-        _write_model_results(results, outpath, settings, location, verbose=verbose)
-
-    return results
-
 
 def _clamp_land_predictions(
     results: SingleModelResults, 
@@ -2123,9 +2037,11 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
 def get_model_location(
     settings: dict,
     main_vacant: str,
-    model_name: str
+    model_name: str,
+    model_group: str
 ):
     mv = settings.get("modeling", {}).get("models", {}).get(main_vacant, {})
+    mv = mv.get(model_group, mv)
     model_entry = mv.get(model_name, mv.get("default", {}))
     location = model_entry.get("location", None)
     if location is None:
@@ -2992,6 +2908,7 @@ def _prepare_ds(
     s_model = s.get("modeling", {})
     vacant_status = "vacant" if vacant_only else "main"
     model_entries = s_model.get("models", {}).get(vacant_status, {})
+    model_entries = model_entries.get(model_group, model_entries)
     entry: dict | None = model_entries.get("model", model_entries.get("default", {}))
 
     if ind_vars is None:
@@ -3936,6 +3853,7 @@ def _run_models(
     models_to_skip = settings_model_instructions.get(main_vacant,{}).get("skip",{}).get(model_group,[])
 
     model_entries = settings_model.get("models").get(main_vacant, {})
+    model_entries = model_entries.get(model_group, model_entries)
 
     if models_to_run is None:
         models_to_run = list(model_entries.keys())
