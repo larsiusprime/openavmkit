@@ -507,6 +507,7 @@ def get_variable_recommendations(
     settings_model = settings.get("modeling", {})
     vacant_status = "vacant" if vacant_only else "main"
     model_entries = settings_model.get("models", {}).get(vacant_status, {})
+    model_entries = model_entries.get(model_group, model_entries)
     entry: dict | None = model_entries.get("model", model_entries.get("default", {}))
     if variables_to_use is None:
         variables_to_use: list | None = entry.get("ind_vars", None)
@@ -1437,7 +1438,7 @@ def run_one_model(
     if save_results:
         t.start("write")
         main_vacant = "vacant" if vacant_only else "main"
-        location = get_model_location(settings, main_vacant, model_name)
+        location = get_model_location(settings, main_vacant, model_name, model_group)
         _write_model_results(results, outpath, settings, location, verbose=verbose)
         t.stop("write")
 
@@ -1684,6 +1685,7 @@ def _predict_one_model(
     smr: SingleModelResults,
     model_name: str,
     model_engine: str,
+    model_group: str,
     outpath: str,
     settings: dict,
     save_results: bool = False,
@@ -1755,12 +1757,13 @@ def _predict_one_model(
     if save_results:
         
         mv = settings.get("modeling", {}).get("models", {}).get(main_vacant, {})
+        mv = mv.get(model_group, mv)
         model_entry = mv.get("model_name", mv.get("default", {}))
         location = model_entry.get("location", None)
         if location is None:
             location = get_important_field(settings, "loc_neighborhood")
         
-        location = get_model_location(settings, main_vacant, model_name)
+        location = get_model_location(settings, main_vacant, model_name, model_group)
         _write_model_results(results, outpath, settings, location, verbose=verbose)
 
     return results
@@ -2107,9 +2110,11 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
 def get_model_location(
     settings: dict,
     main_vacant: str,
-    model_name: str
+    model_name: str,
+    model_group: str
 ):
     mv = settings.get("modeling", {}).get("models", {}).get(main_vacant, {})
+    mv = mv.get(model_group, mv)
     model_entry = mv.get(model_name, mv.get("default", {}))
     location = model_entry.get("location", None)
     if location is None:
@@ -2976,6 +2981,7 @@ def _prepare_ds(
     s_model = s.get("modeling", {})
     vacant_status = "vacant" if vacant_only else "main"
     model_entries = s_model.get("models", {}).get(vacant_status, {})
+    model_entries = model_entries.get(model_group, model_entries)
     entry: dict | None = model_entries.get("model", model_entries.get("default", {}))
 
     if ind_vars is None:
@@ -3906,6 +3912,7 @@ def _run_models(
     models_to_skip = settings_model_instructions.get(main_vacant,{}).get("skip",{}).get(model_group,[])
 
     model_entries = settings_model.get("models").get(main_vacant, {})
+    model_entries = model_entries.get(model_group, model_entries)
 
     if models_to_run is None:
         models_to_run = list(model_entries.keys())
