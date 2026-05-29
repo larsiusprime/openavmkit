@@ -4736,13 +4736,20 @@ def _do_write_canonical_split(
 
 
 def _read_split_keys(model_group: str):
-    """Read the train and test split keys for a model group from disk."""
+    """Read the train and test split keys for a model group from disk.
+
+    Returns empty arrays (with a warning) when keys are missing — happens for
+    model groups that have sales records but no `valid_sale=True` rows, so
+    `_write_canonical_splits` skips them. Callers either union keys across
+    model groups (where empty contributes nothing) or feed into the existing
+    "< 15 sales" skip path in `run_one_model`.
+    """
     path = f"out/models/{model_group}/_data"
     train_path = f"{path}/train_keys.csv"
     test_path = f"{path}/test_keys.csv"
     if not os.path.exists(train_path) or not os.path.exists(test_path):
-        warnings.warn(f"Model group:{model_group}")
-        raise ValueError("No split keys found.")
+        warnings.warn(f"No split keys found for model group: {model_group} (returning empty)")
+        return np.array([], dtype=str), np.array([], dtype=str)
     train_keys = pd.read_csv(train_path)["key_sale"].astype(str).values
     test_keys = pd.read_csv(test_path)["key_sale"].astype(str).values
     return test_keys, train_keys
