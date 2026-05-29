@@ -118,7 +118,6 @@ class VerticalEquityStudy:
         df_sales["quantile"] = _calc_quantiles(df_sales_in, field_sales)
         df = _assemble_quantile_df(df_sales, field_sales, field_prediction, confidence_interval, iterations, seed)
         self.quantiles = df
-
         # Calculate quantiles (grouped price)
         #------------------------------------------
         
@@ -172,7 +171,6 @@ class VerticalEquityStudy:
         data[stat_sig].append(prb_stat_sig)
         data["IAAO recommended"].append(prb_iaao_ok)
         data["IAAO passing"].append(prb_iaao_pass)
-
         return pd.DataFrame(data=data)
     
     
@@ -213,8 +211,6 @@ class VerticalEquityStudy:
         
 
 def _calc_quantiles(df: pd.DataFrame, field: str):
-    if df[field].isna().all():
-        return pd.Series([np.nan] * len(df), index=df.index)
     bins = [0]
     labels = []
     last_value = 0
