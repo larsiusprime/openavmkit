@@ -1757,7 +1757,6 @@ def _predict_one_model(
     if save_results:
         
         mv = settings.get("modeling", {}).get("models", {}).get(main_vacant, {})
-        mv = mv.get(model_group, mv)
         model_entry = mv.get("model_name", mv.get("default", {}))
         location = model_entry.get("location", None)
         if location is None:
