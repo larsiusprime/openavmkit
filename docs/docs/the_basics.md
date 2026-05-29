@@ -114,8 +114,19 @@ This should open a new tab in your web browser with the Jupyter interface.
 
 For information on how to use Jupyter notebooks in general, refer to the [official Jupyter notebook documentation](https://jupyter-notebook.readthedocs.io/en/stable/).
 
+For an overview of which notebook to run when, see [notebooks/README.md](https://github.com/landeconomics/openavmkit/blob/master/notebooks/README.md).
 
+## Where to go from here
 
+Once you have a locality set up and the basics down, dig into:
+
+- **[Build a jurisdiction from scratch (tutorial)](tutorial.md)** — end-to-end walkthrough from raw data to a working AVM. The recommended next read.
+- **[The pipeline notebooks](https://github.com/landeconomics/openavmkit/blob/master/notebooks/README.md)** — `01-assemble`, `02-clean`, `03-model`, `assessment_quality`. Run them in order on a real locality.
+- **[Recipe](recipe.md)** — public function reference, organized by pipeline stage.
+- **[Advanced settings reference](advanced_settings.md)** — the settings.json preprocessor (`__` comments, `$$` references, template merging, `!`/`+` flags), plus high-impact settings most users discover only by reading source. Read this once before writing your own settings file.
+- **[Configuration](config.md)** — environment-level setup (`.env`, cloud storage, Census API keys, PDF generation).
+
+If you're a coding agent or contributor, also read **[AGENTS.md](https://github.com/landeconomics/openavmkit/blob/master/AGENTS.md)** at the repo root — it captures repo-wide conventions and gotchas.
 
 ## Terminology
 
@@ -169,7 +180,7 @@ The portion of the full market value due solely to the land itself, without any 
 **Data set**  
 This refers to any collection of parcel records grouped together by some criteria.
 
-**Sales set**  
+**Sales set / Study set**  
 This refers to the subset of parcels that have a valid sale within the study period. We will use these to train our models as well as to evaluate them.
 
 **Training set**  
@@ -192,9 +203,6 @@ In any OpenAVMKit model run, the "main" model is the primary model. It operates 
 
 **Vacant**  
 In any OpenAVMKit model run, the "vacant" model is a secondary model that trains and predicts separately. It is trained only on sales of vacant land, but is used to predict the value of all parcels. The prediction it generates is solely for land value, not full market value.
-
-**Hedonic**  
-In our specific usage, a "hedonic" model is a variant of the main model used to predict land value. In this case, the main model is re-used for a second set of predictions, but the universe dataset is manipulated to remove all the improvement characteristics. This causes the main model to predict the full market of each parcel *as if it was a vacant lot*.
 
 ### Avoid these terms
 

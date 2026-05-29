@@ -1,3 +1,12 @@
+"""
+Somers unit-foot land valuation utilities.
+
+Implements the "Somers unit-foot" — a lot's value normalized by its
+frontage and a standard depth (typically 100 ft / 30.5 m). This
+normalization makes lots of varying frontage and depth comparable for
+land-value modeling. Used by the streets enrichment to convert
+frontage-and-depth measurements into a Somers-units land area.
+"""
 from __future__ import annotations
 import numpy as np
 

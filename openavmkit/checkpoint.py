@@ -1,3 +1,20 @@
+"""
+Notebook checkpoint system.
+
+Provides ``from_checkpoint``, the main mechanism the pipeline notebooks use to
+save and resume intermediate state. Each checkpoint stores a function's result
+to disk; on subsequent runs the checkpoint is loaded instead of re-executing
+the function. Supports both pickled Python objects and parquet-backed
+DataFrames / GeoDataFrames.
+
+Typical use pattern in a notebook cell::
+
+    sup = from_checkpoint("1-assemble-02-process_data", process_dataframes,
+                          {"dataframes": dataframes, "settings": settings})
+
+Set ``clear_checkpoints = True`` at the top of a notebook (and call
+``delete_checkpoints``) to start over from scratch.
+"""
 import os
 import pickle
 from typing import Any

@@ -1,3 +1,14 @@
+"""
+Sales scrutiny — flagging suspect sales.
+
+Heuristic and statistical checks for identifying sales that may not reflect
+arms-length, market-rate transactions: outlier prices within a cluster of
+similar properties, suspicious price clusters (Gaussian mixture analysis),
+manual exclusion lists, etc. Marks suspect sales so they can be excluded
+from training data while remaining visible for audit.
+
+Cluster definitions come from ``analysis.sales_scrutiny`` in ``settings.json``.
+"""
 import os
 import warnings
 import pandas as pd

@@ -31,7 +31,7 @@ class InferenceModel(ABC):
     """Base class for inference models."""
 
     @abstractmethod
-    def fit(self, df: pd.DataFrame, target: str, settings: Dict[str, Any]) -> None:
+    def fit(self, df: pd.DataFrame, target: str, model_settings: Dict[str, Any]) -> None:
         """
         Fit the model using training data.
 
@@ -41,8 +41,9 @@ class InferenceModel(ABC):
             Training data.
         target : str
             Field name of the target variable.
-        settings : Dict[str, Any]
-            Settings dictionary.
+        model_settings : Dict[str, Any]
+            Per-field inference model config from
+            ``data.process.enrich.infer.<field>.model``.
 
         Returns
         -------
@@ -92,7 +93,7 @@ class RatioProxyModel(InferenceModel):
         self.proxy_ratios = {}
         self.proxy_stats = {}
 
-    def fit(self, df: pd.DataFrame, target: str, settings: Dict[str, Any]) -> None:
+    def fit(self, df: pd.DataFrame, target: str, model_settings: Dict[str, Any]) -> None:
         """
         Fit the model using training data.
 
@@ -102,12 +103,13 @@ class RatioProxyModel(InferenceModel):
             Training data.
         target : str
             Field name of the target variable.
-        settings : Dict[str, Any]
-            Settings dictionary.
+        model_settings : Dict[str, Any]
+            Per-field inference model config from
+            ``data.process.enrich.infer.<field>.model``.
         """
-        proxies = settings.get("proxies", [])
-        locations = settings.get("locations", [])
-        group_by = settings.get("group_by", [])
+        proxies = model_settings.get("proxies", [])
+        locations = model_settings.get("locations", [])
+        group_by = model_settings.get("group_by", [])
 
         # Add global grouping
         locations.append("___everything___")
@@ -423,7 +425,7 @@ class RandomForestModel(InferenceModel):
 
         return X
 
-    def fit(self, df: pd.DataFrame, target: str, settings: Dict[str, Any]) -> None:
+    def fit(self, df: pd.DataFrame, target: str, model_settings: Dict[str, Any]) -> None:
         """
         Fit the model using training data.
 
@@ -433,15 +435,16 @@ class RandomForestModel(InferenceModel):
             Training data.
         target : str
             Field name of the target variable.
-        settings : Dict[str, Any]
-            Settings dictionary.
+        model_settings : Dict[str, Any]
+            Per-field inference model config from
+            ``data.process.enrich.infer.<field>.model``.
         """
 
-        proxies = settings.get("proxies", [])
+        proxies = model_settings.get("proxies", [])
         locations = [
-            loc for loc in settings.get("locations", []) if loc != "___everything___"
+            loc for loc in model_settings.get("locations", []) if loc != "___everything___"
         ]
-        interactions = settings.get("interactions", [])
+        interactions = model_settings.get("interactions", [])
 
         # Format interaction fields
         self.interaction_fields = []
@@ -619,7 +622,7 @@ class LightGBMModel(InferenceModel):
 
         return X
 
-    def fit(self, df: pd.DataFrame, target: str, settings: Dict[str, Any]) -> None:
+    def fit(self, df: pd.DataFrame, target: str, model_settings: Dict[str, Any]) -> None:
         """
         Fit the model using training data.
 
@@ -629,15 +632,16 @@ class LightGBMModel(InferenceModel):
             Training data.
         target : str
             Field name of the target variable.
-        settings : Dict[str, Any]
-            Settings dictionary.
+        model_settings : Dict[str, Any]
+            Per-field inference model config from
+            ``data.process.enrich.infer.<field>.model``.
         """
 
-        proxies = settings.get("proxies", [])
+        proxies = model_settings.get("proxies", [])
         locations = [
-            loc for loc in settings.get("locations", []) if loc != "___everything___"
+            loc for loc in model_settings.get("locations", []) if loc != "___everything___"
         ]
-        interactions = settings.get("interactions", [])
+        interactions = model_settings.get("interactions", [])
 
         # Format interaction fields
         self.interaction_fields = []
@@ -813,7 +817,7 @@ class XGBoostModel(InferenceModel):
 
         return X
 
-    def fit(self, df: pd.DataFrame, target: str, settings: Dict[str, Any]) -> None:
+    def fit(self, df: pd.DataFrame, target: str, model_settings: Dict[str, Any]) -> None:
         """
         Fit model with proper categorical handling and interactions.
 
@@ -823,14 +827,15 @@ class XGBoostModel(InferenceModel):
             Training data.
         target : str
             Field name of the target variable.
-        settings : Dict[str, Any]
-            Settings dictionary.
+        model_settings : Dict[str, Any]
+            Per-field inference model config from
+            ``data.process.enrich.infer.<field>.model``.
         """
-        proxies = settings.get("proxies", [])
+        proxies = model_settings.get("proxies", [])
         locations = [
-            loc for loc in settings.get("locations", []) if loc != "___everything___"
+            loc for loc in model_settings.get("locations", []) if loc != "___everything___"
         ]
-        interactions = settings.get("interactions", [])
+        interactions = model_settings.get("interactions", [])
 
         # Format interaction fields
         self.interaction_fields = []
@@ -999,7 +1004,7 @@ class EnsembleModel(InferenceModel):
 
         return X
 
-    def fit(self, df: pd.DataFrame, target: str, settings: Dict[str, Any]) -> None:
+    def fit(self, df: pd.DataFrame, target: str, model_settings: Dict[str, Any]) -> None:
         """Fit ensemble model and determine optimal weights.
 
         Parameters
@@ -1008,14 +1013,15 @@ class EnsembleModel(InferenceModel):
             Training data.
         target : str
             Field name of the target variable.
-        settings : Dict[str, Any]
-            Settings dictionary.
+        model_settings : Dict[str, Any]
+            Per-field inference model config from
+            ``data.process.enrich.infer.<field>.model``.
         """
-        proxies = settings.get("proxies", [])
+        proxies = model_settings.get("proxies", [])
         locations = [
-            loc for loc in settings.get("locations", []) if loc != "___everything___"
+            loc for loc in model_settings.get("locations", []) if loc != "___everything___"
         ]
-        interactions = settings.get("interactions", [])
+        interactions = model_settings.get("interactions", [])
 
         # Format interaction fields
         self.interaction_fields = []
@@ -1033,11 +1039,11 @@ class EnsembleModel(InferenceModel):
 
         # Fit individual models
         print("\nFitting LightGBM model...")
-        self.lgb_model.fit(df_train, target, settings)
+        self.lgb_model.fit(df_train, target, model_settings)
         print("\nFitting XGBoost model...")
-        self.xgb_model.fit(df_train, target, settings)
+        self.xgb_model.fit(df_train, target, model_settings)
         print("\nFitting Random Forest model...")
-        self.rf_model.fit(df_train, target, settings)
+        self.rf_model.fit(df_train, target, model_settings)
 
         # Get predictions on validation set
         lgb_preds = self.lgb_model.predict(df_val)
@@ -1069,9 +1075,9 @@ class EnsembleModel(InferenceModel):
         print(f"--> Random Forest: {self.weights[2]:.4f}")
 
         # Fit final models on full data
-        self.lgb_model.fit(df, target, settings)
-        self.xgb_model.fit(df, target, settings)
-        self.rf_model.fit(df, target, settings)
+        self.lgb_model.fit(df, target, model_settings)
+        self.xgb_model.fit(df, target, model_settings)
+        self.rf_model.fit(df, target, model_settings)
 
     def predict(self, df: pd.DataFrame) -> pd.Series:
         """Make predictions on new data.
@@ -1235,6 +1241,15 @@ def _do_perform_spatial_inference(
         raise ValueError(f"No model settings found for field {field}")
     if not model_type:
         raise ValueError(f"No model type specified for field {field}")
+
+    if "locations" not in model_settings:
+        warnings.warn(
+            f"No `locations` key in `data.process.enrich.infer.{field}.model`. "
+            f"Inference for '{field}' will run as a single global group. "
+            f"To group by location, set `data.process.enrich.infer.{field}.model.locations` "
+            f"to a list of location-field names (e.g. [\"neighborhood\", \"market_area\"]). "
+            f"To silence this warning while keeping global-only behavior, set `locations: []`."
+        )
 
     filters = s_infer.get("filters", [])
     fill_fields = s_infer.get("fill", [])
