@@ -5,7 +5,12 @@ dist/
 build/
 tests/catboost_info/
 tests/out/
-tests/data/
+tests/data/*
+!tests/data/settings.template.json
+!tests/data/nc-guilford/
+!tests/data/nc-guilford/**
+!tests/data/fr-02-saint_quentin/
+!tests/data/fr-02-saint_quentin/**
 notebooks/pipeline/data/
 notebooks/pipeline/out/
 notebooks/pipeline/cache/
