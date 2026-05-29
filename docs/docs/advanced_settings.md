@@ -561,6 +561,30 @@ For each parcel, computes neighborhood averages of selected fields (sale price, 
 - **Source** — `enrich_sup_spatial_lag` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py)
 - **When to use** — when you want models to see neighborhood smoothing of key signals, especially price.
 
+#### Number of nearest neighbors (`k`)
+
+The neighborhood average is over the parcel's **k nearest training-set sales**. Two knobs control `k`, depending on which family of spatial-lag column is being computed:
+
+- **`data.process.enrich.spatial_lag.sale_price`** — `k` for the sale-price-flavor lags (`spatial_lag_sale_price`, `spatial_lag_sale_price_vacant`, plus the per-land and per-improvement variants). Default `5`.
+- **`data.process.enrich.spatial_lag.fields`** — dict mapping field name to its own `k` for the non-price lags (building age, finished area, quality/condition num, FAR, bedroom density, etc.). Anything not listed uses the built-in default of `5`.
+
+```json
+{
+  "data": {
+    "process": {
+      "enrich": {
+        "spatial_lag": {
+          "sale_price": 10,
+          "fields": { "bldg_age_years": 7 }
+        }
+      }
+    }
+  }
+}
+```
+
+Increasing `k` smooths more (broader neighborhood); decreasing it sharpens (more local). If a model group has fewer training sales than `k+1`, the sale-price lag is skipped for that group rather than failing.
+
 ### 4.9 Spatial inference (gap fill) — `data.process.enrich.infer`
 
 Fills missing values for selected fields using geospatial patterns from nearby parcels. Runs after all other enrichments so it can use enriched fields as predictors.
@@ -834,6 +858,10 @@ Per-model-group skip list. For the named model group, the listed models are skip
 
 - **Source** — `_run_models` in [openavmkit/benchmark.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py)
 - **When to use** — a particular model is unstable on a particular model group (low sample count, rank-deficient features) and you want to exclude it from that group only.
+
+### `modeling.models.<main|vacant>.<model_group>` — per-model-group overrides
+
+The entries under `modeling.models.<main|vacant>` can be **overridden per model group** by nesting a block keyed on the model-group id. When present, the override block replaces the top-level entries wholesale for that group (no merge). Use this when one model group needs a different set of `ind_vars`, `n_trials`, or even a different list of models entirely. See [models_reference.md § 1.5](models_reference.md#15-per-model-group-overrides) for the resolution rule and a worked example.
 
 ### Train / test split rules
 

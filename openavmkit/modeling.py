@@ -1497,7 +1497,7 @@ class SingleModelResults:
         str += f"---->COD    : {self.pred_test.ratio_study.cod:8.4f}\n"
         str += f"---->PRD    : {self.pred_test.ratio_study.prd:8.4f}\n"
         str += f"---->PRB    : {self.pred_test.ratio_study.prb:8.4f}\n"
-        str += f"---->VEI    : {self.ve_test.vei:8.4f}\n"
+        str += f"---->VEI    : {self.ve_test['vei']:8.4f}\n"
         str += f"\n"
         str += f"-->All sales set, rows: {len(self.pred_sales.y)}\n"
         str += f"---->RMSE   : {self.pred_sales_lookback.rmse:8.0f}\n"
@@ -1508,7 +1508,7 @@ class SingleModelResults:
         str += f"---->COD    : {self.pred_sales_lookback.ratio_study.cod:8.4f}\n"
         str += f"---->PRD    : {self.pred_sales_lookback.ratio_study.prd:8.4f}\n"
         str += f"---->PRB    : {self.pred_sales_lookback.ratio_study.prb:8.4f}\n"
-        str += f"---->VEI    : {self.ve_sales_lookback.vei:8.4f}\n"
+        str += f"---->VEI    : {self.ve_sales_lookback['vei']:8.4f}\n"
         str += f"---->CHD    : {self.chd:8.4f}\n"
         str += f"\n"
         return str

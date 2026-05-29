@@ -1884,9 +1884,9 @@ def finalize_models(
     save_params: bool = True,
     use_saved_params: bool = True,
     verbose: bool = False,
-    run_main: bool =False,
-    run_vacant: bool = False,
-    run_ensemble: bool = False
+    run_main: bool = True,
+    run_vacant: bool = True,
+    run_ensemble: bool = True,
 ) -> None:
     """
     Tries out predictive models on the given SalesUniversePair, finalizes results and writes to disk.

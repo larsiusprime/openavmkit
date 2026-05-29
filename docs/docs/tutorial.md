@@ -338,8 +338,9 @@ Open [`03-model.ipynb`](https://github.com/landeconomics/openavmkit/blob/master/
 - **Model training.** Per model group, the configured models train and predict. Default lineup: MRA (linear regression), GWR (geographic weighted regression), XGBoost, LightGBM, CatBoost, plus several baselines. **For the full catalog of available models, how to invoke them, how to run multiple variants of the same engine (e.g. two XGBoost configurations side-by-side), and what settings each accepts, see [Models reference](models_reference.md).**
 - **Per-model output.** Each model produces three artifacts per subset (test/sales/universe):
     - **Predictions** — the central output.
-    - **`params_<subset>.csv`** — per-feature parameters (regression coefficients for linear; SHAP-normalized for tree-based). "What is each feature's per-unit effect?"
+    - **`params_<subset>.csv`** — per-feature parameters (regression coefficients for linear; SHAP-normalized for tree-based). "What is each feature's per-unit effect?" For MRA the file carries two columns — `coefficient` and `error` (the regression standard error) — so you can read both the effect and its uncertainty.
     - **`contributions_<subset>.csv`** — per-feature contributions (coef × value for linear; raw SHAP for tree-based). "How much did each feature contribute to this row's prediction?"
+- **In-notebook metric tables.** Alongside the on-disk artifacts, each run prints a per-model summary table with `count`, `MAPE`, `MSE`, `RMSE`, `m.ratio`, `avg.ratio`, `VEI`, `Slope`. `VEI` (Vertical Equity Index) flags regressive vs. progressive valuation; see the glossary in [§ B.8](#b8-run-notebook-4-assessment-quality).
 
 #### `try_models` vs `finalize_models` — iterate fast, then commit
 
@@ -493,6 +494,7 @@ Open [`assessment_quality.ipynb`](https://github.com/landeconomics/openavmkit/bl
     > - **COD** (Coefficient of Dispersion) — overall variability of ratios. Lower is better; IAAO standard is < 15.0 for single-family residential.
     > - **PRD** (Price-Related Differential) — ratio of mean to weighted-mean ratio. Should be ~1.0; > 1.03 suggests regressive valuation (low-priced properties over-assessed).
     > - **PRB** (Price-Related Bias) — alternative vertical-equity measure. Should be near zero; outside ±0.05 is concerning.
+    > - **VEI** (Vertical Equity Index) — `100 × (top-percentile-group median ratio − bottom-percentile-group median ratio) / overall median ratio`. Number of percentile groups scales with sample size (2 / 4 / 10 for 20–50 / 51–500 / >500 sales; `NaN` below 20). Zero means high- and low-value parcels are valued with the same accuracy; positive means regressive (low-priced over-assessed), negative means progressive. Reported alongside `VEI_sig`, a 90%-CI version: if `VEI_sig` and `VEI` share a sign, the gap is statistically significant.
 - **Horizontal equity study.** Within clusters of similar properties, do similar parcels get similar predictions? Reports CHD (Coefficient of Horizontal Dispersion) per cluster.
 - **Vertical equity study.** Across price quantiles, does the model treat high-value and low-value parcels with the same accuracy? Reports PRD/PRB and per-quantile median ratios.
 

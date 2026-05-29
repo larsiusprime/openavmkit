@@ -145,6 +145,36 @@ All three tree-based models pick up the default `n_trials` and `ind_vars`.
 
 Putting an asterisk in the `model` value (e.g. `"model": "xgboost*"`) enables **sales chasing** — predictions on sold parcels deliberately copy the observed sale price with a small amount of random noise, simulating leakage. This is for **analytical purposes only**; it lets you measure how much a model's reported accuracy comes from genuinely good predictions versus inadvertent leakage. **Never** use sales chasing in production.
 
+### 1.5 Per-model-group overrides
+
+By default, the entries under `modeling.models.<stage>` apply to **every** model group. If you need a different model configuration for a specific model group — different `ind_vars`, different `n_trials`, even a different set of models entirely — nest the overrides under a key that matches the model group's id:
+
+```json
+{
+    "modeling": {
+        "models": {
+            "main": {
+                "default": { "n_trials": 50, "ind_vars": ["bldg_area_finished_sqft", "land_area_sqft", "bldg_age_years"] },
+                "mra": {},
+                "xgboost": {},
+
+                "single_family_residential": {
+                    "default": { "n_trials": 100 },
+                    "mra": { "ind_vars": ["bldg_area_finished_sqft", "land_area_sqft", "bldg_age_years", "bldg_quality_num", "neighborhood"] },
+                    "xgboost": { "ind_vars": ["latitude_norm", "longitude_norm", "bldg_area_finished_sqft", "land_area_sqft", "bldg_age_years", "spatial_lag_sale_price"] }
+                }
+            }
+        }
+    }
+}
+```
+
+Resolution: for each model group, OpenAVMKit first checks whether `modeling.models.<stage>.<model_group_id>` exists. If it does, that nested dict is used in place of the top-level one (same shape — `default` plus model-name entries). If it doesn't, the top-level entries apply. There is **no merging** between the override block and the top level: the override replaces it wholesale for that model group, so include every model entry you want to run there.
+
+- **Source** — see `_run_models`, `_prepare_ds`, `get_variable_recommendations`, and `get_model_location` in [openavmkit/benchmark.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py); all four do `model_entries.get(model_group, model_entries)`.
+- **When to use** — different model groups need substantively different feature sets (e.g. single-family wants neighborhood encodings; vacant-land wants only land features), or you want to tune trees harder on one group than another.
+- **When not to use** — small per-entry tweaks; just override `ind_vars` on the specific model entry at the top level if every group is otherwise the same.
+
 ---
 
 ## 2. Common entry fields
