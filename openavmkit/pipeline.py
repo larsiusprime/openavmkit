@@ -1884,6 +1884,9 @@ def finalize_models(
     save_params: bool = True,
     use_saved_params: bool = True,
     verbose: bool = False,
+    run_main: bool =False,
+    run_vacant: bool = False,
+    run_ensemble: bool = False
 ) -> None:
     """
     Tries out predictive models on the given SalesUniversePair, finalizes results and writes to disk.
@@ -1908,6 +1911,12 @@ def finalize_models(
         Whether to use saved model parameters.
     verbose : bool, optional
         If True, prints additional information.
+    run_main : bool, optional
+        Flag to run main models. Defaults to True.
+    run_vacant : bool, optional
+        Flag to run vacant models. Defaults to True.
+    run_ensemble : bool, optional
+        Flag to run ensemble models. Defaults to True.
 
     Returns
     -------
@@ -1922,9 +1931,9 @@ def finalize_models(
         use_saved_params,
         save_results=True,
         verbose=verbose,
-        run_main=True,
-        run_vacant=True,
-        run_ensemble=True,
+        run_main=run_main,
+        run_vacant=run_vacant,
+        run_ensemble=run_ensemble,
         do_shaps=False,
         do_plots=False
     )
