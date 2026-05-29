@@ -1,3 +1,10 @@
+"""
+Time-series projection helpers.
+
+Linear-trend extrapolation utilities used in time adjustment and trend
+analysis. Given an observed series of values, fits a linear model and
+returns the projected value at a target time index.
+"""
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm

@@ -36,3 +36,5 @@ tests/cache/
 cache/
 
 out/
+
+.claude/

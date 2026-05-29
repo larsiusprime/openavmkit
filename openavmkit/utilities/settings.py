@@ -1,3 +1,27 @@
+"""
+Settings.json loader, preprocessor, and typed accessors.
+
+This module is the single source of truth for reading ``settings.json``.
+It performs four transformations on the user's file before any other
+module sees it:
+
+1. **Comment stripping** — keys prefixed with ``__`` are removed.
+2. **Variable resolution** — string values prefixed with ``$$`` are
+   replaced by the value at the dotted path inside the same settings
+   tree (recursive until stable).
+3. **Template merging** — the user's settings are merged with the built-in
+   ``settings.template.json``, so users only need to specify overrides.
+4. **Flag handling** — ``!key`` overwrites the template instead of merging,
+   ``+key`` extends template lists instead of replacing them.
+
+After loading, a large collection of typed accessors (``get_valuation_date``,
+``get_model_group_ids``, ``get_fields_categorical``, ``area_unit``, etc.)
+provides a stable, well-typed interface to the resulting dict — prefer
+these over reaching into the dict directly.
+
+See :doc:`/advanced_settings` for a user-facing reference of the
+preprocessor and high-impact settings.
+"""
 import importlib
 import json
 import os
@@ -113,11 +137,44 @@ def get_look_back_dates(s: dict):
     rs = s.get("analysis", {}).get("ratio_study", {})
     look_back_years = rs.get("look_back_years", 1)
     val_date = get_valuation_date(s)
-        
+
     # Look back N years BEFORE the valuation date
     look_back_date = val_date - pd.DateOffset(years=look_back_years)
-    
+
     return look_back_date, val_date
+
+
+def resolve_use_sales_from(s: dict) -> tuple[int | None, int | None]:
+    """Resolve ``modeling.metadata.use_sales_from`` into per-type year thresholds.
+
+    The setting can take three forms:
+
+      * ``None`` (missing) — returns ``(None, None)``; callers should treat
+        as "no threshold".
+      * ``int`` — single cutoff applied to both improved and vacant sales.
+      * ``dict`` — ``{"improved": YYYY, "vacant": YYYY}`` for per-type cutoffs.
+        Missing keys fall back to ``val_year - 5``.
+
+    Returns a tuple ``(improved_year, vacant_year)``. Always use this helper
+    instead of parsing ``use_sales_from`` inline — the dict form needs careful
+    branching, and naïve scalar comparisons against a ``Series`` crash with
+    "TypeError: len() of unsized object".
+    """
+    md = s.get("modeling", {}).get("metadata", {})
+    if "use_sales_from" not in md:
+        return None, None
+    use_sales_from = md["use_sales_from"]
+    if use_sales_from is None:
+        return None, None
+    if isinstance(use_sales_from, int):
+        return use_sales_from, use_sales_from
+    if isinstance(use_sales_from, dict):
+        val_year = get_valuation_date(s).year
+        impr = use_sales_from.get("improved", val_year - 5)
+        vac = use_sales_from.get("vacant", val_year - 5)
+        return impr, vac
+    # Fall through: malformed value — return None/None and let callers no-op.
+    return None, None
 
 
 def get_center(s: dict, gdf: gpd.GeoDataFrame = None) -> tuple[float, float]:
@@ -765,7 +822,7 @@ def get_locations(settings: dict, df: pd.DataFrame = None) -> list[str]:
     return locations
     
 
-def get_ensemble_instructions(settings: dict, mvh: str) -> dict:
+def get_ensemble_instructions(settings: dict, mv: str) -> dict:
     """
     Retrieves ensemble instructions for a particular modeling section
     
@@ -773,8 +830,8 @@ def get_ensemble_instructions(settings: dict, mvh: str) -> dict:
     ----------
     settings : dict
         Settings dictionary.
-    mvh : string
-        Which section -- "main", "vacant", or "hedonic"
+    mv : string
+        Which section -- "main" or "vacant"
         
     Returns
     -------
@@ -782,7 +839,7 @@ def get_ensemble_instructions(settings: dict, mvh: str) -> dict:
         Dictionary object containing ensemble settings
     """
     
-    instructions = settings.get("modeling", {}).get("instructions", {}).get(mvh, {})
+    instructions = settings.get("modeling", {}).get("instructions", {}).get(mv, {})
     
     ensemble = instructions.get("ensemble", {})
     type = ensemble.get("type", "default")
@@ -1176,11 +1233,20 @@ def _is_series_all_bools(series: pd.Series) -> bool:
     dtype = series.dtype
     if dtype == bool:
         return True
-    # check all unique values:
-    uniques = series.unique()
-    for unique in uniques:
-        if type(unique) != bool:
-            return False
+    # Also accept pandas' nullable BooleanDtype and any other bool dtype
+    # variants. Earlier this function compared ``type(unique)`` to the built-in
+    # ``bool``, which rejected ``np.bool_`` and ``pandas.BooleanDtype`` arrays
+    # even though their values are unambiguous booleans — which broke
+    # cleaning whenever a source merged in vacant_sale as a nullable boolean.
+    if pd.api.types.is_bool_dtype(dtype):
+        return True
+    import numpy as _np
+    for unique in series.unique():
+        if pd.isna(unique):
+            continue
+        if isinstance(unique, (bool, _np.bool_)):
+            continue
+        return False
     return True
 
 
@@ -1264,10 +1330,28 @@ def get_dupes(entry: dict, df: pd.DataFrame = None, is_geometry: bool = False):
                     )
             else:
                 keys = ["key_sale", "key", "key2", "key3"]
+                matched = False
                 for key in keys:
                     if key in df:
                         dupes = {"subset": [key], "sort_by": [key, "asc"], "drop": True}
+                        matched = True
                         break
+                if not matched:
+                    # Reference tables and other auxiliary loads don't have a canonical
+                    # key column. Fall back to the first column.
+                    cols = list(df.columns.values)
+                    if cols:
+                        col = cols[0]
+                        dupes = {"subset": [col], "sort_by": [col, "asc"], "drop": True}
+                        if dupes_was_none:
+                            warnings.warn(
+                                f"'dupes' not found and no canonical key column "
+                                f"({', '.join(keys)}) present; defaulting to "
+                                f"\"{col}\" as de-dupe key. Set dupes explicitly to "
+                                f"silence this warning."
+                            )
+                    else:
+                        dupes = {"subset": ["key"], "sort_by": ["key", "asc"], "drop": True}
         else:
             dupes = {"subset": ["key"], "sort_by": ["key", "asc"], "drop": True}
     elif dupes == "allow":

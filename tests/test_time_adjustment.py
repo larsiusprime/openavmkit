@@ -1,3 +1,6 @@
+import warnings
+
+import numpy as np
 import pandas as pd
 
 from openavmkit.data import get_hydrated_sales_from_sup, SalesUniversePair
@@ -120,3 +123,114 @@ def test_apply_time_adjustment():
     # plt.scatter(df["sale_date"], df["sale_price_time_adj_per_impr_sqft"], s=1, color=color2)
 
   # plt.show()
+
+
+# ---------------------------------------------------------------------------
+# Robustness: when the V/I filter would empty the dataset, calculate_time_adjustment
+# should fall back gracefully rather than crash in downstream period-derivation.
+# ---------------------------------------------------------------------------
+
+
+def _build_minimal_sales_df(n_rows: int, start_year: int = 2023, all_vacant: bool = False,
+                             all_improved: bool = False, all_zero_bldg: bool = False) -> pd.DataFrame:
+  """Build a tiny synthetic sales DF with the columns calculate_time_adjustment expects.
+
+  Spreads sales across quarters so that per-period grouping has multiple buckets.
+
+  ``all_vacant``: every sale has vacant_sale=True (no improved sales).
+  ``all_improved``: every sale has vacant_sale=False.
+  ``all_zero_bldg``: every sale has bldg_area_finished_sqft=0 (no usable per-impr signal).
+  """
+  rows = []
+  for i in range(n_rows):
+    # Spread across multiple quarters in 2023-2024.
+    sale_date = pd.Timestamp(f"{start_year}-01-15") + pd.Timedelta(days=i * 30)
+    q = ((sale_date.month - 1) // 3) + 1
+    rows.append({
+      "key_sale": f"k{i}",
+      "sale_date": sale_date,
+      "sale_year": sale_date.year,
+      "sale_month": sale_date.month,
+      "sale_year_month": f"{sale_date.year:04d}-{sale_date.month:02d}",
+      "sale_quarter": q,
+      "sale_year_quarter": f"{sale_date.year:04d}Q{q}",
+      "sale_price": 100000.0 + i * 1000,
+      "bldg_area_finished_sqft": 0.0 if (all_zero_bldg or all_vacant) else 1500.0,
+      "land_area_sqft": 5000.0,
+      "vacant_sale": True if all_vacant else False,
+    })
+  return pd.DataFrame(rows)
+
+
+def test_calculate_time_adjustment_falls_back_when_all_vacant_and_per_impr():
+  # Construct a dataset where every sale is vacant_sale=True but improved-area
+  # column has values (some assessor data does this — the parcel currently has a
+  # building but the sale itself was for a vacant parcel). _determine_value_driver
+  # picks "impr" because bldg_area > 0, then our V/I filter would empty df_per.
+  # The function should fall back to the unfiltered set and still produce a schedule.
+  rows = []
+  for i in range(20):
+    sale_date = pd.Timestamp("2023-01-15") + pd.Timedelta(days=i * 30)
+    q = ((sale_date.month - 1) // 3) + 1
+    rows.append({
+      "key_sale": f"k{i}",
+      "sale_date": sale_date,
+      "sale_year": sale_date.year,
+      "sale_month": sale_date.month,
+      "sale_year_month": f"{sale_date.year:04d}-{sale_date.month:02d}",
+      "sale_quarter": q,
+      "sale_year_quarter": f"{sale_date.year:04d}Q{q}",
+      "sale_price": 100000.0 + i * 1000,
+      "bldg_area_finished_sqft": 1500.0,   # NOT zero, so per-impr would be picked
+      "land_area_sqft": 5000.0,
+      "vacant_sale": True,                  # but every sale is vacant
+    })
+  df = pd.DataFrame(rows)
+
+  with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    result = calculate_time_adjustment(df, settings={}, period="Q")
+  # Function returned a non-empty schedule
+  assert len(result) > 0
+  assert "value" in result.columns
+  # And it warned the user about the fallback
+  msgs = [str(w.message) for w in caught]
+  assert any("V/I filter" in m and "0 sales" in m for m in msgs), \
+    f"Expected fallback warning, got: {msgs}"
+
+
+def test_calculate_time_adjustment_returns_flat_schedule_when_no_usable_sales():
+  # Every sale has bldg_area_finished_sqft=0 → sale_price_per_impr_sqft is NaN/0,
+  # so df_per is empty even before V/I filtering. The function should return a
+  # flat schedule (value=1.0) covering the sales date range rather than crashing
+  # in _get_expected_periods on NaT.
+  df = _build_minimal_sales_df(5, all_zero_bldg=True)
+  with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    result = calculate_time_adjustment(df, settings={}, period="Q")
+  assert len(result) > 0
+  # All multipliers should be 1.0 (no adjustment)
+  assert (result["value"] == 1.0).all()
+  # And it warned about returning a flat schedule
+  msgs = [str(w.message) for w in caught]
+  assert any("flat multiplier" in m for m in msgs), \
+    f"Expected flat-schedule warning, got: {msgs}"
+
+
+def test_calculate_time_adjustment_handles_mixed_v_i_normally():
+  # Sanity check: with a normal mix of vacant + improved sales, V/I filter retains
+  # only the relevant side and no fallback warnings are emitted.
+  df = _build_minimal_sales_df(30, all_vacant=False, all_improved=False)
+  # Flag every 10th sale as vacant (10% vacant) so the filter has something to do.
+  df.loc[df.index % 10 == 0, "vacant_sale"] = True
+  df.loc[df.index % 10 == 0, "bldg_area_finished_sqft"] = 0.0
+  with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    result = calculate_time_adjustment(df, settings={}, period="Q")
+  assert len(result) > 0
+  # No fallback warnings should fire
+  msgs = [str(w.message) for w in caught]
+  assert not any("V/I filter" in m for m in msgs), \
+    f"Did not expect fallback warning for healthy mixed data; got: {msgs}"
+  assert not any("flat multiplier" in m for m in msgs), \
+    f"Did not expect flat-schedule warning for healthy data; got: {msgs}"

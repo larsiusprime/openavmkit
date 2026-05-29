@@ -1736,6 +1736,297 @@ def test_split_condition():
   assert dfs_are_equal(df, df_expected)
 
 
+def test_isin_direct_str_prefixed():
+  """Direct (column-producing) isin with str:-prefixed string literals — the canonical form per calc_reference.md."""
+  data = {
+    "ZONING": ["R1", "R2", "C1", "R3", "I1", "R1"]
+  }
+  df = pd.DataFrame(data=data)
+  calc = {
+    "is_residential": ["isin", "ZONING", ["str:R1", "str:R2", "str:R3"]]
+  }
+  expected = {
+    "ZONING":         ["R1", "R2", "C1", "R3", "I1", "R1"],
+    "is_residential": [True, True, False, True, False, True]
+  }
+  df_expected = pd.DataFrame(data=expected)
+  df_results = perform_calculations(df, calc)
+
+  assert dfs_are_equal(df_results, df_expected)
+
+
+def test_isin_direct_returns_series():
+  """Direct isin must return a pandas Series (or Series-compatible) so downstream column assignment works."""
+  data = {
+    "ZONING": ["R1", "R2", "C1"]
+  }
+  df = pd.DataFrame(data=data)
+  calc = {
+    "is_r": ["isin", "ZONING", ["str:R1", "str:R2"]]
+  }
+  df_results = perform_calculations(df, calc)
+  # Column must exist and be a real DataFrame column with a sensible dtype, not a Python list jammed in.
+  assert "is_r" in df_results.columns
+  assert df_results["is_r"].dtype == bool
+  assert list(df_results["is_r"]) == [True, True, False]
+
+
+def test_isin_direct_numeric_list():
+  """Direct isin with a numeric literal list."""
+  data = {
+    "year_built": [1900, 1925, 1950, 1975, 2000]
+  }
+  df = pd.DataFrame(data=data)
+  calc = {
+    "is_pre1960": ["isin", "year_built", [1900, 1925, 1950]]
+  }
+  expected = {
+    "year_built":  [1900, 1925, 1950, 1975, 2000],
+    "is_pre1960": [True, True, True, False, False]
+  }
+  df_expected = pd.DataFrame(data=expected)
+  df_results = perform_calculations(df, calc)
+
+  assert dfs_are_equal(df_results, df_expected)
+
+
+def test_isin_direct_whitespace_stripped():
+  """isin should match values with surrounding whitespace against the rhs literals."""
+  data = {
+    "code": ["R1 ", " R2", "  R3  ", "C1"]
+  }
+  df = pd.DataFrame(data=data)
+  calc = {
+    "match": ["isin", "code", ["str:R1", "str:R2", "str:R3"]]
+  }
+  expected = {
+    "code":  ["R1 ", " R2", "  R3  ", "C1"],
+    "match": [True, True, True, False]
+  }
+  df_expected = pd.DataFrame(data=expected)
+  df_results = perform_calculations(df, calc)
+
+  assert dfs_are_equal(df_results, df_expected)
+
+
+def test_isin_in_filter_str_prefixed():
+  """?-wrapped isin with str:-prefixed string literals — should match against the underlying values, not the prefixed strings."""
+  data = {
+    "ZONING": ["R1", "R2", "C1", "R3"]
+  }
+  df = pd.DataFrame(data=data)
+  calc = {
+    "is_r_filter": ["?", ["isin", "ZONING", ["str:R1", "str:R2", "str:R3"]]]
+  }
+  expected = {
+    "ZONING":      ["R1", "R2", "C1", "R3"],
+    "is_r_filter": [True, True, False, True]
+  }
+  df_expected = pd.DataFrame(data=expected)
+  df_results = perform_calculations(df, calc)
+
+  assert dfs_are_equal(df_results, df_expected)
+
+
+def test_isin_in_filter_plain_strings():
+  """?-wrapped isin with plain string list (not str:-prefixed) — still supported via filters.py."""
+  data = {
+    "quality_txt": ["a", "b", "c", "d", "f"]
+  }
+  df = pd.DataFrame(data=data)
+  calc = {
+    "is_top": ["?", ["isin", "quality_txt", ["a", "b", "c"]]]
+  }
+  expected = {
+    "quality_txt": ["a", "b", "c", "d", "f"],
+    "is_top":      [True, True, True, False, False]
+  }
+  df_expected = pd.DataFrame(data=expected)
+  df_results = perform_calculations(df, calc)
+
+  assert dfs_are_equal(df_results, df_expected)
+
+
+def test_isin_direct_no_match():
+  """Direct isin where nothing matches — verifies an all-False result is still a correctly-shaped boolean Series."""
+  data = {
+    "ZONING": ["R1", "R2", "C1"]
+  }
+  df = pd.DataFrame(data=data)
+  calc = {
+    "is_industrial": ["isin", "ZONING", ["str:I1", "str:I2"]]
+  }
+  expected = {
+    "ZONING":        ["R1", "R2", "C1"],
+    "is_industrial": [False, False, False]
+  }
+  df_expected = pd.DataFrame(data=expected)
+  df_results = perform_calculations(df, calc)
+
+  assert dfs_are_equal(df_results, df_expected)
+
+
+def test_isin_direct_with_nan():
+  """Direct isin on a column containing NaN — NaN should not match anything."""
+  data = {
+    "code": ["R1", None, "R2", float("nan"), "C1"]
+  }
+  df = pd.DataFrame(data=data)
+  calc = {
+    "is_r": ["isin", "code", ["str:R1", "str:R2"]]
+  }
+  df_results = perform_calculations(df, calc)
+  assert "is_r" in df_results.columns
+  assert list(df_results["is_r"]) == [True, False, True, False, False]
+
+
+def test_cci_direct_string_lowercase_target():
+  """Direct contains_case_insensitive with a lowercase needle matches mixed-case text."""
+  data = {
+    "DESC": ["Condo Unit", "CONDOMINIUM", "single family", "townhome", "CONDO complex"]
+  }
+  df = pd.DataFrame(data=data)
+  calc = {
+    "is_condo": ["contains_case_insensitive", "DESC", "str:condo"]
+  }
+  expected = {
+    "DESC":     ["Condo Unit", "CONDOMINIUM", "single family", "townhome", "CONDO complex"],
+    "is_condo": [True, True, False, False, True]
+  }
+  df_expected = pd.DataFrame(data=expected)
+  df_results = perform_calculations(df, calc)
+
+  assert dfs_are_equal(df_results, df_expected)
+
+
+def test_cci_direct_string_uppercase_target():
+  """Direct contains_case_insensitive with an uppercase needle matches lowercase text."""
+  data = {
+    "DESC": ["condo unit", "single family", "Condo Tower"]
+  }
+  df = pd.DataFrame(data=data)
+  calc = {
+    "is_condo": ["contains_case_insensitive", "DESC", "str:CONDO"]
+  }
+  expected = {
+    "DESC":     ["condo unit", "single family", "Condo Tower"],
+    "is_condo": [True, False, True]
+  }
+  df_expected = pd.DataFrame(data=expected)
+  df_results = perform_calculations(df, calc)
+
+  assert dfs_are_equal(df_results, df_expected)
+
+
+def test_cci_direct_list_alternates():
+  """Direct contains_case_insensitive with a list rhs matches any of the alternates."""
+  data = {
+    "DESC": ["Condo Unit", "Townhome", "Single Family", "Apartment", "duplex"]
+  }
+  df = pd.DataFrame(data=data)
+  calc = {
+    "is_attached": ["contains_case_insensitive", "DESC", ["str:condo", "str:townhome", "str:apartment"]]
+  }
+  expected = {
+    "DESC":         ["Condo Unit", "Townhome", "Single Family", "Apartment", "duplex"],
+    "is_attached": [True, True, False, True, False]
+  }
+  df_expected = pd.DataFrame(data=expected)
+  df_results = perform_calculations(df, calc)
+
+  assert dfs_are_equal(df_results, df_expected)
+
+
+def test_cci_direct_list_no_match():
+  """Direct contains_case_insensitive with a list rhs where nothing matches — verifies an all-False boolean Series."""
+  data = {
+    "DESC": ["Single Family", "House", "Bungalow"]
+  }
+  df = pd.DataFrame(data=data)
+  calc = {
+    "is_attached": ["contains_case_insensitive", "DESC", ["str:condo", "str:apartment"]]
+  }
+  expected = {
+    "DESC":         ["Single Family", "House", "Bungalow"],
+    "is_attached": [False, False, False]
+  }
+  df_expected = pd.DataFrame(data=expected)
+  df_results = perform_calculations(df, calc)
+
+  assert dfs_are_equal(df_results, df_expected)
+
+
+def test_cci_direct_grantor_name_column_uses_rhs():
+  """A column literally named 'grantor_name' must use the supplied rhs, not any hardcoded pattern list."""
+  data = {
+    "grantor_name": ["John Smith Trust", "Mary Jones", "Acme Trust LLC", "Pat Brown"]
+  }
+  df = pd.DataFrame(data=data)
+  calc = {
+    "is_trust": ["contains_case_insensitive", "grantor_name", "str:trust"]
+  }
+  expected = {
+    "grantor_name": ["John Smith Trust", "Mary Jones", "Acme Trust LLC", "Pat Brown"],
+    "is_trust":     [True, False, True, False]
+  }
+  df_expected = pd.DataFrame(data=expected)
+  df_results = perform_calculations(df, calc)
+
+  assert dfs_are_equal(df_results, df_expected)
+
+
+def test_cci_direct_with_nan():
+  """Direct contains_case_insensitive on a column with NaN — NaN should not match."""
+  data = {
+    "DESC": ["Condo", None, "Single Family", float("nan"), "condo"]
+  }
+  df = pd.DataFrame(data=data)
+  calc = {
+    "is_condo": ["contains_case_insensitive", "DESC", "str:condo"]
+  }
+  df_results = perform_calculations(df, calc)
+  assert "is_condo" in df_results.columns
+  assert list(df_results["is_condo"]) == [True, False, False, False, True]
+
+
+def test_cci_in_filter_string():
+  """?-wrapped contains_case_insensitive with single string rhs."""
+  data = {
+    "DESC": ["Condo Unit", "Single Family", "CONDO Tower"]
+  }
+  df = pd.DataFrame(data=data)
+  calc = {
+    "is_condo": ["?", ["contains_case_insensitive", "DESC", "str:condo"]]
+  }
+  expected = {
+    "DESC":     ["Condo Unit", "Single Family", "CONDO Tower"],
+    "is_condo": [True, False, True]
+  }
+  df_expected = pd.DataFrame(data=expected)
+  df_results = perform_calculations(df, calc)
+
+  assert dfs_are_equal(df_results, df_expected)
+
+
+def test_cci_in_filter_list_str_prefixed():
+  """?-wrapped contains_case_insensitive with str:-prefixed list rhs."""
+  data = {
+    "DESC": ["Condo Unit", "Townhome", "Single Family"]
+  }
+  df = pd.DataFrame(data=data)
+  calc = {
+    "is_attached": ["?", ["contains_case_insensitive", "DESC", ["str:condo", "str:townhome"]]]
+  }
+  expected = {
+    "DESC":         ["Condo Unit", "Townhome", "Single Family"],
+    "is_attached": [True, True, False]
+  }
+  df_expected = pd.DataFrame(data=expected)
+  df_results = perform_calculations(df, calc)
+
+  assert dfs_are_equal(df_results, df_expected)
+
+
 def test_tweaks():
   data = {
     "id": [0, 1, 2, 3, 4, 5],
