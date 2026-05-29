@@ -142,7 +142,6 @@
 				"predicted_land_value_per_land_sqft",
 				"predicted_land_value_per_land_sqm",
 				"dist_to_cbd",
-				"aspect_ratio",
 				"geom_vertices",
 				"dist_to_colleges",
 				"dist_to_universities",

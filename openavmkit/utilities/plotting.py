@@ -1,3 +1,11 @@
+"""
+Plotting and visualization helpers.
+
+Wrappers around matplotlib for the common visualizations OpenAVMKit
+produces: scatterplots of predictions vs. observed prices, value-surface
+maps, histograms, and color-palette generation. Includes interactive
+(mpld3) variants for in-notebook display.
+"""
 import random
 
 import matplotlib.pyplot as plt

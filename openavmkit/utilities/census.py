@@ -1,3 +1,11 @@
+"""
+US Census API integration.
+
+Wraps the ``census`` library to fetch ACS demographic and income data for
+parcel locations, joining Census block-group geometries spatially with the
+parcel universe. Requires a US Census API key — see the configuration docs
+for setup. Activated via ``data.process.enrich.census`` in ``settings.json``.
+"""
 import os
 from typing import Tuple
 import pandas as pd

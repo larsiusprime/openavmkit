@@ -1,7 +1,70 @@
+"""
+Vertical equity analysis.
+
+Implements :class:`VerticalEquityStudy`, which measures whether high-value
+parcels and low-value parcels are valued with the same accuracy — the
+"vertical equity" question. Computes PRD and PRB (with bootstrap confidence
+intervals) plus per-quantile median ratios.
+
+Together with :mod:`openavmkit.horizontal_equity_study` and
+:mod:`openavmkit.ratio_study`, this module forms OpenAVMKit's IAAO-aligned
+equity analysis suite.
+"""
+from typing import Dict
+import scipy.stats as stats
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import warnings
 from openavmkit.utilities.stats import ConfidenceStat, calc_ratio_stats_bootstrap, calc_prb
+
+def get_vertical_equity_scores(df, sale_field: str, valuation_field: str) -> Dict[str, float]:
+    df = df.copy()
+    df["ratio"] = df[valuation_field] / df[sale_field]
+    median_ratio = df["ratio"].median()
+    df["market_proxy"] = (df[sale_field] * 0.5) + (df[valuation_field]/median_ratio)
+    observation_count = len(df)
+    if 20 <= observation_count <= 50:
+        percentile_group_count = 2
+    elif 51 <= observation_count <= 500:
+        percentile_group_count = 4
+    elif observation_count > 501:
+        percentile_group_count = 10
+    else:
+        # VEI cannot be calculated for less than 20 observations
+        return {
+            "vei": np.nan,
+            "vei_significance": np.nan,
+            "group_stats": None
+        }
+
+    def ci_90_lower(x):
+        if len(x) <= 1: return np.nan
+        # 90% CI uses the 95th percentile for a two-tailed test
+        return np.mean(x) - stats.sem(x) * stats.t.ppf(0.95, df=len(x) - 1)
+
+    def ci_90_upper(x):
+        if len(x) <= 1: return np.nan
+        return np.mean(x) + stats.sem(x) * stats.t.ppf(0.95, df=len(x) - 1)
+
+    #split the df into percentile_group_count groups based on the market proxy
+    df["percentile_group"] = pd.qcut(df["market_proxy"], q=percentile_group_count, labels=False)
+    grouped = df.groupby("percentile_group")
+    group_stats = grouped['ratio'].agg(
+        ratio='median',
+        lower=ci_90_lower,
+        upper=ci_90_upper
+    )
+    #VEI is 100 * (median of last percentile grop - median of first percentile group)/median_ratio
+    vei_score = 100 * (group_stats[group_stats.index == (percentile_group_count - 1)].iloc[0]["ratio"] - group_stats[group_stats.index == 0].iloc[0]["ratio"]) / median_ratio
+    # VEI significance = 100 * (Lower CI for Highest PG - Upper CI for Lowest PG)/median
+    vei_significance = 100 * (group_stats[group_stats.index == (percentile_group_count -1)].iloc[0]["lower"] - group_stats[group_stats.index == 0].iloc[0]["upper"]) / median_ratio
+    return {
+        "vei": vei_score,
+        "vei_significance": vei_significance,
+        "group_stats": group_stats
+    }
+
 
 class VerticalEquityStudy:
     """
@@ -44,7 +107,6 @@ class VerticalEquityStudy:
         sales = df_sales[field_sales].to_numpy()
         
         results = calc_ratio_stats_bootstrap(predictions, sales, confidence_interval, iterations=iterations, seed=seed)
-        self.prd = results["prd"]
         
         prb_point, prb_low, prb_high = calc_prb(predictions, sales, confidence_interval)
         
@@ -56,13 +118,16 @@ class VerticalEquityStudy:
         df_sales["quantile"] = _calc_quantiles(df_sales_in, field_sales)
         df = _assemble_quantile_df(df_sales, field_sales, field_prediction, confidence_interval, iterations, seed)
         self.quantiles = df
-        
         # Calculate quantiles (grouped price)
         #------------------------------------------
         
-        df_sales["quantile"] = _calc_grouped_quantiles(df_sales_in, field_sales, field_location)
-        df = _assemble_quantile_df(df_sales, field_sales,  field_prediction, confidence_interval, iterations, seed)
-        self.grouped_quantiles = df
+        if field_location is not None and field_location in df_sales_in.columns:
+            df_sales["quantile"] = _calc_grouped_quantiles(df_sales_in, field_sales, field_location)
+            df = _assemble_quantile_df(df_sales, field_sales,  field_prediction, confidence_interval, iterations, seed)
+            self.grouped_quantiles = df
+        else:
+            warnings.warn(f"VerticalEquityStudy: could not find location field, \"{field_location}\" in sales dataframe")
+            self.grouped_quantiles = None
  
     
     def summary(self):
@@ -106,7 +171,6 @@ class VerticalEquityStudy:
         data[stat_sig].append(prb_stat_sig)
         data["IAAO recommended"].append(prb_iaao_ok)
         data["IAAO passing"].append(prb_iaao_pass)
-        
         return pd.DataFrame(data=data)
     
     
@@ -117,6 +181,9 @@ class VerticalEquityStudy:
         grouped=False
     ):
         df = self.grouped_quantiles if grouped else self.quantiles
+        if df is None:
+            warnings.warn(f"No quantile data available to plot.")
+            return
         conf = f"{self.confidence_interval*100:0.0f}"
         
         max_y = df['ratio_high'].max()
@@ -165,7 +232,6 @@ def _calc_quantiles(df: pd.DataFrame, field: str):
 def _calc_grouped_quantiles(df_in: pd.DataFrame, value_field: str, group_field: str):
     df = df_in.copy()
     df["quantile"] = _calc_quantiles(df, value_field)
-    df_group_to_quantile = df.groupby(group_field)["quantile"].agg(lambda x: pd.Series.mode(x)[0]).reset_index()
     df2 = df_in.merge(df_group_to_quantile, on=group_field, how="left")
     return df2["quantile"]
 

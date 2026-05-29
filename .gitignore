@@ -14,6 +14,8 @@ notebooks/examples/*.gpkg
 notebooks/research/richie_2025/out/
 notebooks/examples/land_value/trial*
 notebooks/examples/land_value/out*
+.idea/
+.idea/*
 .ipynb_checkpoints/
 .venv/*
 venv/*
@@ -36,3 +38,5 @@ tests/cache/
 cache/
 
 out/
+
+.claude/

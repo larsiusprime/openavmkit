@@ -22,7 +22,6 @@ import geopandas as gpd
 import openavmkit
 import openavmkit.data
 import openavmkit.benchmark
-import openavmkit.land
 import openavmkit.checkpoint
 import openavmkit.ratio_study
 import openavmkit.horizontal_equity_study
@@ -1425,7 +1424,6 @@ def try_models(
     verbose: bool = False,
     run_main: bool = True,
     run_vacant: bool = True,
-    run_hedonic: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
     do_plots: bool = False
@@ -1439,11 +1437,9 @@ def try_models(
     saving the results. It performs basic statistic analysis on each model, and optionally
     combines results into an ensemble model.
 
-    If "run_main" is true, it will run normal models as well as hedonic models (if the
-    user so specifies), "hedonic" in this context meaning models that attempt to generate
-    a land value and an improvement value separately. If "run_vacant" is true, it will run
-    vacant models as well -- models that only use vacant models as evidence to generate
-    land values.
+    If "run_main" is true, it will run normal (full market value) models. If "run_vacant"
+    is true, it will run vacant models as well -- models that only use vacant sales as
+    evidence to generate land values.
 
     This function delegates the model execution to `openavmkit.benchmark.run_models`
     with the given settings.
@@ -1464,8 +1460,6 @@ def try_models(
         Flag to run main models. Defaults to True.
     run_vacant : bool, optional
         Flag to run vacant models. Defaults to True.
-    run_hedonic : bool, optional
-        Flag to run hedonic models. Defaults to True.
     run_ensemble : bool, optional
         Flag to run ensemble models. Defaults to True.
     do_shaps : bool, optional
@@ -1483,11 +1477,165 @@ def try_models(
         verbose=verbose,
         run_main=run_main,
         run_vacant=run_vacant,
-        run_hedonic=run_hedonic,
         run_ensemble=run_ensemble,
         do_shaps=do_shaps,
         do_plots=do_plots
     )
+
+
+def _select_outlier_keys(
+    dfm: pd.DataFrame,
+    low_thresh: float = 0.75,
+    high_thresh: float = 1.25,
+    top_n: int = 10,
+) -> pd.DataFrame:
+    """Pick outliers from a prediction frame: top/bottom N by ratio plus everything outside the ratio thresholds."""
+    if "prediction_ratio" not in dfm.columns or len(dfm) == 0:
+        return dfm.iloc[0:0]
+    s = dfm.sort_values("prediction_ratio")
+    bottom = s.head(top_n)
+    top = s.tail(top_n)
+    extreme = dfm[(dfm["prediction_ratio"] < low_thresh) | (dfm["prediction_ratio"] > high_thresh)]
+    out = pd.concat([bottom, top, extreme], ignore_index=False)
+    return out.drop_duplicates(subset="key_sale")
+
+
+def _fit_comp_models(
+    df_full: pd.DataFrame,
+    ind_vars: list[str],
+    unit: str,
+    is_vacant_only: bool,
+):
+    """Fit LayeredCompModel(s) on the full sales set for outlier comp-analysis.
+
+    Returns (m_price, m_ppsf_impr, m_ppsf_land, feat_cols). Any model may be None
+    if there isn't enough data on its slice."""
+    from layeredcompmodel import LayeredCompModel
+    from openavmkit.modeling import _coerce_categoricals_to_object
+
+    feat_cols = [c for c in ind_vars if c in df_full.columns]
+    if not feat_cols:
+        return None, None, None, []
+
+    df_full = df_full[df_full["sale_price_time_adj"].fillna(0).gt(0)].copy()
+    if len(df_full) < 5:
+        return None, None, None, feat_cols
+
+    # Derive per-impr / per-land time-adj PPSF on the fly if not pre-computed.
+    ppsf_impr_col = f"sale_price_time_adj_per_impr_{unit}"
+    ppsf_land_col = f"sale_price_time_adj_per_land_{unit}"
+    impr_size_col = f"bldg_area_finished_{unit}"
+    land_size_col = f"land_area_{unit}"
+    if ppsf_impr_col not in df_full.columns and impr_size_col in df_full.columns:
+        df_full[ppsf_impr_col] = df_full["sale_price_time_adj"] / df_full[impr_size_col].replace(0, np.nan)
+    if ppsf_land_col not in df_full.columns and land_size_col in df_full.columns:
+        df_full[ppsf_land_col] = df_full["sale_price_time_adj"] / df_full[land_size_col].replace(0, np.nan)
+
+    X_full = _coerce_categoricals_to_object(df_full[feat_cols])
+    y_price = df_full["sale_price_time_adj"].astype(float)
+    m_price = LayeredCompModel(split_metric="mae", n_jobs=1)
+    m_price.fit(X_full, y_price)
+
+    m_ppsf_impr = None
+    if not is_vacant_only and ppsf_impr_col in df_full.columns:
+        df_i = df_full[df_full["vacant_sale"].eq(False) & df_full[ppsf_impr_col].fillna(0).gt(0)]
+        if len(df_i) >= 5:
+            X_i = _coerce_categoricals_to_object(df_i[feat_cols])
+            y_i = df_i[ppsf_impr_col].astype(float)
+            m_ppsf_impr = LayeredCompModel(split_metric="mae", n_jobs=1)
+            m_ppsf_impr.fit(X_i, y_i)
+
+    m_ppsf_land = None
+    if ppsf_land_col in df_full.columns:
+        df_v = df_full[df_full["vacant_sale"].eq(True) & df_full[ppsf_land_col].fillna(0).gt(0)]
+        if len(df_v) >= 5:
+            X_v = _coerce_categoricals_to_object(df_v[feat_cols])
+            y_v = df_v[ppsf_land_col].astype(float)
+            m_ppsf_land = LayeredCompModel(split_metric="mae", n_jobs=1)
+            m_ppsf_land.fit(X_v, y_v)
+
+    return m_price, m_ppsf_impr, m_ppsf_land, feat_cols
+
+
+def _build_comp_quality_table(
+    df_outliers_full: pd.DataFrame,
+    m_price,
+    m_ppsf_impr,
+    m_ppsf_land,
+    feat_cols: list[str],
+    unit: str,
+) -> pd.DataFrame:
+    """For each outlier, run explain_value() on the price + PPSF comp models and
+    record leaf Wilson means, tree depth, leaf count, and the subject-to-leaf ratios."""
+    from openavmkit.modeling import _coerce_categoricals_to_object
+
+    if m_price is None or len(df_outliers_full) == 0:
+        return pd.DataFrame()
+
+    X_out = _coerce_categoricals_to_object(df_outliers_full[feat_cols])
+
+    rows = []
+    for idx, out_row in df_outliers_full.iterrows():
+        x_row = X_out.loc[idx]
+        is_v = bool(out_row.get("vacant_sale", False))
+        actual_price = out_row.get("sale_price_time_adj", np.nan)
+        try:
+            actual_price = float(actual_price)
+        except (TypeError, ValueError):
+            actual_price = np.nan
+
+        rec = {
+            "key_sale": out_row["key_sale"],
+            "vacant_sale": is_v,
+            "ppsf_unit": "land" if is_v else "impr",
+            "actual_price": actual_price,
+        }
+
+        try:
+            exp_p = m_price.explain_value(x_row)
+            path_p = exp_p.get("path", [])
+            wm_price = float(path_p[-1]["wilson_mean"]) if path_p else np.nan
+            depth_p = len(path_p)
+            leaf_n_p = int(path_p[-1]["count"]) if path_p else 0
+        except Exception:
+            wm_price, depth_p, leaf_n_p = np.nan, np.nan, 0
+
+        rec["leaf_wilson_price"] = wm_price
+        rec["price_ratio"] = (actual_price / wm_price) if (wm_price and not np.isnan(wm_price) and not np.isnan(actual_price)) else np.nan
+        rec["tree_depth_price"] = depth_p
+        rec["leaf_count_price"] = leaf_n_p
+
+        m_ppsf = m_ppsf_land if is_v else m_ppsf_impr
+        size_col = f"land_area_{unit}" if is_v else f"bldg_area_finished_{unit}"
+        size_val = out_row.get(size_col, np.nan)
+        try:
+            size_val = float(size_val)
+        except (TypeError, ValueError):
+            size_val = np.nan
+
+        actual_ppsf = (actual_price / size_val) if (size_val and size_val > 0 and not np.isnan(actual_price)) else np.nan
+
+        if m_ppsf is not None and not np.isnan(actual_ppsf):
+            try:
+                exp_pp = m_ppsf.explain_value(x_row)
+                path_pp = exp_pp.get("path", [])
+                wm_ppsf = float(path_pp[-1]["wilson_mean"]) if path_pp else np.nan
+                depth_pp = len(path_pp)
+                leaf_n_pp = int(path_pp[-1]["count"]) if path_pp else 0
+            except Exception:
+                wm_ppsf, depth_pp, leaf_n_pp = np.nan, np.nan, 0
+        else:
+            wm_ppsf, depth_pp, leaf_n_pp = np.nan, np.nan, 0
+
+        rec["actual_ppsf"] = actual_ppsf
+        rec["leaf_wilson_ppsf"] = wm_ppsf
+        rec["ppsf_ratio"] = (actual_ppsf / wm_ppsf) if (wm_ppsf and not np.isnan(wm_ppsf) and not np.isnan(actual_ppsf)) else np.nan
+        rec["tree_depth_ppsf"] = depth_pp
+        rec["leaf_count_ppsf"] = leaf_n_pp
+
+        rows.append(rec)
+
+    return pd.DataFrame(rows)
 
 
 def identify_outliers(
@@ -1496,7 +1644,7 @@ def identify_outliers(
 ):
     unit = area_unit(settings)
     outliers = settings.get("analysis", {}).get("outliers", {})
-    df_sales = get_hydrated_sales_from_sup(sup)    
+    df_sales = get_hydrated_sales_from_sup(sup)
     ids = get_model_group_ids(settings, df_sales)
     
     ss = settings.get("analysis", {}).get("sales_scrutiny", {})
@@ -1515,7 +1663,29 @@ def identify_outliers(
         entry = mgs.get(id, default)
         print("====================")
         print(f"MODEL GROUP = {id}")
-        for mtype in ["main","vacant","hedonic_land"]:
+
+        # Fit comp-analysis models once per model group (reused across mtypes / pred files).
+        ind_vars_lc = (
+            settings.get("modeling", {})
+            .get("models", {})
+            .get("main", {})
+            .get("lcomp", {})
+            .get("ind_vars", [])
+        )
+        if not isinstance(ind_vars_lc, list):
+            ind_vars_lc = []
+        comp_models = (None, None, None, [])
+        if ind_vars_lc and "sale_price_time_adj" in df_sub.columns and "vacant_sale" in df_sub.columns:
+            try:
+                print(f"  Fitting comp-analysis LayeredCompModels on {len(df_sub):,} sales ({len(ind_vars_lc)} features)...")
+                comp_models = _fit_comp_models(df_sub, ind_vars_lc, unit, is_vacant_only=False)
+            except Exception as e:
+                warnings.warn(f"Comp-analysis model fit failed for {id}: {e}")
+        else:
+            print(f"  Skipping comp-analysis: missing ind_vars / sale_price_time_adj / vacant_sale for {id}")
+        m_price, m_ppsf_impr, m_ppsf_land, feat_cols = comp_models
+
+        for mtype in ["main","vacant"]:
             model = entry.get("mtype", "ensemble")
             print(f"model type = {mtype}, model = {model}")
             
@@ -1557,7 +1727,7 @@ def identify_outliers(
             elif model == "assessor":
                 # We can use the assessor fields directly
                 the_field = "assr_market_value"
-                if mtype == "vacant" or "hedonic_land":
+                if mtype == "vacant":
                     the_field = "assr_land_value"
                 print(f"--> for assessor model, using \"{the_field}\" as prediction field...")
                 dfm = df_sub.copy()
@@ -1643,11 +1813,69 @@ def identify_outliers(
                 print("")
                 dfm = dfm.sort_values(by="prediction_ratio", ascending=False)
                 display(dfm.head(n=10))
-                
-                
-                
+
+                # --- Comp-analysis (Phase 2): trace outliers through a LayeredCompModel
+                # fit on the full sales set for this model group. We answer:
+                # "What does the subject's lowest comp-tree leaf say its time-adjusted price
+                # and PPSF should be?" Output is a per-outlier ratio + tree-depth diagnostic.
+                if m_price is not None and feat_cols:
+                    for pred_label, pred_fname in [("sales", "pred_sales.csv"), ("test", "pred_test.csv")]:
+                        pred_path = f"out/models/{id}/{mtype}/{model}/{pred_fname}"
+                        if not os.path.exists(pred_path):
+                            continue
+                        try:
+                            df_pred = pd.read_csv(pred_path, dtype={"key_sale": "str"})
+                            if "prediction_ratio" not in df_pred.columns:
+                                continue
+                            df_out = _select_outlier_keys(df_pred)
+                            if mtype != "main":
+                                # vacant: only score vacant sales
+                                df_out = df_out.merge(
+                                    df_sub[["key_sale", "vacant_sale"]].drop_duplicates("key_sale"),
+                                    on="key_sale", how="left", suffixes=("", "_sub"),
+                                )
+                                df_out = df_out[df_out["vacant_sale"].eq(True)]
+                            if len(df_out) == 0:
+                                continue
+                            # Merge in the features + V/I flag + time-adj price from df_sub
+                            need_cols = list(set(feat_cols + [
+                                "sale_price_time_adj", "vacant_sale",
+                                f"bldg_area_finished_{unit}", f"land_area_{unit}",
+                            ]) - set(df_out.columns))
+                            need_cols = [c for c in need_cols if c in df_sub.columns]
+                            df_out_full = df_out.merge(
+                                df_sub[["key_sale"] + need_cols].drop_duplicates("key_sale"),
+                                on="key_sale", how="left",
+                            )
+                            df_comps = _build_comp_quality_table(
+                                df_out_full, m_price, m_ppsf_impr, m_ppsf_land, feat_cols, unit,
+                            )
+                            if len(df_comps) == 0:
+                                continue
+                            # Join the prediction_ratio back for sorting/context
+                            df_comps = df_comps.merge(
+                                df_out[["key_sale", "prediction_ratio"]],
+                                on="key_sale", how="left",
+                            )
+                            df_comps = df_comps.sort_values("prediction_ratio")
+                            comp_outpath = f"{outdir}outliers_comp_analysis_{pred_label}.csv"
+                            df_comps.to_csv(comp_outpath, index=False)
+                            print("")
+                            print(f"Comp-analysis ({pred_label}): {len(df_comps)} outliers -> {comp_outpath}")
+                            display_cols = [
+                                "key_sale", "prediction_ratio", "vacant_sale", "ppsf_unit",
+                                "actual_price", "leaf_wilson_price", "price_ratio",
+                                "tree_depth_price", "leaf_count_price",
+                                "actual_ppsf", "leaf_wilson_ppsf", "ppsf_ratio",
+                                "tree_depth_ppsf", "leaf_count_ppsf",
+                            ]
+                            display_cols = [c for c in display_cols if c in df_comps.columns]
+                            display(df_comps[display_cols])
+                        except Exception as e:
+                            warnings.warn(f"Comp-analysis failed for {id}/{mtype}/{pred_label}: {e}")
+
                 print("")
-        
+
 
 
 def finalize_models(
@@ -1668,7 +1896,7 @@ def finalize_models(
     details like splitting the data, training the models, and saving the results. It performs basic statistic analysis
     on each model, and optionally combines results into an ensemble model.
 
-    This function iterates over model groups and runs models for main, hedonic and vacant cases.
+    This function iterates over model groups and runs models for main and vacant cases.
 
     It delegates the model execution to `openavmkit.benchmark.run_models` with the given settings.
 
@@ -1708,7 +1936,6 @@ def finalize_models(
         verbose=verbose,
         run_main=run_main,
         run_vacant=run_vacant,
-        run_hedonic=run_hedonic,
         run_ensemble=run_ensemble,
         do_shaps=False,
         do_plots=False
@@ -1724,7 +1951,6 @@ def run_models(
     verbose: bool = False,
     run_main: bool = True,
     run_vacant: bool = True,
-    run_hedonic: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
     do_plots: bool = False
@@ -1736,9 +1962,8 @@ def run_models(
     details like splitting the data, training the models, and saving the results. It performs basic statistic analysis
     on each model, and optionally combines results into an ensemble model.
 
-    If "run_main" is true, it will run normal models as well as hedonic models (if the user so specifies),
-    "hedonic" in this context meaning models that attempt to generate a land value and an improvement value separately.
-    If "run_vacant" is true, it will run vacant models as well -- models that only use vacant models as evidence
+    If "run_main" is true, it will run normal (full market value) models.
+    If "run_vacant" is true, it will run vacant models as well -- models that only use vacant sales as evidence
     to generate land values.
 
     This function iterates over model groups and runs models for both main and vacant cases.
@@ -1761,8 +1986,6 @@ def run_models(
         Whether to run main (non-vacant) models.
     run_vacant : bool, optional
         Whether to run vacant models.
-    run_hedonic : bool, optional
-        Whether to run hedonic models.
     run_ensemble : bool, optional
         Whether to run ensemble models.
     do_shaps : bool, optional
@@ -1784,7 +2007,6 @@ def run_models(
         verbose,
         run_main,
         run_vacant,
-        run_hedonic,
         run_ensemble,
         do_shaps,
         do_plots
@@ -1909,7 +2131,7 @@ def run_vertical_equity_study(
 ):
     # Filter to just the designated model group
     sup = get_sup_model_group(sup, model_group)
-    
+
     # Merge universe characteristics onto sales to create one combined dataframe
     df_sales = get_hydrated_sales_from_sup(sup)
 
@@ -1919,9 +2141,17 @@ def run_vertical_equity_study(
         df_sales["sale_date"].le(end_date)
     ]
 
-    # Get predictions and sales
-    predictions = df_sales[field_prediction]
-    sales = df_sales[field_sales]
+    # If no usable rows survive (empty model-group / date window, or no finite
+    # positive sales), skip the study — mirrors `run_horizontal_equity_study`.
+    if len(df_sales) == 0:
+        return None
+    usable = (
+        np.isfinite(df_sales[field_prediction])
+        & np.isfinite(df_sales[field_sales])
+        & df_sales[field_sales].gt(0)
+    )
+    if not usable.any():
+        return None
 
     # Run the vertical equity study and print the results
     return VerticalEquityStudy(
@@ -1992,15 +2222,12 @@ def _clip_sales_to_use(
 
     val_year = get_valuation_date(settings).year
 
-    metadata = settings.get("modeling", {}).get("metadata", {})
-    use_sales_from = metadata.get("use_sales_from", {})
-
-    if isinstance(use_sales_from, int):
-        use_sales_from_impr = use_sales_from
-        use_sales_from_vacant = use_sales_from
-    else:
-        use_sales_from_impr = use_sales_from.get("improved", val_year - 5)
-        use_sales_from_vacant = use_sales_from.get("vacant", val_year - 5)
+    from openavmkit.utilities.settings import resolve_use_sales_from
+    use_sales_from_impr, use_sales_from_vacant = resolve_use_sales_from(settings)
+    if use_sales_from_impr is None:
+        use_sales_from_impr = val_year - 5
+    if use_sales_from_vacant is None:
+        use_sales_from_vacant = val_year - 5
 
     # mark which sales are to be used (only those that are valid and within the specified time frame)
     df_sales.loc[

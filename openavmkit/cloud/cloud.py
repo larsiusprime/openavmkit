@@ -31,8 +31,7 @@ def load_cloud_settings(
         cwd = os.getcwd()
         full_path = os.path.join(cwd, filepath)
         exists = os.path.exists(full_path)
-        msg = f"Could not find cloud settings file: {filepath}. Go to '{cwd}' and create a cloud.json file there! {full_path} exists? {exists}"
-        raise FileNotFoundError(msg)
+        return None
 
     return cloud
 

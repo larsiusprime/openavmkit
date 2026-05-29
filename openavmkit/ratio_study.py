@@ -1,3 +1,21 @@
+"""
+IAAO-standard ratio studies.
+
+Implements :class:`RatioStudy` and :class:`RatioStudyBootstrapped`, which
+compute the standard ratio-study statistics used in mass appraisal:
+
+- Median and mean ratio (predicted / observed sale price)
+- COD (Coefficient of Dispersion) — overall variability
+- PRD (Price-Related Differential) — vertical equity proxy
+- PRB (Price-Related Bias) — alternative vertical equity measure
+
+Each statistic is also produced in a "trimmed" form that excludes outlier
+ratios beyond the interquartile range, capped by
+``analysis.ratio_study.trim.<model_group>.max_percent`` (default 10%).
+
+See the :doc:`/advanced_settings` page for relevant settings (look-back
+years, trim caps).
+"""
 import os
 import warnings
 

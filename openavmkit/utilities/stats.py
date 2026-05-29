@@ -1,3 +1,22 @@
+"""
+Statistics engine for ratio studies, equity, and modeling diagnostics.
+
+The numeric core behind OpenAVMKit's IAAO-aligned analysis. Implements:
+
+- **Ratio-study statistics** — COD, PRD, PRB, with bootstrap confidence
+  intervals (``calc_cod``, ``calc_prd``, ``calc_prb``,
+  ``calc_ratio_stats_bootstrap``)
+- **Horizontal equity** — CHD (Coefficient of Horizontal Dispersion)
+  per cluster
+- **Outlier trimming** — ``trim_outlier_ratios``, ``trim_outliers_mask``
+- **Variable-selection diagnostics** — correlation, VIF, p-values,
+  t-values, ENR coefficients, adjusted R²
+- **Model fit metrics** — MSE, R², adjusted R², MAPE
+- ``ConfidenceStat`` — value plus bootstrap-derived confidence interval
+
+Functions here are pure-numeric and have no settings or DataFrame-shape
+assumptions beyond what each function declares.
+"""
 import warnings
 import math
 import polars as pl
@@ -1131,6 +1150,14 @@ def calc_r2(
             results["adj_r2"].append(float("nan"))
             results["coef_sign"].append(float("nan"))
             continue  # skip ill-posed models
+
+        # Skip non-numeric columns (e.g. string categoricals); .astype(float) would raise ValueError
+        if not pd.api.types.is_numeric_dtype(data[var]):
+            results["variable"].append(var)
+            results["r2"].append(float("nan"))
+            results["adj_r2"].append(float("nan"))
+            results["coef_sign"].append(float("nan"))
+            continue
 
         X = sm.add_constant(data[var].astype(float), has_constant='add')
 

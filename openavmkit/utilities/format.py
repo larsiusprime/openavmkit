@@ -1,3 +1,11 @@
+"""
+Number and string formatting helpers.
+
+"Fancy" formatting for displaying numbers in reports — applies thousands
+separators, controls decimal precision, formats very large or very small
+numbers compactly, etc. Used wherever human-readable output is produced
+(reports, console summaries, plot annotations).
+"""
 import re
 
 import numpy as np

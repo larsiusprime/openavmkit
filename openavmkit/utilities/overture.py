@@ -1,3 +1,12 @@
+"""
+Overture Maps data fetching service.
+
+Pulls building-footprint data from the Overture Maps public dataset and
+spatially joins it onto the parcel universe. Activated via
+``data.process.enrich.overture`` in ``settings.json``. Useful when assessor
+data lacks reliable building footprint counts or areas, or when an external
+check on improvement coverage is desired.
+"""
 import os
 import warnings
 import geopandas as gpd

@@ -1,3 +1,21 @@
+"""
+Model benchmarking and ensembling.
+
+Orchestrates running multiple predictive models (MRA, GWR, XGBoost, LightGBM,
+CatBoost, kernel regression, ensembles, and several "naive" baselines) across
+each model group, with optional variable-importance experiments. Compares model
+outputs and produces ensemble predictions.
+
+This module is the high-level coordinator that drives :mod:`openavmkit.modeling`.
+The main entry points (``run_models``, ``try_variables``, ensemble runners) are
+exposed as wrappers in :mod:`openavmkit.pipeline`.
+
+Notes
+-----
+The list of models to run for each main/vacant stage is configured in
+``settings.json`` under ``modeling.instructions.<stage>.run``. Per-model-group
+skip lists live under ``modeling.instructions.<stage>.skip.<model_group>``.
+"""
 import os
 import pickle
 import warnings
@@ -35,7 +53,7 @@ from openavmkit.modeling import (
     run_xgboost,
     run_lightgbm,
     run_catboost,
-    run_slice,
+    run_layeredcomp,
     run_garbage,
     run_average,
     run_naive_area,
@@ -56,13 +74,13 @@ from openavmkit.modeling import (
     predict_xgboost,
     predict_catboost,
     predict_lightgbm,
-    predict_slice,
+    predict_layeredcomp,
     predict_ground_truth,
     predict_spatial_lag,
     GarbageModel,
     AverageModel,
     DataSplit,
-    write_model_parameters
+    write_model_parameters, get_shap_contributions_map
 )
 from openavmkit.reports import MarkdownReport, _markdown_to_pdf
 from openavmkit.time_adjustment import enrich_time_adjustment
@@ -77,12 +95,11 @@ from openavmkit.utilities.modeling import (
     NaiveAreaModel,
     LocalAreaModel,
     PassThroughModel,
-    LandSLICEModel,
     GWRModel,
     MRAModel,
     MultiMRAModel,
     GroundTruthModel,
-    SpatialLagModel
+    SpatialLagModel, XGBoostModel, LightGBMModel, CatBoostModel
 )
 from openavmkit.utilities.plotting import plot_scatterplot, _simple_ols
 from openavmkit.utilities.settings import (
@@ -837,7 +854,6 @@ def run_models(
     verbose: bool = False,
     run_main: bool = True,
     run_vacant: bool = True,
-    run_hedonic: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
     do_plots: bool = False
@@ -849,9 +865,8 @@ def run_models(
     details like splitting the data, training the models, and saving the results. It performs basic statistic analysis
     on each model, and optionally combines results into an ensemble model.
 
-    If "run_main" is true, it will run normal models as well as hedonic models (if the user so specifies),
-    "hedonic" in this context meaning models that attempt to generate a land value and an improvement value separately.
-    If "run_vacant" is true, it will run vacant models as well -- models that only use vacant models as evidence
+    If "run_main" is true, it will run normal (full market value) models.
+    If "run_vacant" is true, it will run vacant models as well -- models that only use vacant sales as evidence
     to generate land values.
 
     This function iterates over model groups and runs models for both main and vacant cases.
@@ -874,8 +889,6 @@ def run_models(
         Whether to run main (non-vacant) models.
     run_vacant : bool, optional
         Whether to run vacant models.
-    run_hedonic : bool, optional
-        Whether to run hedonic models.
     run_ensemble : bool, optional
         Whether to run ensemble models.
     do_shaps : bool, optional
@@ -908,20 +921,18 @@ def run_models(
     t.start("run model groups")
     for model_group in model_groups:
         t.start(f"model group: {model_group}")
-        for main_vacant_hedonic in ["main", "vacant", "hedonic"]:
-            if main_vacant_hedonic == "main" and not run_main:
+        for main_vacant in ["main", "vacant"]:
+            if main_vacant == "main" and not run_main:
                 continue
-            if main_vacant_hedonic == "vacant" and not run_vacant:
-                continue
-            if main_vacant_hedonic == "hedonic" and not run_hedonic:
+            if main_vacant == "vacant" and not run_vacant:
                 continue
 
-            models_to_skip = s_inst.get(main_vacant_hedonic, {}).get("skip", {}).get(model_group, [])
+            models_to_skip = s_inst.get(main_vacant, {}).get("skip", {}).get(model_group, [])
 
             if "all" in models_to_skip:
                 if verbose:
                     print(
-                        f"Skipping all models for model_group: {model_group}/{main_vacant_hedonic}"
+                        f"Skipping all models for model_group: {model_group}/{main_vacant}"
                     )
                 continue
 
@@ -938,7 +949,7 @@ def run_models(
                 sup,
                 model_group,
                 settings,
-                main_vacant_hedonic,
+                main_vacant,
                 save_params,
                 use_saved_params,
                 save_results,
@@ -1067,8 +1078,6 @@ def get_data_split_for(
     test_keys: list[str],
     train_keys: list[str],
     vacant_only: bool,
-    hedonic: bool,
-    hedonic_test_against_vacant_sales: bool = True,
 ):
     """
     Prepare a DataSplit object for a given model.
@@ -1107,39 +1116,33 @@ def get_data_split_for(
         Keys for training split.
     vacant_only : bool
         Whether to consider only vacant sales.
-    hedonic : bool
-        Whether to use hedonic pricing.
-    hedonic_test_against_vacant_sales : bool, optional
-        Whether to test hedonic models against vacant sales. Defaults to True.
 
     Returns
     -------
     DataSplit
         A DataSplit object.
     """
-    
+
     unit = area_unit(settings)
     lenunit = length_unit(settings)
-    
+
     if model_engine == "local_area":
         _ind_vars = location_fields + [f"bldg_area_finished_{unit}", f"land_area_{unit}"]
     elif model_engine == "multi_mra":
         _ind_vars = [v for v in ind_vars if v not in location_fields]
-    elif model_engine == "slice":
-        _ind_vars = [f"land_area_{unit}", "latitude", "longitude"]
     elif model_engine == "assessor":
-        _ind_vars = ["assr_land_value"] if hedonic else ["assr_market_value"]
+        _ind_vars = ["assr_market_value"]
     elif model_engine == "pass_through":
         field = model_entry.get("field")
         if field is None:
             raise ValueError("pass_through model \"{model_name}\" has no .field parameter!")
         _ind_vars = [field]
     elif model_engine == "ground_truth":
-        _ind_vars = ["true_land_value"] if hedonic else ["true_market_value"]
+        _ind_vars = ["true_market_value"]
     elif model_engine == "spatial_lag":
         sale_field = get_sale_field(settings)
         field = f"spatial_lag_{sale_field}"
-        if vacant_only or hedonic:
+        if vacant_only:
             field = f"{field}_vacant"
         _ind_vars = [field]
     elif model_engine == "spatial_lag_area":
@@ -1153,6 +1156,8 @@ def get_data_split_for(
     elif model_engine == "catboost":
         df_sales = _clean_categoricals(df_sales, fields_cat, settings)
         df_universe = _clean_categoricals(df_universe, fields_cat, settings)
+        _ind_vars = ind_vars
+    elif model_engine == "lcomp":
         _ind_vars = ind_vars
     else:
         _ind_vars = ind_vars
@@ -1174,8 +1179,6 @@ def get_data_split_for(
         test_keys,
         train_keys,
         vacant_only=vacant_only,
-        hedonic=hedonic,
-        hedonic_test_against_vacant_sales=hedonic_test_against_vacant_sales,
     )
 
 
@@ -1196,7 +1199,6 @@ def run_one_model(
     use_saved_params: bool,
     save_results: bool,
     verbose: bool = False,
-    hedonic: bool = False,
     test_keys: list[str] | None = None,
     train_keys: list[str] | None = None,
 ) -> SingleModelResults | None:
@@ -1237,8 +1239,6 @@ def run_one_model(
         Whether to save results.
     verbose : bool, optional
         If True, prints additional information.
-    hedonic : bool, optional
-        Whether to use hedonic pricing.
     test_keys : list[str] or None, optional
         Optional list of test keys (will be read from disk if not provided).
     train_keys : list[str] or None, optional
@@ -1318,9 +1318,39 @@ def run_one_model(
             test_keys=test_keys,
             train_keys=train_keys,
             vacant_only=vacant_only,
-            hedonic=hedonic,
-            hedonic_test_against_vacant_sales=True,
         )
+        
+    # safeguards against invalid splits
+    n_sales = len(ds.df_sales) if ds.df_sales is not None else 0
+    n_train = len(ds.df_train) if ds.df_train is not None else 0
+    n_test  = len(ds.df_test)  if ds.df_test  is not None else 0
+    p = ds.X_train.shape[1] if getattr(ds, "X_train", None) is not None else 0
+    
+    if n_train == 0 or p == 0:
+        # compute some helpful diagnostics
+        missing_vars = []
+        if p == 0:
+            # requested vars that are not present in train
+            train_cols = set(ds.df_train.columns) if ds.df_train is not None else set()
+            missing_vars = [v for v in ds.ind_vars if v not in train_cols]
+    
+        why = []
+        if n_train == 0:
+            if n_test == n_sales and n_sales > 0:
+                why.append("all sales ended up in the test split (train set empty) — check split keys")
+            else:
+                why.append("filters/slicing removed all training rows")
+        if p == 0:
+            why.append(f"no usable features in X_train (missing ind_vars: {missing_vars[:20]}{'...' if len(missing_vars)>20 else ''})")
+    
+        warnings.warn(
+            f"Skipping model {model_group}/{model_name} ({model_engine}): "
+            f"sales={n_sales}, train={n_train}, test={n_test}, X_train_cols={p}. "
+            + " ".join(why),
+            RuntimeWarning
+        )
+        return None
+    
     t.stop("data split")
 
     t.start("setup")
@@ -1389,8 +1419,10 @@ def run_one_model(
         results = run_catboost(
             ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, use_gpu=use_gpu
         )
-    elif model_engine == "slice":
-        results = run_slice(ds, verbose=verbose)
+    elif model_engine == "lcomp":
+        results = run_layeredcomp(
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
+        )
     else:
         raise ValueError(f"Model {model_engine} not found!")
     t.stop("run")
@@ -1398,122 +1430,17 @@ def run_one_model(
     if results is None:
         return None
     
-    if ds.vacant_only or ds.hedonic:
-        # If this is a vacant or hedonic model, we attempt to load a corresponding "full value" model
+    if ds.vacant_only:
+        # If this is a vacant model, we attempt to load a corresponding "full value" model
         max_trim = _get_max_ratio_study_trim(settings, results.ds.model_group)
 
     if save_results:
         t.start("write")
-        main_vacant_hedonic = "hedonic" if hedonic else "vacant" if vacant_only else "main"
-        location = get_model_location(settings, main_vacant_hedonic, model_name)
+        main_vacant = "vacant" if vacant_only else "main"
+        location = get_model_location(settings, main_vacant, model_name)
         _write_model_results(results, outpath, settings, location, verbose=verbose)
         t.stop("write")
 
-    return results
-
-
-def run_one_hedonic_model(
-    df_sales: pd.DataFrame,
-    df_univ: pd.DataFrame,
-    settings: dict,
-    model_name: str,
-    model_engine: str,
-    model_entry: dict,
-    smr: SingleModelResults,
-    model_group: str,
-    dep_var: str,
-    dep_var_test: str,
-    fields_cat: list[str],
-    outpath: str,
-    hedonic_test_against_vacant_sales: bool = True,
-    save_results: bool = False,
-    verbose: bool = False,
-):
-    """Run a single hedonic model based on provided parameters and return its results.
-
-    This function is similar to run_one_model but specifically tailored for hedonic models.
-
-    Parameters
-    ----------
-    df_sales : pandas.DataFrame
-        Sales DataFrame.
-    df_univ : pandas.DataFrame
-        Universe DataFrame.
-    settings : dict
-        Settings dictionary.
-    model_name : str
-        Model unique identifier.
-    model_engine : str
-        Model engine ("xgboost", "mra", etc.)
-    model_entry : dict
-        Model parameters
-    smr : SingleModelResults
-        SingleModelResults object containing initial model results.
-    model_group : str
-        Model group identifier.
-    dep_var : str
-        Dependent variable for training.
-    dep_var_test : str
-        Dependent variable for testing.
-    fields_cat : list[str]
-        List of categorical fields.
-    outpath : str
-        Output path for saving results.
-    hedonic_test_against_vacant_sales : bool, optional
-        Whether to test hedonic models against vacant sales. Defaults to True.
-    save_results : bool, optional
-        Whether to save results. Defaults to False.
-    verbose : bool, optional
-        If True, prints additional information. Defaults to False.
-
-    Returns
-    -------
-    SingleModelResults or None
-        SingleModelResults if successful, else None.
-    """
-    location_field_neighborhood = get_important_field(
-        settings, "loc_neighborhood", df_sales
-    )
-    location_field_market_area = get_important_field(
-        settings, "loc_market_area", df_sales
-    )
-    location_fields = [location_field_neighborhood, location_field_market_area]
-
-    ds = get_data_split_for(
-        model_name=model_name,
-        model_engine=model_engine,
-        model_entry=model_entry,
-        model_group=model_group,
-        location_fields=location_fields,
-        ind_vars=smr.ind_vars,
-        df_sales=df_sales,
-        df_universe=df_univ,
-        settings=settings,
-        dep_var=dep_var,
-        dep_var_test=dep_var_test,
-        fields_cat=fields_cat,
-        interactions=smr.ds.interactions.copy(),
-        test_keys=smr.ds.test_keys,
-        train_keys=smr.ds.train_keys,
-        vacant_only=False,
-        hedonic=True,
-        hedonic_test_against_vacant_sales=hedonic_test_against_vacant_sales,
-    )
-    # We call this here because we are re-running prediction without first calling run(), which would call this
-    ds.split()
-    if hedonic_test_against_vacant_sales and len(ds.y_sales) < 15:
-        print(f"Skipping hedonic model because there are not enough sale records...")
-        return None
-    smr.ds = ds
-    results = _predict_one_model(
-        smr=smr,
-        model_name=model_name,
-        model_engine=model_engine,
-        outpath=outpath,
-        settings=settings,
-        save_results=save_results,
-        verbose=verbose,
-    )
     return results
 
 
@@ -1528,7 +1455,6 @@ def run_ensemble(
     all_results: MultiModelResults,
     settings: dict,
     verbose: bool = False,
-    hedonic: bool = False,
 ) -> tuple[SingleModelResults, list[str]]:
     """Run an ensemble model based on the provided parameters.
 
@@ -1556,8 +1482,6 @@ def run_ensemble(
         Settings dictionary.
     verbose : bool, optional
         If True, prints additional information. Defaults to False.
-    hedonic : bool, optional
-        Whether to use hedonic pricing. Defaults to False.
 
     Returns
     -------
@@ -1566,7 +1490,7 @@ def run_ensemble(
     """
     if verbose:
         print("Optimizing ensemble...")
-        
+
     ensemble_list = _optimize_ensemble(
         df_sales,
         df_universe,
@@ -1577,7 +1501,6 @@ def run_ensemble(
         all_results,
         settings,
         verbose=verbose,
-        hedonic=hedonic,
         ensemble_list=None,
     )
     if verbose:
@@ -1587,7 +1510,6 @@ def run_ensemble(
         df_universe,
         model_group,
         vacant_only=vacant_only,
-        hedonic=hedonic,
         dep_var=dep_var,
         dep_var_test=dep_var_test,
         outpath=outpath,
@@ -1630,6 +1552,8 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
         "cod": [],
         "prd": [],
         "prb": [],
+        "vei": [],
+        "vei_sig":[],
         "count_trim": [],
         "cod_trim": [],
         "prd_trim": [],
@@ -1662,6 +1586,18 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
             data["cod"].append(pred_results.ratio_study.cod)
             data["prd"].append(pred_results.ratio_study.prd)
             data["prb"].append(pred_results.ratio_study.prb)
+            if kind == "test":
+                data["vei"].append(results.ve_test["vei"])
+                data["vei_sig"].append(results.ve_test["vei_significance"])
+            elif kind == "test_post_val":
+                # results here is the post-valuation SMR
+                # which doesn't explicitly calculate ve_test in _get_post_valuation_smr yet
+                # but let's see if we can get it or if it's fine to be nan
+                data["vei"].append(np.nan)
+                data["vei_sig"].append(results.ve_test["vei_significance"])
+            else:
+                data["vei"].append(results.ve_sales_lookback["vei"])
+                data["vei_sig"].append(results.ve_sales_lookback["vei_significance"])
             data["count_trim"].append(pred_results.ratio_study.count_trim)
             data["cod_trim"].append(pred_results.ratio_study.cod_trim)
             data["prd_trim"].append(pred_results.ratio_study.prd_trim)
@@ -1713,6 +1649,8 @@ def _format_benchmark_df(df: pd.DataFrame, transpose: bool = True):
         "r2": dig2_fancy_format,
         "adj_r2": dig2_fancy_format,
         "median_ratio": dig2_fancy_format,
+        "vei": dig2_fancy_format,
+        "vei_sig": dig2_fancy_format,
         "cod": dig2_fancy_format,
         "cod_trim": dig2_fancy_format,
         "true_mse": fancy_format,
@@ -1775,7 +1713,7 @@ def _predict_one_model(
     timing = TimingData()
     timing.start("total")
     
-    main_vacant_hedonic = "hedonic" if ds.hedonic else "vacant" if ds.vacant_only else "main"
+    main_vacant = "vacant" if ds.vacant_only else "main"
 
     results: SingleModelResults | None = None
 
@@ -1829,19 +1767,16 @@ def _predict_one_model(
     elif model_engine == "catboost":
         catboost_model: CatBoostModel = smr.model
         results = predict_catboost(ds, catboost_model, timing, verbose)
-    elif model_engine == "slice":
-        slice_model: LandSLICEModel = smr.model
-        results = predict_slice(ds, slice_model, timing, verbose)
-    
+
     if save_results:
         
-        mvh = settings.get("modeling", {}).get("models", {}).get(main_vacant_hedonic, {})
-        model_entry = mvh.get("model_name", mvh.get("default", {}))
+        mv = settings.get("modeling", {}).get("models", {}).get(main_vacant, {})
+        model_entry = mv.get("model_name", mv.get("default", {}))
         location = model_entry.get("location", None)
         if location is None:
             location = get_important_field(settings, "loc_neighborhood")
         
-        location = get_model_location(settings, main_vacant_hedonic, model_name)
+        location = get_model_location(settings, main_vacant, model_name)
         _write_model_results(results, outpath, settings, location, verbose=verbose)
 
     return results
@@ -1863,8 +1798,6 @@ def _clamp_land_predictions(
     lookpath = "main"
     if "vacant" in outpath:
         lookpath = "main"
-    if "hedonic" in outpath:
-        lookpath = "hedonic_full"
 
     # Look for the corresponding universe, sales, and test predictions for the land value model.
     df_univ = load_model_results(model_group, model_name, "universe", lookpath)
@@ -2170,14 +2103,30 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
     
     write_model_parameters(results.model, results, location, params_path, verbose=verbose)
 
+    try:
+        universe_parquet = gpd.read_parquet(f"{path}/pred_universe.parquet")
+    except FileNotFoundError:
+        universe_parquet = None
+    try:
+        df_contributions = pd.read_csv(f"{path}/contributions_univ.csv")
+    except FileNotFoundError:
+        df_contributions = None
+
+    if universe_parquet is not None and df_contributions is not None:
+        shap_contributions_map = get_shap_contributions_map(universe_parquet, results.df_universe, df_contributions)
+        shap_contributions_map.to_parquet(f"{path}/contributions_map.parquet")
+        print(f"Wrote contributions map to {path}/contributions_map.parquet")
+
+
+
 
 def get_model_location(
     settings: dict,
-    main_vacant_hedonic: str,
+    main_vacant: str,
     model_name: str
 ):
-    mvh = settings.get("modeling", {}).get("models", {}).get(main_vacant_hedonic, {})
-    model_entry = mvh.get(model_name, mvh.get("default", {}))
+    mv = settings.get("modeling", {}).get("models", {}).get(main_vacant, {})
+    model_entry = mv.get(model_name, mv.get("default", {}))
     location = model_entry.get("location", None)
     if location is None:
         location = get_important_field(settings, "loc_market_area")
@@ -2226,7 +2175,6 @@ def _optimize_ensemble_allocation(
     all_results: MultiModelResults,
     settings: dict,
     verbose: bool = False,
-    hedonic: bool = False,
     ensemble_list: list[str] = None,
 ):
     """
@@ -2257,7 +2205,6 @@ def _optimize_ensemble_allocation(
         test_keys,
         train_keys,
         vacant_only=vacant_only,
-        hedonic=hedonic,
     )
 
     vacant_status = "vacant" if vacant_only else "main"
@@ -2401,7 +2348,6 @@ def _run_local_ensemble(
     settings: dict,
     outpath: str,
     verbose: bool = False,
-    hedonic: bool = False,
     locations: list[str] = None,
 ):
     """
@@ -2433,7 +2379,6 @@ def _run_local_ensemble(
         test_keys,
         train_keys,
         vacant_only=vacant_only,
-        hedonic=hedonic,
     )
 
     vacant_status = "vacant" if vacant_only else "main"
@@ -2733,7 +2678,6 @@ def _optimize_ensemble(
     all_results: MultiModelResults,
     settings: dict,
     verbose: bool = False,
-    hedonic: bool = False,
     ensemble_list: list[str] = None,
 ):
     """
@@ -2765,7 +2709,6 @@ def _optimize_ensemble(
         test_keys,
         train_keys,
         vacant_only=vacant_only,
-        hedonic=hedonic,
     )
 
     vacant_status = "vacant" if vacant_only else "main"
@@ -2925,7 +2868,6 @@ def _run_ensemble(
     df_universe: pd.DataFrame,
     model_group: str,
     vacant_only: bool,
-    hedonic: bool,
     dep_var: str,
     dep_var_test: str,
     outpath: str,
@@ -2958,7 +2900,6 @@ def _run_ensemble(
         test_keys,
         train_keys,
         vacant_only=vacant_only,
-        hedonic=hedonic,
     )
     ds.split()
 
@@ -3492,150 +3433,11 @@ def _calc_variable_recommendations(
     return df
 
 
-def _run_hedonic_models(
-    settings: dict,
-    model_group: str,
-    models_to_run: list[str],
-    model_entries: dict,
-    all_results: MultiModelResults,
-    df_sales: pd.DataFrame,
-    df_universe: pd.DataFrame,
-    dep_var: str,
-    dep_var_test: str,
-    fields_cat: list[str],
-    verbose: bool = False,
-    save_results: bool = False,
-    run_ensemble: bool = True,
-    do_plots: bool = False
-):
-    """
-    Run hedonic models and ensemble them, then update the benchmark.
-    """
-    hedonic_results = {}
-
-    # Run hedonic models
-    outpath = f"out/models/{model_group}/hedonic_land"
-    if not os.path.exists(outpath):
-        os.makedirs(outpath)
-
-    location_field_neighborhood = get_important_field(
-        settings, "loc_neighborhood", df_sales
-    )
-    location_field_market_area = get_important_field(
-        settings, "loc_market_area", df_sales
-    )
-    location_fields = [location_field_neighborhood, location_field_market_area]
-
-    # Re-run the models one by one and stash the results
-    for model_name in models_to_run:
-        if model_name not in all_results.model_results:
-            continue
-        smr = all_results.model_results[model_name]
-        model_engine = smr.model_engine
-        model_entry = model_entries.get(model_name, {})
-        ds = get_data_split_for(
-            model_name=model_name,
-            model_engine=model_engine,
-            model_entry=model_entry,
-            model_group=model_group,
-            location_fields=location_fields,
-            ind_vars=smr.ind_vars,
-            df_sales=df_sales,
-            df_universe=df_universe,
-            settings=settings,
-            dep_var=dep_var,
-            dep_var_test=dep_var_test,
-            fields_cat=fields_cat,
-            interactions=smr.ds.interactions.copy(),
-            test_keys=smr.ds.test_keys,
-            train_keys=smr.ds.train_keys,
-            vacant_only=False,
-            hedonic=True,
-            hedonic_test_against_vacant_sales=True,
-        )
-
-        # if the other one is one-hot encoded, we need to reconcile the fields
-        ds = ds.reconcile_fields_with_foreign(smr.ds)
-
-        # We call this here because we are re-running prediction without first calling run(), which would call this
-        ds.split()
-        if len(ds.y_sales) < 15:
-            print(
-                f"Skipping hedonic model because there are not enough sale records...."
-            )
-            return
-        smr.ds = ds
-        
-        results = _predict_one_model(
-            smr=smr,
-            model_name=model_name,
-            model_engine=model_engine,
-            outpath=outpath,
-            settings=settings,
-            save_results=save_results,
-            verbose=verbose,
-        )
-        if results is not None:
-            hedonic_results[model_name] = results
-
-    all_hedonic_results = MultiModelResults(
-        model_results=hedonic_results, benchmark=_calc_benchmark(hedonic_results), df_univ=df_universe, df_sales=df_sales
-    )
-
-    if run_ensemble:
-        ensemble_results = _perform_ensemble(
-            df_sales=df_sales,
-            df_universe=df_universe,
-            model_group=model_group,
-            vacant_only=False,
-            hedonic=True,
-            outpath=outpath,
-            dep_var=dep_var,
-            dep_var_test=dep_var_test,
-            all_results=all_hedonic_results,
-            settings=settings,
-            verbose=verbose
-        )
-        out_pickle = f"{outpath}/model_ensemble.pickle"
-        with open(out_pickle, "wb") as file:
-            pickle.dump(ensemble_results, file)
-
-        # Calculate final results, including ensemble
-        all_hedonic_results.add_model("ensemble", ensemble_results)
-    
-    print(f"\n************************************************************")
-    print(f"HEDONIC LAND BENCHMARK ({model_group}) -- Assessor Metrics")
-    print(f"************************************************************\n")
-    print(all_hedonic_results.benchmark.print())
-    
-    max_trim = _get_max_ratio_study_trim(settings, model_group)
-
-    title = "HEDONIC LAND"
-    perf_metrics = _model_performance_metrics(model_group, all_hedonic_results, title, max_trim)
-    print(perf_metrics)
-    print("")
-
-    if do_plots:
-        _model_performance_plots(model_group, all_hedonic_results, title)
-        print("")
-
-    # Post-valuation metrics
-    title = f"{title} (POST-VALUATION DATE)"
-    if not all_hedonic_results.benchmark.test_post_val_empty:
-        post_val_results = _get_post_valuation_mmr(all_hedonic_results)
-        perf_metrics = _model_performance_metrics(model_group, post_val_results, title, max_trim)
-        print(perf_metrics)
-        print("")
-
-        print("")
-
-
 def _perform_ensemble(
     df_sales: pd.DataFrame | None,
     df_universe: pd.DataFrame | None,
     model_group: str,
     vacant_only: bool,
-    hedonic: bool,
     outpath: str,
     dep_var: str,
     dep_var_test: str,
@@ -3644,12 +3446,8 @@ def _perform_ensemble(
     verbose: bool = False,
     t: TimingData = None
 ):
-    mvh = "main"
-    if vacant_only:
-        mvh = "vacant"
-    elif hedonic:
-        mvh = "hedonic"
-    ensemble_inst = get_ensemble_instructions(settings, mvh)
+    mv = "vacant" if vacant_only else "main"
+    ensemble_inst = get_ensemble_instructions(settings, mv)
     ensemble_type = ensemble_inst["type"]
     if ensemble_type == "default":
         ensemble_models = ensemble_inst.get("models", [])
@@ -3658,7 +3456,6 @@ def _perform_ensemble(
             df_universe=df_universe,
             model_group=model_group,
             vacant_only=vacant_only,
-            hedonic=hedonic,
             outpath=outpath,
             dep_var=dep_var,
             dep_var_test=dep_var_test,
@@ -3675,7 +3472,6 @@ def _perform_ensemble(
             df_universe=df_universe,
             model_group=model_group,
             vacant_only=vacant_only,
-            hedonic=hedonic,
             outpath=outpath,
             dep_var=dep_var,
             dep_var_test=dep_var_test,
@@ -3694,7 +3490,6 @@ def _perform_local_ensemble(
     df_universe: pd.DataFrame | None,
     model_group: str,
     vacant_only: bool,
-    hedonic: bool,
     outpath: str,
     dep_var: str,
     dep_var_test: str,
@@ -3721,7 +3516,6 @@ def _perform_local_ensemble(
         outpath=outpath,
         locations=locations,
         verbose=verbose,
-        hedonic=hedonic,
     )
     t.stop("run_ensemble")
     return ensemble_results
@@ -3732,7 +3526,6 @@ def _perform_default_ensemble(
     df_universe: pd.DataFrame | None,
     model_group: str,
     vacant_only: bool,
-    hedonic: bool,
     outpath: str,
     dep_var: str,
     dep_var_test: str,
@@ -3757,7 +3550,6 @@ def _perform_default_ensemble(
         all_results=all_results,
         settings=settings,
         verbose=verbose,
-        hedonic=hedonic,
     )
     t.stop("optimize_ensemble")
     # Run the ensemble model
@@ -3769,7 +3561,6 @@ def _perform_default_ensemble(
         df_universe=df_universe,
         model_group=model_group,
         vacant_only=vacant_only,
-        hedonic=hedonic,
         dep_var=dep_var,
         dep_var_test=dep_var_test,
         outpath=outpath,
@@ -3943,6 +3734,8 @@ def _model_performance_metrics(
         "MAPE": [],
         "m.ratio": [],
         "avg.ratio": [],
+        "VEI": [],
+        "VEI_sig": [],
         "Slope": []
     }
     trimmed_data = {
@@ -3954,6 +3747,8 @@ def _model_performance_metrics(
         "Slope": [],
         "m.ratio": [],
         "avg.ratio": [],
+        "VEI": [],
+        "VEI_sig": [],
     }
 
     for model_name, model_result in all_results.model_results.items():
@@ -4031,6 +3826,8 @@ def _model_performance_metrics(
         metrics_data["RMSE"].append(rmse)
         metrics_data["m.ratio"].append(model_result.pred_test.ratio_study.median_ratio)
         metrics_data["avg.ratio"].append(model_result.pred_test.ratio_study.mean_ratio)
+        metrics_data["VEI"].append(model_result.ve_test["vei"])
+        metrics_data["VEI_sig"].append(model_result.ve_test["vei_significance"])
         metrics_data["Slope"].append(slope)
 
         trimmed_data["Model"].append(model_name)
@@ -4040,6 +3837,10 @@ def _model_performance_metrics(
         trimmed_data["RMSE"].append(rmse)
         trimmed_data["m.ratio"].append(model_result.pred_test.ratio_study.median_ratio_trim)
         trimmed_data["avg.ratio"].append(model_result.pred_test.ratio_study.mean_ratio_trim)
+        
+        # Calculate VEI for trimmed data
+        trimmed_data["VEI"].append(model_result.ve_test["vei"])
+        trimmed_data["VEI_sig"].append(model_result.ve_test["vei_significance"])
         trimmed_data["Slope"].append(slope_trim)
 
     # Create and display metrics DataFrame
@@ -4052,6 +3853,8 @@ def _model_performance_metrics(
     metrics_df["Slope"] = metrics_df["Slope"].apply(lambda x: f"{x:.2f}").astype(str)
     metrics_df["m.ratio"] = metrics_df["m.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
     metrics_df["avg.ratio"] = metrics_df["avg.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
+    metrics_df["VEI"] = metrics_df["VEI"].apply(lambda x: f"{x:.2f}").astype(str)
+    metrics_df["VEI_sig"] = metrics_df["VEI_sig"].apply(lambda x: f"{x:.2f}").astype(str)
 
     trimmed_df = pd.DataFrame(trimmed_data)
     trimmed_df.set_index("Model", inplace=True)
@@ -4062,9 +3865,11 @@ def _model_performance_metrics(
     trimmed_df["Slope"] = trimmed_df["Slope"].apply(lambda x: f"{x:.2f}").astype(str)
     trimmed_df["m.ratio"] = trimmed_df["m.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
     trimmed_df["avg.ratio"] = trimmed_df["avg.ratio"].apply(lambda x: f"{x:.2f}").astype(str)
+    trimmed_df["VEI"] = trimmed_df["VEI"].apply(lambda x: f"{x:.2f}").astype(str)
+    trimmed_df["VEI_sig"] = trimmed_df["VEI_sig"].apply(lambda x: f"{x:.2f}").astype(str)
 
-    metrics_df = metrics_df[["count","MAPE","MSE","RMSE","m.ratio","avg.ratio","Slope"]]
-    trimmed_df = trimmed_df[["count","MAPE","MSE","RMSE","m.ratio","avg.ratio","Slope"]]
+    metrics_df = metrics_df[["count","MAPE","MSE","RMSE","m.ratio","avg.ratio","VEI","Slope"]]
+    trimmed_df = trimmed_df[["count","MAPE","MSE","RMSE","m.ratio","avg.ratio","VEI","Slope"]]
 
     float_cols = metrics_df.select_dtypes(include=['float']).columns
     metrics_df[float_cols] = metrics_df[float_cols].map(lambda x: f"{x:.2f}")
@@ -4080,63 +3885,11 @@ def _model_performance_metrics(
     return text
 
 
-def _trim_hedonic_sales(
-    df_sales: pd.DataFrame,
-    model_group: str,
-    impr_to_vac_ratio: float,
-    random_seed: int,
-    verbose: bool = False
-):
-    test_keys, train_keys = _read_split_keys(model_group)
-    rng = np.random.default_rng(random_seed)
-
-    all_vac_keys = df_sales.loc[df_sales["vacant_sale"], "key_sale"]
-
-    selected_keys: set[str] = set(all_vac_keys)
-
-    if verbose:
-        print(f"-->Trimming hedonic sales for model group '{model_group}'...")
-        print(f"---->all sales   : {len(df_sales)}")
-        print(f"---->vacant sales: {len(all_vac_keys)}")
-    
-    for is_test in [True, False]:
-        subset_keys = test_keys if is_test else train_keys
-        mask = df_sales["key_sale"].isin(subset_keys)
-
-        vac_mask   = mask & df_sales["vacant_sale"].eq(True)
-        impr_mask  = mask & df_sales["vacant_sale"].eq(False)
-        
-        n_vac   = vac_mask.sum()
-        n_impr  = impr_mask.sum()
-
-        target = min(n_impr, math.ceil(n_vac * impr_to_vac_ratio))
-        if target == 0:
-            continue
-        
-        improvs = df_sales.index[impr_mask]
-        sampled_idx = rng.choice(improvs, size=target, replace=False)
-        
-        n_samples = len(df_sales.loc[sampled_idx, "key_sale"])
-        
-        if verbose:
-            word = "test" if is_test else "train"
-            print(f"------>{word} sales  : {mask.sum()}")
-            print(f"------>vacant sales: {n_vac}")
-            print(f"------>num sampled : {n_samples}")
-        
-        selected_keys.update(df_sales.loc[sampled_idx, "key_sale"])
-    
-    if verbose:
-        print(f"-------->Final selection: {len(selected_keys)} keys")
-    
-    return df_sales[df_sales["key_sale"].isin(selected_keys)]
-
-
 def _run_models(
     sup: SalesUniversePair,
     model_group: str,
     settings: dict,
-    main_vacant_hedonic: str = "main",
+    main_vacant: str = "main",
     save_params: bool = True,
     use_saved_params: bool = True,
     save_results: bool = False,
@@ -4150,23 +3903,16 @@ def _run_models(
     """
     
     outdir = ""
-    if main_vacant_hedonic == "main":
-        is_hedonic = False
+    if main_vacant == "main":
         vacant_only = False
         outdir = "main"
         titleword = "MAIN"
-    elif main_vacant_hedonic == "vacant":
-        is_hedonic = False
+    elif main_vacant == "vacant":
         vacant_only = True
         outdir = "vacant"
         titleword = "VACANT"
-    elif main_vacant_hedonic == "hedonic":
-        is_hedonic = True
-        vacant_only = False
-        outdir = "hedonic_full"
-        titleword = "HEDONIC FULL"
     else:
-        raise ValueError(f"The only supported values are 'main', 'vacant', and 'hedonic', got '{main_vacant_hedonic}' instead!")
+        raise ValueError(f"The only supported values are 'main' and 'vacant', got '{main_vacant}' instead!")
     
     t = TimingData()
     t.start("total")
@@ -4180,25 +3926,16 @@ def _run_models(
 
     settings_model = settings.get("modeling", {})
     settings_model_instructions = settings_model.get("instructions", {})
-    settings_mvh = settings_model_instructions.get(main_vacant_hedonic, {})
+    settings_mv = settings_model_instructions.get(main_vacant, {})
 
-    if is_hedonic:
-        # For a hedonic model, we don't want to overload the vacant signal
-        # so we grab only a modest amount of improved sales to supplement the vacants
-        settings_select = settings_mvh.get("select", {})
-        impr_to_vac_ratio = settings_select.get("improved_to_vacant_ratio", 4.0)
-        random_seed = settings_model_instructions.get("random_seed", 1337)
-        
-        df_sales = _trim_hedonic_sales(df_sales, model_group, impr_to_vac_ratio, random_seed, verbose)
-        
     default_value = get_sale_field(settings, df_sales)
     dep_var = settings_model_instructions.get("dep_var", default_value)
     dep_var_test = settings_model_instructions.get("dep_var_test", default_value)
     fields_cat = get_fields_categorical(settings, df_univ, include_boolean=True)
-    models_to_run = settings_model_instructions.get(main_vacant_hedonic, {}).get("run", None)
-    models_to_skip = settings_model_instructions.get(main_vacant_hedonic,{}).get("skip",{}).get(model_group,[])
+    models_to_run = settings_model_instructions.get(main_vacant, {}).get("run", None)
+    models_to_skip = settings_model_instructions.get(main_vacant,{}).get("skip",{}).get(model_group,[])
 
-    model_entries = settings_model.get("models").get(main_vacant_hedonic, {})
+    model_entries = settings_model.get("models").get(main_vacant, {})
 
     if models_to_run is None:
         models_to_run = list(model_entries.keys())
@@ -4327,7 +4064,6 @@ def _run_models(
             df_universe=df_univ,
             model_group=model_group,
             vacant_only=vacant_only,
-            hedonic=False,
             outpath=outpath,
             dep_var=dep_var,
             dep_var_test=dep_var_test,
@@ -4398,26 +4134,6 @@ def _run_models(
             print("")
 
             print("")
-
-    if not vacant_only and is_hedonic:
-        t.start("run hedonic models")
-        _run_hedonic_models(
-            settings=settings,
-            model_group=model_group,
-            models_to_run=models_to_run,
-            model_entries=model_entries,
-            all_results=all_results,
-            df_sales=df_sales,
-            df_universe=df_univ,
-            dep_var=dep_var,
-            dep_var_test=dep_var_test,
-            fields_cat=fields_cat,
-            verbose=verbose,
-            save_results=save_results,
-            run_ensemble=run_ensemble,
-            do_plots=do_plots
-        )
-        t.stop("run hedonic models")
 
     t.stop("total")
 

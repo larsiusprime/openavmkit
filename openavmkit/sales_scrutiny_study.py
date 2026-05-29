@@ -1,3 +1,14 @@
+"""
+Sales scrutiny — flagging suspect sales.
+
+Heuristic and statistical checks for identifying sales that may not reflect
+arms-length, market-rate transactions: outlier prices within a cluster of
+similar properties, suspicious price clusters (Gaussian mixture analysis),
+manual exclusion lists, etc. Marks suspect sales so they can be excluded
+from training data while remaining visible for audit.
+
+Cluster definitions come from ``analysis.sales_scrutiny`` in ``settings.json``.
+"""
 import os
 import warnings
 import pandas as pd
@@ -111,8 +122,8 @@ class SalesScrutinyStudy:
         for key in stuff:
             df = stuff[key]
             df, cluster_fields = _mark_sales_scrutiny_clusters(df, settings)
-            df["ss_id"] = df["ss_id"].astype(str)
-            df["ss_id"] = df["model_group"] + "_" + key + "_" + df["ss_id"]
+            df["ss_id"] = df["ss_id"].astype(object).fillna("").astype(str)
+            df["ss_id"] = df["model_group"].astype(object).astype(str) + "_" + key + "_" + df["ss_id"]
             per_area = ""
             denominator = ""
             if key == "i":
@@ -471,6 +482,7 @@ def _run_land_percentiles(sup: SalesUniversePair, settings: dict):
         ].rank(pct=True)
         cols = [
             "key_sale",
+            "model_group",
             "sale_date",
             "sale_price",
             "sale_price_time_adj",
@@ -745,7 +757,7 @@ def run_heuristics(
             f"Identified {len(bad_keys)} invalid sales keys identified by heuristic, but not dropping them"
         )
 
-    _run_land_percentiles(sup, settings)
+    #_run_land_percentiles(sup, settings)
 
     return sup
 
