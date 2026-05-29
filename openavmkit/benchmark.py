@@ -3839,11 +3839,6 @@ def _model_performance_metrics(
         trimmed_data["avg.ratio"].append(model_result.pred_test.ratio_study.mean_ratio_trim)
         
         # Calculate VEI for trimmed data
-        # We need a VerticalEquityStudy for trimmed data specifically if we want to be accurate
-        # but for now let's just use the untrimmed one or calculate it on the fly
-        # To keep it simple and consistent with other metrics, let's just use untrimmed VEI 
-        # OR calculate a simple one here. Given VerticalEquityStudy uses quantiles, it's 
-        # better to use the one from the study.
         trimmed_data["VEI"].append(model_result.ve_test["vei"])
         trimmed_data["VEI_sig"].append(model_result.ve_test["vei_significance"])
         trimmed_data["Slope"].append(slope_trim)

@@ -107,10 +107,6 @@ class VerticalEquityStudy:
         sales = df_sales[field_sales].to_numpy()
         
         results = calc_ratio_stats_bootstrap(predictions, sales, confidence_interval, iterations=iterations, seed=seed)
-        if results is not None:
-            self.prd = results["prd"]
-        else:
-            self.prd = ConfidenceStat(np.nan, confidence_interval, np.nan, np.nan)
         
         prb_point, prb_low, prb_high = calc_prb(predictions, sales, confidence_interval)
         
@@ -122,17 +118,6 @@ class VerticalEquityStudy:
         df_sales["quantile"] = _calc_quantiles(df_sales_in, field_sales)
         df = _assemble_quantile_df(df_sales, field_sales, field_prediction, confidence_interval, iterations, seed)
         self.quantiles = df
-        
-        # Calculate VEI (Vertical Equity Indicator)
-        # ----------------------------------------
-        # VEI is defined as the percentage of price quantiles within ±5% of the overall median ratio (1.0)
-        # Note: Since the median ratio of the whole set might not be exactly 1.0, 
-        # we check how many quantile medians are within 0.95 and 1.05.
-        if len(df) > 0:
-            within_range = df['ratio'].between(0.95, 1.05).sum()
-            self.vei = within_range / len(df)
-        else:
-            self.vei = np.nan
 
         # Calculate quantiles (grouped price)
         #------------------------------------------
@@ -187,14 +172,6 @@ class VerticalEquityStudy:
         data[stat_sig].append(prb_stat_sig)
         data["IAAO recommended"].append(prb_iaao_ok)
         data["IAAO passing"].append(prb_iaao_pass)
-        
-        data["Statistic"].append("VEI")
-        data["Point value"].append(self.vei)
-        data[upper].append(np.nan)
-        data[lower].append(np.nan)
-        data[stat_sig].append(np.nan)
-        data["IAAO recommended"].append(np.nan)
-        data["IAAO passing"].append(np.nan)
 
         return pd.DataFrame(data=data)
     
@@ -259,20 +236,6 @@ def _calc_quantiles(df: pd.DataFrame, field: str):
 def _calc_grouped_quantiles(df_in: pd.DataFrame, value_field: str, group_field: str):
     df = df_in.copy()
     df["quantile"] = _calc_quantiles(df, value_field)
-    
-    # Filter out NaNs before calculating mode
-    df_valid = df.dropna(subset=["quantile"])
-    
-    if df_valid.empty:
-        df_in["quantile"] = np.nan
-        return df_in["quantile"]
-
-    def get_mode(x):
-        m = pd.Series.mode(x)
-        return m.iloc[0] if not m.empty else np.nan
-
-    df_group_to_quantile = df_valid.groupby(group_field)["quantile"].agg(get_mode).reset_index()
-    
     df2 = df_in.merge(df_group_to_quantile, on=group_field, how="left")
     return df2["quantile"]
 
