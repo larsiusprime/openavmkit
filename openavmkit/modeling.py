@@ -5460,8 +5460,12 @@ def write_mra_params(
     csv_path = f"{outpath}/params.csv"
     params = model.fitted_model.params.copy()        # pandas Series
     params = params.rename(index={"const": "intercept"})  # const -> intercept
-    
-    df_coef = params.to_frame(name="coefficient")
+    errors = model.fitted_model.bse.copy()
+    errors = errors.rename(index={"const": "intercept"})
+
+    df_params = params.to_frame(name="coefficient")
+    df_errors = errors.to_frame(name="error")
+    df_coef = pd.concat([df_params, df_errors], axis=1)
     df_coef.index.name = "variable"
     df_coef.to_csv(csv_path)
 
