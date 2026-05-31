@@ -11,7 +11,12 @@
 				]
 			},
 			"reconcile": {},
-			"enrich": {}
+			"enrich": {},
+			"__collapse_sparse_categories": {
+				"__doc": "Optional. Per-field rare-category collapse: any category whose row count is below sales_min in hydrated sales OR below univ_min in the universe is replaced by replacement_value (default 'Other'). Skipped for a field if fewer than 2 categories would collapse. Field must be declared in field_classification.*.categorical.",
+				"__example_roof_material": { "sales_min": 2, "univ_min": 5 },
+				"__example_roof_shape":    { "sales_min": 2, "univ_min": 5, "replacement_value": "Other Shape" }
+			}
 		}
 	},
 	"modeling": {

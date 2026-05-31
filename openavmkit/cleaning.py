@@ -28,6 +28,7 @@ from openavmkit.utilities.settings import (
   get_grouped_fields_from_data_dictionary,
   get_data_dictionary,
   get_model_group_ids,
+  get_collapse_sparse_categories_config,
   _is_series_all_bools,
 )
 from openavmkit.utilities.cache import write_cache
@@ -199,6 +200,147 @@ def clean_valid_sales(sup: SalesUniversePair, settings: dict) -> SalesUniversePa
     sup.update_sales(df_sales, allow_remove_rows=True)
 
     return sup
+
+
+def collapse_sparse_categories_sup(
+    sup: SalesUniversePair, settings: dict
+) -> SalesUniversePair:
+    """Collapse rare categorical values into a per-field replacement bucket.
+
+    For each field configured under ``data.process.collapse_sparse_categories``,
+    any category whose row count falls below ``sales_min`` in the hydrated sales
+    set OR below ``univ_min`` in the universe set is replaced by the configured
+    ``replacement_value`` (default ``"Other"``). The same mapping is applied
+    to both the sales and universe DataFrames so the model and downstream
+    artifacts see a single consistent vocabulary.
+
+    If fewer than two categories would be collapsed for a field, the field is
+    left untouched — renaming a single category to ``"Other"`` would not buy
+    any generalization benefit and would only mask the original label.
+
+    Parameters
+    ----------
+    sup : SalesUniversePair
+        The SalesUniversePair to modify.
+    settings : dict
+        The settings dictionary. Reads ``data.process.collapse_sparse_categories``.
+
+    Returns
+    -------
+    SalesUniversePair
+        The updated SalesUniversePair with sparse categories collapsed.
+
+    Raises
+    ------
+    ValueError
+        If a configured field is missing ``sales_min`` or ``univ_min``, or if
+        the field is not listed in ``field_classification.*.categorical``.
+    """
+    config = get_collapse_sparse_categories_config(settings)
+    if not config:
+        return sup
+
+    known_categoricals = set(get_fields_categorical(settings, include_boolean=False))
+
+    df_sales = sup["sales"].copy()
+    df_univ = sup["universe"].copy()
+    df_sales_hydrated = get_hydrated_sales_from_sup(sup)
+
+    for field, field_cfg in config.items():
+        if "sales_min" not in field_cfg or "univ_min" not in field_cfg:
+            raise ValueError(
+                f"collapse_sparse_categories['{field}'] requires both "
+                f"'sales_min' and 'univ_min' to be set."
+            )
+        if field not in known_categoricals:
+            raise ValueError(
+                f"collapse_sparse_categories['{field}']: field is not "
+                f"declared in field_classification.*.categorical. Add it "
+                f"there or remove it from collapse_sparse_categories."
+            )
+
+        sales_min = field_cfg["sales_min"]
+        univ_min = field_cfg["univ_min"]
+        replacement_value = field_cfg.get("replacement_value", "Other")
+
+        if field not in df_univ.columns:
+            warn(
+                f"collapse_sparse_categories: field '{field}' is not in the "
+                f"universe DataFrame, skipping."
+            )
+            continue
+
+        sales_counts = (
+            df_sales_hydrated[field].value_counts(dropna=False)
+            if field in df_sales_hydrated.columns
+            else pd.Series(dtype="int64")
+        )
+        univ_counts = df_univ[field].value_counts(dropna=False)
+
+        all_values = set(sales_counts.index).union(set(univ_counts.index))
+        sparse_values = sorted(
+            v
+            for v in all_values
+            if sales_counts.get(v, 0) < sales_min or univ_counts.get(v, 0) < univ_min
+        )
+
+        if len(sparse_values) < 2:
+            if len(sparse_values) == 1:
+                print(
+                    f"collapse_sparse_categories: {field} — only 1 sparse "
+                    f"category ('{sparse_values[0]}'), leaving as-is"
+                )
+            continue
+
+        sales_rows_affected = int(
+            sum(sales_counts.get(v, 0) for v in sparse_values)
+        )
+        univ_rows_affected = int(
+            sum(univ_counts.get(v, 0) for v in sparse_values)
+        )
+
+        print(f"collapse_sparse_categories: {field}")
+        print(f"  thresholds: sales_min={sales_min}, univ_min={univ_min}")
+        print(
+            f"  {len(sparse_values)} categories collapsed into "
+            f"'{replacement_value}' ({sales_rows_affected} sales rows, "
+            f"{univ_rows_affected} universe rows affected)"
+        )
+        print(f"  collapsed: {sparse_values}")
+
+        df_univ = _apply_collapse_mapping(
+            df_univ, field, sparse_values, replacement_value
+        )
+        if field in df_sales.columns:
+            df_sales = _apply_collapse_mapping(
+                df_sales, field, sparse_values, replacement_value
+            )
+
+    sup.set("sales", df_sales)
+    sup.set("universe", df_univ)
+    return sup
+
+
+def _apply_collapse_mapping(
+    df: pd.DataFrame, field: str, sparse_values: list, replacement_value: str
+) -> pd.DataFrame:
+    """Replace ``sparse_values`` in ``df[field]`` with ``replacement_value``.
+
+    Handles both object and pandas Categorical dtypes. For Categorical
+    columns, the new category is added before the rename and unused
+    categories are pruned afterward.
+    """
+    series = df[field]
+    if isinstance(series.dtype, pd.CategoricalDtype):
+        if replacement_value not in series.cat.categories:
+            series = series.cat.add_categories([replacement_value])
+        mask = series.isin(sparse_values)
+        series = series.where(~mask, replacement_value)
+        series = series.cat.remove_unused_categories()
+    else:
+        series = series.replace({v: replacement_value for v in sparse_values})
+    df[field] = series
+    return df
 
 
 def fill_unknown_values_sup(

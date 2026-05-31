@@ -839,6 +839,55 @@ Filter out non-arms-length sales after data processing, using the conditions def
 - **Source** — `filter_invalid_sales` in [openavmkit/cleaning.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py)
 - **When to use** — if you have a set of sales you know are invalid and can exclude by rule, that aren't covered by your existing sales validity codes
 
+### 5.4 `data.process.collapse_sparse_categories`
+
+Per-field rare-category collapse. For each configured categorical field, any value whose row count falls below `sales_min` in the hydrated sales set **OR** below `univ_min` in the universe is replaced with a per-field `replacement_value` (default `"Other"`). The same mapping is applied to both the sales and universe DataFrames so the model and downstream artifacts see a single consistent vocabulary.
+
+- **Default** — `{}` (feature is opt-in; absent block is a no-op)
+- **Source** — `collapse_sparse_categories_sup` in [openavmkit/cleaning.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py)
+- **Runs** — last step in `notebooks/pipeline/02-clean.ipynb`, after fill, time adjustment, invalid-sales filtering, and sales scrutiny. Counts therefore reflect what the model will actually see.
+- **When to use** — to keep tree-based models from memorizing rows by branching on near-unique category values (the same failure mode that excludes ID columns from the feature set). Useful for any high-cardinality categorical with a long tail of single-row values: parcel sub-type codes, free-text exterior finishes, hand-entered styles, etc.
+
+Settings shape:
+
+```json
+{
+  "data": {
+    "process": {
+      "collapse_sparse_categories": {
+        "roof_material": { "sales_min": 2, "univ_min": 5 },
+        "roof_shape":    { "sales_min": 2, "univ_min": 5, "replacement_value": "Other Shape" }
+      }
+    }
+  }
+}
+```
+
+Per-field config:
+
+| Key                 | Required | Description                                                                                         |
+| ------------------- | -------- | --------------------------------------------------------------------------------------------------- |
+| `sales_min`         | yes      | Minimum row count in the hydrated, valid sales set for a category to be kept as-is.                 |
+| `univ_min`          | yes      | Minimum row count in the universe for a category to be kept as-is.                                  |
+| `replacement_value` | no       | The label used for the catch-all bucket. Defaults to `"Other"`.                                     |
+
+Behavior:
+
+- A category is **sparse** if it fails either threshold. Union semantics — failing one is enough.
+- If fewer than **two** categories would be collapsed for a field, the field is **left untouched**. Renaming a single category to `"Other"` would only mask its label without buying any generalization benefit. A one-line note is printed in that case.
+- The field must appear in `field_classification.*.categorical` — otherwise the step raises `ValueError`. This catches misspellings and prevents accidental collapse of numeric columns.
+- Missing `sales_min` or `univ_min` raises `ValueError`; there are no silent threshold defaults.
+- `"UNKNOWN"` (the post-fill sentinel for missing categoricals) is treated like any other value and can itself be collapsed if rare.
+
+A typical run prints:
+
+```text
+collapse_sparse_categories: roof_material
+  thresholds: sales_min=2, univ_min=5
+  3 categories collapsed into 'Other' (12 sales rows, 47 universe rows affected)
+  collapsed: ['Cinnamon Butt', 'Giraffe Sauce', 'Vorpal Cherry']
+```
+
 ---
 
 ## 6. Modeling control

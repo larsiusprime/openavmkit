@@ -952,6 +952,60 @@ def fill_unknown_values_sup(
     return openavmkit.cleaning.fill_unknown_values_sup(sup, settings)
 
 
+def collapse_sparse_categories_sup(
+    sup: SalesUniversePair, settings: dict
+) -> SalesUniversePair:
+    """Collapse rare categorical values into a per-field replacement bucket.
+
+    Reads ``data.process.collapse_sparse_categories`` from ``settings`` and,
+    for each configured field, replaces any category whose row count falls
+    below ``sales_min`` in the hydrated sales set OR below ``univ_min`` in
+    the universe set with the configured ``replacement_value`` (default
+    ``"Other"``).
+
+    The same mapping is applied to both the sales and universe DataFrames
+    so downstream modeling and ratio-study artifacts see a single, consistent
+    vocabulary. Fields where fewer than two categories would be collapsed
+    are left untouched (renaming a single category buys nothing).
+
+    Settings shape::
+
+        "data": {
+          "process": {
+            "collapse_sparse_categories": {
+              "roof_material": {"sales_min": 2, "univ_min": 5},
+              "roof_shape":    {"sales_min": 2, "univ_min": 5,
+                                "replacement_value": "Other Shape"}
+            }
+          }
+        }
+
+    Per-field rules:
+        - ``sales_min`` and ``univ_min`` are required (else ``ValueError``).
+        - ``replacement_value`` is optional; defaults to ``"Other"``.
+        - The field must be declared in ``field_classification.*.categorical``
+          (else ``ValueError``).
+
+    Parameters
+    ----------
+    sup : SalesUniversePair
+        The SalesUniversePair containing sales and universe data.
+    settings : dict
+        The settings dictionary.
+
+    Returns
+    -------
+    SalesUniversePair
+        The updated SalesUniversePair with sparse categories collapsed.
+
+    Raises
+    ------
+    ValueError
+        If a configured field is misconfigured or unknown.
+    """
+    return openavmkit.cleaning.collapse_sparse_categories_sup(sup, settings)
+
+
 # Clustering stuff
 
 

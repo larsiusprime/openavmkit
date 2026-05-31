@@ -864,6 +864,26 @@ def get_time_adjustment_instructions(settings: dict):
     return settings.get("data", {}).get("process", {}).get("time_adjustment", {})
 
 
+def get_collapse_sparse_categories_config(settings: dict) -> dict:
+    """Get the ``data.process.collapse_sparse_categories`` config block.
+
+    Parameters
+    ----------
+    settings : dict
+        Settings dictionary.
+
+    Returns
+    -------
+    dict
+        Mapping from field name to its per-field collapse config (keys:
+        ``sales_min``, ``univ_min``, optional ``replacement_value``). Empty
+        dict if the section is absent.
+    """
+    return (
+        settings.get("data", {}).get("process", {}).get("collapse_sparse_categories", {})
+    )
+
+
 #######################################
 # PRIVATE
 #######################################
