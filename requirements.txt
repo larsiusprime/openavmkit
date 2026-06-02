@@ -1,4 +1,4 @@
-azure-storage-blob==12.27.1
+azure-storage-blob==12.29.0
 catboost==1.2.8
 numpy==2.3.5
 huggingface-hub==1.17.0
