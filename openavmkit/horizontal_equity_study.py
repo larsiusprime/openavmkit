@@ -20,7 +20,7 @@ from openavmkit.utilities.cache import get_cached_df, write_cached_df
 from openavmkit.utilities.clustering import make_clusters
 from openavmkit.utilities.data import do_per_model_group
 from openavmkit.utilities.timing import TimingData
-from openavmkit.utilities.settings import area_unit
+from openavmkit.utilities.settings import area_unit, warn_if_location_collapsed
 
 
 class HorizontalEquitySummary:
@@ -366,6 +366,9 @@ def mark_horizontal_equity_clusters(
 
     he = settings.get("analysis", {}).get(settings_object, {})
     location = he.get("location", None)
+    warn_if_location_collapsed(
+        settings, location, context=f"horizontal equity clustering ({settings_object})"
+    )
     fields_categorical = he.get("fields_categorical", [])
     fields_numeric = he.get("fields_numeric", None)
     unit = area_unit(settings)

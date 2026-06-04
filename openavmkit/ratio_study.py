@@ -33,6 +33,7 @@ from openavmkit.utilities.settings import (
     get_fields_impr_as_list,
     get_valuation_date,
     get_model_group_ids,
+    warn_if_location_collapsed,
     _get_max_ratio_study_trim
 )
 from openavmkit.utilities.stats import ConfidenceStat
@@ -497,6 +498,9 @@ def _run_ratio_study_breakdowns(
                     # TODO: when we have variable replacement in settings maybe we won't need this anymore
                     by = by.replace("<", "").replace(">", "")
                     by = get_important_field(settings, by, df)
+                    warn_if_location_collapsed(
+                        settings, by, context="ratio study breakdown"
+                    )
 
                 if by is None or by not in df:
                     continue

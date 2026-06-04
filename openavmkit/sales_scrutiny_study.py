@@ -36,7 +36,7 @@ from openavmkit.utilities.data import (
     combine_dfs,
 )
 from openavmkit.utilities.excel import write_to_excel
-from openavmkit.utilities.settings import get_fields_categorical, _apply_dd_to_df_cols, area_unit, get_locations
+from openavmkit.utilities.settings import get_fields_categorical, _apply_dd_to_df_cols, area_unit, get_locations, warn_if_location_collapsed
 
 
 class SalesScrutinyStudySummary:
@@ -428,6 +428,9 @@ def _mark_sales_scrutiny_clusters(
 
     ss = settings.get("analysis", {}).get("sales_scrutiny", {})
     location = ss.get("location", "neighborhood")
+    warn_if_location_collapsed(
+        settings, location, context="sales scrutiny clustering"
+    )
     fields_categorical = ss.get("fields_categorical", [])
     fields_numeric = ss.get("fields_numeric", None)
 

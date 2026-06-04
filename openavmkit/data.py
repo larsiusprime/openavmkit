@@ -57,6 +57,7 @@ from shapely.geometry import LineString
 from shapely.ops import unary_union
 import warnings
 import traceback
+import importlib.util
 
 from shapely.strtree import STRtree
 from sklearn.model_selection import train_test_split
@@ -108,6 +109,7 @@ from openavmkit.utilities.census import (
 )
 from openavmkit.utilities.openstreetmap import init_service_openstreetmap
 from openavmkit.utilities.overture import init_service_overture
+from openavmkit.utilities.dem import init_service_dem, bbox_in_usgs_coverage
 from openavmkit.inference import perform_spatial_inference
 from openavmkit.utilities.timing import TimingData
 from pyproj import CRS
@@ -1144,6 +1146,16 @@ def _enrich_data(
                 use_cache=True,
             )
 
+        # handle USGS 3DEP DEM enrichment for universe if enabled
+        if "dem" in s_enrich:
+            df_univ = _enrich_df_dem(
+                df_univ,
+                s_enrich.get("dem", {}),
+                settings,
+                verbose=verbose,
+                use_cache=True,
+            )
+
         if "permits" in s_enrich:
             df_sales = _enrich_permits(
                 df_sales, s_enrich, dataframes, settings, is_sales=True, verbose=verbose
@@ -1285,6 +1297,133 @@ def _enrich_df_census(
     write_cached_df(df_in, df, "census", "key", census_settings)
 
     return df
+
+
+def _enrich_df_dem(
+    df_in: pd.DataFrame | gpd.GeoDataFrame,
+    dem_settings: dict,
+    settings: dict,
+    verbose: bool = False,
+    use_cache: bool = True,
+) -> pd.DataFrame | gpd.GeoDataFrame:
+    """Enrich a DataFrame with USGS 3DEP DEM-derived per-parcel stats.
+
+    Adds three columns to the universe:
+
+    - ``elevation_mean_<unit>``  – mean elevation in the locality's length unit
+    - ``elevation_stdev_<unit>`` – within-parcel std-dev of elevation ("bumpiness")
+    - ``slope_mean_deg``         – mean slope of the parcel in degrees
+
+    Where ``<unit>`` is ``ft`` for imperial localities and ``m`` for metric.
+    Behavior:
+
+    - Returns the input unchanged if ``dem.enabled`` is False.
+    - Returns the input unchanged (with a warning) if the parcel bbox falls
+      outside USGS 3DEP coverage (CONUS, AK, HI, PR).
+    """
+    if not dem_settings.get("enabled", False):
+        if verbose:
+            print("DEM enrichment disabled, skipping...")
+        return df_in
+
+    if verbose:
+        print("Enriching with USGS 3DEP DEM data...")
+
+    if use_cache:
+        df_out = get_cached_df(df_in, "dem/all", "key", dem_settings)
+        if df_out is not None:
+            if verbose:
+                print("--> found cached data")
+            return df_out
+
+    # DEM enrichment relies on optional geospatial-raster packages that are not
+    # imported until they're actually used (deep inside DEMService). A stale
+    # environment that hasn't been synced to requirements.txt would otherwise
+    # fail with an opaque "No module named ..." swallowed by the catch-all below.
+    # Check up front and tell the user exactly how to fix it.
+    missing_deps = [
+        pkg for pkg in ("rasterio", "seamless_3dep")
+        if importlib.util.find_spec(pkg) is None
+    ]
+    if missing_deps:
+        warnings.warn(
+            "DEM enrichment is enabled but required package(s) are not installed: "
+            f"{', '.join(missing_deps)}. No elevation/slope columns will be added. "
+            "Your environment is likely out of date; run "
+            "`pip install -r requirements.txt` (or `pip install rasterio seamless-3dep`) "
+            "and re-run this step. Skipping DEM enrichment."
+        )
+        return df_in
+
+    if not isinstance(df_in, gpd.GeoDataFrame):
+        warnings.warn(
+            "DEM enrichment needs parcel geometry, but the universe is a plain "
+            "DataFrame, not a GeoDataFrame. Make sure your parcels source "
+            "(data.load.geo_parcels) loads geometry. Skipping DEM enrichment."
+        )
+        return df_in
+
+    df = df_in.copy()
+
+    # Move to WGS84 for the USGS query bbox
+    original_crs = df.crs
+    if original_crs is None:
+        if is_likely_epsg4326(df):
+            df.set_crs(epsg=4326, inplace=True)
+        else:
+            warnings.warn(
+                "DEM enrichment: parcel GeoDataFrame has no CRS set and the "
+                "coordinates don't look like EPSG:4326, so the USGS query bbox "
+                "can't be computed. Set a CRS on your parcels source (e.g. "
+                "reproject to a known EPSG in preprocessing). Skipping DEM enrichment."
+            )
+            return df_in
+    df_wgs84 = df if df.crs.equals(CRS.from_epsg(4326)) else df.to_crs(epsg=4326)
+
+    west, south, east, north = df_wgs84.total_bounds
+    bbox = (float(west), float(south), float(east), float(north))
+
+    if not bbox_in_usgs_coverage(bbox):
+        warnings.warn(
+            f"DEM enrichment: parcel bbox {bbox} is outside USGS 3DEP coverage "
+            "(only CONUS, AK, HI, and PR are covered). If this locality is "
+            "genuinely outside that footprint, set data.process.enrich.dem.enabled "
+            "to false to silence this. Skipping DEM enrichment."
+        )
+        return df_in
+
+    resolution_m = int(dem_settings.get("resolution_m", 10))
+
+    try:
+        service = init_service_dem(dem_settings)
+        dem_path = service.get_dem_for_bbox(bbox, resolution_m=resolution_m, verbose=verbose)
+        utm_dem_path = service.reproject_to_utm(dem_path, bbox, verbose=verbose)
+        slope_path = service.compute_slope_raster(utm_dem_path, verbose=verbose)
+        stats = service.compute_parcel_stats(df_wgs84, utm_dem_path, slope_path, verbose=verbose)
+    except Exception as e:
+        warnings.warn(
+            f"DEM enrichment failed and was skipped: {e}. No elevation/slope "
+            "columns were added. This is usually a transient network error "
+            "fetching USGS 3DEP tiles — re-run to retry. Re-run with verbose=True "
+            "for the full traceback."
+        )
+        if verbose:
+            print(f"Traceback: {traceback.format_exc()}")
+        return df_in
+
+    # Unit conversion: native stats are meters; convert to locality short-distance unit.
+    unit = get_short_distance_unit(settings)
+    if unit == "ft":
+        stats[f"elevation_mean_ft"] = stats["elevation_mean_m"] * 3.28084
+        stats[f"elevation_stdev_ft"] = stats["elevation_stdev_m"] * 3.28084
+        stats = stats.drop(columns=["elevation_mean_m", "elevation_stdev_m"])
+
+    df_merged = df.copy()
+    for col in stats.columns:
+        df_merged[col] = stats[col].values
+
+    write_cached_df(df_in, df_merged, "dem/all", "key", dem_settings)
+    return df_merged
 
 
 def _enrich_df_distances(

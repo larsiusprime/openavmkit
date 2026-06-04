@@ -186,7 +186,7 @@ These fields can appear on any model entry under `modeling.models.<stage>.<name>
 | `model` | string | (model name) | Which engine to use. See [§ 1.1](#11-model-name-vs-engine). |
 | `ind_vars` | list of strings | (from `default`) | Independent variables to feed the model. |
 | `interactions` | dict | empty | Variable-interaction config (mostly relevant for MRA). |
-| `locations` | list of strings | from `field_classification.important.locations` | Location field names. Required for `local_area` and `multi_mra`. |
+| `locations` | list of strings | from `field_classification.important.locations` | Location field names. Required for `local_area` and `multi_mra`. **Must NOT be a cardinality-collapsed field** — collapsing a location merges unrelated zones into `"Other"` and corrupts per-location fits; see [advanced_settings.md § 5.4](advanced_settings.md#54-dataprocesscollapse_sparse_categories). |
 | `dep_var` | string | sale price field | Override the dependent variable. |
 | `dep_var_test` | string | same as `dep_var` | Override the dependent variable used for test-set evaluation. |
 | `n_trials` | int | 50 | Number of Optuna trials for tree-based hyperparameter tuning. |

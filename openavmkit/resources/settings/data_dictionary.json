@@ -548,29 +548,35 @@
 		"type": "boolean",
 		"groups": ["sale"]
 	},
-	"elevation_mean":{
-		"name": "Elevation",
-		"description": "Elevation of the parcel",
+	"elevation_mean_ft":{
+		"name": "Elevation (ft)",
+		"description": "Mean elevation of the parcel in feet, from a digital elevation model",
 		"type": "number",
-		"groups": ["location"]
+		"groups": ["land"]
 	},
-	"elevation_stdev":{
-		"name": "Elevation change",
-		"description": "Change in elevation across the parcel (standard deviation)",
+	"elevation_mean_m":{
+		"name": "Elevation (m)",
+		"description": "Mean elevation of the parcel in meters, from a digital elevation model",
 		"type": "number",
-		"groups": ["location"]
+		"groups": ["land"]
 	},
-	"slope_mean":{
-		"name": "Slope",
-		"description": "Mean slope across the parcel (in degrees)",
+	"elevation_stdev_ft":{
+		"name": "Elevation variation (ft)",
+		"description": "Standard deviation of elevation within the parcel in feet (terrain 'bumpiness'), from a digital elevation model",
 		"type": "number",
-		"groups": ["location"]
+		"groups": ["land"]
 	},
-	"slope_stdev":{
-		"name": "Slope change",
-		"description": "Change in slope across the parcel (standard deviation)",
+	"elevation_stdev_m":{
+		"name": "Elevation variation (m)",
+		"description": "Standard deviation of elevation within the parcel in meters (terrain 'bumpiness'), from a digital elevation model",
 		"type": "number",
-		"groups": ["location"]
+		"groups": ["land"]
+	},
+	"slope_mean_deg":{
+		"name": "Slope (degrees)",
+		"description": "Mean slope of the parcel in degrees, derived from a digital elevation model",
+		"type": "number",
+		"groups": ["land"]
 	},
 	"noise_mean":{
 		"name": "Noise",

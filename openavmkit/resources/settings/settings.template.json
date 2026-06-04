@@ -11,7 +11,14 @@
 				]
 			},
 			"reconcile": {},
-			"enrich": {}
+			"enrich": {},
+			"__collapse_sparse_categories": {
+				"__doc": "Optional. Per-field rare-category collapse: any category whose row count is below sales_min in hydrated sales OR below univ_min in the universe is replaced by replacement_value (default 'Other'). Skipped for a field if fewer than 2 categories would collapse. Field must be declared in field_classification.*.categorical.",
+				"__doc_output_field": "Optional per-field 'output_field' writes the collapsed result to a NEW column and leaves the source intact -- this is how to collapse a LOCATION field safely (e.g. neighborhood -> neighborhood_collapsed): use the variant ONLY as a model feature and keep the raw location for breakdowns/equity/spatial. Collapsing a location field IN PLACE merges unrelated zones into 'Other' and is warned against loudly. Reserved key 'strict': true escalates those warnings to errors. See advanced_settings.md 5.4.",
+				"__example_roof_material": { "sales_min": 2, "univ_min": 5 },
+				"__example_roof_shape":    { "sales_min": 2, "univ_min": 5, "replacement_value": "Other Shape" },
+				"__example_neighborhood":  { "sales_min": 5, "univ_min": 25, "output_field": "neighborhood_collapsed" }
+			}
 		}
 	},
 	"modeling": {
@@ -99,10 +106,11 @@
 			"+numeric": [
 				"noise_mean",
 				"noise_max",
-				"elevation_mean",
-				"elevation_stdev",
-				"slope_mean",
-				"slope_stdev",
+				"elevation_mean_ft",
+				"elevation_mean_m",
+				"elevation_stdev_ft",
+				"elevation_stdev_m",
+				"slope_mean_deg",
 				"longitude_norm",
 				"latitude_norm",
 				"longitude",

@@ -34,7 +34,7 @@ from IPython.display import display
 import numpy as np
 from openavmkit.reports import finish_report
 from openavmkit.utilities.stats import calc_representation
-from openavmkit.utilities.settings import get_ensemble_instructions, get_locations
+from openavmkit.utilities.settings import get_ensemble_instructions, get_locations, warn_if_location_collapsed
 from sklearn.linear_model import LinearRegression
 
 from openavmkit.data import (
@@ -2460,6 +2460,11 @@ def _run_local_ensemble_test_and_paint(
     outpath: str,
     verbose: bool = False,
 ):
+    # Local ensemble selects the best model per location value, so a collapsed
+    # location silently merges unrelated zones — warn (or raise, if strict).
+    warn_if_location_collapsed(
+        settings, locations, context="local ensemble model selection"
+    )
     # Get all the dataframes we need, ensure they have keys + location fields
     timing.start("setup")
     valid_field = "valid_for_ratio_study"

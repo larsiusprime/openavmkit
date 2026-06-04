@@ -748,6 +748,50 @@ The two mechanisms are not mutually exclusive — use whichever fits per case in
 | `ValueError: Target field '<col>' not found in base dataframe` | `key_target` doesn't exist on the universe/sales after merge. Common cause: the field is created later by enrichment or `calc`, but `ref_tables` runs *first* during basic enrichment, so the column has to exist by load-and-merge time. |
 | `ValueError: Field '<col>' already exists in base dataframe.` | One of `add_fields` collides with an existing column. Either remove the conflict from `add_fields` or rename it in the reference table's `load` block. |
 
+### 4.11 USGS elevation (DEM) — `data.process.enrich.dem`
+
+Fetches USGS 3DEP digital-elevation-model tiles for the locality's bounding box, mosaics and reprojects them to a local UTM CRS, derives a slope raster, and computes per-parcel zonal statistics (mean/stdev elevation, mean slope).
+
+- **Activation** — presence of the `dem` key, **plus** `dem.enabled = true` (defaults to `false`).
+- **Requires** — `rasterio` and `seamless-3dep` (both in `requirements.txt`). These are imported lazily, so a stale environment that hasn't been synced will produce **no** elevation columns. The step now warns loudly and tells you to run `pip install -r requirements.txt` rather than failing silently.
+- **Coverage** — USGS 3DEP covers CONUS, AK, HI, and PR. Parcels whose bounding box falls outside that footprint warn-and-skip.
+- **Source** — `_enrich_df_dem` in [openavmkit/data.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/data.py); `DEMService` in [openavmkit/utilities/dem.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/utilities/dem.py).
+- **When to use** — terrain plausibly drives value (hillside views, flood-prone lows vs. ridges, buildable vs. steep lots) and isn't already captured by your assessor fields. Pairs well with a flood-hazard `spatial_join` layer.
+
+#### Settings
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Master switch for the step. |
+| `resolution_m` | `10` | 3DEP resolution in meters; one of `10`, `30`, or `60`. |
+
+```json
+{
+  "data": {
+    "process": {
+      "enrich": {
+        "dem": {
+          "enabled": true,
+          "resolution_m": 10
+        }
+      }
+    }
+  }
+}
+```
+
+#### Fields added
+
+The unit suffix is `ft` for imperial localities and `m` for metric (driven by `locality.units`).
+
+| Field | Meaning |
+| --- | --- |
+| `elevation_mean_<unit>` | Mean parcel elevation. |
+| `elevation_stdev_<unit>` | Within-parcel standard deviation of elevation ("bumpiness"). |
+| `slope_mean_deg` | Mean parcel slope, in degrees. |
+
+These auto-classify as **land-numeric** via the settings template's `field_classification`, so they're available to models without adding `field_classification` entries yourself. The first run downloads and caches the DEM tiles under the locality's `cache/dem/` folder; subsequent runs reuse them.
+
 ---
 
 ## 5. Data cleaning & validation
@@ -838,6 +882,76 @@ Filter out non-arms-length sales after data processing, using the conditions def
 - **Effect** — when `true`, sales matching the filter are excluded. When `false`, the step is skipped silently.
 - **Source** — `filter_invalid_sales` in [openavmkit/cleaning.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py)
 - **When to use** — if you have a set of sales you know are invalid and can exclude by rule, that aren't covered by your existing sales validity codes
+
+### 5.4 `data.process.collapse_sparse_categories`
+
+Per-field rare-category collapse. For each configured categorical field, any value whose row count falls below `sales_min` in the hydrated sales set **OR** below `univ_min` in the universe is replaced with a per-field `replacement_value` (default `"Other"`). The same mapping is applied to both the sales and universe DataFrames so the model and downstream artifacts see a single consistent vocabulary.
+
+- **Default** — `{}` (feature is opt-in; absent block is a no-op)
+- **Source** — `collapse_sparse_categories_sup` in [openavmkit/cleaning.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py)
+- **Runs** — last step in `notebooks/pipeline/02-clean.ipynb`, after fill, time adjustment, invalid-sales filtering, and sales scrutiny. Counts therefore reflect what the model will actually see.
+- **When to use** — to keep tree-based models from memorizing rows by branching on near-unique category values (the same failure mode that excludes ID columns from the feature set). Useful for any high-cardinality categorical with a long tail of single-row values: parcel sub-type codes, free-text exterior finishes, hand-entered styles, etc.
+
+Settings shape:
+
+```json
+{
+  "data": {
+    "process": {
+      "collapse_sparse_categories": {
+        "strict": false,
+        "roof_material": { "sales_min": 2, "univ_min": 5 },
+        "roof_shape":    { "sales_min": 2, "univ_min": 5, "replacement_value": "Other Shape" },
+        "neighborhood":  { "sales_min": 5, "univ_min": 25, "output_field": "neighborhood_collapsed" }
+      }
+    }
+  }
+}
+```
+
+Per-field config:
+
+| Key                 | Required | Description                                                                                         |
+| ------------------- | -------- | --------------------------------------------------------------------------------------------------- |
+| `sales_min`         | yes      | Minimum row count in the hydrated, valid sales set for a category to be kept as-is.                 |
+| `univ_min`          | yes      | Minimum row count in the universe for a category to be kept as-is.                                  |
+| `replacement_value` | no       | The label used for the catch-all bucket. Defaults to `"Other"`.                                     |
+| `output_field`      | no       | Write the collapsed result to this **new** column and leave the source field untouched. The variant column is always created (a copy of the source) even when nothing collapses. **This is how you collapse a location field safely** — see the footgun box below. You must classify the variant in `field_classification.*.categorical` and reference it in your model `ind_vars` yourself. |
+
+There is also one **reserved, non-field key**: `strict` (boolean, default `false`). It is *not* a field config — when `true`, the location-collapse guard (below) raises a `ValueError` instead of warning. (Use `strict`, not `__strict` — double-underscore keys are stripped as comments.)
+
+Behavior:
+
+- A category is **sparse** if it fails either threshold. Union semantics — failing one is enough.
+- If fewer than **two** categories would be collapsed for a field, the field is **left untouched** (or, with `output_field`, the variant is created as an exact copy of the source). Renaming a single category to `"Other"` would only mask its label without buying any generalization benefit. A one-line note is printed in that case.
+- The field must appear in `field_classification.*.categorical` — otherwise the step raises `ValueError`. This catches misspellings and prevents accidental collapse of numeric columns.
+- Missing `sales_min` or `univ_min` raises `ValueError`; there are no silent threshold defaults.
+- `"UNKNOWN"` (the post-fill sentinel for missing categoricals) is treated like any other value and can itself be collapsed if rare.
+
+> #### ⚠ Footgun: never collapse a location field *in place*
+>
+> Collapsing replaces a field's rare values with one `"Other"` bucket. That's fine for a generic model feature, but **a location field is assumed to be a geographically coherent category** throughout the codebase — equity clustering (`analysis.*.location`), ratio-study breakdowns (`<loc_*>`), local-ensemble model selection (`...ensemble.locations`), and sales-scrutiny clusters all *group by* it. Collapsing it in place silently glues unrelated zones into one `"Other"` bucket and corrupts every one of those analyses.
+>
+> A field counts as a location if it appears in `field_classification.important.locations` / `.fields.loc_*`, any `analysis.*.location`, a ratio-study `<loc_*>` breakdown, a model/ensemble `locations` list, or `land.lycd.*.location`.
+>
+> **Best practice — make a modeling variant:** if you want a cardinality-reduced location for tree models, collapse it **into** a `<field>_collapsed` variant via `output_field`, classify that variant categorical, and use it **only** as a model feature. Leave the raw location field intact everywhere it's used as a location:
+>
+> ```json
+> "collapse_sparse_categories": {
+>   "neighborhood": { "sales_min": 5, "univ_min": 25, "output_field": "neighborhood_collapsed" }
+> }
+> ```
+>
+> If you instead collapse a location **in place** (no `output_field`), OpenAVMKit emits a loud `UserWarning` at collapse time and again at each grouping site (equity, ratio study, ensemble, scrutiny). Set `"strict": true` in the collapse block to turn those warnings into hard errors. Detection is config-based — `get_collapsed_fields` / `get_location_fields` / `is_field_collapsed` / `warn_if_location_collapsed` in [openavmkit/utilities/settings.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/utilities/settings.py).
+
+A typical run prints:
+
+```text
+collapse_sparse_categories: roof_material
+  thresholds: sales_min=2, univ_min=5
+  3 categories collapsed into 'Other' (12 sales rows, 47 universe rows affected)
+  collapsed: ['Cinnamon Butt', 'Giraffe Sauce', 'Vorpal Cherry']
+```
 
 ---
 
