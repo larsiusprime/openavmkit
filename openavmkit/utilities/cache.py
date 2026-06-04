@@ -251,6 +251,20 @@ def write_cached_df(
 
     df_new = df_new.copy()
 
+    # A duplicate column name makes df[col] two-dimensional and silently corrupts the
+    # column-diff logic below (it otherwise surfaces as a cryptic numpy broadcast error
+    # such as "operands could not be broadcast together with shapes (N,2) (N,)"). Fail
+    # loudly and actionably instead: this almost always means an enrichment emitted the
+    # same column twice (e.g. two source features with identical names).
+    for _label, _frame in (("df_new", df_new), ("df_orig", df_orig)):
+        _dupes = _frame.columns[_frame.columns.duplicated()].unique().tolist()
+        if _dupes:
+            raise ValueError(
+                f"write_cached_df: {_label} for cache '{filename}' has duplicate column(s) "
+                f"{_dupes}; refusing to cache. This usually means an enrichment produced the "
+                f"same column twice (e.g. two source features with identical names)."
+            )
+
     orig_cols = set(df_orig.columns)
     new_cols = [c for c in df_new.columns if c not in orig_cols]
     common = [c for c in df_new.columns if c in orig_cols]

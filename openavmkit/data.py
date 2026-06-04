@@ -1432,6 +1432,32 @@ def _enrich_df_dem(
     return df_merged
 
 
+def _collapse_features_by_name(gdf: gpd.GeoDataFrame, name_field: str = "name") -> gpd.GeoDataFrame:
+    """Collapse features that share a name into a single (multi)polygon.
+
+    OSM frequently returns one real-world feature as several elements (a multipolygon
+    relation plus its member ways, or a course split into parts), all carrying the same
+    name. Left alone, each becomes its own ``store_top`` distance column with an identical
+    id -- producing duplicate columns that corrupt downstream caching. Dissolving same-named
+    features to their union yields one feature per name and computes distance to the nearest
+    part, so no information is lost. Features without a usable name are left untouched.
+    """
+    if gdf is None or len(gdf) == 0 or name_field not in gdf.columns:
+        return gdf
+    if not gdf[name_field].duplicated().any():
+        return gdf
+    named = gdf[gdf[name_field].notna()].copy()
+    unnamed = gdf[gdf[name_field].isna()].copy()
+    # union geometry per name; keep the first row's other attributes
+    dissolved = named.dissolve(by=name_field, aggfunc="first").reset_index()
+    if len(unnamed) > 0:
+        dissolved = gpd.GeoDataFrame(
+            pd.concat([dissolved, unnamed], ignore_index=True),
+            geometry="geometry", crs=gdf.crs,
+        )
+    return dissolved
+
+
 def _enrich_df_distances(
     df_in: pd.DataFrame | gpd.GeoDataFrame,
     dist_settings: dict,
@@ -1615,27 +1641,32 @@ def _enrich_df_distances(
 
                         # If store_top is enabled, calculate distances to top features
                         if config.get("store_top", False) and config.get("top_n", 0) > 0:
+                            # Collapse same-named features (OSM often returns one feature as
+                            # several same-named elements) so each named feature yields exactly
+                            # one distance column rather than duplicate columns.
+                            feats = _collapse_features_by_name(result, "name")
                             # Get top features based on configured sort field
                             sort_field = config.get("sort_field")
-                            if sort_field in result.columns:
-                                top_features = result.nlargest(
+                            if sort_field in feats.columns:
+                                top_features = feats.nlargest(
                                     config["top_n"], sort_field
                                 )
                             else:
                                 # Fallback to first numeric column or just take first N
-                                numeric_cols = result.select_dtypes(
+                                numeric_cols = feats.select_dtypes(
                                     include=[np.number]
                                 ).columns
                                 if len(numeric_cols) > 0:
-                                    top_features = result.nlargest(
+                                    top_features = feats.nlargest(
                                         config.get("top_n", 1), numeric_cols[0]
                                     )
                                 else:
-                                    top_features = result.head(
+                                    top_features = feats.head(
                                         config.get("top_n", 1)
                                     )
 
                             # Calculate distances to each top feature
+                            seen_feature_ids = set()
                             for idx, top_feature in top_features.iterrows():
                                 # Try to get name, fallback to type + index if no name
                                 feature_name = None
@@ -1659,6 +1690,14 @@ def _enrich_df_distances(
                                     0
                                 ]
 
+                                # Belt-and-suspenders on top of _collapse_features_by_name:
+                                # never emit the same feature column twice (e.g. if two raw
+                                # names clean to the same slug).
+                                col_id = f"{feature_id}_{feature_name}"
+                                if col_id in seen_feature_ids:
+                                    continue
+                                seen_feature_ids.add(col_id)
+
                                 # Create single-feature GeoDataFrame
                                 feature_gdf = gpd.GeoDataFrame(
                                     geometry=[top_feature.geometry], crs=result.crs
@@ -1668,7 +1707,7 @@ def _enrich_df_distances(
                                 df = _do_perform_distance_calculations_osm(
                                     df,
                                     feature_gdf,
-                                    f"{feature_id}_{feature_name}",
+                                    col_id,
                                     max_distance=max_distance,
                                     unit=unit,
                                 )
