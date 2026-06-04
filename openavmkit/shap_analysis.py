@@ -60,8 +60,8 @@ def get_full_model_shaps(
     Returns
     -------
     dict
-        A dict containing shap.Explanation objects keyed to "train", "test", "sales", and "univ"
-    
+        A dict containing shap.Explanation objects keyed to "train", "test", "sales", and "universe"
+
     """
 
     tree_explainer: shap.TreeExplainer
@@ -95,7 +95,7 @@ def get_full_model_shaps(
         "train": shap_train,
         "test":  shap_test,
         "sales": shap_sales,
-        "univ":  shap_univ,
+        "universe":  shap_univ,
     }
 
 

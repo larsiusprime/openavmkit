@@ -1067,21 +1067,37 @@ Fine-tune the variable-selection scoring used during model setup. The thresholds
 
 ### `modeling.instructions.<main|vacant>.ensemble`
 
-Configure how individual model predictions get combined into an `ensemble` prediction. Two types are supported.
+Configure how individual model predictions get combined into an `ensemble` prediction. Three types are supported.
 
-#### `type: "default"` — global greedy ensemble
+#### `type: "median"` (aka `"default"`) — global greedy ensemble
 
 ```json
 "main": {
     "run": ["mra", "multi_mra", "local_area", "lightgbm"],
-    "ensemble": { "type": "default" }
+    "ensemble": { "type": "median" }
 }
 ```
+
+`"default"` is an alias for `"median"` (and is the value used when `type` is omitted entirely) — both behave identically.
 
 Runs a greedy backward-elimination over the candidate models: starts with all of them combined via per-row **median**, then drops the model whose removal *improves* (lowers) the test MAPE, and repeats until removing any further model would only hurt. The surviving subset is combined element-wise via median (not mean — median is robust to a single model going wild on a particular parcel) and the result is named `ensemble`. Useful when one or two models are weakening the combination and you want them auto-pruned.
 
 - **Optional** `models` — explicit candidate list. Defaults to all models that ran except `assessor` and `ground_truth`.
 - **Source** — `_perform_default_ensemble` in [openavmkit/benchmark.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py)
+
+#### `type: "mean"` — global greedy ensemble (mean aggregation)
+
+```json
+"main": {
+    "run": ["mra", "multi_mra", "local_area", "lightgbm"],
+    "ensemble": { "type": "mean" }
+}
+```
+
+Identical to `median` — same greedy backward-elimination over the candidate models — except component predictions are combined element-wise via **mean** instead of median. Use this when you want every surviving model to pull on the result proportionally (no robustness clipping); prefer `median` when you want a single model going wild on a particular parcel to be ignored.
+
+- **Optional** `models` — explicit candidate list. Defaults to all models that ran except `assessor` and `ground_truth`.
+- **Source** — `_perform_default_ensemble` (with `agg="mean"`) in [openavmkit/benchmark.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py)
 
 #### `type: "local"` — best-model-per-location
 

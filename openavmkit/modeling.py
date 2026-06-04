@@ -5929,7 +5929,7 @@ def write_shaps(
         "train": ind_vars_train,
         "test" : ind_vars_test,
         "sales": ind_vars_sales,
-        "univ" : ind_vars_univ
+        "universe" : ind_vars_univ
     }
     
     X_train = smr.df_train[ind_vars_train].copy()
@@ -5949,12 +5949,12 @@ def write_shaps(
     dfs = {
         "test": smr.df_test,
         "train": smr.df_train,
-        "univ": smr.df_universe,
+        "universe": smr.df_universe,
         "sales": smr.df_sales
     }
-    
+
     do_plot = False
-    
+
     for subset in shaps:
         shap_entry = shaps[subset]
         df = dfs[subset]

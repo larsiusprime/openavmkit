@@ -843,10 +843,14 @@ def get_ensemble_instructions(settings: dict, mv: str) -> dict:
     
     ensemble = instructions.get("ensemble", {})
     type = ensemble.get("type", "default")
+    # "default" is just an alias for "median" (the historical default
+    # aggregation); normalize it so downstream only ever sees "median".
     if type == "default":
+        type = "median"
+    if type in ("median", "mean"):
         models = ensemble.get("models", [])
         return {
-            "type": "default",
+            "type": type,
             "models": models
         }
     elif type == "local":

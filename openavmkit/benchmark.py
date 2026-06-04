@@ -17,6 +17,7 @@ The list of models to run for each main/vacant stage is configured in
 skip lists live under ``modeling.instructions.<stage>.skip.<model_group>``.
 """
 import os
+import json
 import pickle
 import warnings
 import math
@@ -80,7 +81,8 @@ from openavmkit.modeling import (
     GarbageModel,
     AverageModel,
     DataSplit,
-    write_model_parameters, get_shap_contributions_map
+    write_model_parameters, get_shap_contributions_map,
+    _add_prediction_to_contribution, _contrib_to_unit_values
 )
 from openavmkit.reports import MarkdownReport, _markdown_to_pdf
 from openavmkit.time_adjustment import enrich_time_adjustment
@@ -2021,10 +2023,15 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
         universe_parquet = gpd.read_parquet(f"{path}/pred_universe.parquet")
     except FileNotFoundError:
         universe_parquet = None
-    try:
-        df_contributions = pd.read_csv(f"{path}/contributions_univ.csv")
-    except FileNotFoundError:
-        df_contributions = None
+    df_contributions = None
+    # "universe" is the canonical subset name; "univ" is read for back-compat
+    # with outputs from older runs.
+    for _fname in ["contributions_universe.csv", "contributions_univ.csv"]:
+        try:
+            df_contributions = pd.read_csv(f"{path}/{_fname}")
+            break
+        except FileNotFoundError:
+            continue
 
     if universe_parquet is not None and df_contributions is not None:
         shap_contributions_map = get_shap_contributions_map(universe_parquet, results.df_universe, df_contributions)
@@ -2047,6 +2054,30 @@ def get_model_location(
     if location is None:
         location = get_important_field(settings, "loc_market_area")
     return location
+
+
+def _aggregate_ensemble(df: pd.DataFrame, ensemble_list: list[str], agg: str):
+    """Reduce per-model prediction columns into a single ensemble prediction.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing one column per model in ``ensemble_list``.
+    ensemble_list : list[str]
+        Columns to aggregate across (one per component model).
+    agg : str
+        Aggregation method, either ``"median"`` or ``"mean"``.
+
+    Returns
+    -------
+    pandas.Series
+        Row-wise aggregated prediction.
+    """
+    if agg == "mean":
+        return df[ensemble_list].mean(axis=1)
+    elif agg == "median":
+        return df[ensemble_list].median(axis=1)
+    raise ValueError(f"Unrecognized ensemble aggregation \"{agg}\"!")
 
 
 def _write_ensemble_model_results(
@@ -2081,176 +2112,231 @@ def _write_ensemble_model_results(
         df.to_csv(f"{path}/pred_{key}.csv", index=False)
 
 
-def _optimize_ensemble_allocation(
-    df_sales: pd.DataFrame | None,
-    df_universe: pd.DataFrame | None,
-    model_group: str,
-    vacant_only: bool,
-    dep_var: str,
-    dep_var_test: str,
-    all_results: MultiModelResults,
+def _write_ensemble_meta(path: str, ensemble_type: str, members: list[str]):
+    """Stamp the ensemble output directory with how it was produced.
+
+    Only one ensemble type runs per model_group x (main/vacant), so the
+    canonical ``{outpath}/ensemble`` directory is reused across types; this
+    marker makes the output self-describing.
+    """
+    os.makedirs(path, exist_ok=True)
+    meta = {"type": ensemble_type, "members": list(members)}
+    with open(f"{path}/ensemble_meta.json", "w") as f:
+        json.dump(meta, f, indent=2)
+
+
+def _find_member_contrib_file(outpath: str, m_key: str, candidate_files: list[str]):
+    """Locate a member model's contributions CSV, tolerating the univ/universe
+    filename inconsistency (tree writers use ``univ``, MRA/GWR use ``universe``)."""
+    for fname in candidate_files:
+        p = f"{outpath}/{m_key}/{fname}"
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _write_ensemble_contributions(
+    results: SingleModelResults,
+    outpath: str,
     settings: dict,
-    verbose: bool = False,
-    ensemble_list: list[str] = None,
-):
-    """
-    Select the models that produce the best land allocation results for an ensemble
-    model.
-    """
-    timing = TimingData()
-    timing.start("total")
-    timing.start("setup")
-
-    if df_sales is None:
-        df_universe = all_results.df_univ_orig
-        df_sales = all_results.df_sales_orig
-
-    test_keys, train_keys = _read_split_keys(model_group)
-
-    ds = DataSplit(
-        "ensemble",
-        df_sales,
-        df_universe,
-        model_group,
-        settings,
-        dep_var,
-        dep_var_test,
-        [],
-        [],
-        {},
-        test_keys,
-        train_keys,
-        vacant_only=vacant_only,
-    )
-
-    vacant_status = "vacant" if vacant_only else "main"
-    df_test = ds.df_test
-    df_univ = ds.df_universe
-    instructions = settings.get("modeling", {}).get("instructions", {})
-    
-    if ensemble_list is None:
-        ensemble_inst = get_ensemble_instructions(settings, vacant_status)
-        ensemble_list = ensemble_inst.get("list", [])
-
-    if len(ensemble_list) == 0:
-        ensemble_list = [key for key in all_results.model_results.keys()]
-
-    if "assessor" in ensemble_list:
-        ensemble_list.remove("assessor")
-
-    if "ground_truth" in ensemble_list:
-        ensemble_list.remove("ground_truth")
-
-    best_list = []
-    best_score = float("inf")
-
-    while len(ensemble_list) > 1:
-        best_score, best_list = _optimize_ensemble_allocation_iteration(
-            df_test,
-            df_sales,
-            df_univ,
-            timing,
-            all_results,
-            ds,
-            best_score,
-            best_list,
-            ensemble_list,
-            verbose,
-        )
-
-    if verbose:
-        if not np.isinf(best_score):
-            print(f"Best score = {best_score:8.0f}, ensemble = {best_list}")
-    return best_list
-
-
-def _optimize_ensemble_allocation_iteration(
-    df_test: pd.DataFrame,
-    df_sales: pd.DataFrame,
-    df_univ: pd.DataFrame,
-    timing: TimingData,
-    all_results: MultiModelResults,
-    ds: DataSplit,
-    best_score: float,
-    best_list: list[str],
     ensemble_list: list[str],
+    all_results: MultiModelResults,
+    mode: str,
+    local_selection: dict[str, pd.Series] | None = None,
     verbose: bool = False,
 ):
+    """Assemble ensemble ``contributions_*`` and ``params_*`` files from members.
+
+    A mean ensemble is a convex combination of member predictions and a local
+    ensemble selects exactly one member per row; in both cases the ensemble's
+    per-feature contribution is a per-row weighted sum of member contributions
+    (weights summing to 1 per row). We accumulate the weighted feature
+    contributions and set the base term as the residual
+    ``prediction - sum(feature contributions)`` so reconstruction is exact and
+    non-decomposable members (e.g. ``local_area``) fold cleanly into the base.
+
+    Parameters
+    ----------
+    results : SingleModelResults
+        The ensemble result; its ``df_test``/``df_sales``/``df_universe`` carry
+        the final ensemble ``prediction`` column and the raw feature values.
+    outpath : str
+        Parent model output directory; the ensemble dir is ``{outpath}/ensemble``.
+    ensemble_list : list[str]
+        Member model keys that compose the ensemble.
+    all_results : MultiModelResults
+        Used to read each member's per-row predictions (mean weighting).
+    mode : str
+        ``"mean"`` or ``"local"``.
+    local_selection : dict[str, pandas.Series], optional
+        For ``mode="local"``: per-subset Series mapping merge key -> selected
+        model name (the painted ``local_model`` column).
     """
-    Perform one iteration of ensemble allocation optimization.
-    """
-    df_test_ensemble = df_test[["key_sale", "key"]].copy()
-    df_sales_ensemble = df_sales[["key_sale", "key"]].copy()
-    df_univ_ensemble = df_univ[["key"]].copy()
-    if len(ensemble_list) == 0:
-        ensemble_list = [key for key in all_results.model_results.keys()]
-    timing.stop("setup")
+    path = f"{outpath}/{results.model_name}"
+    os.makedirs(path, exist_ok=True)
 
-    timing.start("parameter_search")
-    timing.stop("parameter_search")
+    members = [m for m in ensemble_list if m in all_results.model_results]
 
-    timing.start("train")
-    for m_key in ensemble_list:
-        m_results = all_results.model_results[m_key]
-        df_test_ensemble[m_key] = m_results.pred_test.y_pred
-        df_sales_ensemble[m_key] = m_results.pred_sales.y_pred
-        df_univ_ensemble[m_key] = m_results.pred_univ
-    timing.stop("train")
+    subset_specs = [
+        ("test", results.df_test, "key_sale", ["contributions_test.csv"]),
+        ("sales", results.df_sales, "key_sale", ["contributions_sales.csv"]),
+        (
+            # "universe" is canonical; "univ" is read for back-compat with older runs.
+            "universe",
+            results.df_universe,
+            "key",
+            ["contributions_universe.csv", "contributions_univ.csv"],
+        ),
+    ]
 
-    timing.start("predict_test")
-    y_pred_test_ensemble = df_test_ensemble[ensemble_list].median(axis=1)
-    timing.stop("predict_test")
+    warned_missing = set()
 
-    timing.start("predict_sales")
-    y_pred_sales_ensemble = df_sales_ensemble[ensemble_list].median(axis=1)
-    timing.stop("predict_sales")
+    for name, ref_df, merge_key, candidate_files in subset_specs:
+        if ref_df is None or len(ref_df) == 0 or merge_key not in ref_df.columns:
+            continue
+        if "prediction" not in ref_df.columns:
+            continue
 
-    timing.start("predict_univ")
-    y_pred_univ_ensemble = df_univ_ensemble[ensemble_list].median(axis=1)
-    timing.stop("predict_univ")
+        ref_index = pd.Index(ref_df[merge_key].astype(str), name=merge_key)
+        # Drop any duplicate keys defensively (keys should be unique per subset).
+        keep_mask = ~ref_index.duplicated()
+        ref_df = ref_df.loc[keep_mask.tolist()]
+        ref_index = ref_index[keep_mask]
 
-    results = SingleModelResults(
-        ds,
-        "prediction",
-        "he_id",
-        "ensemble",
-        model_name="ensemble",
-        model_engine="ensemble",
-        y_pred_test=y_pred_test_ensemble.to_numpy(),
-        y_pred_sales=y_pred_sales_ensemble.to_numpy(),
-        y_pred_univ=y_pred_univ_ensemble.to_numpy(),
-        timing=timing,
-        verbose=verbose
-    )
-    score = results.utility_train
+        # Per-(member, row) weights, summing to 1 per row.
+        weights = {}
+        if mode == "mean":
+            # Presence = member produced a (non-NaN) prediction for the row.
+            present = pd.DataFrame(index=ref_index)
+            for m_key in members:
+                mr = all_results.model_results[m_key]
+                if name == "test":
+                    kk, pv = mr.df_test[merge_key], mr.pred_test.y_pred
+                elif name == "sales":
+                    kk, pv = mr.df_sales[merge_key], mr.pred_sales.y_pred
+                else:
+                    kk, pv = mr.df_universe[merge_key], mr.pred_univ
+                s = pd.Series(
+                    np.asarray(pv, dtype=float),
+                    index=pd.Index(kk.astype(str), name=merge_key),
+                )
+                s = s[~s.index.duplicated()]
+                present[m_key] = s.reindex(ref_index).notna()
+            n_row = present.sum(axis=1).replace(0, np.nan)
+            for m_key in members:
+                weights[m_key] = present[m_key].astype(float) / n_row
+        elif mode == "local":
+            sel = local_selection.get(name) if local_selection else None
+            if sel is None:
+                continue
+            sel = sel.reindex(ref_index)
+            for m_key in members:
+                weights[m_key] = (sel == m_key).astype(float)
+        else:
+            raise ValueError(f"Unrecognized ensemble contribution mode \"{mode}\"!")
 
-    timing.stop("total")
+        # Accumulate per-row weighted feature contributions across members.
+        feat_total = pd.DataFrame(index=ref_index)
+        for m_key in members:
+            w = weights[m_key].reindex(ref_index).fillna(0.0)
+            cfile = _find_member_contrib_file(outpath, m_key, candidate_files)
+            if cfile is None:
+                # Non-decomposable (or unsaved) member -> folds into the base
+                # via the residual below. Nothing to attribute to features.
+                if m_key not in warned_missing:
+                    warnings.warn(
+                        f"Ensemble member '{m_key}' has no {candidate_files[0]}; "
+                        f"folding its prediction into the ensemble base."
+                    )
+                    warned_missing.add(m_key)
+                continue
+            dfc = pd.read_csv(cfile)
+            if merge_key not in dfc.columns:
+                continue
+            base_col = (
+                "base_value"
+                if "base_value" in dfc.columns
+                else ("intercept" if "intercept" in dfc.columns else None)
+            )
+            drop = {merge_key, "key", "key_sale", "contribution_sum", "prediction", "check_delta"}
+            if base_col is not None:
+                drop.add(base_col)
+            feat_cols = [c for c in dfc.columns if c not in drop]
+            dfc[merge_key] = dfc[merge_key].astype(str)
+            dfc = dfc[~dfc[merge_key].duplicated()].set_index(merge_key)
+            for c in feat_cols:
+                contrib_c = pd.to_numeric(
+                    dfc[c].reindex(ref_index), errors="coerce"
+                ).fillna(0.0)
+                weighted = contrib_c * w
+                if c in feat_total.columns:
+                    feat_total[c] = feat_total[c] + weighted
+                else:
+                    feat_total[c] = weighted
 
-    if verbose:
-        print(
-            f"score = {score:5.0f}, best = {best_score:5.0f}, ensemble = {ensemble_list}..."
+        feat_cols = list(feat_total.columns)
+        ens_pred = pd.to_numeric(
+            pd.Series(ref_df["prediction"].values, index=ref_index), errors="coerce"
         )
+        feat_sum = (
+            feat_total.sum(axis=1) if feat_cols else pd.Series(0.0, index=ref_index)
+        )
+        # Residual base: guarantees contribution_sum == prediction (check_delta ~ 0)
+        # and cleanly absorbs non-decomposable members and any missing-row slack.
+        base_value = ens_pred - feat_sum
 
-    if score < best_score and len(ensemble_list) >= 1:
-        best_score = score
-        best_list = ensemble_list.copy()
+        out = pd.DataFrame(index=ref_index)
+        out["base_value"] = base_value
+        for c in feat_cols:
+            out[c] = feat_total[c]
+        out["contribution_sum"] = out[["base_value"] + feat_cols].sum(axis=1)
+        out = out.reset_index()  # restores the merge_key column
 
-    # identify the WORST individual model:
-    worst_model = None
-    worst_score = float("-inf")
-    for key in ensemble_list:
-        if key in all_results.model_results:
-            model_results = all_results.model_results[key]
-            model_score = model_results.utility_train
+        # Match the per-model contributions schema: key first, then key_sale.
+        if merge_key == "key_sale" and "key" in ref_df.columns:
+            key_map = dict(
+                zip(ref_df[merge_key].astype(str), ref_df["key"].astype(str))
+            )
+            out.insert(0, "key", out["key_sale"].map(key_map))
+        ordered = (
+            [c for c in ["key", "key_sale"] if c in out.columns]
+            + ["base_value"]
+            + feat_cols
+            + ["contribution_sum"]
+        )
+        out = out[ordered]
 
-            if model_score > worst_score:
-                worst_score = model_score
-                worst_model = key
+        df_final = _add_prediction_to_contribution(ref_df, out, split_name=name)
 
-    if worst_model is not None and len(ensemble_list) > 1:
-        ensemble_list.remove(worst_model)
+        max_delta = float(np.nanmax(np.abs(df_final["check_delta"].to_numpy()))) if len(df_final) else 0.0
+        tol = 1e-6 * (1.0 + float(np.nanmean(np.abs(ens_pred.to_numpy()))) if len(ens_pred) else 1.0)
+        if max_delta > tol:
+            warnings.warn(
+                f"Ensemble contributions for '{name}' don't reconstruct the "
+                f"prediction (max|check_delta| = {max_delta:.4g})."
+            )
 
-    return best_score, best_list
+        df_final.to_csv(f"{path}/contributions_{name}.csv", index=False)
+
+        df_unit = _contrib_to_unit_values(out, ref_df, split_name=name)
+        df_unit.to_csv(f"{path}/params_{name}.csv", index=False)
+
+        if verbose:
+            print(f"Wrote ensemble contributions/params for '{name}' (max|check_delta| = {max_delta:.4g})")
+
+        # Universe-only contributions map, mirroring _write_model_results.
+        if name == "universe":
+            try:
+                universe_parquet = gpd.read_parquet(f"{path}/pred_universe.parquet")
+            except FileNotFoundError:
+                universe_parquet = None
+            if universe_parquet is not None:
+                cmap = get_shap_contributions_map(
+                    universe_parquet, results.df_universe, df_final
+                )
+                cmap.to_parquet(f"{path}/contributions_map.parquet")
+                if verbose:
+                    print(f"Wrote ensemble contributions map to {path}/contributions_map.parquet")
 
 
 def _run_local_ensemble(
@@ -2586,6 +2672,36 @@ def _run_local_ensemble_test_and_paint(
 
     _write_ensemble_model_results(results, outpath, settings, dfs, model_keys+["local_model","local_mape"])
 
+    results.ensemble_type = "local"
+    _write_ensemble_meta(f"{outpath}/{results.model_name}", "local", model_keys)
+
+    # Local ensembles select exactly one member per row, so contributions are an
+    # exact per-row pass-through of the painted model's contributions.
+    local_selection = {
+        "test": pd.Series(
+            df_test_ensemble["local_model"].values,
+            index=df_test_ensemble["key_sale"].astype(str),
+        ),
+        "sales": pd.Series(
+            df_sales_ensemble["local_model"].values,
+            index=df_sales_ensemble["key_sale"].astype(str),
+        ),
+        "universe": pd.Series(
+            df_univ_ensemble["local_model"].values,
+            index=df_univ_ensemble["key"].astype(str),
+        ),
+    }
+    _write_ensemble_contributions(
+        results,
+        outpath,
+        settings,
+        model_keys,
+        all_results,
+        mode="local",
+        local_selection=local_selection,
+        verbose=verbose,
+    )
+
     return results
 
 
@@ -2600,6 +2716,7 @@ def _optimize_ensemble(
     settings: dict,
     verbose: bool = False,
     ensemble_list: list[str] = None,
+    agg: str = "median",
 ):
     """
     Optimize the ensemble over all iterations.
@@ -2668,6 +2785,7 @@ def _optimize_ensemble(
             best_list,
             ensemble_list,
             verbose,
+            agg=agg,
         )
 
     if verbose:
@@ -2686,6 +2804,7 @@ def _optimize_ensemble_iteration(
     best_list: list[str],
     ensemble_list: list[str],
     verbose: bool = False,
+    agg: str = "median",
 ):
     df_test_ensemble = df_test[["key_sale", "key"]].copy()
     df_sales_ensemble = df_sales[["key_sale", "key"]].copy()
@@ -2721,15 +2840,15 @@ def _optimize_ensemble_iteration(
     timing.stop("train")
 
     timing.start("predict_test")
-    y_pred_test_ensemble = df_test_ensemble[ensemble_list].median(axis=1)
+    y_pred_test_ensemble = _aggregate_ensemble(df_test_ensemble, ensemble_list, agg)
     timing.stop("predict_test")
 
     timing.start("predict_sales")
-    y_pred_sales_ensemble = df_sales_ensemble[ensemble_list].median(axis=1)
+    y_pred_sales_ensemble = _aggregate_ensemble(df_sales_ensemble, ensemble_list, agg)
     timing.stop("predict_sales")
 
     timing.start("predict_univ")
-    y_pred_univ_ensemble = df_univ_ensemble[ensemble_list].median(axis=1)
+    y_pred_univ_ensemble = _aggregate_ensemble(df_univ_ensemble, ensemble_list, agg)
     timing.stop("predict_univ")
 
     results : SingleModelResults = SingleModelResults(
@@ -2796,6 +2915,7 @@ def _run_ensemble(
     all_results: MultiModelResults,
     settings: dict,
     verbose: bool = False,
+    agg: str = "median",
 ):
     """Run the ensemble model based on the given ensemble list and write results.
     """
@@ -2860,17 +2980,17 @@ def _run_ensemble(
     timing.stop("train")
 
     timing.start("predict_test")
-    y_pred_test_ensemble = df_test_ensemble[ensemble_list].median(axis=1)
+    y_pred_test_ensemble = _aggregate_ensemble(df_test_ensemble, ensemble_list, agg)
     timing.stop("predict_test")
 
     timing.start("predict_sales")
-    y_pred_sales_ensemble = df_sales_ensemble[ensemble_list].median(axis=1)
+    y_pred_sales_ensemble = _aggregate_ensemble(df_sales_ensemble, ensemble_list, agg)
     timing.stop("predict_sales")
 
     timing.start("predict_univ")
-    y_pred_univ_ensemble = df_univ_ensemble[ensemble_list].median(axis=1)
+    y_pred_univ_ensemble = _aggregate_ensemble(df_univ_ensemble, ensemble_list, agg)
     timing.stop("predict_univ")
-    
+
     results = SingleModelResults(
         ds,
         "prediction",
@@ -2893,6 +3013,23 @@ def _run_ensemble(
     }
 
     _write_ensemble_model_results(results, outpath, settings, dfs, ensemble_list)
+
+    ensemble_type = "mean" if agg == "mean" else "median"
+    results.ensemble_type = ensemble_type
+    _write_ensemble_meta(f"{outpath}/{results.model_name}", ensemble_type, ensemble_list)
+
+    # Mean ensembles are linear, so contributions/params can be reassembled
+    # exactly from the members. Median is non-linear -> skipped.
+    if agg == "mean":
+        _write_ensemble_contributions(
+            results,
+            outpath,
+            settings,
+            ensemble_list,
+            all_results,
+            mode="mean",
+            verbose=verbose,
+        )
 
     return results
 
@@ -3371,8 +3508,11 @@ def _perform_ensemble(
     mv = "vacant" if vacant_only else "main"
     ensemble_inst = get_ensemble_instructions(settings, mv)
     ensemble_type = ensemble_inst["type"]
-    if ensemble_type == "default":
+    if ensemble_type in ("median", "mean"):
         ensemble_models = ensemble_inst.get("models", [])
+        # The ensemble type names the aggregation method directly ("median" or
+        # "mean"); "default" was already normalized to "median" upstream.
+        agg = ensemble_type
         return _perform_default_ensemble(
             df_sales=df_sales,
             df_universe=df_universe,
@@ -3385,7 +3525,8 @@ def _perform_ensemble(
             settings=settings,
             verbose=verbose,
             ensemble_list=ensemble_models,
-            t=t
+            t=t,
+            agg=agg,
         )
     elif ensemble_type == "local":
         ensemble_locations = ensemble_inst.get("locations", [])
@@ -3455,7 +3596,8 @@ def _perform_default_ensemble(
     settings: dict,
     verbose: bool = False,
     ensemble_list: list[str] = None,
-    t: TimingData = None
+    t: TimingData = None,
+    agg: str = "median",
 ):
     if t is None:
         t = TimingData()
@@ -3472,6 +3614,7 @@ def _perform_default_ensemble(
         all_results=all_results,
         settings=settings,
         verbose=verbose,
+        agg=agg,
     )
     t.stop("optimize_ensemble")
     # Run the ensemble model
@@ -3490,6 +3633,7 @@ def _perform_default_ensemble(
         all_results=all_results,
         settings=settings,
         verbose=verbose,
+        agg=agg,
     )
     t.stop("run_ensemble")
     return ensemble_results
