@@ -117,7 +117,24 @@ def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
 
         new_columns.append(new_col)
 
-    df.columns = new_columns
+    # Guarantee uniqueness. Many distinct characters (spaces, hyphens, periods, slashes,
+    # commas, parens, ...) all map to '_', so two distinct source columns can clean to the
+    # same name -- e.g. one-hot dummies for two categories that differ only by punctuation
+    # ("FOO-BAR" vs "FOO BAR" -> both "..._FOO_BAR"). Duplicate labels break downstream
+    # reindex/alignment, so suffix repeats deterministically (left-to-right). The one-hot
+    # encoder is fit once and applied to every split, so all splits produce the same column
+    # order and therefore the same de-duplicated names, keeping them aligned.
+    seen: dict = {}
+    deduped = []
+    for col in new_columns:
+        if col in seen:
+            seen[col] += 1
+            deduped.append(f"{col}_{seen[col]}")
+        else:
+            seen[col] = 0
+            deduped.append(col)
+
+    df.columns = deduped
     return df
 
 
