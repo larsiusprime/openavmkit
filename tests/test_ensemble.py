@@ -336,3 +336,137 @@ def test_local_ensemble_contributions_passthrough(tmp_path):
 	np.testing.assert_allclose(con.loc["p2", "feat_b"], 0.0)
 	np.testing.assert_allclose(con.loc["p2", "base_value"], 60.0)
 	np.testing.assert_allclose(con["check_delta"].to_numpy(), [0.0, 0.0], atol=1e-9)
+
+
+def test_median_ensemble_odd_passthrough(tmp_path):
+	# Odd present-count (3) -> the central member wins per row; the winner varies
+	# across rows, so contributions are an exact per-row pass-through.
+	keys = ["p1", "p2"]
+	_write_member_univ_contribs(
+		tmp_path, "mra", "contributions_universe.csv",
+		{
+			"key": keys,
+			"intercept": [100.0, 200.0],
+			"feat_a": [10.0, 30.0],
+			"feat_b": [20.0, 40.0],
+			"contribution_sum": [130.0, 270.0],
+			"prediction": [130.0, 270.0],
+			"check_delta": [0.0, 0.0],
+		},
+	)
+	_write_member_univ_contribs(
+		tmp_path, "xgboost", "contributions_univ.csv",
+		{
+			"key": keys,
+			"base_value": [50.0, 60.0],
+			"feat_a": [5.0, 7.0],
+			"feat_c": [15.0, 33.0],
+			"contribution_sum": [70.0, 100.0],
+			"prediction": [70.0, 100.0],
+			"check_delta": [0.0, 0.0],
+		},
+	)
+	_write_member_univ_contribs(
+		tmp_path, "lightgbm", "contributions_universe.csv",
+		{
+			"key": keys,
+			"base_value": [40.0, 200.0],
+			"feat_a": [35.0, 50.0],
+			"feat_d": [25.0, 50.0],
+			"contribution_sum": [100.0, 300.0],
+			"prediction": [100.0, 300.0],
+			"check_delta": [0.0, 0.0],
+		},
+	)
+	# Per-row medians: p1 -> sorted [70,100,130] -> 100 (lightgbm wins)
+	#                  p2 -> sorted [100,270,300] -> 270 (mra wins)
+	df_universe = pd.DataFrame({
+		"key": keys,
+		"feat_a": [2.0, 5.0],
+		"feat_b": [4.0, 8.0],
+		"feat_c": [3.0, 11.0],
+		"feat_d": [6.0, 9.0],
+		"prediction": [100.0, 270.0],
+	})
+	results = _ensemble_results(df_universe)
+	all_results = SimpleNamespace(model_results={
+		"mra": _univ_member(keys, [130.0, 270.0]),
+		"xgboost": _univ_member(keys, [70.0, 100.0]),
+		"lightgbm": _univ_member(keys, [100.0, 300.0]),
+	})
+
+	_write_ensemble_contributions(
+		results, str(tmp_path), {}, ["mra", "xgboost", "lightgbm"],
+		all_results, mode="median",
+	)
+
+	con = pd.read_csv(tmp_path / "ensemble" / "contributions_universe.csv").set_index("key")
+	# p1 is exactly lightgbm's decomposition; features it lacks are 0.
+	np.testing.assert_allclose(con.loc["p1", "feat_a"], 35.0)
+	np.testing.assert_allclose(con.loc["p1", "feat_d"], 25.0)
+	np.testing.assert_allclose(con.loc["p1", "feat_b"], 0.0)
+	np.testing.assert_allclose(con.loc["p1", "feat_c"], 0.0)
+	np.testing.assert_allclose(con.loc["p1", "base_value"], 40.0)
+	np.testing.assert_allclose(con.loc["p1", "contribution_sum"], 100.0)
+	# p2 is exactly mra's decomposition.
+	np.testing.assert_allclose(con.loc["p2", "feat_a"], 30.0)
+	np.testing.assert_allclose(con.loc["p2", "feat_b"], 40.0)
+	np.testing.assert_allclose(con.loc["p2", "feat_d"], 0.0)
+	np.testing.assert_allclose(con.loc["p2", "base_value"], 200.0)
+	np.testing.assert_allclose(con.loc["p2", "contribution_sum"], 270.0)
+	np.testing.assert_allclose(con["check_delta"].to_numpy(), [0.0, 0.0], atol=1e-9)
+
+
+def test_median_ensemble_even_equals_mean_of_two(tmp_path):
+	# Even present-count (2) -> median == mean of the two central members, so the
+	# decomposition is the per-row mean of both members' contributions.
+	keys = ["p1", "p2"]
+	_write_member_univ_contribs(
+		tmp_path, "mra", "contributions_universe.csv",
+		{
+			"key": keys,
+			"intercept": [100.0, 200.0],
+			"feat_a": [10.0, 30.0],
+			"feat_b": [20.0, 40.0],
+			"contribution_sum": [130.0, 270.0],
+			"prediction": [130.0, 270.0],
+			"check_delta": [0.0, 0.0],
+		},
+	)
+	_write_member_univ_contribs(
+		tmp_path, "xgboost", "contributions_univ.csv",
+		{
+			"key": keys,
+			"base_value": [50.0, 60.0],
+			"feat_a": [5.0, 7.0],
+			"feat_c": [15.0, 33.0],
+			"contribution_sum": [70.0, 100.0],
+			"prediction": [70.0, 100.0],
+			"check_delta": [0.0, 0.0],
+		},
+	)
+	df_universe = pd.DataFrame({
+		"key": keys,
+		"feat_a": [2.0, 5.0],
+		"feat_b": [4.0, 8.0],
+		"feat_c": [3.0, 11.0],
+		"prediction": [100.0, 185.0],  # median of two == mean of two
+	})
+	results = _ensemble_results(df_universe)
+	all_results = SimpleNamespace(model_results={
+		"mra": _univ_member(keys, [130.0, 270.0]),
+		"xgboost": _univ_member(keys, [70.0, 100.0]),
+	})
+
+	_write_ensemble_contributions(
+		results, str(tmp_path), {}, ["mra", "xgboost"], all_results, mode="median",
+	)
+
+	con = pd.read_csv(tmp_path / "ensemble" / "contributions_universe.csv").set_index("key")
+	np.testing.assert_allclose(con.loc["p1", "feat_a"], (10 + 5) / 2)
+	np.testing.assert_allclose(con.loc["p1", "feat_b"], 20 / 2)
+	np.testing.assert_allclose(con.loc["p1", "feat_c"], 15 / 2)
+	np.testing.assert_allclose(con.loc["p1", "base_value"], (100 + 50) / 2)
+	np.testing.assert_allclose(con.loc["p1", "contribution_sum"], 100.0)
+	np.testing.assert_allclose(con.loc["p2", "contribution_sum"], 185.0)
+	np.testing.assert_allclose(con["check_delta"].to_numpy(), [0.0, 0.0], atol=1e-9)

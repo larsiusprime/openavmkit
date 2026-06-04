@@ -794,6 +794,69 @@ These auto-classify as **land-numeric** via the settings template's `field_class
 
 ---
 
+### 4.12 Condo resolution — `data.process.condos`
+
+OpenAVMKit models **one row per parcel**, and every row must have geometry or it is dropped. Condominium units break this: the assessment unit (the condo account) usually has **no polygon of its own** — it physically sits inside a shared building/land parcel. This step brings condo units into the universe by *borrowing* their building's footprint polygon, so they enrich, group, and model like any other parcel.
+
+- **Activation** — `data.process.condos.enabled: true`. No-op otherwise.
+- **Source** — `resolve_condos` in [openavmkit/condos.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/condos.py), called at the top of `process_data` **before** the universe merge / geometry attach.
+
+It does four things, all reusing existing machinery:
+
+1. **Link** each condo unit to a building/shared parcel.
+2. **Borrow geometry** — append a row to `geo_parcels` keyed by the unit, with the building's polygon as its geometry. Because the universe geometry attach de-dupes by *key, not geometry*, many units can share one polygon. And because every spatial enrichment (DEM, census, distances, basic-geo, Overture) is centroid-derived, **all units in a building inherit identical "shared-parcel" amenities for free** — no copy step.
+3. **Group** — write `condo_group` (the building id), analogous to a neighborhood. It's auto-registered as a categorical location, so it works in ratio-study breakdowns, equity/sales-scrutiny clustering, and local-ensemble selection. Tame its cardinality with `collapse_sparse_categories` + `output_field` (see §5.4).
+4. **Allocate land** — write a per-unit `land_area_alloc_sqft` (and overwrite condos' `land_area_sqft` with it, so the standard land feature is per-unit rather than the whole footprint).
+
+#### Schema
+
+```json
+"data": {
+  "process": {
+    "condos": {
+      "enabled": true,
+      "select": ["isin", "bldg_type", ["CONDOMINIUM", "Commercial Condo"]],
+      "link": { "method": "id_prefix", "id_field": "parcel_num", "prefix_len": 9, "from": "geo_parcels" },
+      "group_field": "condo_group",
+      "borrow_geometry": true,
+      "land_share": { "method": "field", "field": "land_area_sqft" }
+    }
+  }
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `select` | A filter expression (same DSL as `modeling.model_groups.*.filter`) selecting which universe rows are condo units. |
+| `link.method` | How to find each unit's building polygon. `id_prefix`: units whose `id_field` (e.g. `parcel_num`) share a prefix of length `prefix_len` belong to one building; the largest polygon with that prefix in `from` is the representative. `parent_id`: `link.parent_field` names the building/shared-parcel key directly. `spatial`: point-in-polygon (not yet implemented). |
+| `group_field` | Output column holding the building id. Default `condo_group`. |
+| `borrow_geometry` | If true, inject the building polygon as the geometry of units that lack one. |
+| `land_share.method` | `field`: copy a legible per-unit land field. `floor_area`: pro-rate — `alloc = (unit_floor / building_total_floor) × building_polygon_area`, summing the building's units back to the parcel. |
+
+#### Fields added
+
+| Field | Meaning |
+| --- | --- |
+| `condo_group` | Building/shared-parcel id (the resolved link target). |
+| `land_area_alloc_sqft` (`_sqm`) | Per-unit allocated land area; also written to `land_area_sqft` for condos. |
+| `geometry_borrowed` | `True` on rows whose geometry was borrowed (audit flag). |
+
+These three default field names ship in the settings template's `field_classification`, so default-named condo jobs need **no** per-jurisdiction `field_classification` entries (they auto-classify across all notebooks). Whether `condo_group` is also a *location* stays a per-jurisdiction choice — add it to `field_classification.important.locations` to use it in breakdowns/ensembles. If you rename `group_field`, declare the custom name in your `settings.json` `field_classification` yourself (the affordance auto-registers it in-memory and warns, but settings reload fresh each notebook, so the in-memory registration does not persist).
+
+> **Cache note:** Adding or removing condos changes the universe row set, which invalidates the enrichment cache (it hard-errors on mismatch rather than silently recomputing). Clear the locality's `cache/` folder after first enabling/disabling condos — see §8.5.
+
+#### Beyond condos — the sub-parcel pattern
+
+Condos are one instance of a more general situation: **the valuation unit is finer than the geometry.** The same shape recurs with timeshare interests, leasehold/ground-lease units, mobile-home pads in a park, and any "many assessment accounts on one physical parcel" arrangement. The coherent way to model these in a one-row-per-parcel framework is always the same three moves — and they're exactly what `data.process.condos` does, so reach for it (with the appropriate `link.method`) rather than dropping the rows or inventing a bespoke script:
+
+1. **Borrow** the parent/shared parcel's geometry so the unit survives and inherits its location-based amenities.
+2. **Group** the units with a shared id (`condo_group`) so they can be analyzed and modeled as a cohort.
+3. **Allocate** the shared land to each unit (legible per-unit field, else floor-area pro-rate) so land size is per-unit, not the whole parcel.
+
+What you generally *cannot* recover this way is **within-structure vertical position** (which floor a unit is on, view): borrowed geometry is the ground footprint, identical for every unit in the building, and most assessor extracts have no floor field. That's usually an acceptable loss — the dominant locational signal is *which building / where on the map*, which the borrowed footprint captures — but be explicit about it rather than assuming a floor effect is in the data.
+
+---
+
 ## 5. Data cleaning & validation
 
 ### 5.1 Filling missing values — `data.process.fill.<method>`

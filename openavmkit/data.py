@@ -607,6 +607,12 @@ def process_data(
         If required merge instructions or columns are missing.
     """
 
+    # Condo resolution (opt-in): borrow building geometry for geometry-less condo units,
+    # assign condo_group, and allocate per-unit land size -- BEFORE the universe merge /
+    # geometry attach. No-op unless data.process.condos.enabled is set.
+    from openavmkit.condos import resolve_condos
+    dataframes = resolve_condos(dataframes, settings, verbose=verbose)
+
     s_data = settings.get("data", {})
     s_process = s_data.get("process", {})
     s_merge = s_process.get("merge", {})

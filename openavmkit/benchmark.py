@@ -2135,6 +2135,61 @@ def _find_member_contrib_file(outpath: str, m_key: str, candidate_files: list[st
     return None
 
 
+def _median_weights(P: pd.DataFrame) -> pd.DataFrame:
+    """Per-(member, row) weights reproducing a row-wise median.
+
+    A median over the members present in a row equals (odd count) the single
+    central member's prediction, or (even count) the mean of the two central
+    members. So the median is a convex combination of members: weight ``1`` on
+    the central member, or ``0.5`` on each of the two central members. Member
+    presence is per row (NaN predictions are skipped, matching
+    ``pandas.median(axis=1)``).
+
+    Parameters
+    ----------
+    P : pandas.DataFrame
+        Per-member prediction matrix (rows x members), NaN where a member has no
+        prediction for that row.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Weights with the same shape/index/columns as ``P``; each row sums to 1
+        (or 0 for rows with no present members).
+    """
+    members = list(P.columns)
+    vals = P.to_numpy(dtype=float)
+    R, M = vals.shape
+    W = np.zeros((R, M), dtype=float)
+    if M == 0:
+        return pd.DataFrame(W, index=P.index, columns=members)
+
+    finite = np.isfinite(vals)
+    n = finite.sum(axis=1)
+    # Sort each row ascending with absent members pushed to the end.
+    filled = np.where(finite, vals, np.inf)
+    order = np.argsort(filled, axis=1, kind="stable")  # column indices, ascending
+    rows = np.arange(R)
+
+    odd = (n % 2 == 1) & (n > 0)
+    even = (n % 2 == 0) & (n > 0)
+
+    # Odd: the member at the central sorted rank carries the whole weight.
+    k_mid = np.clip((n - 1) // 2, 0, M - 1)
+    cols_mid = order[rows, k_mid]
+    W[rows[odd], cols_mid[odd]] = 1.0
+
+    # Even: the two central members split the weight 50/50.
+    k_lo = np.clip(n // 2 - 1, 0, M - 1)
+    k_hi = np.clip(n // 2, 0, M - 1)
+    cols_lo = order[rows, k_lo]
+    cols_hi = order[rows, k_hi]
+    W[rows[even], cols_lo[even]] = 0.5
+    W[rows[even], cols_hi[even]] = 0.5
+
+    return pd.DataFrame(W, index=P.index, columns=members)
+
+
 def _write_ensemble_contributions(
     results: SingleModelResults,
     outpath: str,
@@ -2147,13 +2202,19 @@ def _write_ensemble_contributions(
 ):
     """Assemble ensemble ``contributions_*`` and ``params_*`` files from members.
 
-    A mean ensemble is a convex combination of member predictions and a local
-    ensemble selects exactly one member per row; in both cases the ensemble's
-    per-feature contribution is a per-row weighted sum of member contributions
-    (weights summing to 1 per row). We accumulate the weighted feature
-    contributions and set the base term as the residual
-    ``prediction - sum(feature contributions)`` so reconstruction is exact and
-    non-decomposable members (e.g. ``local_area``) fold cleanly into the base.
+    Each supported ensemble is, per row, a convex combination of its members'
+    predictions, so the ensemble's per-feature contribution is the matching
+    per-row weighted sum of member contributions (weights summing to 1 per row):
+
+    - ``mean``: equal weight across members present for the row.
+    - ``local``: weight 1 on the row's selected model.
+    - ``median``: weight 1 on the central member (odd present-count) or 0.5 on
+      each of the two central members (even present-count).
+
+    We accumulate the weighted feature contributions and set the base term as the
+    residual ``prediction - sum(feature contributions)`` so reconstruction is
+    exact and non-decomposable members (e.g. ``local_area``) fold cleanly into
+    the base.
 
     Parameters
     ----------
@@ -2165,9 +2226,9 @@ def _write_ensemble_contributions(
     ensemble_list : list[str]
         Member model keys that compose the ensemble.
     all_results : MultiModelResults
-        Used to read each member's per-row predictions (mean weighting).
+        Used to read each member's per-row predictions (mean/median weighting).
     mode : str
-        ``"mean"`` or ``"local"``.
+        ``"mean"``, ``"median"``, or ``"local"``.
     local_selection : dict[str, pandas.Series], optional
         For ``mode="local"``: per-subset Series mapping merge key -> selected
         model name (the painted ``local_model`` column).
@@ -2205,9 +2266,9 @@ def _write_ensemble_contributions(
 
         # Per-(member, row) weights, summing to 1 per row.
         weights = {}
-        if mode == "mean":
-            # Presence = member produced a (non-NaN) prediction for the row.
-            present = pd.DataFrame(index=ref_index)
+        if mode in ("mean", "median"):
+            # Per-member prediction matrix aligned to the ensemble rows.
+            P = pd.DataFrame(index=ref_index)
             for m_key in members:
                 mr = all_results.model_results[m_key]
                 if name == "test":
@@ -2221,10 +2282,18 @@ def _write_ensemble_contributions(
                     index=pd.Index(kk.astype(str), name=merge_key),
                 )
                 s = s[~s.index.duplicated()]
-                present[m_key] = s.reindex(ref_index).notna()
-            n_row = present.sum(axis=1).replace(0, np.nan)
-            for m_key in members:
-                weights[m_key] = present[m_key].astype(float) / n_row
+                P[m_key] = s.reindex(ref_index)
+            if mode == "mean":
+                # Equal weight across the members present for the row.
+                present = P.notna()
+                n_row = present.sum(axis=1).replace(0, np.nan)
+                for m_key in members:
+                    weights[m_key] = present[m_key].astype(float) / n_row
+            else:
+                # Median == central member(s) per row.
+                wmat = _median_weights(P)
+                for m_key in members:
+                    weights[m_key] = wmat[m_key]
         elif mode == "local":
             sel = local_selection.get(name) if local_selection else None
             if sel is None:
@@ -3018,16 +3087,17 @@ def _run_ensemble(
     results.ensemble_type = ensemble_type
     _write_ensemble_meta(f"{outpath}/{results.model_name}", ensemble_type, ensemble_list)
 
-    # Mean ensembles are linear, so contributions/params can be reassembled
-    # exactly from the members. Median is non-linear -> skipped.
-    if agg == "mean":
+    # Both mean and median are per-row convex combinations of the members, so
+    # contributions/params can be reassembled exactly (mean = equal weights;
+    # median = central member, or the two central members averaged).
+    if agg in ("mean", "median"):
         _write_ensemble_contributions(
             results,
             outpath,
             settings,
             ensemble_list,
             all_results,
-            mode="mean",
+            mode=agg,
             verbose=verbose,
         )
 

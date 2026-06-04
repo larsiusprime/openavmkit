@@ -88,6 +88,29 @@
 		"type": "percent",
 		"groups": ["land"]
 	},
+	"land_area_alloc_sqft":{
+		"name": "Allocated land area (sqft)",
+		"description": "For a condo unit, its allocated share of the shared building/land parcel's land area, in square feet. Set by the condo affordance (data.process.condos): either a legible per-unit field or a floor-area pro-rate. For condos this also becomes land_area_sqft.",
+		"type": "number",
+		"groups": ["land"]
+	},
+	"land_area_alloc_sqm":{
+		"name": "Allocated land area (sqm)",
+		"description": "Metric-unit variant of land_area_alloc_sqft (a condo unit's allocated share of the shared parcel's land area, in square meters).",
+		"type": "number",
+		"groups": ["land"]
+	},
+	"condo_group":{
+		"name": "Condo group",
+		"description": "Identifier for the building / shared parcel a condo unit belongs to (analogous to a neighborhood for single-family homes). Set by the condo affordance (data.process.condos); used as a location for breakdowns/clustering and as a categorical model feature.",
+		"type": "string",
+		"groups": ["land"]
+	},
+	"geometry_borrowed":{
+		"name": "Geometry borrowed",
+		"description": "True when a parcel's geometry was borrowed from its building/shared parcel by the condo affordance (the unit has no polygon of its own), rather than being the parcel's own digitized polygon.",
+		"type": "boolean"
+	},
 	"floor_area_ratio":{
 		"name": "Floor area ratio",
 		"description": "Ratio between the total floor area of the building(s) on the parcel and the size of the parcel",
