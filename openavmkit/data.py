@@ -57,6 +57,7 @@ from shapely.geometry import LineString
 from shapely.ops import unary_union
 import warnings
 import traceback
+import importlib.util
 
 from shapely.strtree import STRtree
 from sklearn.model_selection import train_test_split
@@ -1335,8 +1336,31 @@ def _enrich_df_dem(
                 print("--> found cached data")
             return df_out
 
+    # DEM enrichment relies on optional geospatial-raster packages that are not
+    # imported until they're actually used (deep inside DEMService). A stale
+    # environment that hasn't been synced to requirements.txt would otherwise
+    # fail with an opaque "No module named ..." swallowed by the catch-all below.
+    # Check up front and tell the user exactly how to fix it.
+    missing_deps = [
+        pkg for pkg in ("rasterio", "seamless_3dep")
+        if importlib.util.find_spec(pkg) is None
+    ]
+    if missing_deps:
+        warnings.warn(
+            "DEM enrichment is enabled but required package(s) are not installed: "
+            f"{', '.join(missing_deps)}. No elevation/slope columns will be added. "
+            "Your environment is likely out of date; run "
+            "`pip install -r requirements.txt` (or `pip install rasterio seamless-3dep`) "
+            "and re-run this step. Skipping DEM enrichment."
+        )
+        return df_in
+
     if not isinstance(df_in, gpd.GeoDataFrame):
-        warnings.warn("DataFrame is not a GeoDataFrame, skipping DEM enrichment")
+        warnings.warn(
+            "DEM enrichment needs parcel geometry, but the universe is a plain "
+            "DataFrame, not a GeoDataFrame. Make sure your parcels source "
+            "(data.load.geo_parcels) loads geometry. Skipping DEM enrichment."
+        )
         return df_in
 
     df = df_in.copy()
@@ -1347,7 +1371,12 @@ def _enrich_df_dem(
         if is_likely_epsg4326(df):
             df.set_crs(epsg=4326, inplace=True)
         else:
-            warnings.warn("GeoDataFrame has no CRS set; skipping DEM enrichment")
+            warnings.warn(
+                "DEM enrichment: parcel GeoDataFrame has no CRS set and the "
+                "coordinates don't look like EPSG:4326, so the USGS query bbox "
+                "can't be computed. Set a CRS on your parcels source (e.g. "
+                "reproject to a known EPSG in preprocessing). Skipping DEM enrichment."
+            )
             return df_in
     df_wgs84 = df if df.crs.equals(CRS.from_epsg(4326)) else df.to_crs(epsg=4326)
 
@@ -1356,7 +1385,10 @@ def _enrich_df_dem(
 
     if not bbox_in_usgs_coverage(bbox):
         warnings.warn(
-            f"Parcel bbox {bbox} is outside USGS 3DEP coverage; skipping DEM enrichment."
+            f"DEM enrichment: parcel bbox {bbox} is outside USGS 3DEP coverage "
+            "(only CONUS, AK, HI, and PR are covered). If this locality is "
+            "genuinely outside that footprint, set data.process.enrich.dem.enabled "
+            "to false to silence this. Skipping DEM enrichment."
         )
         return df_in
 
@@ -1369,7 +1401,12 @@ def _enrich_df_dem(
         slope_path = service.compute_slope_raster(utm_dem_path, verbose=verbose)
         stats = service.compute_parcel_stats(df_wgs84, utm_dem_path, slope_path, verbose=verbose)
     except Exception as e:
-        warnings.warn(f"DEM enrichment failed: {e}; skipping.")
+        warnings.warn(
+            f"DEM enrichment failed and was skipped: {e}. No elevation/slope "
+            "columns were added. This is usually a transient network error "
+            "fetching USGS 3DEP tiles — re-run to retry. Re-run with verbose=True "
+            "for the full traceback."
+        )
         if verbose:
             print(f"Traceback: {traceback.format_exc()}")
         return df_in

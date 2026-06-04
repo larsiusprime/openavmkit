@@ -884,6 +884,200 @@ def get_collapse_sparse_categories_config(settings: dict) -> dict:
     )
 
 
+def is_collapse_strict(settings: dict) -> bool:
+    """Whether cardinality-collapse location guards should raise instead of warn.
+
+    Opt in by setting the reserved boolean key
+    ``data.process.collapse_sparse_categories.strict`` to ``true``. (Note: a
+    ``__strict`` key would be stripped as a comment, so the flag is a single
+    reserved ``strict`` key alongside the per-field entries.)
+
+    Parameters
+    ----------
+    settings : dict
+        Settings dictionary.
+
+    Returns
+    -------
+    bool
+        True if guards should raise ``ValueError``; False (default) to warn.
+    """
+    return bool(get_collapse_sparse_categories_config(settings).get("strict", False))
+
+
+def get_collapsed_fields(settings: dict) -> set[str]:
+    """Return the set of columns that carry a collapsed (``"Other"``) bucket.
+
+    For each entry in ``data.process.collapse_sparse_categories``, the collapsed
+    column is the entry's ``output_field`` if set, otherwise the source field
+    (the dict key). This is the column downstream code should treat as
+    cardinality-collapsed — when ``output_field`` is used the raw source field is
+    left intact and is *not* considered collapsed. Reserved non-dict keys (e.g.
+    ``strict``) are skipped.
+
+    Parameters
+    ----------
+    settings : dict
+        Settings dictionary.
+
+    Returns
+    -------
+    set[str]
+        Column names that have been (or will be) cardinality-collapsed.
+    """
+    config = get_collapse_sparse_categories_config(settings)
+    collapsed = set()
+    for field, field_cfg in config.items():
+        if not isinstance(field_cfg, dict):
+            continue
+        collapsed.add(field_cfg.get("output_field", field))
+    return collapsed
+
+
+def is_field_collapsed(settings: dict, field: str) -> bool:
+    """Return True if ``field`` is a cardinality-collapsed output column.
+
+    See :func:`get_collapsed_fields`.
+    """
+    return field in get_collapsed_fields(settings)
+
+
+def get_location_fields(settings: dict, df: pd.DataFrame = None) -> set[str]:
+    """Return every field the settings treat as a coherent geographic location.
+
+    Collapsing any of these *in place* via ``collapse_sparse_categories`` is a
+    footgun: downstream grouping / clustering / breakdowns assume each location
+    value is a geographically coherent zone, and a collapsed location merges
+    unrelated zones into one ``"Other"`` bucket. This aggregates, from
+    ``settings``:
+
+    - ``field_classification.important.locations``
+    - ``field_classification.important.fields.loc_*`` (the mapped field names)
+    - ``analysis.{sales_scrutiny,horizontal_equity,land_equity,impr_equity}.location``
+    - ``analysis.ratio_study.breakdowns[].by`` entries written as ``<loc_*>``
+      (resolved through ``important.fields``)
+    - ``modeling.instructions.{main,vacant}.ensemble.locations`` and any
+      per-model ``modeling.models.*.*.locations``
+    - ``land.lycd.*.location``
+
+    ``field_classification.important.report_locations`` is intentionally excluded
+    — those are used only as report output columns (benign if collapsed).
+
+    Parameters
+    ----------
+    settings : dict
+        Settings dictionary.
+    df : pandas.DataFrame, optional
+        If given, the result is filtered to columns present in ``df``.
+
+    Returns
+    -------
+    set[str]
+        Field names used as coherent geographic locations.
+    """
+    fc = settings.get("field_classification", {})
+    important = fc.get("important", {})
+    fields_map = important.get("fields", {}) or {}
+
+    out: set[str] = set()
+    out.update(important.get("locations", []) or [])
+    for alias, actual in fields_map.items():
+        if isinstance(alias, str) and alias.startswith("loc_") and actual:
+            out.add(actual)
+
+    analysis = settings.get("analysis", {})
+    for sect in ("sales_scrutiny", "horizontal_equity", "land_equity", "impr_equity"):
+        loc = analysis.get(sect, {}).get("location")
+        if loc:
+            out.add(loc)
+
+    for bd in analysis.get("ratio_study", {}).get("breakdowns", []) or []:
+        by = bd.get("by") if isinstance(bd, dict) else None
+        if isinstance(by, str) and by.startswith("<") and by.endswith(">"):
+            actual = fields_map.get(by[1:-1])
+            if actual:
+                out.add(actual)
+
+    modeling = settings.get("modeling", {})
+    instr = modeling.get("instructions", {})
+    for mv in ("main", "vacant"):
+        ens = instr.get(mv, {}).get("ensemble", {})
+        out.update(ens.get("locations", []) or [])
+    for mv_block in modeling.get("models", {}).values():
+        if not isinstance(mv_block, dict):
+            continue
+        for model_cfg in mv_block.values():
+            if isinstance(model_cfg, dict):
+                out.update(model_cfg.get("locations", []) or [])
+
+    for cfg in settings.get("land", {}).get("lycd", {}).values():
+        if isinstance(cfg, dict) and cfg.get("location"):
+            out.add(cfg["location"])
+
+    out.discard(None)
+    if df is not None:
+        out = {f for f in out if f in df.columns}
+    return out
+
+
+# Tracks (field, context) pairs already warned about, so per-model-group loops
+# don't emit the same location-collapse warning dozens of times in one run.
+_LOCATION_COLLAPSE_WARNED: set = set()
+
+
+def warn_if_location_collapsed(
+    settings: dict, fields, context: str, df: pd.DataFrame = None
+) -> None:
+    """Warn (or raise, if strict) when a location field used here was collapsed.
+
+    Call this at sites that consume a field as a coherent geographic grouping key
+    (equity clustering, ratio-study breakdowns, local-ensemble selection, etc.).
+    If the field is in :func:`get_collapsed_fields`, collapsing has merged
+    unrelated zones into the replacement bucket, so grouping by it is wrong.
+
+    Deduplicates on ``(field, context)`` so repeated per-model-group calls warn
+    only once per run.
+
+    Parameters
+    ----------
+    settings : dict
+        Settings dictionary.
+    fields : str or Iterable[str]
+        The location field(s) about to be used at this site.
+    context : str
+        Short description of the consuming site, e.g. ``"horizontal equity
+        clustering"`` — used in the message.
+    df : pandas.DataFrame, optional
+        Unused; accepted so callers can pass it uniformly.
+    """
+    if fields is None:
+        return
+    if isinstance(fields, str):
+        fields = [fields]
+    collapsed = get_collapsed_fields(settings)
+    strict = is_collapse_strict(settings)
+    for field in fields:
+        if not field or field not in collapsed:
+            continue
+        key = (field, context)
+        if key in _LOCATION_COLLAPSE_WARNED:
+            continue
+        _LOCATION_COLLAPSE_WARNED.add(key)
+        msg = (
+            f"Location field '{field}' is being used as a geographic grouping key "
+            f"for {context}, but it was cardinality-collapsed via "
+            f"data.process.collapse_sparse_categories. Collapsing a location merges "
+            f"unrelated zones into one replacement bucket (e.g. 'Other'), which "
+            f"corrupts {context}. Best practice: collapse into a separate "
+            f"'{field}_collapsed' modeling variant (set 'output_field' on the collapse "
+            f"config) and use that ONLY as a model feature, leaving '{field}' intact "
+            f"as the location."
+        )
+        if strict:
+            raise ValueError(msg)
+        warnings.warn(msg)
+
+
 #######################################
 # PRIVATE
 #######################################

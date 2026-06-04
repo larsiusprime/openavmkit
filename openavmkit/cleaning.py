@@ -29,6 +29,9 @@ from openavmkit.utilities.settings import (
   get_data_dictionary,
   get_model_group_ids,
   get_collapse_sparse_categories_config,
+  get_collapsed_fields,
+  get_location_fields,
+  is_collapse_strict,
   _is_series_all_bools,
 )
 from openavmkit.utilities.cache import write_cache
@@ -218,6 +221,24 @@ def collapse_sparse_categories_sup(
     left untouched — renaming a single category to ``"Other"`` would not buy
     any generalization benefit and would only mask the original label.
 
+    Per-field config keys: ``sales_min`` and ``univ_min`` (required),
+    ``replacement_value`` (optional, default ``"Other"``), and ``output_field``
+    (optional). When ``output_field`` is set, the collapsed result is written to
+    that **new** column and the source field is left untouched — this is the
+    recommended way to make a cardinality-reduced *modeling variant* of a
+    **location** field (e.g. ``neighborhood`` -> ``neighborhood_collapsed``)
+    without corrupting the raw location used for breakdowns/equity/spatial work.
+    The variant column is always created (a copy of the source) even when nothing
+    collapses, so downstream references to it never break.
+
+    A reserved boolean key ``strict`` (not a field) turns the location-collapse
+    guard from a warning into a ``ValueError``.
+
+    **Location footgun:** collapsing a field *in place* that is used as a coherent
+    geographic location (see :func:`get_location_fields`) merges unrelated zones
+    into the replacement bucket. This function warns loudly (or raises when
+    ``strict``) in that case. Use ``output_field`` instead.
+
     Parameters
     ----------
     sup : SalesUniversePair
@@ -233,8 +254,9 @@ def collapse_sparse_categories_sup(
     Raises
     ------
     ValueError
-        If a configured field is missing ``sales_min`` or ``univ_min``, or if
-        the field is not listed in ``field_classification.*.categorical``.
+        If a configured field is missing ``sales_min`` or ``univ_min``, if the
+        field is not listed in ``field_classification.*.categorical``, or if a
+        location field is collapsed in place while ``strict`` is set.
     """
     config = get_collapse_sparse_categories_config(settings)
     if not config:
@@ -242,11 +264,40 @@ def collapse_sparse_categories_sup(
 
     known_categoricals = set(get_fields_categorical(settings, include_boolean=False))
 
+    # Upfront location-collapse guard: a field collapsed *in place* (no
+    # output_field) whose result column is used as a coherent location is almost
+    # always a mistake. Warn once per offender here (or raise when strict).
+    location_fields = get_location_fields(settings)
+    strict = is_collapse_strict(settings)
+    for field, field_cfg in config.items():
+        if not isinstance(field_cfg, dict):
+            continue
+        result_col = field_cfg.get("output_field", field)
+        if result_col in location_fields:
+            msg = (
+                f"collapse_sparse_categories is collapsing '{result_col}', which is "
+                f"used as a coherent geographic location (in field_classification."
+                f"important.locations, analysis.*.location, ratio-study breakdowns, "
+                f"and/or model/ensemble locations). Collapsing a location merges "
+                f"unrelated zones into '{field_cfg.get('replacement_value', 'Other')}', "
+                f"corrupting equity clustering, ratio-study breakdowns, local-ensemble "
+                f"selection, and sales-scrutiny clusters. Best practice: set "
+                f"'output_field' (e.g. '{field}_collapsed') so the collapse writes a "
+                f"separate modeling variant and leaves '{field}' intact as the location, "
+                f"then use the variant ONLY as a model feature."
+            )
+            if strict:
+                raise ValueError(msg)
+            warn(msg)
+
     df_sales = sup["sales"].copy()
     df_univ = sup["universe"].copy()
     df_sales_hydrated = get_hydrated_sales_from_sup(sup)
 
     for field, field_cfg in config.items():
+        if not isinstance(field_cfg, dict):
+            # Reserved scalar keys (e.g. "strict") are not field configs.
+            continue
         if "sales_min" not in field_cfg or "univ_min" not in field_cfg:
             raise ValueError(
                 f"collapse_sparse_categories['{field}'] requires both "
@@ -262,6 +313,8 @@ def collapse_sparse_categories_sup(
         sales_min = field_cfg["sales_min"]
         univ_min = field_cfg["univ_min"]
         replacement_value = field_cfg.get("replacement_value", "Other")
+        output_field = field_cfg.get("output_field")
+        target = output_field or field
 
         if field not in df_univ.columns:
             warn(
@@ -269,6 +322,14 @@ def collapse_sparse_categories_sup(
                 f"universe DataFrame, skipping."
             )
             continue
+
+        # When writing to a separate variant, seed it as a copy of the source up
+        # front so the column always exists for downstream references — even if
+        # too few categories collapse below.
+        if output_field:
+            df_univ[output_field] = df_univ[field]
+            if field in df_sales.columns:
+                df_sales[output_field] = df_sales[field]
 
         sales_counts = (
             df_sales_hydrated[field].value_counts(dropna=False)
@@ -278,10 +339,14 @@ def collapse_sparse_categories_sup(
         univ_counts = df_univ[field].value_counts(dropna=False)
 
         all_values = set(sales_counts.index).union(set(univ_counts.index))
+        # Skip NA/NaN. Missing values are a fill concern, not a rare category to
+        # bucket into the replacement value, and including pd.NA here makes the
+        # sorted() comparison raise "boolean value of NA is ambiguous".
         sparse_values = sorted(
             v
             for v in all_values
-            if sales_counts.get(v, 0) < sales_min or univ_counts.get(v, 0) < univ_min
+            if not pd.isna(v)
+            and (sales_counts.get(v, 0) < sales_min or univ_counts.get(v, 0) < univ_min)
         )
 
         if len(sparse_values) < 2:
@@ -299,7 +364,8 @@ def collapse_sparse_categories_sup(
             sum(univ_counts.get(v, 0) for v in sparse_values)
         )
 
-        print(f"collapse_sparse_categories: {field}")
+        into = f" into '{output_field}'" if output_field else ""
+        print(f"collapse_sparse_categories: {field}{into}")
         print(f"  thresholds: sales_min={sales_min}, univ_min={univ_min}")
         print(
             f"  {len(sparse_values)} categories collapsed into "
@@ -309,11 +375,11 @@ def collapse_sparse_categories_sup(
         print(f"  collapsed: {sparse_values}")
 
         df_univ = _apply_collapse_mapping(
-            df_univ, field, sparse_values, replacement_value
+            df_univ, target, sparse_values, replacement_value
         )
-        if field in df_sales.columns:
+        if target in df_sales.columns:
             df_sales = _apply_collapse_mapping(
-                df_sales, field, sparse_values, replacement_value
+                df_sales, target, sparse_values, replacement_value
             )
 
     sup.set("sales", df_sales)
@@ -583,20 +649,35 @@ def _fill_unknown_values(df, settings: dict):
             if field_name not in df:
                 continue
             fill_method = key
-            if key.endswith("_impr"):
-                fill_method = key[:-5]
-                df_impr = df[df["is_vacant"].eq(False)].copy()
-                df_impr = _fill_thing(df_impr, field, fill_method)
-                df, df_impr = ensure_categories(df, df_impr, field_name)
-                df.loc[df_impr.index, field_name] = df_impr[field_name]
-            elif key.endswith("_vacant"):
-                fill_method = key[:-7]
-                df_vacant = df[df["is_vacant"].eq(True)].copy()
-                df_vacant = _fill_thing(df_vacant, field, fill_method)
-                df, df_vacant = ensure_categories(df, df_vacant, field_name)
-                df.loc[df_vacant.index, field_name] = df_vacant[field_name]
-            else:
-                df = _fill_thing(df, field, fill_method)
+            try:
+                if key.endswith("_impr"):
+                    fill_method = key[:-5]
+                    df_impr = df[df["is_vacant"].eq(False)].copy()
+                    df_impr = _fill_thing(df_impr, field, fill_method)
+                    df, df_impr = ensure_categories(df, df_impr, field_name)
+                    df.loc[df_impr.index, field_name] = df_impr[field_name]
+                elif key.endswith("_vacant"):
+                    fill_method = key[:-7]
+                    df_vacant = df[df["is_vacant"].eq(True)].copy()
+                    df_vacant = _fill_thing(df_vacant, field, fill_method)
+                    df, df_vacant = ensure_categories(df, df_vacant, field_name)
+                    df.loc[df_vacant.index, field_name] = df_vacant[field_name]
+                else:
+                    df = _fill_thing(df, field, fill_method)
+            except Exception as e:
+                dtype = df[field_name].dtype if field_name in df else "<field absent>"
+                raise ValueError(
+                    f"Fill failed for field '{field_name}' using the "
+                    f"'data.process.fill.{key}' list (fill method '{fill_method}', "
+                    f"current column dtype: {dtype}). This almost always means the "
+                    f"field's dtype doesn't match the fill -- e.g. a numeric fill "
+                    f"('zero'/'median'/'mean'/'min'/'max') applied to a string/object "
+                    f"column, or a string fill ('unknown'/'none') applied to a numeric "
+                    f"column. Fix by either classifying '{field_name}' so it loads as the "
+                    f"right type (field_classification.*.numeric vs .categorical, or an "
+                    f"explicit dtype in data.load), or moving it to a fill method that "
+                    f"matches its type. Original error: {e}"
+                ) from e
 
     # After all fills, clean up
 
