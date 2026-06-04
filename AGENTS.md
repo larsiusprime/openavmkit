@@ -172,6 +172,10 @@ Models live in [openavmkit/utilities/modeling.py](openavmkit/utilities/modeling.
 
    Existing implementations to follow: [`write_mra_params`](openavmkit/modeling.py) (linear), [`write_tree_based_params`](openavmkit/modeling.py) (SHAP), [`write_gwr_params`](openavmkit/modeling.py) (per-location coefficients), [`write_local_area_params`](openavmkit/modeling.py), [`write_multi_mra_params`](openavmkit/modeling.py). Pick the one that most closely matches your model's structure and follow the same file-output contract. The dispatch that calls these per-model writers is the common interface; if your model is fundamentally new in shape, add a new writer in `modeling.py` and a dispatch case alongside the existing ones.
 
+   Use the canonical subset names `test` / `sales` / `universe` in those filenames (`contributions_universe.csv`, not the legacy `univ`). `_write_model_results` reads `contributions_universe.csv` to build `contributions_map.parquet`; a writer that emits a different universe name silently skips the map.
+
+   **Ensembles also produce params/contribs.** `_write_ensemble_contributions` in [openavmkit/benchmark.py](openavmkit/benchmark.py) reassembles them from the member models rather than from a fitted model object: mean/median ensembles are per-row convex combinations of members (so the ensemble contribution is the weighted mean of member contributions, with the base term taken as the residual `prediction − Σ contributions` so reconstruction is exact), and local passes through the selected member. A new model engine automatically participates as an ensemble member as long as it emits the standard per-row `contributions_<subset>.csv`; engines that can't (e.g. `local_area`, the naive baselines) fold cleanly into the ensemble base.
+
 ### Adding a new equity study
 
 See `horizontal_equity_study.py`, `vertical_equity_study.py` as templates. The shape is: a `*Study` class with statistics in `__init__`, a runner function that handles the SalesUniversePair plumbing, and a `pipeline.py` wrapper.

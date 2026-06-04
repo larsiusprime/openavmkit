@@ -70,7 +70,7 @@ Now run, in order:
 After all four notebooks run cleanly:
 
 - `data/us-nc-guilford/out/` has parquet files for the universe, sales, and predictions
-- `data/us-nc-guilford/out/models/<model_group>/` has per-model output: predictions, `params_<subset>.csv`, `contributions_<subset>.csv`
+- `data/us-nc-guilford/out/models/<model_group>/` has per-model output: predictions, `params_<subset>.csv`, `contributions_<subset>.csv` — including an `ensemble/` folder with its own reassembled params/contributions
 - `data/us-nc-guilford/out/reports/` has ratio study and equity reports
 - The `examine_sup` output shows non-null fields for every parcel, sales correctly partitioned into model groups
 
@@ -341,7 +341,7 @@ Open [`03-model.ipynb`](https://github.com/landeconomics/openavmkit/blob/master/
     - **Predictions** — the central output.
     - **`params_<subset>.csv`** — per-feature parameters (regression coefficients for linear; SHAP-normalized for tree-based). "What is each feature's per-unit effect?" For MRA the file carries two columns — `coefficient` and `error` (the regression standard error) — so you can read both the effect and its uncertainty.
     - **`contributions_<subset>.csv`** — per-feature contributions (coef × value for linear; raw SHAP for tree-based). "How much did each feature contribute to this row's prediction?"
-- **In-notebook metric tables.** Alongside the on-disk artifacts, each run prints a per-model summary table with `count`, `MAPE`, `MSE`, `RMSE`, `m.ratio`, `avg.ratio`, `VEI`, `Slope`. `VEI` (Vertical Equity Index) flags regressive vs. progressive valuation; see the glossary in [§ B.8](#b8-run-notebook-4-assessment-quality).
+- **Ensemble output.** The `ensemble/` folder reassembles its own `params_<subset>.csv` / `contributions_<subset>.csv` from the member models (mean and median ensembles average the members' contributions per row; local passes through the selected model's), so the combined prediction stays interpretable. It also writes `ensemble_meta.json` recording which type (`mean`/`median`/`local`) and members produced it. Alongside the on-disk artifacts, each run prints a per-model summary table with `count`, `MAPE`, `MSE`, `RMSE`, `m.ratio`, `avg.ratio`, `VEI`, `Slope`. `VEI` (Vertical Equity Index) flags regressive vs. progressive valuation; see the glossary in [§ B.8](#b8-run-notebook-4-assessment-quality).
 
 #### `try_models` vs `finalize_models` — iterate fast, then commit
 

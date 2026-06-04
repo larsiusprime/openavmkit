@@ -1179,10 +1179,14 @@ For each unique value of each location field, finds the single best-MAPE model o
 This is **not averaging** — at each parcel, exactly one model's prediction is used. The choice varies across the locality.
 
 - **`locations`** — list of categorical fields to partition by, ordered specific → general (the painter walks the list and the *most specific* match wins). If omitted, falls back to `field_classification.important.locations`.
-- **Only valid for `main`** — the vacant stage only supports `default`.
+- **Only valid for `main`** — the vacant stage supports `median`/`mean` but not `local`.
 - **Source** — `_perform_local_ensemble` and `_run_local_ensemble_test_and_paint` in [openavmkit/benchmark.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py)
 - **When to use** — different sub-markets favor different models (e.g. tree-based dominates dense urban neighborhoods where it has plenty of sales, but multi-MRA wins in rural areas where signals are sparser). Local ensemble lets each neighborhood pick its own winner. Avoid when (a) you have very few sales per location (many locations will pick a model based on noise), or (b) you want a single coherent global prediction for explainability.
 - **Pairs naturally with** — model engines that themselves vary by location (`multi_mra`, `local_area`, `gwr`), since they often dominate in different parts of the locality.
+
+#### Ensemble interpretability output
+
+All three types reassemble the ensemble's own `params_<subset>.csv` / `contributions_<subset>.csv` (and a `contributions_map.parquet`) from the member models, plus an `ensemble_meta.json` recording the resolved type and member list. Because each strategy is a per-row convex combination of members, the decomposition reconstructs the ensemble prediction exactly: `mean`/`median` average the members' per-feature contributions for the row, `local` passes through the selected model's. Members that don't emit per-feature contributions (e.g. `local_area`, naive baselines) fold into the ensemble's base term rather than breaking the reconstruction. See [models_reference.md § 3.4](models_reference.md) and `_write_ensemble_contributions` in [openavmkit/benchmark.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/benchmark.py).
 
 ### `modeling.try_variables.variables`
 

@@ -327,16 +327,22 @@ Random predictions (uniform or normal-distributed). Establishes what "literally 
 
 ### 3.4 Special: ensemble
 
-`ensemble` is not invoked through `modeling.models` — it runs automatically after all the configured models, averaging their predictions. Configure under `modeling.instructions.<stage>.ensemble`:
+`ensemble` is not invoked through `modeling.models` — it runs automatically after all the configured models, combining their predictions. Configure under `modeling.instructions.<stage>.ensemble`:
 
 ```json
 "main": {
     "run": ["mra", "xgboost", "gwr"],
-    "ensemble": { "type": "default" }
+    "ensemble": { "type": "median" }
 }
 ```
 
-`type: "default"` does a global greedy backward-elimination, then combines the surviving subset via per-row **median** (not mean — median is robust to a single outlier prediction). `type: "local"` (only for `main`) picks the *single best* model per location at predict time — no combining; one model wins per neighborhood. See [advanced_settings.md → `modeling.instructions.<stage>.ensemble`](advanced_settings.md#modelinginstructionsmainvacantensemble) for full configuration including the `locations` list.
+Three combination strategies:
+
+- **`type: "median"`** (aka `"default"`, the value used when `type` is omitted) — global greedy backward-elimination, then combines the surviving subset via per-row **median** (robust to a single model going wild on a parcel).
+- **`type: "mean"`** — identical greedy selection, but combines via per-row **mean** (every surviving model pulls proportionally).
+- **`type: "local"`** (only for `main`) — picks the *single best* model per location at predict time; no combining, one model wins per neighborhood.
+
+All three also **reassemble per-feature `params_<subset>.csv` / `contributions_<subset>.csv`** for the ensemble itself (and stamp `ensemble_meta.json`), so the ensemble is as interpretable as the individual models — see [tutorial.md § per-model output](tutorial.md). See [advanced_settings.md → `modeling.instructions.<stage>.ensemble`](advanced_settings.md#modelinginstructionsmainvacantensemble) for full configuration including the `locations` list.
 
 ---
 
