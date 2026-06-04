@@ -354,19 +354,32 @@ def try_variables(
 
             df_univ = df_univ[df_univ["model_group"].eq(model_group)].copy()
 
-            var_recs = get_variable_recommendations(
-                df_in,
-                df_univ,
-                vacant_only,
-                settings,
-                model_group,
-                variables_to_use=variables_to_use,
-                tests_to_run=["corr", "r2"],
-                do_report=True,
-                do_cross=True,
-                do_plots=plot,
-                verbose=verbose,
-            )
+            try:
+                var_recs = get_variable_recommendations(
+                    df_in,
+                    df_univ,
+                    vacant_only,
+                    settings,
+                    model_group,
+                    variables_to_use=variables_to_use,
+                    tests_to_run=["corr", "r2"],
+                    do_report=True,
+                    do_cross=True,
+                    do_plots=plot,
+                    verbose=verbose,
+                )
+            except Exception as e:
+                # A model group can be too small or too degenerate (e.g. all-constant /
+                # all-NaN features, too few sales) for the correlation/R2 recommendation
+                # step to produce a result -- it would otherwise crash the whole
+                # try_variables run. Warn and skip this group instead.
+                warnings.warn(
+                    f"try_variables: skipping model group '{model_group}' "
+                    f"({'vacant' if vacant_only else 'main'}) -- could not compute variable "
+                    f"recommendations ({type(e).__name__}: {e}). This usually means the group "
+                    f"has too few or too-degenerate sales for the requested variables."
+                )
+                continue
 
             best_variables = var_recs["variables"]
             df_results = var_recs["df_results"]

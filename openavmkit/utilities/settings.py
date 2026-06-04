@@ -480,6 +480,23 @@ def get_fields_categorical(
             cats += (
                 s.get("field_classification", {}).get("other", {}).get("boolean", [])
             )
+
+    # collapse_sparse_categories `output_field` variants (e.g. "subdivision_collapsed")
+    # are categorical by construction -- they inherit their source field's classification.
+    # Derived from settings on every call so the inheritance persists across notebooks
+    # (settings reload fresh each notebook). Without this, a collapsed variant reaches the
+    # tree models as a raw string column and LightGBM/XGBoost reject it.
+    collapse = (
+        s.get("data", {}).get("process", {}).get("collapse_sparse_categories", {})
+    )
+    if isinstance(collapse, dict):
+        for src_field, cfg in collapse.items():
+            if not isinstance(cfg, dict):
+                continue
+            out_field = cfg.get("output_field")
+            if out_field and src_field in cats and out_field not in cats:
+                cats.append(out_field)
+
     if df is not None:
         cats = [cat for cat in cats if cat in df]
     return cats
