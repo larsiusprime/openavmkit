@@ -1277,3 +1277,36 @@ def test_canonical_split_explicit_none_disables_default_rule():
 	# sales remain for training.
 	assert test_2025 == 53
 	assert train_2025 == 22
+
+
+def test_enrich_universe_spatial_lag_small_universe_does_not_crash():
+	# Regression (Fabrica ENG-3031): cKDTree.query returns an out-of-range
+	# sentinel index when the universe has fewer training parcels than k.
+	from openavmkit.data import _enrich_universe_spatial_lag
+
+	df_univ = pd.DataFrame({
+		"key": ["a", "b"],
+		"latitude": [38.89, 38.90],
+		"longitude": [-90.18, -90.19],
+		"model_group": ["vacant_land", "vacant_land"],
+		"land_area_sqft": [21780.0, 10890.0],
+		"bldg_area_finished_sqft": [0.0, 0.0],
+	})
+	df_test = pd.DataFrame({"key": pd.Series([], dtype=object)})
+	out = _enrich_universe_spatial_lag(
+		df_univ, df_test, "vacant_land", ["vacant_land"], {}
+	)
+	assert "spatial_lag_land_area_sqft" in out.columns
+
+	df_one = df_univ.iloc[[0]].copy()
+	df_test_one = pd.DataFrame({"key": pd.Series([], dtype=object)})
+	out_one = _enrich_universe_spatial_lag(
+		df_one, df_test_one, "vacant_land", ["vacant_land"], {}
+	)
+	assert "spatial_lag_land_area_sqft" in out_one.columns
+
+	df_test_all = pd.DataFrame({"key": ["a", "b"]})
+	out_empty = _enrich_universe_spatial_lag(
+		df_univ, df_test_all, "vacant_land", ["vacant_land"], {}
+	)
+	assert not any(c.startswith("spatial_lag_") for c in out_empty.columns)
