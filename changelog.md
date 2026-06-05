@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 
 ### Major features
 - Add condo modeling pathway — an opt-in, settings-driven affordance (`data.process.condos` + new `openavmkit/condos.py`) for jurisdictions where condo units are their own accounts but have no parcel geometry. Links each unit to its building polygon (`id_prefix` / `parent_id` / `spatial`), borrows that geometry so units flow through every spatial enrichment, groups units (`condo_group`), and allocates a per-unit land share (legible `field` or `floor_area` pro-rate). New template/data-dictionary fields: `condo_group`, `land_area_alloc_sqft`, `geometry_borrowed`
+- Add layered comparables (`lcomp`) model — a bagged comparable-sales model engine
 - Add support for different independent variables per model group
 - Add support for loading your own time adjustments per model group, plus a start-indexed time-adjustment export and additional file reporting
 - Add categorical collapse (`collapse_sparse_categories`) and USGS 3DEP DEM elevation enrichment
