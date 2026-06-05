@@ -28,6 +28,7 @@ from openavmkit.utilities.modeling import (
     LightGBMModel,
     CatBoostModel,
     NGBoostModel,
+    LayeredCompModel,
     TreeBasedCategoricalData
 )
 
@@ -138,6 +139,331 @@ def get_full_ngboost_shaps(
     }
 
 
+# ---------------------------------------------------------------------------
+# LayeredComp exact tree-SHAP
+# ---------------------------------------------------------------------------
+#
+# A LayeredComp tree is an ordinary binary decision tree, but its prediction is
+# NOT the value at the leaf a row reaches -- it is a ``weight_falloff``-weighted
+# average of the Wilson-trimmed means of every node on the root->terminal path
+# (see ``layeredcompmodel.model.LayeredCompModel._predict_row``). Because that
+# blend is a deterministic function of *which* terminal node a row reaches, we
+# FOLD it into a single value per terminal node. Folding turns each tree into a
+# plain regression tree, to which exact path-dependent tree-SHAP (Lundberg et
+# al. 2019, "Consistent Individualized Feature Attribution for Tree Ensembles",
+# Algorithm 2) applies directly.
+#
+# Two LayeredComp-specific wrinkles are handled natively in the recursion --
+# rather than by translating the tree into SHAP's numeric-threshold-only tree
+# format (which can't express one-vs-rest categorical splits without blowing up
+# the tree, and can't reproduce the early-stop semantics at all):
+#
+#   * Categorical one-vs-rest splits (string equality). The hot/cold child is
+#     chosen by equality; everything else in the recursion is feature-identity
+#     bookkeeping that does not care how the split was decided.
+#   * Early stopping. A NaN at a numeric split -- or a routed-to child that was
+#     never created because its partition was empty -- makes the model stop and
+#     emit the *current* node's folded value (it does not descend to a leaf). We
+#     model this with a synthetic "stop" leaf per node whose cover is the number
+#     of training rows that stopped there (parent.count - sum(child.count)), so
+#     both the prediction and the cover-weighted base value stay exact.
+#
+# The ensemble SHAP is the mean of the per-tree SHAP values, mirroring
+# ``LayeredCompBaggingModel.predict`` (a plain mean over trees), with a
+# correspondingly averaged base value.
+
+
+class _FoldedNode:
+    """One node of a folded LayeredComp tree (see module-level note)."""
+
+    __slots__ = (
+        "feat", "is_numeric", "val", "cover", "value",
+        "children", "n_real", "stop_index",
+    )
+
+    def __init__(self, feat, is_numeric, val, cover, value, children, n_real, stop_index):
+        self.feat = feat            # feature index, or -1 for a leaf / stop leaf
+        self.is_numeric = is_numeric
+        self.val = val              # split threshold (numeric) or category value
+        self.cover = cover          # node_sample_weight = training rows reaching here
+        self.value = value          # folded prediction if a row terminates here
+        self.children = children    # tuple of _FoldedNode; real children first, stop last
+        self.n_real = n_real        # number of *real* (non-stop) children
+        self.stop_index = stop_index  # index of the stop child in ``children``, or None
+
+    @property
+    def is_leaf(self) -> bool:
+        return self.feat < 0
+
+
+def _fold_path_value(path_means: list, falloff: float) -> float:
+    """Collapse a root->node path of Wilson means into the model's predicted value.
+
+    Replicates ``LayeredCompModel._predict_row``'s weighting exactly: for a path
+    of ``n`` nodes, node ``i`` (root=0, leaf=n-1) gets weight ``(1 - x)**falloff``
+    with ``x = (n - 1 - i) / (n - 1)``, then the weighted mean is normalized.
+    """
+    n = len(path_means)
+    if n == 1:
+        return float(path_means[0])
+    weighted_sum = 0.0
+    total_w = 0.0
+    for i, m in enumerate(path_means):
+        x = (n - 1 - i) / (n - 1)
+        w = (1.0 - x) ** falloff
+        weighted_sum += m * w
+        total_w += w
+    return float(weighted_sum / total_w)
+
+
+def _expected_value(node: _FoldedNode) -> float:
+    """Cover-weighted mean of folded leaf values below ``node`` (E[f] at root)."""
+    if node.is_leaf or node.cover <= 0:
+        return node.value
+    acc = 0.0
+    for child in node.children:
+        acc += (child.cover / node.cover) * _expected_value(child)
+    return acc
+
+
+class _LayeredCompShapExplainer:
+    """Exact path-dependent tree-SHAP for a LayeredComp bagging ensemble.
+
+    Accepts either an :class:`openavmkit.utilities.modeling.LayeredCompModel`
+    wrapper or a raw ``LayeredCompBaggingModel``. ``shap_values(X)`` returns an
+    ``(n_rows, n_features)`` array; ``base_value + row.sum()`` reconstructs
+    ``model.predict(X)`` exactly (up to floating point).
+    """
+
+    def __init__(self, model):
+        bag = getattr(model, "model", model)
+        self.feature_names = list(bag.feature_names_in_)
+        self.n_features = len(self.feature_names)
+        self._feat_index = {f: i for i, f in enumerate(self.feature_names)}
+        self.trees = []
+        tree_bases = []
+        for est in bag.estimators_:
+            root = self._fold(est.tree_, float(est.weight_falloff), [])
+            self.trees.append(root)
+            tree_bases.append(_expected_value(root))
+        self.expected_value = float(np.mean(tree_bases)) if tree_bases else 0.0
+
+    def _fold(self, node, falloff: float, path_means: list) -> _FoldedNode:
+        pm = path_means + [float(node.wilson_mean)]
+        folded = _fold_path_value(pm, falloff)
+        children = node.children if node.children else []
+
+        if not children or node.filter_col is None:
+            return _FoldedNode(
+                feat=-1, is_numeric=False, val=None, cover=float(node.count),
+                value=folded, children=(), n_real=0, stop_index=None,
+            )
+
+        kids = [self._fold(ch, falloff, pm) for ch in children]
+        n_real = len(kids)
+        sum_cov = sum(k.cover for k in kids)
+        stop_cov = float(node.count) - sum_cov
+
+        # A row can land on the stop leaf when a numeric split sees a NaN, or
+        # when it routes to a child that does not exist (empty partition). Create
+        # one whenever that is reachable; cover may be 0 (it then contributes
+        # nothing to the base value, but still gives such a row a value to read).
+        is_numeric = bool(node.is_numeric)
+        need_stop = stop_cov > 1e-9 or is_numeric or n_real < 2
+        stop_index = None
+        if need_stop:
+            kids.append(_FoldedNode(
+                feat=-1, is_numeric=False, val=None, cover=max(stop_cov, 0.0),
+                value=folded, children=(), n_real=0, stop_index=None,
+            ))
+            stop_index = len(kids) - 1
+
+        return _FoldedNode(
+            feat=self._feat_index[node.filter_col],
+            is_numeric=is_numeric,
+            val=node.filter_val,
+            cover=float(node.count),
+            value=folded,
+            children=tuple(kids),
+            n_real=n_real,
+            stop_index=stop_index,
+        )
+
+    def _hot_index(self, node: _FoldedNode, xvals) -> int:
+        """Which child the instance routes to -- mirrors ``_predict_row`` exactly."""
+        rv = xvals[node.feat]
+        if node.is_numeric:
+            if pd.isna(rv):
+                return node.stop_index
+            rvn = pd.to_numeric(rv, errors="coerce")
+            valn = pd.to_numeric(node.val, errors="coerce")
+            if pd.isna(rvn) or pd.isna(valn):
+                return node.stop_index
+            if rvn <= valn:
+                return 0
+            return 1 if node.n_real >= 2 else node.stop_index
+        # categorical one-vs-rest
+        rs = "NaN" if pd.isna(rv) else str(rv)
+        if rs == str(node.val):
+            return 0
+        return 1 if node.n_real >= 2 else node.stop_index
+
+    def shap_values(self, X: pd.DataFrame) -> np.ndarray:
+        n = len(X)
+        out = np.zeros((n, self.n_features), dtype=np.float64)
+
+        # Align inputs to the training feature order; missing columns -> NaN.
+        xarr = np.empty((n, self.n_features), dtype=object)
+        for j, f in enumerate(self.feature_names):
+            if f in X.columns:
+                xarr[:, j] = X[f].to_numpy(dtype=object)
+            else:
+                xarr[:, j] = np.nan
+
+        # SHAP values depend only on the row's feature vector, so identical rows
+        # share a result -- a big win on assessment data with repeated profiles.
+        sig_to_rows: dict = {}
+        for r in range(n):
+            sig_to_rows.setdefault(tuple(xarr[r]), []).append(r)
+
+        n_trees = len(self.trees) or 1
+        for sig, rows in sig_to_rows.items():
+            xvals = list(sig)
+            phi = np.zeros(self.n_features, dtype=np.float64)
+            for root in self.trees:
+                _tree_shap(root, xvals, phi, self._hot_index)
+            phi /= n_trees
+            out[rows] = phi
+        return out
+
+
+def _tree_shap(root: _FoldedNode, xvals, phi: np.ndarray, hot_index) -> None:
+    """Accumulate path-dependent SHAP for one folded tree into ``phi`` in place.
+
+    Direct port of Lundberg et al. (2019) Algorithm 2 (EXTEND/UNWIND on the
+    "unique path"), generalized so a node may have more than two children (the
+    real children plus the synthetic stop leaf). The first path element is a
+    sentinel at index 0 and is skipped when attributing.
+    """
+
+    def extend(d, z, o, w, pz, po, pi):
+        d = d + [pi]; z = z + [pz]; o = o + [po]; w = w + [0.0]
+        l = len(d) - 1
+        w[l] = 1.0 if l == 0 else 0.0
+        for i in range(l - 1, -1, -1):
+            w[i + 1] += po * w[i] * (i + 1) / (l + 1)
+            w[i] = pz * w[i] * (l - i) / (l + 1)
+        return d, z, o, w
+
+    def unwind(d, z, o, w, idx):
+        l = len(d) - 1
+        oi, zi = o[idx], z[idx]
+        w = list(w)
+        n = w[l]
+        for j in range(l - 1, -1, -1):
+            if oi != 0:
+                t = w[j]
+                w[j] = n * (l + 1) / ((j + 1) * oi)
+                n = t - w[j] * zi * (l - j) / (l + 1)
+            elif zi != 0:
+                w[j] = w[j] * (l + 1) / (zi * (l - j))
+            else:
+                # Degenerate z=0,o=0 element (cold zero-cover); contributes no
+                # weight. Cold zero-cover branches are skipped before they reach
+                # the path, so this is only a defensive guard.
+                w[j] = 0.0
+        d = d[:idx] + d[idx + 1:]
+        z = z[:idx] + z[idx + 1:]
+        o = o[:idx] + o[idx + 1:]
+        return d, z, o, w[:l]
+
+    def recurse(node, d, z, o, w, pz, po, pi):
+        d, z, o, w = extend(d, z, o, w, pz, po, pi)
+        if node.is_leaf:
+            v = node.value
+            for i in range(1, len(d)):
+                _, _, _, w2 = unwind(d, z, o, w, i)
+                phi[d[i]] += sum(w2) * (o[i] - z[i]) * v
+            return
+        hot = hot_index(node, xvals)
+        # If this feature is already on the path, splice it out and carry its
+        # incoming fractions forward (handles a feature reused down the tree).
+        iz = io = 1.0
+        k = None
+        for idx in range(1, len(d)):
+            if d[idx] == node.feat:
+                k = idx
+                break
+        if k is not None:
+            iz, io = z[k], o[k]
+            d, z, o, w = unwind(d, z, o, w, k)
+        cov = node.cover
+        for c, child in enumerate(node.children):
+            # A zero-cover branch carries no training mass, so it contributes
+            # nothing when its feature is marginalized out (cold). Skipping it
+            # also keeps the path free of degenerate z=0,o=0 elements that would
+            # divide-by-zero in UNWIND. The synthetic stop leaf is cover-0
+            # whenever no training row stopped there (the norm once NaNs are
+            # filled); it still gets visited when it is the *hot* child (a NaN
+            # row routing to it), where o>0 keeps UNWIND well defined.
+            if c != hot and child.cover == 0:
+                continue
+            cz = iz * (child.cover / cov) if cov > 0 else 0.0
+            cp = io if c == hot else 0.0
+            recurse(child, d, z, o, w, cz, cp, node.feat)
+
+    recurse(root, [], [], [], [], 1.0, 1.0, -1)
+
+
+def _layeredcomp_shap(model) -> _LayeredCompShapExplainer:
+    """Build an exact path-dependent SHAP explainer for a LayeredComp model."""
+    return _LayeredCompShapExplainer(model)
+
+
+def _to_numeric_data(X: pd.DataFrame, feature_names: list) -> np.ndarray:
+    """Numeric matrix aligned to ``feature_names`` for SHAP plotting (categories -> codes)."""
+    n = len(X)
+    arr = np.full((n, len(feature_names)), np.nan, dtype=np.float64)
+    for j, f in enumerate(feature_names):
+        if f not in X.columns:
+            continue
+        col = X[f]
+        if pd.api.types.is_numeric_dtype(col):
+            arr[:, j] = pd.to_numeric(col, errors="coerce").to_numpy(dtype=np.float64)
+        else:
+            arr[:, j] = pd.factorize(col)[0].astype(np.float64)
+    return arr
+
+
+def get_full_layeredcomp_shaps(
+    model: LayeredCompModel,
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+    X_sales: pd.DataFrame,
+    X_univ: pd.DataFrame,
+    verbose: bool = False,
+):
+    """Compute exact SHAP Explanations for all subsets of a LayeredComp model.
+
+    Mirrors :func:`get_full_model_shaps` / :func:`get_full_ngboost_shaps` for the
+    LayeredComp engine's folded-tree decomposition.
+    """
+    explainer = _layeredcomp_shap(model)
+
+    def explain(X, label):
+        return _shap_explain("layeredcomp", explainer, X, verbose=verbose, label=label)
+
+    if verbose:
+        print("Generating LayeredComp SHAPs...")
+
+    return {
+        "train": explain(X_train, "train"),
+        "test": explain(X_test, "test"),
+        "sales": explain(X_sales, "sales"),
+        "universe": explain(X_univ, "universe"),
+    }
+
+
 def get_full_model_shaps(
     model: XGBoostModel | LightGBMModel | CatBoostModel,
     X_train: pd.DataFrame,
@@ -176,6 +502,13 @@ def get_full_model_shaps(
     if isinstance(model, NGBoostModel):
         return get_full_ngboost_shaps(
             model, X_train, X_test, X_sales, X_univ, param_index=0, verbose=verbose
+        )
+
+    # LayeredComp folds its path-weighted prediction into per-leaf values and
+    # gets exact path-dependent tree-SHAP via its own hand-rolled explainer.
+    if isinstance(model, LayeredCompModel):
+        return get_full_layeredcomp_shaps(
+            model, X_train, X_test, X_sales, X_univ, verbose=verbose
         )
 
     tree_explainer: shap.TreeExplainer
@@ -383,6 +716,8 @@ def _calc_shap(
         return _shap_explain(
             "ngboost", _ngboost_shap(model, 0), X_to_explain, cat_data=model.cat_data
         )
+    if isinstance(model, LayeredCompModel):
+        return _shap_explain("layeredcomp", _layeredcomp_shap(model), X_to_explain)
     if isinstance(model, XGBoostModel):
         explainer = _xgboost_shap(model, X_train, background_size=background_size)
     elif isinstance(model, LightGBMModel):
@@ -571,6 +906,18 @@ def _shap_explain(
     
     if (X_to_explain is None) or len(X_to_explain) == 0:
         return None
+
+    # --- LayeredComp folded-tree exact path-dependent SHAP -----------------
+    if model_type == "layeredcomp":
+        explainer = te  # a _LayeredCompShapExplainer
+        values = explainer.shap_values(X_to_explain)
+        data = _to_numeric_data(X_to_explain, explainer.feature_names)
+        return shap.Explanation(
+            values=values,
+            base_values=np.full(len(X_to_explain), explainer.expected_value, dtype=np.float64),
+            data=data,
+            feature_names=list(explainer.feature_names),
+        )
 
     # --- NGBoost exact additive decomposition ------------------------------
     if model_type == "ngboost":

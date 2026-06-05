@@ -76,6 +76,7 @@ from openavmkit.shap_analysis import (
     make_shap_table,
     get_full_model_shaps,
     get_full_ngboost_shaps,
+    get_full_layeredcomp_shaps,
     ngboost_internals_ok
 )
 
@@ -6176,6 +6177,34 @@ def write_shaps(
                 )
         return
 
+    # LayeredComp: exact path-dependent SHAP on the folded ensemble. It carries
+    # no cat_data and isn't a TreeBasedModel, so feed _prepare_shap_dfs an
+    # explicit predictor (which also skips its cat_data/predictor branch).
+    if isinstance(model, LayeredCompModel):
+        shaps = get_full_layeredcomp_shaps(
+            model, X_train, X_test, X_sales, X_univ, verbose=verbose
+        )
+        bag = model.model
+        feat_order = list(bag.feature_names_in_)
+
+        def _lc_predict(Xdf):
+            return bag.predict(Xdf[feat_order])
+
+        for subset in shaps:
+            _prepare_shap_dfs(
+                model,
+                shaps[subset],
+                dfs[subset],
+                ind_vars_by_subset[subset],
+                subset,
+                outpath,
+                do_plot=do_plot,
+                verbose=verbose,
+                do_write=True,
+                predict_fn=_lc_predict,
+            )
+        return
+
     shaps = get_full_model_shaps(
         model,
         X_train,
@@ -6471,8 +6500,7 @@ def write_model_parameters(
     elif isinstance(model, LocalAreaModel):
         write_local_area_params(model, smr, outpath, do_plot)
     elif isinstance(model, LayeredCompModel):
-        # TODO
-        pass
+        write_shaps(model, outpath, smr, location, do_plot, verbose=verbose)
     # ...and so on
     else:
         raise TypeError(f"Unexpected model type: {type(model).__name__}")
