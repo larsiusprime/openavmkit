@@ -27,8 +27,115 @@ from openavmkit.utilities.modeling import (
     XGBoostModel,
     LightGBMModel,
     CatBoostModel,
+    NGBoostModel,
     TreeBasedCategoricalData
 )
+
+
+_NGBOOST_REQUIRED_ATTRS = ("base_models", "scalings", "col_idxs", "learning_rate", "init_params")
+
+
+def ngboost_internals_ok(regressor) -> bool:
+    """Return True if an NGBRegressor exposes the additive-ensemble internals SHAP needs.
+
+    NGBoost's exact tree-SHAP decomposition relies on per-stage ``base_models``,
+    ``scalings``, ``col_idxs``, ``learning_rate`` and ``init_params``. This guards
+    against future NGBoost layout changes — callers should skip SHAP (rather than
+    crash) when it returns False.
+    """
+    if not all(hasattr(regressor, a) for a in _NGBOOST_REQUIRED_ATTRS):
+        return False
+    bms = getattr(regressor, "base_models", None)
+    if not bms or len(bms) == 0:
+        return False
+    # Each stage holds one fitted learner per distribution parameter (loc, logscale).
+    if len(bms[0]) < 2:
+        return False
+    return True
+
+
+class _NGBoostShapExplainer:
+    """Exact additive SHAP for one NGBoost distribution parameter.
+
+    NGBoost predicts each distribution parameter as an additive ensemble of
+    per-stage trees::
+
+        param_p(X) = init_params[p] - lr * Σ_i scaling_i * tree_{i,p}.predict(X[:, col_idx_i])
+
+    so its SHAP is the weighted sum of per-stage ``TreeExplainer`` values. The
+    base value folds in each tree's expected value so that
+    ``base_value + Σ_features shap == param_p(X)`` exactly.
+
+    ``param_index`` selects the distribution parameter: 0 = loc (the mean / point
+    estimate), 1 = logscale (= log of the predictive std, for a Normal Dist).
+    """
+
+    def __init__(self, model: NGBoostModel, param_index: int = 0):
+        regressor = model.regressor
+        self.feature_names = list(model.cat_data.feature_names)
+        self.n_features = len(self.feature_names)
+        self.param_index = param_index
+
+        lr = float(regressor.learning_rate)
+        base = float(np.asarray(regressor.init_params, dtype=float)[param_index])
+        self.stages = []  # (weight, col_idx, TreeExplainer)
+        for stage_models, scaling, col_idx in zip(
+            regressor.base_models, regressor.scalings, regressor.col_idxs
+        ):
+            tree = stage_models[param_index]
+            weight = -lr * float(scaling)
+            te = shap.TreeExplainer(tree, feature_perturbation="tree_path_dependent")
+            base += weight * float(np.ravel(te.expected_value)[0])
+            self.stages.append((weight, np.asarray(col_idx, dtype=int), te))
+        self.expected_value = base
+
+    def shap_values(self, Xn: np.ndarray) -> np.ndarray:
+        """Compute exact SHAP values for the numeric matrix ``Xn`` (n_rows, n_features)."""
+        out = np.zeros((Xn.shape[0], self.n_features), dtype=np.float64)
+        for weight, col_idx, te in self.stages:
+            sv = np.asarray(te.shap_values(Xn[:, col_idx], check_additivity=False))
+            out[:, col_idx] += weight * sv
+        return out
+
+
+def _ngboost_shap(model: NGBoostModel, param_index: int = 0) -> _NGBoostShapExplainer:
+    """Build an exact additive SHAP explainer for one NGBoost distribution parameter."""
+    return _NGBoostShapExplainer(model, param_index=param_index)
+
+
+def get_full_ngboost_shaps(
+    model: NGBoostModel,
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+    X_sales: pd.DataFrame,
+    X_univ: pd.DataFrame,
+    param_index: int = 0,
+    verbose: bool = False,
+):
+    """Compute exact SHAP Explanations for all subsets for one NGBoost distribution parameter.
+
+    Mirrors :func:`get_full_model_shaps` but for NGBoost's additive tree
+    decomposition. ``param_index`` selects loc (0, the mean) or logscale
+    (1, log predictive std).
+    """
+    cat_data = model.cat_data
+    explainer = _ngboost_shap(model, param_index=param_index)
+
+    def explain(X, label):
+        return _shap_explain(
+            "ngboost", explainer, X, cat_data=cat_data, verbose=verbose, label=label
+        )
+
+    if verbose:
+        which = "loc (mean)" if param_index == 0 else "logscale (uncertainty)"
+        print(f"Generating NGBoost SHAPs for {which}...")
+
+    return {
+        "train": explain(X_train, "train"),
+        "test": explain(X_test, "test"),
+        "sales": explain(X_sales, "sales"),
+        "universe": explain(X_univ, "universe"),
+    }
 
 
 def get_full_model_shaps(
@@ -64,11 +171,18 @@ def get_full_model_shaps(
 
     """
 
+    # NGBoost uses an exact additive tree decomposition rather than a single
+    # TreeExplainer; delegate to its dedicated path (param_index=0 -> mean).
+    if isinstance(model, NGBoostModel):
+        return get_full_ngboost_shaps(
+            model, X_train, X_test, X_sales, X_univ, param_index=0, verbose=verbose
+        )
+
     tree_explainer: shap.TreeExplainer
-    
+
     approximate = True
     cat_data = model.cat_data
-    
+
     model_type = ""
     if isinstance(model, XGBoostModel):
         model_type = "xgboost"
@@ -262,13 +376,20 @@ def make_shap_table(
 def _calc_shap(
     model, X_train: pd.DataFrame, X_to_explain: pd.DataFrame, background_size: int = 100
 ) -> shap.Explanation:
+    if isinstance(model, NGBoostModel):
+        # NGBoost uses an exact additive tree decomposition (param 0 = mean / loc).
+        if not ngboost_internals_ok(model.regressor):
+            return None
+        return _shap_explain(
+            "ngboost", _ngboost_shap(model, 0), X_to_explain, cat_data=model.cat_data
+        )
     if isinstance(model, XGBoostModel):
         explainer = _xgboost_shap(model, X_train, background_size=background_size)
     elif isinstance(model, LightGBMModel):
         explainer = _lightgbm_shap(model, X_train, background_size=background_size)
     elif isinstance(model, CatBoostModel):
         explainer = _catboost_shap(model, X_train, background_size=background_size)
-    else: 
+    else:
         explainer = shap.Explainer(model, X_train)
     explanation = explainer(X_to_explain)
     if not hasattr(explanation, "values"):
@@ -450,6 +571,19 @@ def _shap_explain(
     
     if (X_to_explain is None) or len(X_to_explain) == 0:
         return None
+
+    # --- NGBoost exact additive decomposition ------------------------------
+    if model_type == "ngboost":
+        # NGBoost's base learners are numeric-only; encode via the same numeric
+        # matrix used at training time (categories -> codes, missing -> NaN).
+        Xn = cat_data.to_numeric_matrix(X_to_explain)
+        values = te.shap_values(Xn)
+        return shap.Explanation(
+            values=values,
+            base_values=np.full(Xn.shape[0], te.expected_value, dtype=np.float64),
+            data=Xn,
+            feature_names=list(cat_data.feature_names),
+        )
 
     # --- CatBoost fast path -------------------------------------------------
     if model_type == "catboost":

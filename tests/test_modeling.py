@@ -1,9 +1,20 @@
+import tempfile
+
+import numpy as np
 import pandas as pd
 
 from openavmkit.modeling import simple_ols, _greedy_nn_limited, simple_mra
 from openavmkit.utilities.assertions import lists_are_equal
 from openavmkit.utilities.stats import calc_vif
-from openavmkit.modeling import DataSplit, run_mra
+import os
+
+from openavmkit.modeling import (
+    DataSplit,
+    run_mra,
+    run_ngboost,
+    SingleModelResults,
+    write_model_parameters,
+)
 
 import warnings
 
@@ -171,6 +182,100 @@ def test_mra_constant():
     
     
     run_mra(ds, intercept=True)
+
+
+def test_ngboost_smoke():
+    # Smoke test: NGBoost runs end-to-end with a categorical ind_var, returns a
+    # SingleModelResults, and surfaces a non-negative per-parcel prediction_std.
+    n = 24
+    keys = [str(i) for i in range(n)]
+    rng = np.arange(n)
+    data = {
+        "key": keys,
+        "key_sale": keys,
+        "bldg_area_finished_sqft": (1000 + (rng % 6) * 250).astype(float),
+        "land_area_sqft": (10000 + (rng % 6) * 5000).astype(float),
+        # categorical predictor — exercises the numeric-encoding path
+        "neighborhood": [["north", "south", "east"][i % 3] for i in range(n)],
+        "is_vacant": False,
+        "model_group": ["a"] * n,
+    }
+    df = pd.DataFrame(data)
+    df["sale_price"] = (
+        df["bldg_area_finished_sqft"] * 20
+        + df["land_area_sqft"] * 1.5
+        + df["neighborhood"].map({"north": 50000, "south": 0, "east": 25000})
+    ).astype(float)
+    df["valid_sale"] = True
+    df["vacant_sale"] = False
+    df["sale_date"] = pd.to_datetime("2025-01-01", format="%Y-%m-%d")
+    df["valid_for_ratio_study"] = True
+    df["sale_age_days"] = 0
+
+    ind_vars = ["bldg_area_finished_sqft", "land_area_sqft", "neighborhood"]
+    fields_cat = ["neighborhood"]
+    df_sales = df.copy()
+    df_universe = df[["key", "is_vacant"] + ind_vars].copy()
+    test_keys = keys[:6]
+    train_keys = keys[6:]
+
+    ds = DataSplit(
+        "",
+        df_sales,
+        df_universe,
+        "a",
+        {},
+        "sale_price",
+        "sale_price",
+        ind_vars,
+        fields_cat,
+        {},
+        test_keys,
+        train_keys,
+    )
+
+    with tempfile.TemporaryDirectory() as outpath:
+        results = run_ngboost(ds, outpath, n_trials=1)
+
+        assert isinstance(results, SingleModelResults)
+
+        preds = results.df_universe["prediction"].to_numpy()
+        assert len(preds) == len(df_universe)
+        assert np.all(np.isfinite(preds))
+
+        assert "prediction_std" in results.df_universe.columns
+        std = results.df_universe["prediction_std"].to_numpy()
+        assert np.all(np.isfinite(std))
+        assert np.all(std >= 0)
+
+        # --- SHAP: exact tree decomposition for mean (loc) and uncertainty (logscale) ---
+        model_dir = os.path.join(outpath, results.model_name)
+        write_model_parameters(results.model, results, None, model_dir)
+
+        # Both the standard (mean) and the std (uncertainty) SHAP files must exist.
+        for fname in [
+            "params_universe.csv",
+            "contributions_universe.csv",
+            "params_std_universe.csv",
+            "contributions_std_universe.csv",
+        ]:
+            assert os.path.exists(os.path.join(model_dir, fname)), f"missing {fname}"
+
+        # Mean additivity: base + Σ contributions reconstructs the prediction (check_delta ~ 0).
+        contrib = pd.read_csv(os.path.join(model_dir, "contributions_universe.csv"))
+        assert np.max(np.abs(contrib["check_delta"])) < 1e-3 * float(np.mean(preds))
+
+        # Uncertainty additivity: contribution_sum reconstructs log(predictive std).
+        contrib_std = pd.read_csv(os.path.join(model_dir, "contributions_std_universe.csv"))
+        merged = results.df_universe[["key", "prediction_std"]].merge(
+            contrib_std[["key", "contribution_sum"]].assign(key=lambda d: d["key"].astype(str)),
+            on="key",
+            how="inner",
+        )
+        assert len(merged) == len(df_universe)
+        recon_logstd = merged["contribution_sum"].to_numpy()
+        true_logstd = np.log(merged["prediction_std"].to_numpy())
+        assert np.max(np.abs(recon_logstd - true_logstd)) < 1e-6
 
 
 def test_simple_mra():

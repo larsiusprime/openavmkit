@@ -233,6 +233,18 @@ Production-grade tree-based ensembles. Handle nonlinearities, interactions, and 
 - **When to use**: most production AVM workloads. Often the strongest single-model performers.
 - **When not to use**: very small training sets; when interpretability is a hard requirement.
 
+#### `ngboost` — Probabilistic gradient boosting (NGBoost)
+
+Natural-gradient boosting that predicts a full probability distribution per parcel, not just a point value. The distribution **mean** is used as the prediction (so it slots in like the other engines), and the per-parcel predictive **standard deviation** is written out as an extra `prediction_std` column on the universe output (and merged onto sales by `key`), following the same per-parcel pattern as `spatial_lag` confidence.
+
+- **Accepts**: `ind_vars`, `n_trials`.
+- **Hyperparameter tuning**: yes, via Optuna (`learning_rate`, `n_estimators`, `minibatch_frac`, base-learner `max_depth`). Tuned parameters cached at `<outpath>/<slug>_params.json`. NGBoost's natural-gradient boosting is **notably slower** than xgboost/lightgbm/catboost — keep `n_trials` small (e.g. 5).
+- **Categoricals**: not native. Its sklearn tree base learner is numeric-only, so categoricals are encoded to integer codes internally (same encoding used for SHAP).
+- **Native spatial awareness**: no — feed location via `latitude_norm`/`longitude_norm`, polar coords, or categorical region fields (as with the other tree engines).
+- **Params / contributions**: emitted via **exact tree-SHAP**. Although SHAP's `TreeExplainer` has no native NGBoost support, NGBoost's mean is an additive ensemble of per-stage trees, so its SHAP is computed exactly as the weighted sum of per-tree explanations. Standard `params_<subset>.csv` / `contributions_<subset>.csv` describe the **point estimate** (so NGBoost is a full ensemble member). A parallel `params_std_<subset>.csv` / `contributions_std_<subset>.csv` describe what drives the **predictive uncertainty** — note these are in **log-std space** (`base + Σ contributions = log(std)`), since the decomposition is additive on `logscale`, not on the raw std.
+- **When to use**: when you want calibrated per-parcel uncertainty alongside the point estimate.
+- **When not to use**: when SHAP attributions are required, or when training time is tight.
+
 #### `gwr` — Geographic Weighted Regression
 
 Linear regression where each prediction is weighted by spatial proximity to training points. The weighting kernel uses lat/lon directly.

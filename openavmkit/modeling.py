@@ -53,6 +53,9 @@ import geopandas as gpd
 import xgboost as xgb
 import lightgbm as lgb
 import catboost
+from ngboost import NGBRegressor
+from ngboost.distns import Normal
+from sklearn.tree import DecisionTreeRegressor
 from layeredcompmodel import LayeredCompBaggingModel as LCompModel
 from catboost import CatBoostRegressor, Pool
 from lightgbm import Booster
@@ -71,7 +74,9 @@ from xgboost import XGBRegressor
 
 from openavmkit.shap_analysis import (
     make_shap_table,
-    get_full_model_shaps
+    get_full_model_shaps,
+    get_full_ngboost_shaps,
+    ngboost_internals_ok
 )
 
 from openavmkit.data import (
@@ -107,6 +112,7 @@ from openavmkit.utilities.modeling import (
     XGBoostModel,
     LightGBMModel,
     CatBoostModel,
+    NGBoostModel,
     LayeredCompModel,
     MultiMRAModel,
     GroundTruthModel,
@@ -128,7 +134,7 @@ from openavmkit.utilities.stats import (
     calc_prb,
     trim_outliers_mask,
 )
-from openavmkit.tuning import _tune_lightgbm, _tune_xgboost, _tune_catboost
+from openavmkit.tuning import _tune_lightgbm, _tune_xgboost, _tune_catboost, _tune_ngboost
 from openavmkit.utilities.timing import TimingData
 
 pd.set_option("future.no_silent_downcasting", True)
@@ -136,7 +142,8 @@ pd.set_option("future.no_silent_downcasting", True)
 TreeBasedModel = Union[
     XGBoostModel,
     LightGBMModel,
-    CatBoostModel
+    CatBoostModel,
+    NGBoostModel
 ]
 
 PredictionModel = Union[
@@ -144,6 +151,7 @@ PredictionModel = Union[
     XGBoostModel,
     LightGBMModel,
     CatBoostModel,
+    NGBoostModel,
     KernelReg,
     GarbageModel,
     AverageModel,
@@ -3686,6 +3694,182 @@ def run_catboost(
     return predict_catboost(ds, model, timing, verbose)
 
 
+def predict_ngboost(
+    ds: DataSplit,
+    ngboost_model: NGBoostModel,
+    timing: TimingData,
+    verbose: bool = False,
+) -> SingleModelResults:
+    """
+    Generate predictions using an NGBoost model.
+
+    NGBoost yields a full predictive distribution per row. The distribution mean
+    is used as the point estimate (consistent with the other engines), and the
+    per-parcel predictive standard deviation is surfaced as a ``<prediction>_std``
+    column on the universe output (and merged onto sales by ``key``), following
+    the per-parcel pattern used for ``spatial_lag`` confidence.
+
+    Parameters
+    ----------
+    ds : DataSplit
+        DataSplit object containing train/test/universe splits.
+    ngboost_model : NGBoostModel
+        Trained NGBoostModel instance.
+    timing : TimingData
+        TimingData object for recording performance metrics.
+    verbose : bool, optional
+        If True, print verbose output. Defaults to False.
+
+    Returns
+    -------
+    SingleModelResults
+        Prediction results from the NGBoost model.
+    """
+    regressor = ngboost_model.regressor
+    cat_data = ngboost_model.cat_data
+
+    def _predict_mean(X):
+        if len(X) == 0:
+            return np.array([])
+        return regressor.predict(cat_data.to_numeric_matrix(X))
+
+    timing.start("predict_test")
+    y_pred_test = _predict_mean(ds.X_test)
+    timing.stop("predict_test")
+
+    timing.start("predict_sales")
+    y_pred_sales = _predict_mean(ds.X_sales)
+    timing.stop("predict_sales")
+
+    timing.start("predict_univ")
+    y_pred_univ = _predict_mean(ds.X_univ)
+    # Per-parcel predictive standard deviation (Normal distribution scale).
+    if len(ds.X_univ) == 0:
+        std_univ = np.array([])
+    else:
+        std_univ = regressor.pred_dist(cat_data.to_numeric_matrix(ds.X_univ)).scale
+    timing.stop("predict_univ")
+
+    timing.stop("total")
+
+    model_name = ds.name
+    model_engine = "ngboost"
+
+    results = SingleModelResults(
+        ds,
+        "prediction",
+        "he_id",
+        model_name,
+        model_engine,
+        ngboost_model,
+        y_pred_test,
+        y_pred_sales,
+        y_pred_univ,
+        timing,
+        verbose=verbose,
+    )
+
+    # Surface uncertainty per the spatial_lag precedent (openavmkit/data.py): write a
+    # per-parcel column on the universe (row order matches ds.X_univ), then merge onto
+    # sales by parcel key so each sale carries its parcel's predictive uncertainty.
+    std_field = f"{results.field_prediction}_std"
+    if len(std_univ) == len(results.df_universe):
+        results.df_universe[std_field] = std_univ
+        if results.pred_sales is not None and "key" in results.df_sales.columns:
+            results.df_sales = results.df_sales.merge(
+                results.df_universe[["key", std_field]], on="key", how="left"
+            )
+
+    return results
+
+
+def run_ngboost(
+    ds: DataSplit,
+    outpath: str,
+    save_params: bool = False,
+    use_saved_params: bool = False,
+    verbose: bool = False,
+    n_trials: int = 50,
+) -> SingleModelResults:
+    """
+    Run an NGBoost model by tuning parameters, training, and predicting.
+
+    NGBoost is a probabilistic gradient booster whose default sklearn tree base
+    learner requires numeric input, so categoricals are encoded to a numeric
+    matrix via :class:`TreeBasedCategoricalData` (the same encoding used for SHAP)
+    rather than passed natively.
+
+    Parameters
+    ----------
+    ds : DataSplit
+        DataSplit object.
+    outpath : str
+        Output path for saving parameters.
+    save_params : bool, optional
+        Whether to save tuned parameters. Defaults to False.
+    use_saved_params : bool, optional
+        Whether to load saved parameters. Defaults to False.
+    n_trials : int, optional
+        How many trials to run during parameter search. Defaults to 50.
+    verbose : bool, optional
+        If True, print verbose output. Defaults to False.
+
+    Returns
+    -------
+    SingleModelResults
+        Prediction results from the NGBoost model.
+    """
+
+    timing = TimingData()
+    timing.start("total")
+
+    timing.start("setup")
+    ds = ds.encode_categoricals_as_categories()
+    ds.split()
+    # Fix for object-typed boolean columns (especially 'within_*' fields)
+    ds = _fix_bool_objs(ds)
+    timing.stop("setup")
+
+    timing.start("parameter_search")
+    parameters = _get_params(
+        "NGBoost",
+        ds.name,
+        ds,
+        _tune_ngboost,
+        outpath,
+        save_params,
+        use_saved_params,
+        verbose,
+        n_trials=n_trials,
+    )
+    timing.stop("parameter_search")
+
+    timing.start("setup")
+    cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
+    cat_data = TreeBasedCategoricalData.from_training_data(
+        ds.X_train,
+        categorical_cols=cat_vars,
+    )
+
+    # Base-learner depth is tuned alongside the booster params; split it out.
+    params = dict(parameters)
+    max_depth = params.pop("max_depth", 3)
+    base = DecisionTreeRegressor(max_depth=max_depth, criterion="friedman_mse")
+    regressor = NGBRegressor(Dist=Normal, Base=base, verbose=False, **params)
+    timing.stop("setup")
+
+    timing.start("train")
+    regressor.fit(
+        cat_data.to_numeric_matrix(ds.X_train),
+        np.asarray(ds.y_train, dtype=np.float64),
+    )
+    timing.stop("train")
+
+    ngboost_model = NGBoostModel(regressor=regressor, cat_data=cat_data)
+
+    return predict_ngboost(ds, ngboost_model, timing, verbose)
+
+
 def run_layeredcomp(
     ds: DataSplit,
     outpath: str,
@@ -5936,16 +6120,7 @@ def write_shaps(
     X_test = smr.df_test[ind_vars_test].copy()
     X_sales = smr.df_sales[ind_vars_sales].copy()
     X_univ = smr.df_universe[ind_vars_univ].copy()
-    
-    shaps = get_full_model_shaps(
-        model,
-        X_train,
-        X_test,
-        X_sales,
-        X_univ,
-        verbose=verbose
-    )
-    
+
     dfs = {
         "test": smr.df_test,
         "train": smr.df_train,
@@ -5954,6 +6129,61 @@ def write_shaps(
     }
 
     do_plot = False
+
+    # NGBoost: exact additive tree-SHAP. Emit the standard mean (loc) params/contribs
+    # PLUS a parallel "std_" set explaining the predictive uncertainty (logscale).
+    # Guard against unexpected NGBoost internals — skip SHAP rather than crash.
+    if isinstance(model, NGBoostModel):
+        if not ngboost_internals_ok(model.regressor):
+            warnings.warn(
+                "NGBoost internals not in the expected layout; skipping SHAP for this model."
+            )
+            return
+
+        regressor = model.regressor
+        cat_data = model.cat_data
+
+        def _mean_predict(Xdf):
+            return regressor.predict(cat_data.to_numeric_matrix(Xdf))
+
+        def _logscale_predict(Xdf):
+            # logscale = log(predictive std); the additive decomposition is exact here.
+            return np.log(regressor.pred_dist(cat_data.to_numeric_matrix(Xdf)).scale)
+
+        # (param_index, filename prefix, predict_fn)
+        dimensions = [
+            (0, "", _mean_predict),
+            (1, "std_", _logscale_predict),
+        ]
+        for param_index, prefix, predict_fn in dimensions:
+            shaps = get_full_ngboost_shaps(
+                model, X_train, X_test, X_sales, X_univ,
+                param_index=param_index, verbose=verbose
+            )
+            for subset in shaps:
+                _prepare_shap_dfs(
+                    model,
+                    shaps[subset],
+                    dfs[subset],
+                    ind_vars_by_subset[subset],
+                    subset,
+                    outpath,
+                    do_plot=do_plot,
+                    verbose=verbose,
+                    do_write=True,
+                    prefix=prefix,
+                    predict_fn=predict_fn,
+                )
+        return
+
+    shaps = get_full_model_shaps(
+        model,
+        X_train,
+        X_test,
+        X_sales,
+        X_univ,
+        verbose=verbose
+    )
 
     for subset in shaps:
         shap_entry = shaps[subset]
@@ -5980,9 +6210,11 @@ def _prepare_shap_dfs(
         outpath: str,
         do_plot: bool = False,
         verbose: bool = False,
-        do_write: bool = True
+        do_write: bool = True,
+        prefix: str = "",
+        predict_fn=None
     ):
-    
+
     if shap_entry is None or df is None or len(df) == 0:
         return None, None
     
@@ -6005,33 +6237,40 @@ def _prepare_shap_dfs(
     )
     
     # Check for divergent baseline due to approximate shap calculation
-    
-    ## get the same feature matrix used for SHAP (X_to_explain)
-    X_to_explain = df[list_vars].copy()
 
-    ## raw model predictions on those exact rows
-
-    predictor = None
-    if isinstance(model, LightGBMModel):
-        predictor = model.booster
-    elif isinstance(model, CatBoostModel) or isinstance(model, XGBoostModel):
-        predictor = model.regressor
-    
-    cat_data = model.cat_data
-    if cat_data is not None and len(cat_data.categorical_cols) > 0:
-        # apply dtype enforcement but stay within list_vars, not full feature_names
-        for c in cat_data.bool_cols:
-            if c in X_to_explain.columns:
-                X_to_explain[c] = X_to_explain[c].astype("boolean")
-        for c, levels in cat_data.category_levels.items():
-            if c in X_to_explain.columns:
-                X_to_explain[c] = pd.Categorical(X_to_explain[c], categories=levels)
-                if isinstance(model, CatBoostModel):
-                    X_to_explain[c] = X_to_explain[c].astype("string").fillna("__MISSING__")
+    ## raw model predictions on those exact rows. ``predict_fn`` overrides the
+    ## per-engine predictor selection (used by NGBoost, whose numeric-only base
+    ## learner needs its own encoding and whose std dimension predicts log(scale)).
+    if predict_fn is not None:
+        yhat_raw = np.asarray(predict_fn(df[list_vars]))
     else:
-        X_to_explain = X_to_explain.to_numpy()
-    
-    yhat_raw = predictor.predict(X_to_explain)
+        predictor = None
+        if isinstance(model, LightGBMModel):
+            predictor = model.booster
+        elif isinstance(model, CatBoostModel) or isinstance(model, XGBoostModel):
+            predictor = model.regressor
+        else:
+            raise TypeError(
+                f"_prepare_shap_dfs: no predictor for {type(model).__name__}; pass predict_fn"
+            )
+
+        ## get the same feature matrix used for SHAP (X_to_explain)
+        X_to_explain = df[list_vars].copy()
+        cat_data = model.cat_data
+        if cat_data is not None and len(cat_data.categorical_cols) > 0:
+            # apply dtype enforcement but stay within list_vars, not full feature_names
+            for c in cat_data.bool_cols:
+                if c in X_to_explain.columns:
+                    X_to_explain[c] = X_to_explain[c].astype("boolean")
+            for c, levels in cat_data.category_levels.items():
+                if c in X_to_explain.columns:
+                    X_to_explain[c] = pd.Categorical(X_to_explain[c], categories=levels)
+                    if isinstance(model, CatBoostModel):
+                        X_to_explain[c] = X_to_explain[c].astype("string").fillna("__MISSING__")
+        else:
+            X_to_explain = X_to_explain.to_numpy()
+
+        yhat_raw = predictor.predict(X_to_explain)
 
     ## SHAP reconstruction on those rows
     recon = np.asarray(shap_entry.base_values).ravel() + shap_entry.values.sum(axis=1)
@@ -6061,14 +6300,14 @@ def _prepare_shap_dfs(
     
     if do_write:
         # Write params to disk
-        unit_path = f"{outpath}/params_{subset}.csv"
+        unit_path = f"{outpath}/params_{prefix}{subset}.csv"
         if verbose:
             print(f"writing shap params to {unit_path}")
         df_unit.to_csv(unit_path, index=False)
-    
+
     if do_write:
         # Write contributions to disk
-        contrib_path = f"{outpath}/contributions_{subset}.csv"
+        contrib_path = f"{outpath}/contributions_{prefix}{subset}.csv"
         if verbose:
             print(f"writing shap to {contrib_path}")
         df_contrib_w_pred.to_csv(contrib_path, index=False)

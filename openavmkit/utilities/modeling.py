@@ -484,6 +484,26 @@ class CatBoostModel:
         self.cat_data = cat_data
 
 
+class NGBoostModel:
+    """NGBoost Model (probabilistic gradient boosting)
+
+    NGBoost predicts a full probability distribution per row, so it surfaces a
+    per-parcel predictive standard deviation in addition to a point estimate.
+    Its base learner is a numeric-only sklearn tree, so categoricals are encoded
+    via ``cat_data`` rather than passed natively.
+
+    Attributes
+    ----------
+    regressor: NGBRegressor
+        The trained NGBoost NGBRegressor model
+    cat_data: TreeBasedCategoricalData
+        Categorical metadata used to build the numeric matrix NGBoost requires
+    """
+    def __init__(self, regressor, cat_data):
+        self.regressor = regressor
+        self.cat_data = cat_data
+
+
 class LayeredCompModel:
     """Layered Comp Model
 

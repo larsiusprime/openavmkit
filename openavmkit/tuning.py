@@ -15,10 +15,15 @@ import numpy as np
 import optuna
 import pandas as pd
 from catboost import Pool, CatBoostRegressor, cv
+from ngboost import NGBRegressor
+from ngboost.distns import Normal
 
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_absolute_percentage_error
+from sklearn.tree import DecisionTreeRegressor
 from optuna.integration import CatBoostPruningCallback
+
+from openavmkit.utilities.modeling import TreeBasedCategoricalData
 
 #######################################
 # PRIVATE
@@ -285,6 +290,93 @@ def _tune_catboost(
         )
         print("Params:", study.best_trial.params)
 
+    return study.best_params
+
+
+def _tune_ngboost(
+    X,
+    y,
+    sizes,
+    he_ids,
+    n_trials=50,
+    n_splits=5,
+    random_state=42,
+    cat_vars=None,
+    verbose=False,
+):
+    """Tunes NGBoost hyperparameters using Optuna and k-fold cross-validation.
+
+    NGBoost is a probabilistic gradient booster; here we tune for point-estimate
+    accuracy (MAPE on the predicted mean), consistent with the other tree tuners.
+    Its natural-gradient boosting is markedly slower than XGBoost/LightGBM, so
+    callers should keep ``n_trials`` small.
+
+    Args:
+        X (pd.DataFrame): Feature matrix (categoricals as 'category' dtype).
+        y (array-like): Target vector.
+        sizes (array-like): Array of size values (land or building size).
+        he_ids (array-like): Array of horizontal equity cluster ID's.
+        n_trials (int): Number of optimization trials for Optuna. Default is 50.
+        n_splits (int): Number of folds for cross-validation. Default is 5.
+        random_state (int): Random seed for reproducibility. Default is 42.
+        cat_vars (list): Categorical feature names to encode numerically.
+        verbose (bool): Whether to print Optuna progress.
+
+    Returns:
+        dict: Best hyperparameters found by Optuna.
+    """
+    y = np.asarray(y, dtype=np.float64)
+
+    def objective(trial):
+        learning_rate = trial.suggest_float("learning_rate", 0.005, 0.2, log=True)
+        n_estimators = trial.suggest_int("n_estimators", 100, 1000)
+        minibatch_frac = trial.suggest_float("minibatch_frac", 0.5, 1.0)
+        max_depth = trial.suggest_int("max_depth", 3, 8)
+
+        kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+        mape_scores = []
+        for train_idx, val_idx in kf.split(X):
+            X_tr, X_val = X.iloc[train_idx], X.iloc[val_idx]
+            y_tr, y_val = y[train_idx], y[val_idx]
+
+            # cat_data is fit on the training fold so unseen val categories map to NaN
+            cat_data = TreeBasedCategoricalData.from_training_data(
+                X_tr, categorical_cols=[c for c in (cat_vars or []) if c in X_tr.columns]
+            )
+            Xn_tr = cat_data.to_numeric_matrix(X_tr)
+            Xn_val = cat_data.to_numeric_matrix(X_val)
+
+            base = DecisionTreeRegressor(
+                max_depth=max_depth, criterion="friedman_mse", random_state=random_state
+            )
+            model = NGBRegressor(
+                Dist=Normal,
+                Base=base,
+                n_estimators=n_estimators,
+                learning_rate=learning_rate,
+                minibatch_frac=minibatch_frac,
+                random_state=random_state,
+                verbose=False,
+            )
+            model.fit(Xn_tr, y_tr)
+            preds = model.predict(Xn_val)
+            mape_scores.append(mean_absolute_percentage_error(y_val, preds))
+
+        mape = float(np.mean(mape_scores))
+        if verbose:
+            print(f"-->trial # {trial.number}/{n_trials}, MAPE: {mape:0.4f}")
+        return mape
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study = optuna.create_study(direction="minimize")
+    # NGBoost training is not thread-safe enough for n_jobs=-1; tune serially.
+    study.optimize(objective, n_trials=n_trials, n_jobs=1, callbacks=[_plateau_callback])
+
+    if verbose:
+        print(
+            f"Best trial: {study.best_trial.number} with MAPE: {study.best_trial.value:0.4f} "
+            f"and params: {study.best_trial.params}"
+        )
     return study.best_params
 
 

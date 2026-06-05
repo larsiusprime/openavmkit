@@ -54,6 +54,7 @@ from openavmkit.modeling import (
     run_xgboost,
     run_lightgbm,
     run_catboost,
+    run_ngboost,
     run_layeredcomp,
     run_garbage,
     run_average,
@@ -1434,6 +1435,10 @@ def run_one_model(
     elif model_engine == "catboost":
         results = run_catboost(
             ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, use_gpu=use_gpu
+        )
+    elif model_engine == "ngboost":
+        results = run_ngboost(
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
     elif model_engine == "lcomp":
         results = run_layeredcomp(
@@ -4548,13 +4553,17 @@ def _quick_shap(
         SHAP values array for the evaluation dataset.
     """
 
-    if smr.model_engine not in ["xgboost", "catboost", "lightgbm"]:
+    if smr.model_engine not in ["xgboost", "catboost", "lightgbm", "ngboost"]:
         # SHAP is not supported for this model type
         return
 
     X_train = smr.ds.X_train
 
     shaps = _calc_shap(smr.model, X_train, X_train)
+
+    # _calc_shap returns None if SHAP can't be computed (e.g. unexpected NGBoost internals)
+    if shaps is None:
+        return
 
     if plot:
         plot_full_beeswarm(shaps, title=title)
