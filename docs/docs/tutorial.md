@@ -49,7 +49,7 @@ That's it. No credentials needed — it's a public read-only container.
 
 **Make sure your venv is active** (your prompt should show `(venv)`). If you opened a fresh terminal since A.1, re-run the activate command.
 
-Launch Jupyter (`jupyter notebook` from the `notebooks/` directory) and open [`pipeline/01-assemble.ipynb`](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/01-assemble.ipynb).
+Launch Jupyter (`jupyter notebook` from the `notebooks/` directory) and open [`pipeline/01-assemble.ipynb`](https://github.com/larsiusprime/openavmkit/blob/master/notebooks/pipeline/01-assemble.ipynb).
 
 In the second cell, set:
 
@@ -61,9 +61,9 @@ Run all cells from the top. The `cloud_sync` cell will download the input data t
 
 Now run, in order:
 
-- [`02-clean.ipynb`](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/02-clean.ipynb) — fills missing values, runs sales scrutiny, computes time-adjusted prices.
-- [`03-model.ipynb`](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/03-model.ipynb) — trains models per model group and writes predictions and reports under `data/us-nc-guilford/out/`.
-- [`assessment_quality.ipynb`](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/assessment_quality.ipynb) — generates ratio and equity reports.
+- [`02-clean.ipynb`](https://github.com/larsiusprime/openavmkit/blob/master/notebooks/pipeline/02-clean.ipynb) — fills missing values, runs sales scrutiny, computes time-adjusted prices.
+- [`03-model.ipynb`](https://github.com/larsiusprime/openavmkit/blob/master/notebooks/pipeline/03-model.ipynb) — trains models per model group and writes predictions and reports under `data/us-nc-guilford/out/`.
+- [`assessment_quality.ipynb`](https://github.com/larsiusprime/openavmkit/blob/master/notebooks/pipeline/assessment_quality.ipynb) — generates ratio and equity reports.
 
 ### A.4 What success looks like
 
@@ -76,7 +76,7 @@ After all four notebooks run cleanly:
 
 If any stage errors out: check the install (re-run `pytest` from the repo root), confirm Python is 3.11, and confirm `cloud.json` is in the right place.
 
-**For full reference**, see [notebooks/README.md](https://github.com/landeconomics/openavmkit/blob/master/notebooks/README.md) for the run-order map and [recipe.md](recipe.md) for what each public function does.
+**For full reference**, see [notebooks/README.md](https://github.com/larsiusprime/openavmkit/blob/master/notebooks/README.md) for the run-order map and [recipe.md](recipe.md) for what each public function does.
 
 ---
 
@@ -199,7 +199,7 @@ The setting affects:
 
 #### data.load
 
-This is where most onboarding work happens. Each subkey under `data.load` declares a file, its column-to-canonical-field mapping, and any computed columns. A real example from [us-nc-guilford](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/data/us-nc-guilford/in/settings.json):
+This is where most onboarding work happens. Each subkey under `data.load` declares a file, its column-to-canonical-field mapping, and any computed columns. A real example from [us-nc-guilford](https://github.com/larsiusprime/openavmkit/blob/master/notebooks/pipeline/data/us-nc-guilford/in/settings.json):
 
 ```json
 {
@@ -285,13 +285,13 @@ Each model group has a name and a filter expression. Filters are nested-list exp
 }
 ```
 
-For more sophisticated splits — handling vacant vs. improved sub-types, common-area exclusions, or filter reuse via `$$ref` — see the [us-nc-guilford settings](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/data/us-nc-guilford/in/settings.json) `model_groups` block.
+For more sophisticated splits — handling vacant vs. improved sub-types, common-area exclusions, or filter reuse via `$$ref` — see the [us-nc-guilford settings](https://github.com/larsiusprime/openavmkit/blob/master/notebooks/pipeline/data/us-nc-guilford/in/settings.json) `model_groups` block.
 
 **For everything else** — preprocessor syntax (`__` comments, `$$` variable refs, `!` and `+` flags), the full enrichment menu, modeling overrides, ratio study tuning — see [advanced_settings.md](advanced_settings.md). The minimum viable settings above is enough to run notebook 1; layer on advanced features once that's working.
 
 ### B.5 Run notebook 1 (Assemble)
 
-Open [`01-assemble.ipynb`](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/01-assemble.ipynb), set `locality = "<your-slug>"`, and run cells from the top.
+Open [`01-assemble.ipynb`](https://github.com/larsiusprime/openavmkit/blob/master/notebooks/pipeline/01-assemble.ipynb), set `locality = "<your-slug>"`, and run cells from the top.
 
 **What to watch for:**
 
@@ -317,7 +317,7 @@ When something is wrong, the fix is **almost always in `settings.json`**. Edit t
 
 ### B.6 Run notebook 2 (Clean)
 
-Open [`02-clean.ipynb`](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/02-clean.ipynb).
+Open [`02-clean.ipynb`](https://github.com/larsiusprime/openavmkit/blob/master/notebooks/pipeline/02-clean.ipynb).
 
 **What this notebook is doing:**
 
@@ -330,7 +330,7 @@ Open [`02-clean.ipynb`](https://github.com/landeconomics/openavmkit/blob/master/
 
 ### B.7 Run notebook 3 (Model)
 
-Open [`03-model.ipynb`](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/03-model.ipynb).
+Open [`03-model.ipynb`](https://github.com/larsiusprime/openavmkit/blob/master/notebooks/pipeline/03-model.ipynb).
 
 **What this notebook is doing:**
 
@@ -359,7 +359,7 @@ The reason these are separate functions is purely **performance**: writing all t
 
 If your goal is reproducibility (the same input produces the same output and you want it persisted), call `finalize_models`. If you're still in the explore-and-tweak phase, use `try_models` to keep the cycle fast.
 
-For configuring which models run for which model groups, see [advanced_settings.md § 6](advanced_settings.md#6-modeling-control). For wiring up a new model class, see [AGENTS.md § 7](https://github.com/landeconomics/openavmkit/blob/master/AGENTS.md).
+For configuring which models run for which model groups, see [advanced_settings.md § 6](advanced_settings.md#6-modeling-control). For wiring up a new model class, see [AGENTS.md § 7](https://github.com/larsiusprime/openavmkit/blob/master/AGENTS.md).
 
 #### Modeling best practices
 
@@ -470,7 +470,7 @@ This one's important enough to call out in bold:
 
 **Model on `bldg_age_years` or `bldg_effective_age_years`. Never on `bldg_year_built` or `bldg_effective_year_built`.**
 
-The flow is: **load** the year-built field from your raw data (in `data.load.<id>.load`) → OpenAVMKit's cleaning step automatically derives `bldg_age_years` from it by subtracting `bldg_year_built` from the year of your `valuation_date` (see `_fill_unknown_values` in [openavmkit/cleaning.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/cleaning.py)) → **model** on the derived `bldg_age_years`.
+The flow is: **load** the year-built field from your raw data (in `data.load.<id>.load`) → OpenAVMKit's cleaning step automatically derives `bldg_age_years` from it by subtracting `bldg_year_built` from the year of your `valuation_date` (see `_fill_unknown_values` in [openavmkit/cleaning.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/cleaning.py)) → **model** on the derived `bldg_age_years`.
 
 Why year-built is wrong as a model variable:
 
@@ -486,7 +486,7 @@ Why year-built is wrong as a model variable:
 
 ### B.8 Run notebook 4 (Assessment quality)
 
-Open [`assessment_quality.ipynb`](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/assessment_quality.ipynb).
+Open [`assessment_quality.ipynb`](https://github.com/larsiusprime/openavmkit/blob/master/notebooks/pipeline/assessment_quality.ipynb).
 
 **What this notebook is doing:**
 
@@ -611,8 +611,8 @@ You now have a working AVM. To go further:
 - **[models_reference.md](models_reference.md)** — every model engine: invocation, name-vs-engine dispatch, multiple variants of the same engine, settings, when to use each.
 - **[recipe.md](recipe.md)** — every public function organized by pipeline stage.
 - **[config.md](config.md)** — environment-level config: cloud storage credentials, Census API key, PDF report generation.
-- **[AGENTS.md](https://github.com/landeconomics/openavmkit/blob/master/AGENTS.md)** — extending OpenAVMKit (new models, new equity studies, new enrichment sources).
+- **[AGENTS.md](https://github.com/larsiusprime/openavmkit/blob/master/AGENTS.md)** — extending OpenAVMKit (new models, new equity studies, new enrichment sources).
 - **Canonical examples to learn from** — read these settings files when you want to see how something is done in practice:
-    - [`us-nc-guilford`](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/data/us-nc-guilford/in/settings.json) — Guilford County, NC
-    - [`us-va-petersburgcity`](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/data/us-va-petersburgcity/in/settings.json) — Petersburg City, VA
-    - [`us-pa-philadelphia`](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/data/us-pa-philadelphia/in/settings.json) — Philadelphia, PA
+    - [`us-nc-guilford`](https://github.com/larsiusprime/openavmkit/blob/master/notebooks/pipeline/data/us-nc-guilford/in/settings.json) — Guilford County, NC
+    - [`us-va-petersburgcity`](https://github.com/larsiusprime/openavmkit/blob/master/notebooks/pipeline/data/us-va-petersburgcity/in/settings.json) — Petersburg City, VA
+    - [`us-pa-philadelphia`](https://github.com/larsiusprime/openavmkit/blob/master/notebooks/pipeline/data/us-pa-philadelphia/in/settings.json) — Philadelphia, PA

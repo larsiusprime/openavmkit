@@ -323,7 +323,7 @@ Computes the area of the row's `geometry` in the specified unit. Requires a GeoD
 ]
 ```
 
-This example, drawn from the [us-nc-guilford settings](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/data/us-nc-guilford/in/settings.json), shows nested operations: take a string like `"B+  85%"`, look it up in a reference map, split off the percentage, strip the `%`, cast to float, divide by 100.
+This example, drawn from the [us-nc-guilford settings](https://github.com/larsiusprime/openavmkit/blob/master/notebooks/pipeline/data/us-nc-guilford/in/settings.json), shows nested operations: take a string like `"B+  85%"`, look it up in a reference map, split off the percentage, strip the `%`, cast to float, divide by 100.
 
 ### Compute GIS area at load time
 
@@ -378,8 +378,8 @@ This says: "for the row where `PARCEL_ID == 12345`, set `bldg_quality_num` to `0
 
 - [The tutorial § B.4](tutorial.md#b4-author-a-minimum-viable-settingsjson) — calc in the context of authoring your first `settings.json`
 - [Advanced settings reference](advanced_settings.md) — settings.json structure, preprocessor, enrichment, fill rules, caching
-- [openavmkit/calculations.py](https://github.com/landeconomics/openavmkit/blob/master/openavmkit/calculations.py) — implementation
+- [openavmkit/calculations.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/calculations.py) — implementation
 - Canonical examples that use calc heavily:
-    - [us-nc-guilford](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/data/us-nc-guilford/in/settings.json)
-    - [us-va-petersburgcity](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/data/us-va-petersburgcity/in/settings.json)
-    - [us-pa-philadelphia](https://github.com/landeconomics/openavmkit/blob/master/notebooks/pipeline/data/us-pa-philadelphia/in/settings.json)
+    - [us-nc-guilford](https://github.com/larsiusprime/openavmkit/blob/master/notebooks/pipeline/data/us-nc-guilford/in/settings.json)
+    - [us-va-petersburgcity](https://github.com/larsiusprime/openavmkit/blob/master/notebooks/pipeline/data/us-va-petersburgcity/in/settings.json)
+    - [us-pa-philadelphia](https://github.com/larsiusprime/openavmkit/blob/master/notebooks/pipeline/data/us-pa-philadelphia/in/settings.json)

@@ -5,12 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "openavmkit"
 description = "Open-source automated valuation model (AVM) toolkit"
-readme = "README.md"
+# 'readme' is dynamic: setup.py supplies long_description, rewriting the README's repo-relative
+# links to absolute GitHub URLs so they work on PyPI (which renders the README without repo
+# context). The README file itself stays relative for GitHub and the docs site.
 requires-python = ">=3.11"
 # Dual license (AGPLv3 OR commercial).
 license = { file = "LICENSE-AGPLv3" }
 authors = [{ name = "Lars A. Doucet", email = "lars.doucet+openavmkit@gmail.com" }]
-dynamic = ["version", "dependencies"]
+dynamic = ["version", "dependencies", "readme"]
 keywords = ["avm", "mass appraisal", "valuation", "gis", "real estate"]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -35,7 +37,7 @@ dev = ["pytest", "ruff"]
 Homepage = "https://www.openavmkit.com/"
 Source = "https://github.com/larsiusprime/openavmkit"
 Issues = "https://github.com/larsiusprime/openavmkit/issues"
-Changelog = "https://github.com/larsiusprime/openavmkit/blob/master/CHANGELOG.md"
+Changelog = "https://github.com/larsiusprime/openavmkit/blob/master/changelog.md"
 
 # NOTE: remove the version-from-attr; setuptools-scm supplies the version
 [tool.setuptools.dynamic]

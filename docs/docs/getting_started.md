@@ -6,7 +6,7 @@ OpenAVMKit can be used three ways. Pick the one that fits, then follow the corre
 
 - **Notebook user** — you want to run the pipeline notebooks on a locality (assess, clean, model, evaluate). Most users start here. After install, do the [smoke test below](#smoke-test-with-sample-data) to confirm everything works, then jump to the [tutorial](tutorial.md) for an end-to-end walkthrough of building a jurisdiction from your own data.
 - **Python library user** — you want to import `openavmkit` modules into your own Python code (analysis scripts, custom pipelines, dashboards). After install, see [The Basics → Code modules](the_basics.md#code-modules), then the [API reference](api/) for what's available.
-- **Contributor / coding agent** — you want to extend OpenAVMKit. Install from Git (option 2 below), then read [AGENTS.md](https://github.com/landeconomics/openavmkit/blob/master/AGENTS.md) at the repo root for conventions and gotchas, plus [CONTRIBUTING.md](https://github.com/landeconomics/openavmkit/blob/master/CONTRIBUTING.md) for the PR workflow.
+- **Contributor / coding agent** — you want to extend OpenAVMKit. Install from Git (option 2 below), then read [AGENTS.md](https://github.com/larsiusprime/openavmkit/blob/master/AGENTS.md) at the repo root for conventions and gotchas, plus [CONTRIBUTING.md](https://github.com/larsiusprime/openavmkit/blob/master/CONTRIBUTING.md) for the PR workflow.
 
 ## Option 1 - Install from PyPI
 

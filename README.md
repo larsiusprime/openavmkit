@@ -42,7 +42,7 @@ See the [Changelog](changelog.md)
 ## 6. Notebooks & API
   - [Pipeline notebooks workflow](notebooks/README.md) — which notebook to run when
   - [Recipe — public functions](docs/docs/recipe.md)
-  - [API reference](docs/docs/api/) (auto-generated from docstrings)
+  - [API reference](https://www.openavmkit.com/api/) (auto-generated from docstrings)
 ## 7. For contributors & coding agents
   - [AGENTS.md](AGENTS.md) — repo conventions, settings preprocessor, gotchas, extending patterns
   - [CONTRIBUTING.md](CONTRIBUTING.md) — PR workflow, style guide
