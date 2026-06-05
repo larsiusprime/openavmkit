@@ -65,6 +65,40 @@ class OvertureService:
         cache_key = f"{cache_type}_{bbox[0]}_{bbox[1]}_{bbox[2]}_{bbox[3]}"
         return os.path.join(self.cache_dir, f"{cache_key}.parquet")
 
+    def _stats_cache_save(self, cache_path: str, gdf: gpd.GeoDataFrame, stat_cols: list) -> None:
+        """Cache ONLY the computed per-parcel stats (keyed by 'key'), never a snapshot of the
+        input frame. Storing the whole input frame makes the cache go stale whenever a caller
+        adds/removes input columns (it would then return a frame missing those columns)."""
+        have = [c for c in stat_cols if c in gdf.columns]
+        pd.DataFrame(gdf[["key"] + have]).to_parquet(cache_path)
+
+    def _stats_cache_load(self, cache_path: str, gdf: gpd.GeoDataFrame, stat_cols: list,
+                          verbose: bool = False):
+        """Load cached per-parcel stats and graft them onto the LIVE input frame, preserving
+        its current columns. Returns None (forcing a recompute) if the cache is absent, lacks
+        the stat columns, or does not cover the current parcel set -- so a changed parcel set
+        invalidates it, while a mere column change (e.g. an added 'address') does not."""
+        if not os.path.exists(cache_path):
+            return None
+        # pd.read_parquet reads both plain (new stats-only) and geo (legacy full-frame) caches;
+        # we only need 'key' + the stat columns, so geometry (if present) is ignored.
+        cached = pd.read_parquet(cache_path)
+        if "key" not in cached.columns:
+            return None
+        have = [c for c in stat_cols if c in cached.columns]
+        if not have:
+            return None
+        if not set(gdf["key"].astype(str)).issubset(set(cached["key"].astype(str))):
+            return None  # cache predates the current parcel set -> recompute
+        if verbose:
+            print(f"--> Loading cached building stats: {cache_path}")
+        out = gdf.drop(columns=have, errors="ignore").merge(
+            cached[["key"] + have].drop_duplicates("key"), on="key", how="left"
+        )
+        for c in have:
+            out[c] = out[c].fillna(0)
+        return out
+
     def _get_dataset(self):
         """Get the PyArrow dataset for buildings."""
         path = f"{self.bucket}/{self.prefix}"
@@ -364,14 +398,14 @@ class OvertureService:
             )
 
         t.start("crs")
-        # Get cache path for intersection areas
+        # Footprint stats depend only on the buildings (bbox-derived) and parcel geometry, so
+        # the bounding box is the correct cache key. We cache ONLY the computed per-parcel stat
+        # and graft it onto the LIVE input frame (see _stats_cache_load) -- never a snapshot of
+        # the input frame, which would go stale when callers add columns (e.g. 'address').
         cache_path = self._get_cache_path("intersections_area", gdf.total_bounds)
-
-        # Check cache
-        if os.path.exists(cache_path):
-            if verbose:
-                print(f"--> Loading intersection areas from cache: {cache_path}")
-            return gpd.read_parquet(cache_path)
+        cached = self._stats_cache_load(cache_path, gdf, [field_name], verbose)
+        if cached is not None:
+            return cached
 
         # Convert both to same CRS for spatial operations
         buildings = buildings.to_crs(gdf.crs)
@@ -468,10 +502,10 @@ class OvertureService:
                 f"--> Number of parcels with buildings: {(gdf[field_name] > 0).sum():,}"
             )
 
-        # Save to cache
+        # Save ONLY the computed stat (keyed by parcel key), never the input frame.
         if verbose:
             print(f"--> Saving intersection areas to cache: {cache_path}")
-        gdf.to_parquet(cache_path)
+        self._stats_cache_save(cache_path, gdf, [field_name])
 
         return gdf
     
@@ -511,12 +545,13 @@ class OvertureService:
         else:
             raise ValueError("Unsupported units: {desired_units}. Use 'ft' or 'm'.")
 
-        # Cache
+        # Height/stories depend only on the buildings (bbox-derived) and parcel geometry, so the
+        # bounding box is the correct cache key. Cache ONLY the computed per-parcel stats and
+        # graft them onto the LIVE input frame -- never a snapshot of the input frame.
         cache_path = self._get_cache_path("intersections_height", gdf.total_bounds)
-        if os.path.exists(cache_path):
-            if verbose:
-                print(f"--> Loading parcel heights from cache: {cache_path}")
-            return gpd.read_parquet(cache_path)
+        cached = self._stats_cache_load(cache_path, gdf, [field_name, "bldg_stories"], verbose)
+        if cached is not None:
+            return cached
 
         # Align CRS for spatial ops
         t.start("crs")
@@ -568,10 +603,10 @@ class OvertureService:
         if verbose:
             print(f"--> Finished...({t.get('finish'):.2f}s)")
 
-        # Cache result
+        # Cache ONLY the computed stats (keyed by parcel key), never the input frame.
         if verbose:
             print(f"--> Saving to cache: {cache_path}")
-        out.to_parquet(cache_path)
+        self._stats_cache_save(cache_path, out, [field_name, "bldg_stories"])
         return out
 
     
