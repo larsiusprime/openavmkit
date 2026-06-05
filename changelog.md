@@ -1,6 +1,54 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] - 2026-06-05
+
+### New test jurisdictions
+- Added `us-co-eagle` (Eagle County / Vail, CO) as a new end-to-end example jurisdiction, built specifically as an elevation/DEM showcase (ski-resort terrain where elevation strongly drives price). Pulls parcel geometry from the county ArcGIS endpoint, ingests xlsx account + sales extracts, and runs all "free" enrichments (DEM headline, census, OSM distances, spatial lag, Overture footprints)
+- Added `us-va-petersburgcity` (Petersburg, VA) as a new end-to-end example jurisdiction; it now drives the CI smoke/docker container
+
+### Major features
+- Add condo modeling pathway — an opt-in, settings-driven affordance (`data.process.condos` + new `openavmkit/condos.py`) for jurisdictions where condo units are their own accounts but have no parcel geometry. Links each unit to its building polygon (`id_prefix` / `parent_id` / `spatial`), borrows that geometry so units flow through every spatial enrichment, groups units (`condo_group`), and allocates a per-unit land share (legible `field` or `floor_area` pro-rate). New template/data-dictionary fields: `condo_group`, `land_area_alloc_sqft`, `geometry_borrowed`
+- Add support for different independent variables per model group
+- Add support for loading your own time adjustments per model group, plus a start-indexed time-adjustment export and additional file reporting
+- Add categorical collapse (`collapse_sparse_categories`) and USGS 3DEP DEM elevation enrichment
+- Add Vertical Equity Index (VEI) statistics
+- Add ensemble contributions/parameters output and a SHAP contributions map to the finalize-models flow
+- Add standard errors to MRA parameter output
+- Add OSM coastline support for distance/proximity enrichment
+- Add local ensembling as a model option
+- Add CSV export option for end-of-notebook "look" files
+- Add debug information for piecewise data fills
+
+### Major bug fixes
+- Fix bug where all boolean fields were filled with True during fill-missing
+- Fix invalid cache from duplicate columns in enrichment
+- Fix Overture cache bug that cached/returned a stale full input frame (now caches computed stats only, bbox-keyed, and merges)
+- Remove caching from basic geo enrichment where it caused errors
+- Fix one-hot / duplicate column-name collisions; collapsed-category output fields are now correctly classified as categorical
+- Fix a batch of crash conditions that stopped notebook 3, including crash in identify_outliers, variable-selection crashes on degenerate model groups, GWR/SHAP crashes, and beeswarm/prettify on empty data
+- Impute NaN before variable-selection steps in stats
+- Guard against n_splits > n_samples in rolling-origin CV
+- Guard against all-NA scores in calc_correlations
+- Skip non-numeric columns in calc_r2
+- Fix ArrowNotImplementedError in SalesScrutinyStudy with pyarrow >= 22
+- Cap LightGBM num_leaves/min_data_in_leaf search space for thin datasets
+- Fix vertical equity to gracefully handle a missing location field
+- Fix assessment quality calculation
+- Fix memory use in CHD calculation; guard land_area log fields against infinities
+- Numerous column-existence and explicit-truthiness fixes
+
+### Breaking / behavioral changes
+- Remove worthless "triangular" parcel detection entirely
+- Remove old land/deploy notebooks (crufty, unused) — but the land notebook will be back soon, new and improved!
+- Add new opt-in settings blocks: `data.process.condos`, `collapse_sparse_categories`, per-model-group variables, and per-model-group time adjustments (existing settings files are unaffected unless they opt in)
+- Change Overture cache format (stats-only / bbox-keyed) — old Overture caches will be recomputed
+- Make `readme` packaging dynamic: `setup.py` rewrites the README's repo-relative links to absolute GitHub URLs so they render correctly on PyPI (the in-repo README stays relative for GitHub and the docs site)
+
+### Dependencies & infrastructure
+- Numerous dependency bumps: numpy 2.3.5, xgboost 3.2.0, scikit-learn 1.8.0, polars 1.38.1, rich 15.0.0, huggingface-hub 1.17.0, scipy <1.17, statsmodels 0.14.6, matplotlib 3.10.9, and others
+- CI: GitHub Actions version bumps, CLA workflow updates, and docker CI fixes
+
 ## [0.5.1] - 2025-12-04
 - Fix bug in examine_df/examine_df_in_ridiculous_detail
 
