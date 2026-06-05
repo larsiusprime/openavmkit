@@ -1846,10 +1846,34 @@ def identify_outliers(
                     "local_land_sales"
                 ]
                 put_at_end = ["address", location]
-                
+
+                # Some of these opinionated front/end columns may be absent (most commonly
+                # 'address', when no address field was mapped in settings). Warn loudly but
+                # don't crash -- omit the missing columns and print the table anyway.
+                desired = [c for c in (put_at_front + put_at_end) if c is not None]
+                missing = [c for c in dict.fromkeys(desired) if c not in dfm.columns]
+                if missing:
+                    msg = (
+                        f"identify_outliers: preferred columns missing from the data and omitted "
+                        f"from {outpath}: {missing}."
+                    )
+                    if "address" in missing:
+                        msg += (
+                            " In particular 'address' is not present -- the outlier tables will have"
+                            " no human-readable address column. Map an 'address' field in your"
+                            " settings (data.load.<source>.load.address, or compose one in"
+                            " preprocessing) to fix this."
+                        )
+                    warnings.warn(msg)
+                put_at_front = [c for c in put_at_front if c in dfm.columns]
+                put_at_end = [c for c in put_at_end if c in dfm.columns]
+
                 cols = [col for col in cols if col not in put_at_front and col not in put_at_end and col in dfm and col is not None]
                 cols = put_at_front + cols + put_at_end
-                
+                # de-duplicate, preserving order ('address' is intentionally listed in both
+                # put_at_front and put_at_end).
+                cols = list(dict.fromkeys(cols))
+
                 dfm = dfm[cols]
                 
                 os.makedirs(outdir, exist_ok=True)
