@@ -2039,6 +2039,17 @@ def _run_multi_mra(
 
     has_const = "const" in X_train
 
+    # Impute NaN with training-set column medians and propagate to all splits.
+    # Real-world property data routinely has missing values in features like
+    # parking spaces, garage counts, etc.  statsmodels OLS raises
+    # MissingDataError on any NaN in exog, so we guard here using the same
+    # median-imputation pattern applied elsewhere in the codebase.
+    col_medians = X_train.median()
+    X_train = X_train.fillna(col_medians)
+    ds_prepped.X_test = ds_prepped.X_test.fillna(col_medians)
+    ds_prepped.X_sales = ds_prepped.X_sales.fillna(col_medians)
+    ds_prepped.X_univ = ds_prepped.X_univ.fillna(col_medians)
+
     # ------------------------
     # Global OLS (fallback)
     # ------------------------
