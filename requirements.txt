@@ -7,7 +7,7 @@ markdown==3.10.2
 mgwr==2.2.1
 ngboost==0.5.10
 optuna==4.6.0
-osmnx==2.0.7
+osmnx==2.1.0
 paramiko==4.0.0
 pdfkit==1.0.0
 pipreqs==0.5.0
