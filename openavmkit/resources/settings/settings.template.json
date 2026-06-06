@@ -11,7 +11,22 @@
 				]
 			},
 			"reconcile": {},
-			"enrich": {},
+			"enrich": {
+				"__area_stats": {
+					"__doc": "Optional 'neighborhood enrichment'. Computes per-location summary statistics of the chosen fields and stamps them onto every parcel as area_stat_<location>_<field>_<stat> columns (e.g. area_stat_neighborhood_bldg_area_finished_sqft_mean). A quantized counterpart to spatial_lag; run it in the modeling stage after cleaning, sales scrutiny, and the train/test split. Derived columns are auto-classified (numeric/categorical, land/impr/other) by inheriting their base field's classification, so models discover them automatically.",
+					"__doc_leakage": "Sale-derived fields (sale_price and its variants) are aggregated over TRAINING valid sales only; all other fields are aggregated over the full universe. Set exclude_test_keys: true to additionally drop test-key parcels from every aggregation (strict out-of-sample hygiene; off by default).",
+					"__doc_locations": "List location fields coarsest -> finest (finest last). Each yields its own independent columns; a group with fewer than min_count observations is left NaN (no fallback) -- rely on the next-coarser location as a separate feature.",
+					"__doc_stats": "numeric defaults: mean, median, std (plus a per-location count, always emitted). numeric opt-in: cv, p25, p75, iqr, min, max, sum. categorical defaults (categorical_stats): mode, mode_frac. categorical opt-in: nunique, entropy.",
+					"__example": {
+						"locations": ["city", "census_tract", "neighborhood"],
+						"fields": ["bldg_area_finished_sqft", "land_area_sqft", "bldg_quality_num", "zoning"],
+						"stats": ["mean", "median", "std"],
+						"categorical_stats": ["mode", "mode_frac"],
+						"min_count": 5,
+						"exclude_test_keys": false
+					}
+				}
+			},
 			"__collapse_sparse_categories": {
 				"__doc": "Optional. Per-field rare-category collapse: any category whose row count is below sales_min in hydrated sales OR below univ_min in the universe is replaced by replacement_value (default 'Other'). Skipped for a field if fewer than 2 categories would collapse. Field must be declared in field_classification.*.categorical.",
 				"__doc_output_field": "Optional per-field 'output_field' writes the collapsed result to a NEW column and leaves the source intact -- this is how to collapse a LOCATION field safely (e.g. neighborhood -> neighborhood_collapsed): use the variant ONLY as a model feature and keep the raw location for breakdowns/equity/spatial. Collapsing a location field IN PLACE merges unrelated zones into 'Other' and is warned against loudly. Reserved key 'strict': true escalates those warnings to errors. See advanced_settings.md 5.4.",

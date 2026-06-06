@@ -210,6 +210,167 @@ def get_center(s: dict, gdf: gpd.GeoDataFrame = None) -> tuple[float, float]:
         raise ValueError("Could not find locality.center in settings!")
 
 
+# ---------------------------------------------------------------------------
+# Area-statistic ("neighborhood enrichment") field naming and classification.
+#
+# Area stats are per-location summary statistics stamped onto every parcel as
+# ``area_stat_<location>_<field>_<stat>`` features (see ``openavmkit.area_stats``).
+# The naming + classification helpers live here so they stay the single source of
+# truth shared by the enrichment code (which generates the columns) and the field
+# getters (which must auto-discover them for modeling).
+# ---------------------------------------------------------------------------
+
+AREA_STAT_PREFIX = "area_stat_"
+
+# Numeric base fields: these stats are emitted by default, the rest are opt-in.
+AREA_STATS_NUMERIC_DEFAULT = ["mean", "median", "std"]
+AREA_STATS_NUMERIC_OPTIONAL = ["cv", "p25", "p75", "iqr", "min", "max", "sum"]
+
+# Categorical base fields: ``mode``/``mode_frac`` by default, the rest opt-in.
+AREA_STATS_CATEGORICAL_DEFAULT = ["mode", "mode_frac"]
+AREA_STATS_CATEGORICAL_OPTIONAL = ["nunique", "entropy"]
+
+# Stats whose output is itself categorical rather than numeric.
+AREA_STATS_CATEGORICAL_OUTPUT = {"mode"}
+
+
+def get_area_stats_config(s: dict) -> dict:
+    """Return the ``data.process.enrich.area_stats`` config block (or ``{}``).
+
+    Parameters
+    ----------
+    s : dict
+        Settings dictionary.
+
+    Returns
+    -------
+    dict
+        The area-stats configuration, or an empty dict if the feature is not
+        configured for this locality.
+    """
+    return (
+        s.get("data", {})
+        .get("process", {})
+        .get("enrich", {})
+        .get("area_stats", {})
+    ) or {}
+
+
+def make_area_stat_field_name(location: str, field: str, stat: str) -> str:
+    """Build the derived column name for one (location, field, stat) combination.
+
+    Examples
+    --------
+    ``make_area_stat_field_name("neighborhood", "bldg_area_finished_sqft", "mean")``
+    returns ``"area_stat_neighborhood_bldg_area_finished_sqft_mean"``.
+    """
+    return f"{AREA_STAT_PREFIX}{location}_{field}_{stat}"
+
+
+def make_area_stat_count_field_name(location: str) -> str:
+    """Build the per-location group-size column name (e.g. ``area_stat_neighborhood_count``)."""
+    return f"{AREA_STAT_PREFIX}{location}_count"
+
+
+def is_sale_derived_field(s: dict, field: str) -> bool:
+    """Whether ``field`` is the sale price (or a sale-price variant).
+
+    Sale-derived fields must be aggregated over training valid sales only to
+    avoid leaking the target; everything else aggregates over the universe. The
+    sale field is always ``sale_price`` or ``sale_price_time_adj`` (see
+    ``openavmkit.data.get_sale_field``), so a prefix check covers both without a
+    circular import back into ``data``.
+    """
+    return str(field).startswith("sale_price")
+
+
+def _classify_base_field_raw(s: dict, field: str) -> tuple[str | None, str | None]:
+    """Resolve a base field's ``(bucket, kind)`` from the *raw* classification lists.
+
+    Reads ``field_classification`` directly (not via :func:`get_fields_numeric` /
+    :func:`get_fields_categorical`) so it can be called from inside those getters
+    without recursion. Returns ``(None, None)`` if the field is unclassified.
+    """
+    if is_sale_derived_field(s, field):
+        return "other", "numeric"
+    fc = s.get("field_classification", {})
+    for bucket in ("land", "impr", "other"):
+        b = fc.get(bucket, {})
+        if field in b.get("numeric", []) or field in b.get("boolean", []):
+            return bucket, "numeric"
+        if field in b.get("categorical", []):
+            return bucket, "categorical"
+    return None, None
+
+
+def get_area_stats_fields(s: dict, df: pd.DataFrame = None) -> dict:
+    """Enumerate the area-stat derived fields and their classifications.
+
+    For each configured ``location × field × stat`` combination this returns the
+    generated column name mapped to metadata describing how it should be treated:
+
+    - ``bucket``: ``"land"`` / ``"impr"`` / ``"other"`` inherited from the base field
+    - ``kind``: ``"numeric"`` or ``"categorical"`` (the *output* kind of the stat)
+    - ``location`` / ``base_field`` / ``stat``: the components it was built from
+
+    A per-location ``count`` column (group size) is always included. Base fields
+    that are unclassified in settings are skipped (so they don't pollute the
+    model's feature lists with unknown buckets).
+
+    Parameters
+    ----------
+    s : dict
+        Settings dictionary.
+    df : pandas.DataFrame, optional
+        If given, only columns actually present in ``df`` are returned.
+
+    Returns
+    -------
+    dict
+        Mapping of derived column name to its metadata dict.
+    """
+    cfg = get_area_stats_config(s)
+    out: dict = {}
+    if not cfg:
+        return out
+
+    locations = cfg.get("locations", []) or []
+    fields = cfg.get("fields", []) or []
+    num_stats = cfg.get("stats", AREA_STATS_NUMERIC_DEFAULT) or []
+    cat_stats = cfg.get("categorical_stats", AREA_STATS_CATEGORICAL_DEFAULT) or []
+
+    for location in locations:
+        count_name = make_area_stat_count_field_name(location)
+        out[count_name] = {
+            "bucket": "other",
+            "kind": "numeric",
+            "location": location,
+            "base_field": None,
+            "stat": "count",
+        }
+        for field in fields:
+            bucket, kind = _classify_base_field_raw(s, field)
+            if kind is None:
+                continue
+            stats_list = num_stats if kind == "numeric" else cat_stats
+            for stat in stats_list:
+                name = make_area_stat_field_name(location, field, stat)
+                out_kind = (
+                    "categorical" if stat in AREA_STATS_CATEGORICAL_OUTPUT else "numeric"
+                )
+                out[name] = {
+                    "bucket": bucket,
+                    "kind": out_kind,
+                    "location": location,
+                    "base_field": field,
+                    "stat": stat,
+                }
+
+    if df is not None:
+        out = {k: v for k, v in out.items() if k in df.columns}
+    return out
+
+
 def get_fields_land(s: dict, df: pd.DataFrame = None) -> dict:
     """
     Get all fields in the given dataframe that are classified in settings as pertaining to land.
@@ -235,6 +396,11 @@ def get_fields_land(s: dict, df: pd.DataFrame = None) -> dict:
 
     for field in fields_unclassified:
         if field.startswith("dist_to_") or field.startswith("within_") or field.startswith("proximity_to_") or field.startswith("spatial_lag_"):
+            fields_land["numeric"].append(field)
+        # Defensive net for area-stat columns that reach the getter without their
+        # config context (e.g. loaded from cache). Numeric stats only -- the
+        # categorical ``_mode`` variant is handled by get_fields_categorical.
+        elif field.startswith(AREA_STAT_PREFIX) and not field.endswith("_mode"):
             fields_land["numeric"].append(field)
 
     for key in fields_land:
@@ -497,6 +663,12 @@ def get_fields_categorical(
             if out_field and src_field in cats and out_field not in cats:
                 cats.append(out_field)
 
+    # area-stat derived fields whose output is categorical (e.g. ``..._mode``)
+    # inherit their base field's bucket; include those in the requested types.
+    for name, meta in get_area_stats_fields(s, df).items():
+        if meta["kind"] == "categorical" and meta["bucket"] in types and name not in cats:
+            cats.append(name)
+
     if df is not None:
         cats = [cat for cat in cats if cat in df]
     return cats
@@ -546,6 +718,13 @@ def get_fields_numeric(
             nums += (
                 s.get("field_classification", {}).get("other", {}).get("boolean", [])
             )
+
+    # area-stat derived fields with numeric output inherit their base field's
+    # bucket; include those in the requested types so models auto-discover them.
+    for name, meta in get_area_stats_fields(s, df).items():
+        if meta["kind"] == "numeric" and meta["bucket"] in types and name not in nums:
+            nums.append(name)
+
     if df is not None:
         nums = [num for num in nums if num in df]
     return nums

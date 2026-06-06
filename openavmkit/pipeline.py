@@ -21,6 +21,7 @@ import geopandas as gpd
 
 import openavmkit
 import openavmkit.data
+import openavmkit.area_stats
 import openavmkit.benchmark
 import openavmkit.checkpoint
 import openavmkit.ratio_study
@@ -898,6 +899,75 @@ def enrich_sup_spatial_lag(
         Enriched SalesUniversePair with spatial lag features.
     """
     return openavmkit.data.enrich_sup_spatial_lag(sup, settings, verbose)
+
+
+def enrich_sup_area_stats(
+    sup: SalesUniversePair, settings: dict, verbose: bool = False
+):
+    """Enrich sales and universe with per-location area-statistic features.
+
+    Area statistics are per-location summary statistics (mean, median, dispersion,
+    dominant category, ...) of user-selected fields, stamped onto every parcel as
+    ``area_stat_<location>_<field>_<stat>`` columns. This is a quantized, group-based
+    counterpart to spatial lag and should be run after cleaning, sales scrutiny, and the
+    canonical train/test split, so invalid sales and test-set prices never enter the
+    statistics.
+
+    Parameters
+    ----------
+    sup : SalesUniversePair
+        SalesUniversePair containing sales and universe DataFrames.
+    settings : dict
+        Settings dictionary.
+    verbose : bool, optional
+        If True, prints progress information.
+
+    Returns
+    -------
+    SalesUniversePair
+        Enriched SalesUniversePair with area-statistic features.
+    """
+    return openavmkit.area_stats.enrich_sup_area_stats(sup, settings, verbose)
+
+
+def report_area_stats(
+    sup: SalesUniversePair,
+    settings: dict,
+    outpath: str = None,
+    threshold: float = 0.1,
+    do_plots: bool = False,
+    verbose: bool = False,
+):
+    """Rank area-stat features by their correlation with sale price.
+
+    Returns a DataFrame ranking every numeric ``area_stat_*`` feature by its correlation
+    with sale price (over valid sales). When ``outpath`` is provided, also writes a
+    Markdown report.
+
+    Parameters
+    ----------
+    sup : SalesUniversePair
+        SalesUniversePair already enriched via :func:`enrich_sup_area_stats`.
+    settings : dict
+        Settings dictionary.
+    outpath : str, optional
+        Output path (without extension) for the Markdown report. If None, no file is
+        written.
+    threshold : float, optional
+        Correlation score threshold. Defaults to 0.1.
+    do_plots : bool, optional
+        If True, render correlation heatmaps. Defaults to False.
+    verbose : bool, optional
+        If True, prints progress information.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Ranked correlation table.
+    """
+    return openavmkit.area_stats.report_area_stats(
+        sup, settings, outpath, threshold, do_plots, verbose
+    )
 
 
 def enrich_sup_streets(sup: SalesUniversePair, settings: dict, verbose: bool = False):
