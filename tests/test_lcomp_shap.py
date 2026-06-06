@@ -209,6 +209,20 @@ def test_calc_shap_and_beeswarm_render():
         assert os.path.exists(out) and os.path.getsize(out) > 0
 
 
+def test_numba_and_pure_python_paths_agree(monkeypatch):
+    """The JIT kernel and the pure-Python fallback must produce identical SHAP."""
+    import openavmkit.shap_analysis as sa
+
+    X, y = _mixed_frame()
+    bag = _fit_bag(X, y, tree_count=3, seed=11)
+    expl = _layeredcomp_shap(LayeredCompModel(bag))
+
+    fast = expl.shap_values(X.head(25))                  # numba path (if available)
+    monkeypatch.setattr(sa, "_HAVE_NUMBA", False)
+    slow = expl.shap_values(X.head(25))                  # forced pure-Python path
+    np.testing.assert_allclose(fast, slow, atol=1e-9)
+
+
 def test_get_full_layeredcomp_shaps_all_subsets():
     X, y = _mixed_frame()
     bag = _fit_bag(X, y, tree_count=2, seed=3)

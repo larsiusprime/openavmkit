@@ -12,7 +12,9 @@ See Also
 openavmkit.modeling : Calls into this module to build params/contribs
     files for tree-based models.
 """
+import os
 import textwrap
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
@@ -31,6 +33,22 @@ from openavmkit.utilities.modeling import (
     LayeredCompModel,
     TreeBasedCategoricalData
 )
+
+try:
+    from numba import njit, prange
+    _HAVE_NUMBA = True
+except Exception:  # pragma: no cover - numba is an optional accelerator
+    _HAVE_NUMBA = False
+
+    def njit(*args, **kwargs):
+        def _decorate(fn):
+            return fn
+        # support both @njit and @njit(...)
+        if len(args) == 1 and callable(args[0]) and not kwargs:
+            return args[0]
+        return _decorate
+
+    prange = range
 
 
 _NGBOOST_REQUIRED_ATTRS = ("base_models", "scalings", "col_idxs", "learning_rate", "init_params")
@@ -248,6 +266,38 @@ class _LayeredCompShapExplainer:
             tree_bases.append(_expected_value(root))
         self.expected_value = float(np.mean(tree_bases)) if tree_bases else 0.0
 
+        # Per-feature numeric/categorical flag + a string-keyed code table for
+        # categorical splits, so the numba kernel can do integer equality
+        # instead of Python string compares. Built from the tree split values.
+        self._feat_numeric = np.ones(self.n_features, dtype=np.bool_)
+        self._cat_codes = {}  # feat_index -> {string key: int code}
+        for root in self.trees:
+            self._scan_feature_types(root)
+
+        # Flatten each folded tree into numpy arrays for the JIT kernel.
+        self._flat = [self._flatten(root) for root in self.trees]
+        max_depth = max((ft.max_depth for ft in self._flat), default=0)
+        self._maxpath = max_depth + 2     # path length bound (incl. sentinel)
+        self._maxlevels = max_depth + 2   # recursion-depth bound
+
+    def _scan_feature_types(self, node: _FoldedNode) -> None:
+        # Features default to numeric; any categorical split flips the flag and
+        # registers its split value in the per-feature code table.
+        if node.is_leaf:
+            return
+        if not node.is_numeric:
+            f = node.feat
+            self._feat_numeric[f] = False
+            codes = self._cat_codes.setdefault(f, {})
+            key = _cat_key(node.val)
+            if key not in codes:
+                codes[key] = len(codes)
+        for c in node.children:
+            self._scan_feature_types(c)
+
+    def _flatten(self, root: _FoldedNode) -> "_FlatTree":
+        return _flatten_folded_tree(root, self._cat_codes)
+
     def _fold(self, node, falloff: float, path_means: list) -> _FoldedNode:
         pm = path_means + [float(node.wilson_mean)]
         folded = _fold_path_value(pm, falloff)
@@ -308,25 +358,70 @@ class _LayeredCompShapExplainer:
             return 0
         return 1 if node.n_real >= 2 else node.stop_index
 
+    def _encode(self, X: pd.DataFrame):
+        """Encode X into the numeric + integer-code matrices the kernel needs.
+
+        ``Xnum`` holds numeric feature values (NaN where missing); ``Xcode``
+        holds integer codes for categorical features (matching the per-feature
+        code table, -1 for any value not seen as a split). Mirrors ``_hot_index``
+        exactly: numeric NaN -> stop, categorical string equality -> code match.
+        """
+        n = len(X)
+        Xnum = np.full((n, self.n_features), np.nan, dtype=np.float64)
+        Xcode = np.full((n, self.n_features), -1, dtype=np.int64)
+        for j, name in enumerate(self.feature_names):
+            col = X[name] if name in X.columns else None
+            if self._feat_numeric[j]:
+                if col is not None:
+                    Xnum[:, j] = pd.to_numeric(col, errors="coerce").to_numpy(dtype=np.float64)
+            else:
+                if col is not None:
+                    codes = self._cat_codes.get(j, {})
+                    keys = [_cat_key(v) for v in col.to_numpy(dtype=object)]
+                    Xcode[:, j] = [codes.get(k, -1) for k in keys]
+        return Xnum, Xcode
+
     def shap_values(self, X: pd.DataFrame) -> np.ndarray:
         n = len(X)
-        out = np.zeros((n, self.n_features), dtype=np.float64)
+        n_trees = len(self.trees) or 1
 
-        # Align inputs to the training feature order; missing columns -> NaN.
+        if _HAVE_NUMBA and n > 0:
+            Xnum, Xcode = self._encode(X)
+            out = np.zeros((n, self.n_features), dtype=np.float64)
+
+            def _run_range(s, e):
+                # All trees for a disjoint row range -> threads never write the
+                # same out[r], so accumulation across trees stays race-free.
+                for ft in self._flat:
+                    _kernel(
+                        Xnum, Xcode, ft.feat, ft.is_numeric, ft.val_num,
+                        ft.val_code, ft.children, ft.n_real, ft.stop_pos,
+                        ft.cover, ft.value, self._maxpath, self._maxlevels,
+                        out, s, e,
+                    )
+
+            n_workers = min((os.cpu_count() or 1), 8)
+            if n_workers <= 1 or n < 256:
+                _run_range(0, n)
+            else:
+                # @njit releases the GIL, so Python threads run the kernel in
+                # true parallel over disjoint row ranges.
+                bounds = np.linspace(0, n, n_workers + 1).astype(int)
+                with ThreadPoolExecutor(max_workers=n_workers) as ex:
+                    list(ex.map(lambda b: _run_range(int(b[0]), int(b[1])),
+                                zip(bounds[:-1], bounds[1:])))
+            out /= n_trees
+            return out
+
+        # Pure-Python fallback (no numba available). Dedup identical rows since
+        # SHAP depends only on the feature vector.
+        out = np.zeros((n, self.n_features), dtype=np.float64)
         xarr = np.empty((n, self.n_features), dtype=object)
         for j, f in enumerate(self.feature_names):
-            if f in X.columns:
-                xarr[:, j] = X[f].to_numpy(dtype=object)
-            else:
-                xarr[:, j] = np.nan
-
-        # SHAP values depend only on the row's feature vector, so identical rows
-        # share a result -- a big win on assessment data with repeated profiles.
+            xarr[:, j] = X[f].to_numpy(dtype=object) if f in X.columns else np.nan
         sig_to_rows: dict = {}
         for r in range(n):
             sig_to_rows.setdefault(tuple(xarr[r]), []).append(r)
-
-        n_trees = len(self.trees) or 1
         for sig, rows in sig_to_rows.items():
             xvals = list(sig)
             phi = np.zeros(self.n_features, dtype=np.float64)
@@ -413,6 +508,245 @@ def _tree_shap(root: _FoldedNode, xvals, phi: np.ndarray, hot_index) -> None:
             recurse(child, d, z, o, w, cz, cp, node.feat)
 
     recurse(root, [], [], [], [], 1.0, 1.0, -1)
+
+
+# ---------------------------------------------------------------------------
+# numba-accelerated path
+# ---------------------------------------------------------------------------
+#
+# Identical math to ``_tree_shap`` above, but the folded tree is flattened into
+# numpy arrays and the recursion is JIT-compiled, with rows run in parallel.
+# Categorical string equality is pre-encoded to integer-code equality so the
+# kernel stays purely numeric. Validated bit-for-bit against the pure-Python
+# path and the brute-force Shapley oracle (see tests/test_lcomp_shap.py).
+
+
+def _cat_key(v) -> str:
+    """Canonical string key for a categorical value (mirrors ``_hot_index``)."""
+    return "NaN" if pd.isna(v) else str(v)
+
+
+class _FlatTree:
+    """Folded tree as parallel numpy arrays (node 0 = root)."""
+
+    __slots__ = (
+        "feat", "is_numeric", "val_num", "val_code", "children",
+        "n_real", "stop_pos", "cover", "value", "max_depth",
+    )
+
+    def __init__(self, feat, is_numeric, val_num, val_code, children,
+                 n_real, stop_pos, cover, value, max_depth):
+        self.feat = feat
+        self.is_numeric = is_numeric
+        self.val_num = val_num
+        self.val_code = val_code
+        self.children = children
+        self.n_real = n_real
+        self.stop_pos = stop_pos
+        self.cover = cover
+        self.value = value
+        self.max_depth = max_depth
+
+
+def _flatten_folded_tree(root: _FoldedNode, cat_codes: dict) -> _FlatTree:
+    """DFS-flatten a folded tree into the arrays the JIT kernel consumes."""
+    nodes = []          # _FoldedNode in id order
+    order_index = {}    # id(node) -> flat index
+
+    stack = [root]
+    while stack:
+        nd = stack.pop()
+        order_index[id(nd)] = len(nodes)
+        nodes.append(nd)
+        for c in nd.children:
+            stack.append(c)
+
+    n = len(nodes)
+    feat = np.full(n, -1, dtype=np.int64)
+    is_numeric = np.zeros(n, dtype=np.bool_)
+    val_num = np.full(n, np.nan, dtype=np.float64)
+    val_code = np.full(n, -2, dtype=np.int64)
+    children = np.full((n, 3), -1, dtype=np.int64)
+    n_real = np.zeros(n, dtype=np.int64)
+    stop_pos = np.full(n, -1, dtype=np.int64)
+    cover = np.zeros(n, dtype=np.float64)
+    value = np.zeros(n, dtype=np.float64)
+
+    for idx, nd in enumerate(nodes):
+        cover[idx] = nd.cover
+        value[idx] = nd.value
+        if nd.is_leaf:
+            continue
+        feat[idx] = nd.feat
+        is_numeric[idx] = nd.is_numeric
+        n_real[idx] = nd.n_real
+        if nd.stop_index is not None:
+            stop_pos[idx] = nd.stop_index
+        if nd.is_numeric:
+            try:
+                val_num[idx] = float(nd.val)
+            except (TypeError, ValueError):
+                val_num[idx] = np.nan
+        else:
+            val_code[idx] = cat_codes.get(nd.feat, {}).get(_cat_key(nd.val), -2)
+        for c, child in enumerate(nd.children):
+            children[idx, c] = order_index[id(child)]
+
+    # max recursion depth (root depth 0)
+    max_depth = 0
+    stack = [(root, 0)]
+    while stack:
+        nd, d = stack.pop()
+        if d > max_depth:
+            max_depth = d
+        for c in nd.children:
+            stack.append((c, d + 1))
+
+    return _FlatTree(feat, is_numeric, val_num, val_code, children,
+                     n_real, stop_pos, cover, value, max_depth)
+
+
+@njit(cache=True, nogil=True)
+def _k_unwound_sum(i, m, w, o, z):
+    """Sum of path weights with element ``i`` removed (no allocation)."""
+    l = m - 1
+    oi = o[i]
+    zi = z[i]
+    n = w[l]
+    total = 0.0
+    if oi != 0.0:
+        for j in range(l - 1, -1, -1):
+            wj = n * (l + 1) / ((j + 1) * oi)
+            total += wj
+            n = w[j] - wj * zi * (l - j) / (l + 1)
+    elif zi != 0.0:
+        for j in range(l - 1, -1, -1):
+            total += w[j] * (l + 1) / (zi * (l - j))
+    return total
+
+
+@njit(cache=True, nogil=True)
+def _k_unwind_compact(d, z, o, w, m, k):
+    """Remove element ``k`` from the path in place; return the new length."""
+    l = m - 1
+    oi = o[k]
+    zi = z[k]
+    n = w[l]
+    for j in range(l - 1, -1, -1):
+        if oi != 0.0:
+            t = w[j]
+            w[j] = n * (l + 1) / ((j + 1) * oi)
+            n = t - w[j] * zi * (l - j) / (l + 1)
+        elif zi != 0.0:
+            w[j] = w[j] * (l + 1) / (zi * (l - j))
+        else:
+            w[j] = 0.0
+    for j in range(k, l):
+        d[j] = d[j + 1]
+        z[j] = z[j + 1]
+        o[j] = o[j + 1]
+    return l
+
+
+@njit(nogil=True)
+def _k_recurse(nd, feat, is_numeric, val_num, val_code, children, n_real,
+               stop_pos, cover, value, xnum, xcode, D, Z, O, W, lvl, plen,
+               pz, po, pi, phi):
+    # Work in this level's preallocated path row (no per-node allocation). The
+    # parent's path lives one level up; copy its active prefix down, then EXTEND.
+    d = D[lvl]
+    z = Z[lvl]
+    o = O[lvl]
+    w = W[lvl]
+    if lvl > 0:
+        pd_ = D[lvl - 1]
+        pz_ = Z[lvl - 1]
+        po_ = O[lvl - 1]
+        pw_ = W[lvl - 1]
+        for i in range(plen):
+            d[i] = pd_[i]
+            z[i] = pz_[i]
+            o[i] = po_[i]
+            w[i] = pw_[i]
+    d[plen] = pi
+    z[plen] = pz
+    o[plen] = po
+    w[plen] = 1.0 if plen == 0 else 0.0
+    l = plen
+    for i in range(l - 1, -1, -1):
+        w[i + 1] += po * w[i] * (i + 1) / (l + 1)
+        w[i] = pz * w[i] * (l - i) / (l + 1)
+    m = plen + 1
+
+    if feat[nd] < 0:  # leaf
+        v = value[nd]
+        for i in range(1, m):
+            s = _k_unwound_sum(i, m, w, o, z)
+            phi[d[i]] += s * (o[i] - z[i]) * v
+        return
+
+    f = feat[nd]
+    if is_numeric[nd]:
+        xv = xnum[f]
+        if np.isnan(xv):
+            hp = stop_pos[nd]
+        elif xv <= val_num[nd]:
+            hp = 0
+        else:
+            hp = 1 if n_real[nd] >= 2 else stop_pos[nd]
+    else:
+        if xcode[f] == val_code[nd]:
+            hp = 0
+        else:
+            hp = 1 if n_real[nd] >= 2 else stop_pos[nd]
+
+    # Splice out this feature if it is already on the path.
+    iz = 1.0
+    io = 1.0
+    k = -1
+    for i in range(1, m):
+        if d[i] == f:
+            k = i
+            break
+    if k >= 0:
+        iz = z[k]
+        io = o[k]
+        m = _k_unwind_compact(d, z, o, w, m, k)
+
+    cov = cover[nd]
+    nc = n_real[nd]
+    if stop_pos[nd] >= 0:
+        nc += 1
+    for c in range(nc):
+        childid = children[nd, c]
+        if childid < 0:
+            continue
+        chcov = cover[childid]
+        if c != hp and chcov == 0.0:
+            continue
+        cz = iz * (chcov / cov) if cov > 0.0 else 0.0
+        cp = io if c == hp else 0.0
+        _k_recurse(childid, feat, is_numeric, val_num, val_code, children,
+                   n_real, stop_pos, cover, value, xnum, xcode,
+                   D, Z, O, W, lvl + 1, m, cz, cp, f, phi)
+
+
+@njit(nogil=True)
+def _kernel(Xnum, Xcode, feat, is_numeric, val_num, val_code, children,
+            n_real, stop_pos, cover, value, maxpath, maxlevels, out,
+            row_start, row_end):
+    # Sequential over [row_start, row_end). Recursion can't run under numba's
+    # prange (LLVM symbol error), so parallelism is added one level up by
+    # threading over row ranges -- safe because nogil=True releases the GIL.
+    # One depth-indexed path buffer, reused across every row in this range.
+    D = np.empty((maxlevels, maxpath), dtype=np.int64)
+    Z = np.empty((maxlevels, maxpath), dtype=np.float64)
+    O = np.empty((maxlevels, maxpath), dtype=np.float64)
+    W = np.empty((maxlevels, maxpath), dtype=np.float64)
+    for r in range(row_start, row_end):
+        _k_recurse(0, feat, is_numeric, val_num, val_code, children, n_real,
+                   stop_pos, cover, value, Xnum[r], Xcode[r],
+                   D, Z, O, W, 0, 0, 1.0, 1.0, -1, out[r])
 
 
 def _layeredcomp_shap(model) -> _LayeredCompShapExplainer:

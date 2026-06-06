@@ -23,6 +23,7 @@ xlsxwriter==3.2.9
 census==0.8.26
 layeredcompmodel==0.2.1
 shap==0.50.0
+numba==0.65.1
 mpld3==0.5.12
 hilbertcurve==2.0.5
 optuna-integration==4.6.0
