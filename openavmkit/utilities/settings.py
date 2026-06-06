@@ -866,9 +866,20 @@ def get_ensemble_instructions(settings: dict, mv: str) -> dict:
         type = "median"
     if type in ("median", "mean"):
         models = ensemble.get("models", [])
+        # "optimize" controls whether the greedy backward-elimination optimizer
+        # runs. Its default depends on whether the user supplied an explicit
+        # model list:
+        #   - models given, optimize unspecified  -> False (use the list as-is;
+        #     it is a whitelist of exactly which models to ensemble)
+        #   - models given, optimize=True          -> optimize *from* the whitelist
+        #   - models omitted, optimize unspecified -> True (optimize over all
+        #     models -- the historical default)
+        #   - models omitted, optimize=True        -> optimize over all models
+        optimize = ensemble.get("optimize", len(models) == 0)
         return {
             "type": type,
-            "models": models
+            "models": models,
+            "optimize": optimize,
         }
     elif type == "local":
         locations = ensemble.get("locations", None)

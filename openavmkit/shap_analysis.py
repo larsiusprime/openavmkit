@@ -1040,6 +1040,86 @@ def make_shap_table(
     return df
 
 
+# Bookkeeping columns that are never SHAP feature contributions.
+_CONTRIB_NON_FEATURE_COLS = frozenset(
+    {"key", "key_sale", "base_value", "intercept", "contribution_sum",
+     "prediction", "check_delta"}
+)
+
+
+def explanation_from_contributions(
+    df_contrib: pd.DataFrame,
+    df_features: pd.DataFrame,
+    key_col: str = "key_sale",
+) -> shap.Explanation:
+    """Rebuild a plottable ``shap.Explanation`` from a ``contributions_*`` table.
+
+    This is the inverse of :func:`make_shap_table`. It is used for models whose
+    SHAP values exist only as on-disk contributions (e.g. the ensemble, whose
+    contributions are assembled as a weighted combination of its members rather
+    than computed from a live estimator), so there is no explainer to re-run.
+
+    Parameters
+    ----------
+    df_contrib : pd.DataFrame
+        A contributions table: a ``base_value`` (or ``intercept``) column, one
+        column per feature, and bookkeeping columns (``key``, ``key_sale``,
+        ``contribution_sum``, ``prediction``, ``check_delta``) which are dropped.
+    df_features : pd.DataFrame
+        Raw feature values for the same rows, used as the beeswarm ``data`` matrix
+        (it colors points by feature magnitude). Aligned to ``df_contrib`` by
+        ``key_col`` and reindexed to the feature columns; missing or non-numeric
+        features become NaN (rendered gray by the beeswarm).
+    key_col : str
+        The column shared by both frames used to align rows. Defaults to
+        ``"key_sale"``.
+
+    Returns
+    -------
+    shap.Explanation
+        With ``values`` (n, m), ``base_values`` (n,), ``data`` (n, m) and
+        ``feature_names`` of length m.
+    """
+    base_col = (
+        "base_value" if "base_value" in df_contrib.columns
+        else ("intercept" if "intercept" in df_contrib.columns else None)
+    )
+    feature_names = [
+        c for c in df_contrib.columns if c not in _CONTRIB_NON_FEATURE_COLS
+    ]
+
+    values = df_contrib[feature_names].apply(
+        pd.to_numeric, errors="coerce"
+    ).to_numpy(dtype=float)
+
+    if base_col is not None:
+        base_values = pd.to_numeric(
+            df_contrib[base_col], errors="coerce"
+        ).to_numpy(dtype=float)
+    else:
+        base_values = np.zeros(len(df_contrib), dtype=float)
+
+    # Align raw feature values to the contribution rows for the `data` matrix.
+    if key_col in df_contrib.columns and key_col in df_features.columns:
+        feats = df_features.copy()
+        feats[key_col] = feats[key_col].astype(str)
+        feats = feats[~feats[key_col].duplicated()].set_index(key_col)
+        keys = df_contrib[key_col].astype(str)
+        data = feats.reindex(keys).reindex(columns=feature_names)
+    else:
+        # No shared key: fall back to positional alignment.
+        data = df_features.reindex(columns=feature_names)
+
+    data = data.apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+
+    return shap.Explanation(
+        values=values,
+        base_values=base_values,
+        data=data,
+        feature_names=feature_names,
+    )
+
+
 def _calc_shap(
     model, X_train: pd.DataFrame, X_to_explain: pd.DataFrame, background_size: int = 100
 ) -> shap.Explanation:

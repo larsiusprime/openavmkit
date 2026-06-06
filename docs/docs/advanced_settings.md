@@ -1145,8 +1145,22 @@ Configure how individual model predictions get combined into an `ensemble` predi
 
 Runs a greedy backward-elimination over the candidate models: starts with all of them combined via per-row **median**, then drops the model whose removal *improves* (lowers) the test MAPE, and repeats until removing any further model would only hurt. The surviving subset is combined element-wise via median (not mean — median is robust to a single model going wild on a particular parcel) and the result is named `ensemble`. Useful when one or two models are weakening the combination and you want them auto-pruned.
 
-- **Optional** `models` — explicit candidate list. Defaults to all models that ran except `assessor` and `ground_truth`.
+- **Optional** `models` — explicit list of models to ensemble. **By default this is treated as a whitelist: exactly these models are combined, with no greedy pruning.** Defaults to all models that ran except `assessor` and `ground_truth`. Any listed model that produced no results for a given model group is dropped with a warning.
+- **Optional** `optimize` (bool) — whether to run greedy backward-elimination. Its default depends on `models`:
+  - `models` omitted → `optimize` defaults to **`true`** (optimize over every model that ran — the historical default).
+  - `models` given → `optimize` defaults to **`false`** (use the listed models exactly).
+  - Set `"optimize": true` *with* a `models` list to optimize *from* that whitelist (treat it as a candidate pool to prune).
+  - Set `"optimize": false` *without* a `models` list to combine every model that ran with no pruning.
 - **Source** — `_perform_default_ensemble` in [openavmkit/benchmark.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/benchmark.py)
+
+```json
+"main": {
+    "run": ["mra", "multi_mra", "local_area", "lightgbm", "xgboost"],
+    "ensemble": { "type": "median", "models": ["mra", "lightgbm", "xgboost"] }
+}
+```
+
+The example above ensembles *exactly* `mra`, `lightgbm`, and `xgboost` (no pruning). Add `"optimize": true` to instead greedily prune that three-model pool down to its best-MAPE subset.
 
 #### `type: "mean"` — global greedy ensemble (mean aggregation)
 
@@ -1157,9 +1171,10 @@ Runs a greedy backward-elimination over the candidate models: starts with all of
 }
 ```
 
-Identical to `median` — same greedy backward-elimination over the candidate models — except component predictions are combined element-wise via **mean** instead of median. Use this when you want every surviving model to pull on the result proportionally (no robustness clipping); prefer `median` when you want a single model going wild on a particular parcel to be ignored.
+Identical to `median` — same `models` whitelist and `optimize` semantics — except component predictions are combined element-wise via **mean** instead of median. Use this when you want every surviving model to pull on the result proportionally (no robustness clipping); prefer `median` when you want a single model going wild on a particular parcel to be ignored.
 
-- **Optional** `models` — explicit candidate list. Defaults to all models that ran except `assessor` and `ground_truth`.
+- **Optional** `models` — explicit list of models to ensemble (whitelist by default). See `median` above.
+- **Optional** `optimize` (bool) — whether to greedily prune. See `median` above for the default rules.
 - **Source** — `_perform_default_ensemble` (with `agg="mean"`) in [openavmkit/benchmark.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/benchmark.py)
 
 #### `type: "local"` — best-model-per-location

@@ -354,6 +354,8 @@ Three combination strategies:
 - **`type: "mean"`** — identical greedy selection, but combines via per-row **mean** (every surviving model pulls proportionally).
 - **`type: "local"`** (only for `main`) — picks the *single best* model per location at predict time; no combining, one model wins per neighborhood.
 
+For `median`/`mean` you can **manually pick the ensemble members** with an explicit `models` list — by default it is a whitelist (those exact models, no pruning). Add `"optimize": true` to instead greedily prune from that list, or omit `models` to optimize over every model that ran. See [advanced_settings.md → `modeling.instructions.<stage>.ensemble`](advanced_settings.md#modelinginstructionsmainvacantensemble).
+
 All three also **reassemble per-feature `params_<subset>.csv` / `contributions_<subset>.csv`** for the ensemble itself (and stamp `ensemble_meta.json`), so the ensemble is as interpretable as the individual models — see [tutorial.md § per-model output](tutorial.md). See [advanced_settings.md → `modeling.instructions.<stage>.ensemble`](advanced_settings.md#modelinginstructionsmainvacantensemble) for full configuration including the `locations` list.
 
 ---

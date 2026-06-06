@@ -136,7 +136,8 @@ from openavmkit.utilities.geometry import ensure_geometries
 from openavmkit.utilities.timing import TimingData
 from openavmkit.shap_analysis import (
     _calc_shap,
-    plot_full_beeswarm
+    plot_full_beeswarm,
+    explanation_from_contributions,
 )
 
 #######################################
@@ -2844,7 +2845,7 @@ def _optimize_ensemble(
     
     if ensemble_list is None:
         ensemble_inst = get_ensemble_instructions(settings, vacant_status)
-        ensemble_list = ensemble_inst.get("list", [])
+        ensemble_list = list(ensemble_inst.get("models", []))
 
     if len(ensemble_list) == 0:
         ensemble_list = [key for key in all_results.model_results.keys()]
@@ -3598,6 +3599,7 @@ def _perform_ensemble(
     ensemble_type = ensemble_inst["type"]
     if ensemble_type in ("median", "mean"):
         ensemble_models = ensemble_inst.get("models", [])
+        optimize = ensemble_inst.get("optimize", len(ensemble_models) == 0)
         # The ensemble type names the aggregation method directly ("median" or
         # "mean"); "default" was already normalized to "median" upstream.
         agg = ensemble_type
@@ -3613,6 +3615,7 @@ def _perform_ensemble(
             settings=settings,
             verbose=verbose,
             ensemble_list=ensemble_models,
+            optimize=optimize,
             t=t,
             agg=agg,
         )
@@ -3672,6 +3675,49 @@ def _perform_local_ensemble(
     return ensemble_results
 
 
+def _validate_ensemble_models(
+    ensemble_list: list[str],
+    all_results: MultiModelResults,
+    verbose: bool = False,
+) -> list[str]:
+    """Filter a user-supplied ensemble model list down to models that actually ran.
+
+    Any listed model with no results for this model group (a typo, or a model
+    that was skipped here) is dropped with a warning, so a mistake visibly
+    shrinks the ensemble rather than silently producing a KeyError downstream.
+
+    Parameters
+    ----------
+    ensemble_list : list[str]
+        Model keys requested for the ensemble (may be empty).
+    all_results : MultiModelResults
+        Results for every model that ran in this model group.
+    verbose : bool
+        Whether to print diagnostic output.
+
+    Returns
+    -------
+    list[str]
+        The subset of ``ensemble_list`` that has corresponding results, in the
+        original order. An empty input list is returned unchanged.
+    """
+    if ensemble_list is None or len(ensemble_list) == 0:
+        return []
+
+    available = all_results.model_results
+    kept = [m for m in ensemble_list if m in available]
+    missing = [m for m in ensemble_list if m not in available]
+    if missing:
+        warnings.warn(
+            f"Ensemble requested model(s) {missing} that produced no results for "
+            f"this model group; ignoring them. Available models: "
+            f"{list(available.keys())}"
+        )
+    if verbose and kept:
+        print(f"Validated ensemble models: {kept}")
+    return kept
+
+
 def _perform_default_ensemble(
     df_sales: pd.DataFrame | None,
     df_universe: pd.DataFrame | None,
@@ -3684,26 +3730,50 @@ def _perform_default_ensemble(
     settings: dict,
     verbose: bool = False,
     ensemble_list: list[str] = None,
+    optimize: bool = None,
     t: TimingData = None,
     agg: str = "median",
 ):
     if t is None:
         t = TimingData()
-    t.start("optimize_ensemble")
-    if verbose:
-        print("Optimizing ensemble...")
-    best_ensemble = _optimize_ensemble(
-        df_sales=df_sales,
-        df_universe=df_universe,
-        model_group=model_group,
-        vacant_only=vacant_only,
-        dep_var=dep_var,
-        dep_var_test=dep_var_test,
-        all_results=all_results,
-        settings=settings,
-        verbose=verbose,
-        agg=agg,
+
+    if ensemble_list is None:
+        ensemble_list = []
+
+    # Drop any user-listed models that did not produce results for this model
+    # group (e.g. a typo, or a model that was skipped here), warning loudly so a
+    # mistake shrinks the ensemble visibly rather than silently.
+    ensemble_list = _validate_ensemble_models(
+        ensemble_list, all_results, verbose=verbose
     )
+
+    # Default mirrors get_ensemble_instructions: optimize unless the caller gave
+    # an explicit whitelist.
+    if optimize is None:
+        optimize = len(ensemble_list) == 0
+
+    t.start("optimize_ensemble")
+    if optimize:
+        if verbose:
+            print("Optimizing ensemble...")
+        best_ensemble = _optimize_ensemble(
+            df_sales=df_sales,
+            df_universe=df_universe,
+            model_group=model_group,
+            vacant_only=vacant_only,
+            dep_var=dep_var,
+            dep_var_test=dep_var_test,
+            all_results=all_results,
+            settings=settings,
+            verbose=verbose,
+            ensemble_list=ensemble_list if len(ensemble_list) > 0 else None,
+            agg=agg,
+        )
+    else:
+        # Manual selection: use exactly the models the user listed, no pruning.
+        best_ensemble = list(ensemble_list)
+        if verbose:
+            print(f"Using manually-selected ensemble: {best_ensemble}")
     t.stop("optimize_ensemble")
     # Run the ensemble model
     t.start("run_ensemble")
@@ -3818,12 +3888,60 @@ def _model_performance_plots(
             )
 
 
-def _model_shaps(model_group: str, all_results: MultiModelResults, title: str):
+def _model_shaps(
+    model_group: str,
+    all_results: MultiModelResults,
+    title: str,
+    outpath: str,
+):
 
     for key in all_results.model_results:
         smr: SingleModelResults = all_results.model_results[key]
         _title = f"{title}/{model_group}/{key}"
-        _quick_shap(smr, True, _title)
+        if smr.model_engine == "ensemble":
+            # The ensemble has no explainable estimator; its SHAPs live on disk as
+            # derived contributions. Rebuild a beeswarm from those instead.
+            _ensemble_beeswarm(smr, outpath, _title)
+        else:
+            _quick_shap(smr, True, _title)
+
+
+def _ensemble_beeswarm(
+    smr: SingleModelResults,
+    outpath: str,
+    title: str,
+    verbose: bool = False,
+):
+    """Draw an inline beeswarm for the ensemble from its derived contributions.
+
+    The ensemble isn't fitted, so it carries no train contributions of its own.
+    Other models plot their train subset, and train == sales rows whose
+    ``key_sale`` is not in the test set (see ``DataSplit.split``). So we read the
+    ensemble's ``contributions_sales.csv``, keep the train rows, and rebuild a
+    ``shap.Explanation`` colored by the raw train feature values. Output mirrors
+    ``_quick_shap`` exactly: an inline ``plt.show()`` with no file written.
+    """
+    path = f"{outpath}/{smr.model_name}"
+    cfile = f"{path}/contributions_sales.csv"
+    if not os.path.exists(cfile):
+        if verbose:
+            print(f"No ensemble contributions at {cfile}; skipping beeswarm.")
+        return
+
+    df_contrib = pd.read_csv(cfile)
+    df_train = smr.ds.df_train
+    if df_train is None or "key_sale" not in df_train.columns:
+        return
+    if "key_sale" not in df_contrib.columns:
+        return
+
+    train_keys = set(df_train["key_sale"].astype(str))
+    df_contrib = df_contrib[df_contrib["key_sale"].astype(str).isin(train_keys)]
+    if len(df_contrib) == 0:
+        return
+
+    expl = explanation_from_contributions(df_contrib, df_train, key_col="key_sale")
+    plot_full_beeswarm(expl, title=title)
 
 
 def _get_earliest_and_latest_date(df: pd.DataFrame):
@@ -4273,7 +4391,7 @@ def _run_models(
     print("")
 
     if do_shaps:
-        _model_shaps(model_group, all_results, title)
+        _model_shaps(model_group, all_results, title, outpath)
 
     if do_plots:
         _model_performance_plots(model_group, all_results, title)

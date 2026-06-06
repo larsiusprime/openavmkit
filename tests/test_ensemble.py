@@ -8,6 +8,8 @@ import openavmkit.benchmark as benchmark
 from openavmkit.benchmark import (
 	_aggregate_ensemble,
 	_perform_ensemble,
+	_perform_default_ensemble,
+	_validate_ensemble_models,
 	_write_ensemble_contributions,
 )
 from openavmkit.utilities.settings import get_ensemble_instructions
@@ -115,6 +117,151 @@ def test_perform_ensemble_dispatches_correct_aggregation(
 	assert result == "sentinel-result"
 	assert captured["agg"] == expected_agg
 	assert captured["ensemble_list"] == ["mra", "xgboost"]
+
+
+# ---------------------------------------------------------------------------
+# Manual model selection: the `models` whitelist + `optimize` flag
+# ---------------------------------------------------------------------------
+
+
+def test_get_ensemble_instructions_optimize_defaults():
+	# models given -> optimize defaults to False (whitelist, use as-is)
+	inst = get_ensemble_instructions(
+		_make_settings({"type": "median", "models": ["mra", "xgboost"]}), "main"
+	)
+	assert inst["models"] == ["mra", "xgboost"]
+	assert inst["optimize"] is False
+
+	# models omitted -> optimize defaults to True (historical: optimize over all)
+	inst = get_ensemble_instructions(_make_settings({"type": "median"}), "main")
+	assert inst["models"] == []
+	assert inst["optimize"] is True
+
+
+def test_get_ensemble_instructions_optimize_explicit():
+	# explicit optimize=True with a list -> optimize *from* the whitelist
+	inst = get_ensemble_instructions(
+		_make_settings(
+			{"type": "mean", "models": ["mra", "xgboost"], "optimize": True}
+		),
+		"main",
+	)
+	assert inst["models"] == ["mra", "xgboost"]
+	assert inst["optimize"] is True
+
+	# explicit optimize=False with no list -> combine everything, no pruning
+	inst = get_ensemble_instructions(
+		_make_settings({"type": "median", "optimize": False}), "main"
+	)
+	assert inst["models"] == []
+	assert inst["optimize"] is False
+
+
+def _fake_all_results(model_keys):
+	"""MultiModelResults-like stub exposing only `model_results` keys."""
+	return SimpleNamespace(model_results={k: SimpleNamespace() for k in model_keys})
+
+
+def test_validate_ensemble_models_drops_unknown_with_warning():
+	all_results = _fake_all_results(["mra", "xgboost"])
+	with pytest.warns(UserWarning, match="bogus"):
+		kept = _validate_ensemble_models(["mra", "bogus", "xgboost"], all_results)
+	assert kept == ["mra", "xgboost"]  # order preserved, unknown dropped
+
+
+def test_validate_ensemble_models_empty_passthrough():
+	all_results = _fake_all_results(["mra", "xgboost"])
+	assert _validate_ensemble_models([], all_results) == []
+	assert _validate_ensemble_models(None, all_results) == []
+
+
+@pytest.mark.parametrize(
+	"ensemble_list,optimize,expect_optimize_called,expected_run_list",
+	[
+		# whitelist, no optimization -> exact list passed straight to _run_ensemble
+		(["mra", "xgboost"], False, False, ["mra", "xgboost"]),
+		# whitelist + optimize -> optimizer runs over the whitelist
+		(["mra", "xgboost"], True, True, ["mra"]),
+		# no list + optimize -> optimizer runs over everything
+		([], True, True, ["mra"]),
+	],
+)
+def test_perform_default_ensemble_optimize_branch(
+	monkeypatch, ensemble_list, optimize, expect_optimize_called, expected_run_list
+):
+	"""_perform_default_ensemble must honor the optimize flag and feed the right list to _run_ensemble."""
+	calls = {"optimize": False, "run_list": None, "optimize_input": None}
+
+	def _fake_optimize(*args, **kwargs):
+		calls["optimize"] = True
+		calls["optimize_input"] = kwargs.get("ensemble_list")
+		# Pretend the optimizer pruned down to a single best model.
+		return ["mra"]
+
+	def _fake_run(*args, **kwargs):
+		calls["run_list"] = kwargs.get("ensemble_list")
+		return "ran"
+
+	monkeypatch.setattr(benchmark, "_optimize_ensemble", _fake_optimize)
+	monkeypatch.setattr(benchmark, "_run_ensemble", _fake_run)
+
+	all_results = _fake_all_results(["mra", "xgboost"])
+	result = _perform_default_ensemble(
+		df_sales=None,
+		df_universe=None,
+		model_group="mg",
+		vacant_only=False,
+		outpath="unused",
+		dep_var="dep",
+		dep_var_test="dep_test",
+		all_results=all_results,
+		settings={},
+		ensemble_list=list(ensemble_list),
+		optimize=optimize,
+	)
+
+	assert result == "ran"
+	assert calls["optimize"] is expect_optimize_called
+	assert calls["run_list"] == expected_run_list
+
+
+def test_perform_default_ensemble_defaults_to_whitelist_when_models_given(monkeypatch):
+	"""With optimize=None and a non-empty list, the list is used as-is (no optimizer)."""
+	calls = {"optimize": False, "run_list": None}
+	monkeypatch.setattr(
+		benchmark, "_optimize_ensemble",
+		lambda *a, **k: calls.__setitem__("optimize", True) or ["should-not-be-used"],
+	)
+	monkeypatch.setattr(
+		benchmark, "_run_ensemble",
+		lambda *a, **k: calls.__setitem__("run_list", k.get("ensemble_list")) or "ran",
+	)
+
+	_perform_default_ensemble(
+		df_sales=None, df_universe=None, model_group="mg", vacant_only=False,
+		outpath="unused", dep_var="dep", dep_var_test="dep_test",
+		all_results=_fake_all_results(["mra", "xgboost", "lightgbm"]),
+		settings={}, ensemble_list=["mra", "lightgbm"], optimize=None,
+	)
+	assert calls["optimize"] is False
+	assert calls["run_list"] == ["mra", "lightgbm"]
+
+
+def test_perform_ensemble_passes_optimize_through(monkeypatch):
+	"""_perform_ensemble must forward the resolved optimize flag to the default runner."""
+	captured = {}
+	monkeypatch.setattr(
+		benchmark, "_perform_default_ensemble",
+		lambda *a, **k: captured.update(k) or "sentinel",
+	)
+	# models present, optimize unspecified -> resolves to False
+	_perform_ensemble(
+		df_sales=None, df_universe=None, model_group="mg", vacant_only=False,
+		outpath="unused", dep_var="dep", dep_var_test="dep_test", all_results=None,
+		settings=_make_settings({"type": "median", "models": ["mra", "xgboost"]}),
+	)
+	assert captured["ensemble_list"] == ["mra", "xgboost"]
+	assert captured["optimize"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -470,3 +617,103 @@ def test_median_ensemble_even_equals_mean_of_two(tmp_path):
 	np.testing.assert_allclose(con.loc["p1", "contribution_sum"], 100.0)
 	np.testing.assert_allclose(con.loc["p2", "contribution_sum"], 185.0)
 	np.testing.assert_allclose(con["check_delta"].to_numpy(), [0.0, 0.0], atol=1e-9)
+
+
+# --- Ensemble beeswarm plotting -------------------------------------------
+
+import os
+import matplotlib
+
+matplotlib.use("Agg")  # headless: beeswarm smoke tests need no display
+
+from openavmkit.benchmark import _ensemble_beeswarm, _model_shaps
+from openavmkit.shap_analysis import (
+	explanation_from_contributions,
+	plot_full_beeswarm,
+)
+
+
+def _contrib_and_features():
+	"""A tiny contributions table + matching raw feature values (by key_sale)."""
+	df_contrib = pd.DataFrame({
+		"key": ["k1", "k2", "k3"],
+		"key_sale": ["s1", "s2", "s3"],
+		"base_value": [100.0, 100.0, 100.0],
+		"feat_a": [10.0, -5.0, 2.0],
+		"feat_b": [-3.0, 4.0, 1.0],
+		"contribution_sum": [107.0, 99.0, 103.0],
+	})
+	df_features = pd.DataFrame({
+		"key_sale": ["s3", "s1", "s2"],  # deliberately out of order
+		"feat_a": [20.0, 200.0, 50.0],
+		"feat_b": [7.0, 70.0, 35.0],
+	})
+	return df_contrib, df_features
+
+
+def test_explanation_from_contributions_shapes_and_alignment():
+	df_contrib, df_features = _contrib_and_features()
+	expl = explanation_from_contributions(df_contrib, df_features, key_col="key_sale")
+
+	assert list(expl.feature_names) == ["feat_a", "feat_b"]
+	assert expl.values.shape == (3, 2)
+	assert expl.data.shape == expl.values.shape
+	np.testing.assert_allclose(expl.base_values, [100.0, 100.0, 100.0])
+	# values come straight from the contribution columns
+	np.testing.assert_allclose(expl.values[:, 0], [10.0, -5.0, 2.0])
+	# data is aligned by key_sale, not row order: s1->200, s2->50, s3->20
+	np.testing.assert_allclose(expl.data[:, 0], [200.0, 50.0, 20.0])
+
+
+def test_explanation_from_contributions_missing_feature_is_nan():
+	df_contrib, df_features = _contrib_and_features()
+	# Drop a feature from the raw values: its data column should be all-NaN.
+	expl = explanation_from_contributions(
+		df_contrib, df_features.drop(columns=["feat_b"]), key_col="key_sale"
+	)
+	b = expl.feature_names.index("feat_b")
+	assert np.isnan(expl.data[:, b]).all()
+	# values for the dropped-from-data feature are still present
+	np.testing.assert_allclose(expl.values[:, b], [-3.0, 4.0, 1.0])
+
+
+def test_explanation_from_contributions_renders_beeswarm(tmp_path):
+	df_contrib, df_features = _contrib_and_features()
+	expl = explanation_from_contributions(df_contrib, df_features, key_col="key_sale")
+	out = tmp_path / "beeswarm.png"
+	plot_full_beeswarm(expl, title="ensemble", save_path=str(out))
+	assert out.exists() and out.stat().st_size > 0
+
+
+def test_ensemble_beeswarm_filters_train_and_renders(tmp_path):
+	"""_ensemble_beeswarm reads contributions_sales.csv, keeps train rows, renders."""
+	path = tmp_path / "ensemble"
+	os.makedirs(path, exist_ok=True)
+	df_contrib = pd.DataFrame({
+		"key": ["k1", "k2", "k3"],
+		"key_sale": ["s1", "s2", "s3"],
+		"base_value": [100.0, 100.0, 100.0],
+		"feat_a": [10.0, -5.0, 2.0],
+		"contribution_sum": [110.0, 95.0, 102.0],
+	})
+	df_contrib.to_csv(path / "contributions_sales.csv", index=False)
+
+	# Train == sales minus the test row (s2). df_train carries raw feature values.
+	df_train = pd.DataFrame({"key_sale": ["s1", "s3"], "feat_a": [200.0, 20.0]})
+	smr = SimpleNamespace(
+		model_name="ensemble",
+		model_engine="ensemble",
+		ds=SimpleNamespace(df_train=df_train),
+	)
+	# Should not raise; renders the 2 train rows only.
+	_ensemble_beeswarm(smr, str(tmp_path), title="grp/ensemble")
+
+
+def test_ensemble_beeswarm_missing_file_is_noop(tmp_path):
+	smr = SimpleNamespace(
+		model_name="ensemble",
+		model_engine="ensemble",
+		ds=SimpleNamespace(df_train=pd.DataFrame({"key_sale": ["s1"]})),
+	)
+	# No contributions_sales.csv on disk -> quietly returns.
+	_ensemble_beeswarm(smr, str(tmp_path), title="grp/ensemble")
