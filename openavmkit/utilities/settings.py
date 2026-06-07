@@ -267,9 +267,20 @@ def make_area_stat_field_name(location: str, field: str, stat: str) -> str:
     return f"{AREA_STAT_PREFIX}{location}_{field}_{stat}"
 
 
-def make_area_stat_count_field_name(location: str) -> str:
-    """Build the per-location group-size column name (e.g. ``area_stat_neighborhood_count``)."""
-    return f"{AREA_STAT_PREFIX}{location}_count"
+# Per-location count columns always emitted by area-stats enrichment:
+#   count                 -> universe parcels in the location
+#   sales_count           -> training valid sales in the location
+#   sales_count_improved  -> of those, improved sales
+#   sales_count_vacant    -> of those, vacant sales
+AREA_STAT_COUNT_KINDS = ["count", "sales_count", "sales_count_improved", "sales_count_vacant"]
+
+
+def make_area_stat_count_field_name(location: str, kind: str = "count") -> str:
+    """Build a per-location count column name (e.g. ``area_stat_neighborhood_sales_count``).
+
+    ``kind`` is one of :data:`AREA_STAT_COUNT_KINDS`; defaults to the universe parcel count.
+    """
+    return f"{AREA_STAT_PREFIX}{location}_{kind}"
 
 
 def is_sale_derived_field(s: dict, field: str) -> bool:
@@ -282,6 +293,61 @@ def is_sale_derived_field(s: dict, field: str) -> bool:
     circular import back into ``data``.
     """
     return str(field).startswith("sale_price")
+
+
+# Bare sale-price entries in an area_stats `fields` list trigger auto-expansion into the
+# full per-area family. The colloquial "_time_adjusted" spelling is accepted too.
+AREA_STATS_SALE_PRICE_TRIGGERS = {
+    "sale_price",
+    "sale_price_time_adj",
+    "sale_price_time_adjusted",
+}
+
+
+def expand_area_stats_fields(s: dict, fields: list) -> list:
+    """Expand a bare sale-price entry into the full per-area sale-rate family.
+
+    Listing ``sale_price`` or ``sale_price_time_adj`` (treated as aliases) auto-generates
+    the price level plus the three area-normalized rates (``_impr_<unit>``,
+    ``_vacant_land_<unit>``, ``_impr_land_<unit>``) — no suffixes needed. It uses the
+    canonical sale field, matching :func:`openavmkit.data.get_sale_field`: the
+    time-adjusted price when time adjustment is enabled, otherwise the raw sale price (one
+    base, not both). All other fields pass through unchanged; the result is de-duplicated
+    and order-preserving.
+
+    Parameters
+    ----------
+    s : dict
+        Settings dictionary.
+    fields : list
+        The configured ``area_stats.fields`` list.
+
+    Returns
+    -------
+    list
+        The expanded field list.
+    """
+    unit = area_unit(s)
+    ta_on = bool(get_time_adjustment_instructions(s).get("use", True))
+    base = "sale_price_time_adj" if ta_on else "sale_price"
+
+    expanded: list = []
+    for field in fields:
+        if field in AREA_STATS_SALE_PRICE_TRIGGERS:
+            expanded.append(base)  # price level
+            if unit:
+                expanded.append(f"{base}_impr_{unit}")
+                expanded.append(f"{base}_vacant_land_{unit}")
+                expanded.append(f"{base}_impr_land_{unit}")
+        else:
+            expanded.append(field)
+
+    seen, out = set(), []
+    for field in expanded:
+        if field not in seen:
+            seen.add(field)
+            out.append(field)
+    return out
 
 
 def _classify_base_field_raw(s: dict, field: str) -> tuple[str | None, str | None]:
@@ -335,19 +401,19 @@ def get_area_stats_fields(s: dict, df: pd.DataFrame = None) -> dict:
         return out
 
     locations = cfg.get("locations", []) or []
-    fields = cfg.get("fields", []) or []
+    fields = expand_area_stats_fields(s, cfg.get("fields", []) or [])
     num_stats = cfg.get("stats", AREA_STATS_NUMERIC_DEFAULT) or []
     cat_stats = cfg.get("categorical_stats", AREA_STATS_CATEGORICAL_DEFAULT) or []
 
     for location in locations:
-        count_name = make_area_stat_count_field_name(location)
-        out[count_name] = {
-            "bucket": "other",
-            "kind": "numeric",
-            "location": location,
-            "base_field": None,
-            "stat": "count",
-        }
+        for count_kind in AREA_STAT_COUNT_KINDS:
+            out[make_area_stat_count_field_name(location, count_kind)] = {
+                "bucket": "other",
+                "kind": "numeric",
+                "location": location,
+                "base_field": None,
+                "stat": count_kind,
+            }
         for field in fields:
             bucket, kind = _classify_base_field_raw(s, field)
             if kind is None:

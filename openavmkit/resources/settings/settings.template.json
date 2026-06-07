@@ -12,11 +12,22 @@
 			},
 			"reconcile": {},
 			"enrich": {
+				"__census": {
+					"__doc": "Optional ACS Census enrichment. Spatially joins American Community Survey block-group data (median_income, median_g_rent, median_c_rent, total_population) onto every parcel. Requires a US Census API key (see README) and a 5-digit state+county FIPS code.",
+					"__doc_stamp_regions": "By default (stamp_regions: true) also stamps census_tract (11-digit GEOID) and census_block_group (12-digit GEOID) location columns derived from the block-group GEOID. These auto-classify as categorical locations (already in field_classification + data_dictionary) and can be used by spatial_lag, area_stats, ratio-study breakdowns, and equity studies. Set stamp_regions: false to skip. Existing census_tract/census_block_group columns are never overwritten.",
+					"__example": {
+						"enabled": true,
+						"fips": "51730",
+						"year": 2022,
+						"stamp_regions": true
+					}
+				},
 				"__area_stats": {
 					"__doc": "Optional 'neighborhood enrichment'. Computes per-location summary statistics of the chosen fields and stamps them onto every parcel as area_stat_<location>_<field>_<stat> columns (e.g. area_stat_neighborhood_bldg_area_finished_sqft_mean). A quantized counterpart to spatial_lag; run it in the modeling stage after cleaning, sales scrutiny, and the train/test split. Derived columns are auto-classified (numeric/categorical, land/impr/other) by inheriting their base field's classification, so models discover them automatically.",
 					"__doc_leakage": "Sale-derived fields (sale_price and its variants) are aggregated over TRAINING valid sales only; all other fields are aggregated over the full universe. Set exclude_test_keys: true to additionally drop test-key parcels from every aggregation (strict out-of-sample hygiene; off by default).",
 					"__doc_locations": "List location fields coarsest -> finest (finest last). Each yields its own independent columns; a group with fewer than min_count observations is left NaN (no fallback) -- rely on the next-coarser location as a separate feature.",
-					"__doc_stats": "numeric defaults: mean, median, std (plus a per-location count, always emitted). numeric opt-in: cv, p25, p75, iqr, min, max, sum. categorical defaults (categorical_stats): mode, mode_frac. categorical opt-in: nunique, entropy.",
+					"__doc_stats": "numeric defaults: mean, median, std. numeric opt-in: cv, p25, p75, iqr, min, max, sum. categorical defaults (categorical_stats): mode, mode_frac. categorical opt-in: nunique, entropy. Per-location counts are always emitted: count (universe parcels), sales_count, sales_count_improved, sales_count_vacant (training valid sales).",
+					"__doc_sale_rates": "MAGIC: just list 'sale_price' (or 'sale_price_time_adj' -- treated as aliases) and it auto-expands to the full per-area family using the canonical sale field (time-adjusted price when time_adjustment is on, else raw sale_price -- same convention as elsewhere): the price level plus _impr_<unit> ($/finished-building-area, improved sales), _vacant_land_<unit> ($/land-area, vacant sales -- clean land rate), and _impr_land_<unit> ($/land-area, improved sales -- developed-density rate). All synthesized train-only (leakage-safe). You may still list explicit suffixed fields for fine control; _land_<unit> is an accepted alias of _vacant_land_<unit>.",
 					"__example": {
 						"locations": ["city", "census_tract", "neighborhood"],
 						"fields": ["bldg_area_finished_sqft", "land_area_sqft", "bldg_quality_num", "zoning"],

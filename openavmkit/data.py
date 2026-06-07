@@ -1203,6 +1203,51 @@ def _enrich_data(
     return sup
 
 
+def _stamp_census_regions(
+    df: pd.DataFrame | gpd.GeoDataFrame, geoid_col: str = "std_geoid"
+) -> pd.DataFrame | gpd.GeoDataFrame:
+    """Derive census region location fields from the block-group GEOID.
+
+    The Census enrichment builds a 12-digit standardized GEOID
+    (state(2) + county(3) + tract(6) + block group(1)) purely as a spatial-join key.
+    This stamps two location columns derived from it:
+
+    - ``census_block_group``: the full 12-digit block-group GEOID.
+    - ``census_tract``: the 11-digit tract GEOID (state + county + tract).
+
+    These are the only census geographies that vary within a single locality (one
+    state+county FIPS); county/state are constant and finer/orthogonal geographies are
+    not present in the fetched data. Both names are already classified as categorical
+    locations in the settings template and defined in the data dictionary, so once
+    stamped they are auto-discovered by spatial lag, area stats, ratio-study breakdowns,
+    and equity studies.
+
+    Non-clobbering: a column that is already present (e.g. supplied from another source)
+    is left untouched. ``NaN`` GEOIDs (parcels with no matching block group) propagate as
+    ``NaN``.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame or geopandas.GeoDataFrame
+        DataFrame containing the block-group GEOID column.
+    geoid_col : str, optional
+        Name of the GEOID column. Defaults to "std_geoid".
+
+    Returns
+    -------
+    pandas.DataFrame or geopandas.GeoDataFrame
+        The DataFrame with ``census_tract`` / ``census_block_group`` stamped where absent.
+    """
+    if geoid_col not in df.columns:
+        return df
+    geoid = df[geoid_col].astype("string")
+    if "census_block_group" not in df.columns:
+        df["census_block_group"] = geoid  # full 12-digit block-group GEOID
+    if "census_tract" not in df.columns:
+        df["census_tract"] = geoid.str[:11]  # state + county + tract
+    return df
+
+
 def _enrich_df_census(
     df_in: pd.DataFrame | gpd.GeoDataFrame, census_settings: dict, verbose: bool = False
 ) -> pd.DataFrame | gpd.GeoDataFrame:
@@ -1292,7 +1337,9 @@ def _enrich_df_census(
         df = match_to_census_blockgroups(
             gdf=df, census_gdf=census_boundaries_subset, join_type="left"
         )
-        df = df.drop(columns="std_geoid")
+        if census_settings.get("stamp_regions", True):
+            df = _stamp_census_regions(df)
+        df = df.drop(columns="std_geoid", errors="ignore")
     except Exception as e:
         warnings.warn(
             f"Census enrichment failed after fetch ({type(e).__name__}: {e}); "

@@ -475,9 +475,23 @@ def _get_df_signature(df: pd.DataFrame, extra: dict | str = None) -> dict:
             "columns": sorted_columns,
             "model_groups": _get_model_group_signature(df)
         }
+    # Stamp the library version so every derived-enrichment cache self-invalidates when
+    # the library is upgraded (computed outputs can change with the code that made them).
+    # Raw download caches (DEM tiles, Overture footprints) and notebook checkpoints are
+    # intentionally not version-keyed.
+    signature["lib_version"] = _get_lib_version()
     if extra is not None:
         signature["extra"] = extra
     return signature
+
+
+def _get_lib_version() -> str:
+    """Return the installed openavmkit version (best-effort; never raises)."""
+    try:
+        from openavmkit import __version__
+        return str(__version__)
+    except Exception:
+        return "0+unknown"
 
 
 def _match_signature(filename: str, signature: dict | str) -> bool:

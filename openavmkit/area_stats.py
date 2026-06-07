@@ -36,10 +36,13 @@ from openavmkit.data import (
     get_train_test_keys,
 )
 from openavmkit.reports import MarkdownReport, finish_report
+from openavmkit.utilities.data import div_series_z_safe
 from openavmkit.utilities.settings import (
     AREA_STAT_PREFIX,
     AREA_STATS_CATEGORICAL_DEFAULT,
     AREA_STATS_NUMERIC_DEFAULT,
+    area_unit,
+    expand_area_stats_fields,
     get_area_stats_config,
     get_fields_categorical,
     get_fields_numeric,
@@ -82,7 +85,10 @@ def enrich_sup_area_stats(
         return sup
 
     locations = cfg.get("locations", []) or []
-    fields = cfg.get("fields", []) or []
+    # Bare sale-price fields auto-expand into the full per-area family (level +
+    # improved $/bldg-sqft + vacant/improved $/land-sqft), for both raw and time-adjusted.
+    explicit_fields = set(cfg.get("fields", []) or [])
+    fields = expand_area_stats_fields(settings, cfg.get("fields", []) or [])
     num_stats = cfg.get("stats", AREA_STATS_NUMERIC_DEFAULT) or []
     cat_stats = cfg.get("categorical_stats", AREA_STATS_CATEGORICAL_DEFAULT) or []
     min_count = int(cfg.get("min_count", 0) or 0)
@@ -97,30 +103,46 @@ def enrich_sup_area_stats(
     # Resolve base-field kinds once (numeric vs categorical) to pick the stat family.
     num_set = set(get_fields_numeric(settings, include_boolean=True))
     cat_set = set(get_fields_categorical(settings))
+    unit = area_unit(settings)
 
     # Source frames -----------------------------------------------------------------
+    # The sales frame is always built: sale-derived stats use it AND the per-location
+    # sales counts (total / improved / vacant) are derived from it. It is restricted to
+    # training valid sales so nothing here leaks the target.
     df_univ_src = df_universe
-    df_sale_src = None
-
-    if sale_fields or exclude_test_keys:
-        df_hydrated = get_hydrated_sales_from_sup(sup)
+    df_hydrated = get_hydrated_sales_from_sup(sup)
+    try:
         train_keys, test_keys = get_train_test_keys(df_hydrated, settings)
-        train_keys = set(np.asarray(train_keys).astype(str))
-        test_keys = set(np.asarray(test_keys).astype(str))
-
+    except KeyError:
+        # No model_group column / canonical splits available (e.g. run before the split
+        # stage, or minimal frames): we can't build a leakage-safe sales source, so
+        # sale-derived stats and sales counts are skipped rather than risk leakage.
         if sale_fields:
-            mask = df_hydrated["key_sale"].astype(str).isin(train_keys)
-            if "valid_sale" in df_hydrated.columns:
-                mask &= df_hydrated["valid_sale"].eq(True)
-            df_sale_src = df_hydrated.loc[mask].copy()
-
-        if exclude_test_keys:
-            test_parcels = set(
-                df_hydrated.loc[
-                    df_hydrated["key_sale"].astype(str).isin(test_keys), "key"
-                ].astype(str)
+            warnings.warn(
+                "area_stats: no train/test split available (missing 'model_group' or "
+                "canonical splits); sale-derived fields and sales counts will be empty. "
+                "Run after write_canonical_splits."
             )
-            df_univ_src = df_universe[~df_universe["key"].astype(str).isin(test_parcels)]
+        train_keys, test_keys = np.array([], dtype=str), np.array([], dtype=str)
+    train_keys = set(np.asarray(train_keys).astype(str))
+    test_keys = set(np.asarray(test_keys).astype(str))
+
+    sale_mask = df_hydrated["key_sale"].astype(str).isin(train_keys)
+    if "valid_sale" in df_hydrated.columns:
+        sale_mask &= df_hydrated["valid_sale"].eq(True)
+    df_sale_src = df_hydrated.loc[sale_mask].copy()
+    if sale_fields:
+        # Synthesize area-unit-normalized sale fields (e.g. $/finished-sqft) on the
+        # train-only frame so they stay leakage-guarded, mirroring spatial lag.
+        df_sale_src = _synthesize_sale_unit_fields(df_sale_src, sale_fields, unit)
+
+    if exclude_test_keys:
+        test_parcels = set(
+            df_hydrated.loc[
+                df_hydrated["key_sale"].astype(str).isin(test_keys), "key"
+            ].astype(str)
+        )
+        df_univ_src = df_universe[~df_universe["key"].astype(str).isin(test_parcels)]
 
     # Compute and stamp --------------------------------------------------------------
     new_cols: list[str] = []
@@ -132,20 +154,38 @@ def enrich_sup_area_stats(
             )
             continue
 
-        # Per-location group size (always emitted), from the universe population.
-        count_name = make_area_stat_count_field_name(location)
-        grp_size = df_univ_src.groupby(location).size()
-        df_universe[count_name] = df_universe[location].map(grp_size)
-        new_cols.append(count_name)
+        # Per-location counts (always emitted, never masked by min_count):
+        #   count                -> universe parcels in the area
+        #   sales_count          -> training valid sales in the area
+        #   sales_count_improved -> of those, improved sales
+        #   sales_count_vacant   -> of those, vacant sales
+        parcels_name = make_area_stat_count_field_name(location, "count")
+        df_universe[parcels_name] = df_universe[location].map(
+            df_univ_src.groupby(location).size()
+        )
+        new_cols.append(parcels_name)
+
+        total, improved, vacant = _sales_counts_by_group(df_sale_src, location, unit)
+        for kind, series in (
+            ("sales_count", total),
+            ("sales_count_improved", improved),
+            ("sales_count_vacant", vacant),
+        ):
+            cname = make_area_stat_count_field_name(location, kind)
+            df_universe[cname] = df_universe[location].map(series).fillna(0)
+            new_cols.append(cname)
 
         for field in fields:
             is_sale = field in sale_fields
             src = df_sale_src if is_sale else df_univ_src
             if src is None or field not in src.columns or location not in src.columns:
-                warnings.warn(
-                    f"area_stats: field '{field}' unavailable for location "
-                    f"'{location}'; skipping."
-                )
+                # Only warn for fields the user listed explicitly; auto-expanded
+                # sale-rate variants that don't apply here are skipped silently.
+                if field in explicit_fields:
+                    warnings.warn(
+                        f"area_stats: field '{field}' unavailable for location "
+                        f"'{location}'; skipping."
+                    )
                 continue
 
             kind = _base_field_kind(settings, field, src[field], num_set, cat_set)
@@ -269,6 +309,99 @@ def report_area_stats(
 #######################################
 # PRIVATE
 #######################################
+
+
+def _synthesize_sale_unit_fields(
+    df: pd.DataFrame, requested_fields: list, unit: str
+) -> pd.DataFrame:
+    """Create area-unit-normalized sale rates (e.g. ``$/finished-sqft``) where missing.
+
+    Per-unit sale fields are not persisted columns — they're synthesized here on the
+    (already train-only, valid-sale) frame by dividing the base sale value by an area, with
+    a sample mask that makes the *which sales* explicit. The recognized suffixes are:
+
+    - ``_impr_<unit>``        — $/finished-building-area, improved sales (``bldg_area > 0``;
+      vacant sales have no building area and are excluded).
+    - ``_vacant_land_<unit>`` — $/land-area, **vacant** sales only. A vacant sale's price is
+      pure land, so this is a clean land-value rate.
+    - ``_impr_land_<unit>``   — $/land-area, **improved** sales only. A developed-density rate
+      (total price over land), distinct from the vacant land rate.
+    - ``_land_<unit>``        — alias of ``_vacant_land_<unit>`` (kept so spatial-lag-style
+      names don't silently fail; spatial lag's ``_land`` rate is likewise vacant-sampled).
+
+    Vacant vs improved is decided by :func:`_vacant_sale_mask`. Rows failing a mask are left
+    NaN so they're excluded from aggregation rather than skewing it. The more specific
+    ``_*_land_<unit>`` suffixes are matched before ``_land_<unit>``/``_impr_<unit>``.
+    """
+    # Ordered most-specific suffix first (both `_vacant_land_<unit>` and `_impr_land_<unit>`
+    # also end in `_land_<unit>`). sample: "vacant", "improved", or "any".
+    specs = [
+        (f"_vacant_land_{unit}", f"land_area_{unit}", "vacant"),
+        (f"_impr_land_{unit}", f"land_area_{unit}", "improved"),
+        (f"_impr_{unit}", f"bldg_area_finished_{unit}", "any"),
+        (f"_land_{unit}", f"land_area_{unit}", "vacant"),  # alias of _vacant_land_<unit>
+    ]
+    vac_mask = _vacant_sale_mask(df, unit)
+    for field in requested_fields:
+        if field in df.columns:
+            continue
+        for suffix, area_col, sample in specs:
+            if not field.endswith(suffix):
+                continue
+            base = field[: -len(suffix)]
+            if base in df.columns and area_col in df.columns:
+                mask = df[area_col] > 0
+                if sample in ("vacant", "improved"):
+                    if vac_mask is None:
+                        warnings.warn(
+                            f"area_stats: cannot split vacant vs improved sales (no "
+                            f"'vacant_sale' or building-area column); '{field}' is computed "
+                            f"from all {area_col}>0 sales."
+                        )
+                    elif sample == "vacant":
+                        mask &= vac_mask
+                    else:  # improved
+                        mask &= ~vac_mask
+                df[field] = div_series_z_safe(df[base], df[area_col]).where(mask)
+            break
+    return df
+
+
+def _vacant_sale_mask(df: pd.DataFrame, unit: str):
+    """Boolean mask of vacant sales, or None if vacancy can't be determined.
+
+    Prefers the explicit ``vacant_sale`` flag (what spatial lag uses); falls back to
+    "no finished building area" if that column is absent.
+    """
+    if "vacant_sale" in df.columns:
+        return df["vacant_sale"].eq(True)
+    area_col = f"bldg_area_finished_{unit}"
+    if area_col in df.columns:
+        return ~(df[area_col].fillna(0) > 0)
+    return None
+
+
+def _sales_counts_by_group(df_sales: pd.DataFrame, location: str, unit: str):
+    """Return (total, improved, vacant) training-sale counts per location group.
+
+    Each is a Series indexed by location value (empty where unavailable). Improved vs
+    vacant split uses :func:`_vacant_sale_mask`; if vacancy can't be determined, all
+    sales are reported as improved (with a warning) and vacant is left empty.
+    """
+    empty = pd.Series(dtype="float64")
+    if df_sales is None or len(df_sales) == 0 or location not in df_sales.columns:
+        return empty, empty, empty
+    total = df_sales.groupby(location).size()
+    vac_mask = _vacant_sale_mask(df_sales, unit)
+    if vac_mask is None:
+        warnings.warn(
+            "area_stats: cannot determine vacant vs improved sales (no 'vacant_sale' "
+            "or building-area column); reporting all sales as improved."
+        )
+        return total, total, empty
+    vacant = df_sales.loc[vac_mask].groupby(location).size()
+    improved = df_sales.loc[~vac_mask].groupby(location).size()
+    return total, improved, vacant
 
 
 def _base_field_kind(
