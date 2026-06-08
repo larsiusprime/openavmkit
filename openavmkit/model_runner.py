@@ -127,6 +127,7 @@ from openavmkit.utilities.settings import (
     _simulate_removed_buildings,
     _get_max_ratio_study_trim,
     get_look_back_dates,
+    get_assessor_holdout_mode,
     area_unit,
     length_unit
 )
@@ -182,6 +183,7 @@ class BenchmarkResults:
         df_stats_test: pd.DataFrame,
         df_stats_test_post_val: pd.DataFrame,
         df_stats_full: pd.DataFrame,
+        assessor_in_test: bool = True,
     ):
         """
         Initialize a BenchmarkResults instance.
@@ -213,6 +215,7 @@ class BenchmarkResults:
         self.test_empty = test_empty
         self.full_empty = full_empty
         self.test_post_val_empty = test_post_val_empty
+        self.assessor_in_test = assessor_in_test
 
     def print(self) -> str:
         """
@@ -231,12 +234,36 @@ class BenchmarkResults:
             and not self.test_post_val_empty
         ):
             result += "Holdout set (post-valuation-date only):\n"
+            result += (
+                "  (Like-for-like vs. the assessor: these sales postdate the valuation date,\n"
+                "   so they are out-of-sample for both -- as long as valuation_date is aligned\n"
+                "   with the assessor's roll-close date.)\n"
+            )
             result += _format_benchmark_df(self.df_stats_test_post_val)
             result += "\n\n"
         result += "Holdout set:\n"
+        if self.assessor_in_test:
+            result += (
+                "  (Assessor shown here because you've declared its values honor this same\n"
+                "   holdout (analysis.ratio_study.assessor_holdout: shared). Otherwise it is\n"
+                "   left off, since the holdout status of values we didn't generate is unknown.)\n"
+            )
+        else:
+            result += (
+                "  (Assessor not shown here: this is a random pre-valuation holdout we draw\n"
+                "   ourselves. Our figures are out-of-sample, but we can't know whether values\n"
+                "   we didn't generate were held out the same way, so the comparison wouldn't be\n"
+                "   like-for-like. If you are the assessor and know the holdout status, see\n"
+                "   analysis.ratio_study.assessor_holdout.)\n"
+            )
         result += _format_benchmark_df(self.df_stats_test)
         result += "\n\n"
         result += "Study set:\n"
+        result += (
+            "  (Assessor shown as an audit of the finished roll over all sales -- the standard\n"
+            "   IAAO frame, not a predictive holdout. See the sales-chasing check in the ratio\n"
+            "   study report for context on interpreting a very tight assessor result.)\n"
+        )
         result += _format_benchmark_df(self.df_stats_full)
         result += "\n\n"
         return result
@@ -254,9 +281,10 @@ class MultiModelResults:
     benchmark: BenchmarkResults
     df_univ_orig: pd.DataFrame
     df_sales_orig: pd.DataFrame
+    drop_assessor_from_test: bool
 
     def __init__(
-        self, model_results: dict[str, SingleModelResults], benchmark: BenchmarkResults, df_univ: pd.DataFrame, df_sales: pd.DataFrame
+        self, model_results: dict[str, SingleModelResults], benchmark: BenchmarkResults, df_univ: pd.DataFrame, df_sales: pd.DataFrame, drop_assessor_from_test: bool = False
     ):
         """Initialize a MultiModelResults instance.
 
@@ -266,11 +294,16 @@ class MultiModelResults:
             Dictionary of individual model results.
         benchmark: BenchmarkResults
             Benchmark results.
+        drop_assessor_from_test: bool
+            Whether the assessor should be left off the pre-valuation "Test set". Stored so
+            that ``add_model`` (which recomputes the benchmark, e.g. when the ensemble is
+            added) preserves the same choice as the initial ``_calc_benchmark`` call.
         """
         self.model_results = model_results
         self.benchmark = benchmark
         self.df_univ_orig = df_univ
         self.df_sales_orig = df_sales
+        self.drop_assessor_from_test = drop_assessor_from_test
 
     def add_model(self, model: str, results: SingleModelResults):
         """Add a new model's results and update the benchmark.
@@ -283,8 +316,12 @@ class MultiModelResults:
             The results for the given model.
         """
         self.model_results[model] = results
-        # Recalculate the benchmark based on updated model results.
-        self.benchmark = _calc_benchmark(self.model_results)
+        # Recalculate the benchmark based on updated model results. Preserve the assessor
+        # drop choice -- otherwise adding the ensemble model would silently re-introduce the
+        # assessor into the Test-set comparison.
+        self.benchmark = _calc_benchmark(
+            self.model_results, drop_assessor_from_test=self.drop_assessor_from_test
+        )
 
 
 def try_variables(
@@ -1560,9 +1597,21 @@ def run_ensemble(
 #######################################
 
 
-def _calc_benchmark(model_results: dict[str, SingleModelResults]):
+def _calc_benchmark(
+    model_results: dict[str, SingleModelResults], drop_assessor_from_test: bool = False
+):
     """
     Calculate benchmark statistics from individual model results.
+
+    Parameters
+    ----------
+    model_results : dict[str, SingleModelResults]
+        Per-model results to summarize.
+    drop_assessor_from_test : bool, optional
+        When True, the assessor is left out of the pre-valuation "Test set" comparison.
+        See the note in the body for why; controlled by ``analysis.ratio_study.assessor_holdout``
+        at the main call site. Defaults to False (the assessor is kept), which is correct for
+        the post-valuation benchmark and for incremental recomputation.
     """
     data_time = {
         "model": [],
@@ -1657,12 +1706,28 @@ def _calc_benchmark(model_results: dict[str, SingleModelResults]):
     df_full = df[df["subset"].eq("Universe set")].drop(columns=["subset"])
     df_time = pd.DataFrame(data_time)
 
+    # The pre-valuation "Test set" is a random holdout we draw ourselves. We have no way to
+    # know whether the assessor's values were produced holding out these same sales, so a
+    # head-to-head here would not be like-for-like: our figures are out-of-sample while the
+    # assessor's may not be. By default we therefore leave the assessor off this set only --
+    # it is still shown on the post-valuation holdout (out-of-sample for both, given an
+    # aligned valuation_date) and on the full "Universe"/study set (an IAAO-style audit of the
+    # finished roll, where evaluating on all sales is standard). If you are the assessor and
+    # know the holdout status, `analysis.ratio_study.assessor_holdout: "shared"` keeps the
+    # assessor here (see get_assessor_holdout_mode).
+    assessor_in_test = "assessor" in model_results
+    if drop_assessor_from_test:
+        df_test = df_test[df_test["model"].ne("assessor")]
+        assessor_in_test = False
+
     df_test.set_index("model", inplace=True)
     df_test_post_val.set_index("model", inplace=True)
     df_full.set_index("model", inplace=True)
     df_time.set_index("model", inplace=True)
 
-    results = BenchmarkResults(df_time, df_test, df_test_post_val, df_full)
+    results = BenchmarkResults(
+        df_time, df_test, df_test_post_val, df_full, assessor_in_test=assessor_in_test
+    )
     return results
 
 
@@ -4335,9 +4400,16 @@ def _run_models(
     t.stop("run_models")
 
     t.start("calc benchmarks")
-    # Calculate initial results (ensemble will use them)
+    # Calculate initial results (ensemble will use them). By default the assessor is left off
+    # the pre-valuation random holdout (we can't know its holdout status); declaring
+    # analysis.ratio_study.assessor_holdout: "shared" keeps it in.
+    drop_assessor_from_test = get_assessor_holdout_mode(settings) != "shared"
     all_results = MultiModelResults(
-        model_results=model_results, benchmark=_calc_benchmark(model_results), df_univ=df_univ, df_sales=df_sales
+        model_results=model_results,
+        benchmark=_calc_benchmark(model_results, drop_assessor_from_test=drop_assessor_from_test),
+        df_univ=df_univ,
+        df_sales=df_sales,
+        drop_assessor_from_test=drop_assessor_from_test,
     )
     t.stop("calc benchmarks")
 
