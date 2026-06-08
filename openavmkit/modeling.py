@@ -589,7 +589,7 @@ class DataSplit:
         - Adds missing columns to universe data.
         - Enriches time fields and calculates sale age.
         - Splits sales data into training and test sets.
-        - Pre-sorts data for rolling origin cross-validation.
+        - Pre-sorts data (CV is shuffled k-fold).
         - Applies interactions if specified.
 
         Parameters
@@ -686,7 +686,7 @@ class DataSplit:
 
         # we also need to limit the sales set, but we can't do that AFTER we've split
 
-        # Pre-sort dataframes so that rolling origin cross-validation can assume oldest observations first:
+        # sort for determinism
         self.df_universe.sort_values(by="key", ascending=False, inplace=True)
 
         if days_field in self.df_sales:

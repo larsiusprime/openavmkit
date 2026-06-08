@@ -41,7 +41,7 @@ def _tune_xgboost(
     cat_vars=None,
     verbose=False,
 ):
-    """Tunes XGBoost hyperparameters using Optuna and rolling-origin cross-validation.
+    """Tunes XGBoost hyperparameters using Optuna and shuffled k-fold cross-validation.
     Uses the xgboost.train API for training. Includes logging for progress monitoring.
     """
 
@@ -80,7 +80,7 @@ def _tune_xgboost(
         }
         num_boost_round = trial.suggest_int("num_boost_round", 100, 3000)
 
-        mape = _xgb_rolling_origin_cv(
+        mape = _xgb_kfold_cv(
             X,
             y,
             params,
@@ -121,7 +121,7 @@ def _tune_lightgbm(
     cat_vars=None,
     verbose=False,
 ):
-    """Tunes LightGBM hyperparameters using Optuna and rolling-origin cross-validation.
+    """Tunes LightGBM hyperparameters using Optuna and shuffled k-fold cross-validation.
 
     Args:
         X (array-like): Feature matrix.
@@ -179,8 +179,8 @@ def _tune_lightgbm(
             "early_stopping_round": 50,
         }
 
-        # Use rolling-origin cross-validation
-        mape = _lightgbm_rolling_origin_cv(
+        # Use shuffled k-fold cross-validation (inner selection loop)
+        mape = _lightgbm_kfold_cv(
             X, y, params, n_splits=n_splits, random_state=random_state, cat_vars=cat_vars
         )
         if verbose:
@@ -461,7 +461,7 @@ def _xgb_custom_obj_variance_factory(size, cluster, alpha=0.1):
     return custom_obj
 
 
-def _xgb_rolling_origin_cv(
+def _xgb_kfold_cv(
     X,
     y,
     params,
@@ -473,7 +473,7 @@ def _xgb_rolling_origin_cv(
     he_ids=None,
     custom_alpha=0.1,
 ):
-    """Performs rolling-origin cross-validation for XGBoost model evaluation.
+    """Shuffled (random) K-fold CV for XGBoost hyperparameter selection.
 
     Args:
         X (array-like): Feature matrix.
@@ -527,10 +527,13 @@ def _xgb_rolling_origin_cv(
     return np.mean(mape_scores)
 
 
-def _catboost_rolling_origin_cv(
+def _catboost_kfold_cv(
     X, y, params, n_splits=5, random_state=42, cat_vars=None, verbose=False
 ):
-    """Performs rolling-origin cross-validation for CatBoost model evaluation.
+    """Shuffled (random) K-fold CV for CatBoost. CURRENTLY UNUSED.
+
+    The live CatBoost tuner (`_tune_catboost`) uses CatBoost's built-in `cv()`; this
+    helper is kept for reference/parity with the XGBoost/LightGBM paths.
 
     Args:
         X (array-like): Feature matrix.
@@ -601,7 +604,9 @@ def _catboost_rolling_origin_cv(
     return np.mean(mape_scores)
 
 
-def _lightgbm_rolling_origin_cv(X, y, params, n_splits=5, random_state=42, cat_vars=None):
+def _lightgbm_kfold_cv(X, y, params, n_splits=5, random_state=42, cat_vars=None):
+    """Shuffled (random) K-fold CV for LightGBM hyperparameter selection.
+    """
     n_samples = len(X)
     n_splits = min(n_splits, n_samples)
     if n_splits < 2:
