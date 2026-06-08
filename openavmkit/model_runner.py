@@ -119,7 +119,6 @@ from openavmkit.utilities.settings import (
     get_fields_categorical,
     get_variable_interactions,
     get_valuation_date,
-    get_model_seed,
     get_model_group,
     _apply_dd_to_df_rows,
     get_model_group_ids,
@@ -128,7 +127,6 @@ from openavmkit.utilities.settings import (
     _simulate_removed_buildings,
     _get_max_ratio_study_trim,
     get_look_back_dates,
-    get_assessor_holdout_mode,
     area_unit,
     length_unit
 )
@@ -184,7 +182,6 @@ class BenchmarkResults:
         df_stats_test: pd.DataFrame,
         df_stats_test_post_val: pd.DataFrame,
         df_stats_full: pd.DataFrame,
-        assessor_in_test: bool = True,
     ):
         """
         Initialize a BenchmarkResults instance.
@@ -216,7 +213,6 @@ class BenchmarkResults:
         self.test_empty = test_empty
         self.full_empty = full_empty
         self.test_post_val_empty = test_post_val_empty
-        self.assessor_in_test = assessor_in_test
 
     def print(self) -> str:
         """
@@ -235,36 +231,12 @@ class BenchmarkResults:
             and not self.test_post_val_empty
         ):
             result += "Holdout set (post-valuation-date only):\n"
-            result += (
-                "  (Like-for-like vs. the assessor: these sales postdate the valuation date,\n"
-                "   so they are out-of-sample for both -- as long as valuation_date is aligned\n"
-                "   with the assessor's roll-close date.)\n"
-            )
             result += _format_benchmark_df(self.df_stats_test_post_val)
             result += "\n\n"
         result += "Holdout set:\n"
-        if self.assessor_in_test:
-            result += (
-                "  (Assessor shown here because you've declared its values honor this same\n"
-                "   holdout (analysis.ratio_study.assessor_holdout: shared). Otherwise it is\n"
-                "   left off, since the holdout status of values we didn't generate is unknown.)\n"
-            )
-        else:
-            result += (
-                "  (Assessor not shown here: this is a random pre-valuation holdout we draw\n"
-                "   ourselves. Our figures are out-of-sample, but we can't know whether values\n"
-                "   we didn't generate were held out the same way, so the comparison wouldn't be\n"
-                "   like-for-like. If you are the assessor and know the holdout status, see\n"
-                "   analysis.ratio_study.assessor_holdout.)\n"
-            )
         result += _format_benchmark_df(self.df_stats_test)
         result += "\n\n"
         result += "Study set:\n"
-        result += (
-            "  (Assessor shown as an audit of the finished roll over all sales -- the standard\n"
-            "   IAAO frame, not a predictive holdout. See the sales-chasing check in the ratio\n"
-            "   study report for context on interpreting a very tight assessor result.)\n"
-        )
         result += _format_benchmark_df(self.df_stats_full)
         result += "\n\n"
         return result
@@ -282,10 +254,9 @@ class MultiModelResults:
     benchmark: BenchmarkResults
     df_univ_orig: pd.DataFrame
     df_sales_orig: pd.DataFrame
-    drop_assessor_from_test: bool
 
     def __init__(
-        self, model_results: dict[str, SingleModelResults], benchmark: BenchmarkResults, df_univ: pd.DataFrame, df_sales: pd.DataFrame, drop_assessor_from_test: bool = False
+        self, model_results: dict[str, SingleModelResults], benchmark: BenchmarkResults, df_univ: pd.DataFrame, df_sales: pd.DataFrame
     ):
         """Initialize a MultiModelResults instance.
 
@@ -295,16 +266,11 @@ class MultiModelResults:
             Dictionary of individual model results.
         benchmark: BenchmarkResults
             Benchmark results.
-        drop_assessor_from_test: bool
-            Whether the assessor should be left off the pre-valuation "Test set". Stored so
-            that ``add_model`` (which recomputes the benchmark, e.g. when the ensemble is
-            added) preserves the same choice as the initial ``_calc_benchmark`` call.
         """
         self.model_results = model_results
         self.benchmark = benchmark
         self.df_univ_orig = df_univ
         self.df_sales_orig = df_sales
-        self.drop_assessor_from_test = drop_assessor_from_test
 
     def add_model(self, model: str, results: SingleModelResults):
         """Add a new model's results and update the benchmark.
@@ -317,12 +283,8 @@ class MultiModelResults:
             The results for the given model.
         """
         self.model_results[model] = results
-        # Recalculate the benchmark based on updated model results. Preserve the assessor
-        # drop choice -- otherwise adding the ensemble model would silently re-introduce the
-        # assessor into the Test-set comparison.
-        self.benchmark = _calc_benchmark(
-            self.model_results, drop_assessor_from_test=self.drop_assessor_from_test
-        )
+        # Recalculate the benchmark based on updated model results.
+        self.benchmark = _calc_benchmark(self.model_results)
 
 
 def try_variables(
@@ -1427,13 +1389,8 @@ def run_one_model(
 
     optimize_vars = entry.get("optimize_vars", False)
     intercept = entry.get("intercept", True)
-    # Per-model opt-in to log-target training (mra / multi_mra only). Fitting on log(price) keeps
-    # the linear models from extrapolating negative values; the model exponentiates its own
-    # predictions back to price space, so this stays contained to the model (no dep_var changes).
-    log = entry.get("log", False)
     n_trials = entry.get("n_trials", 50)
     use_gpu = entry.get("use_gpu", True)
-    seed = get_model_seed(settings)
     t.stop("setup")
 
     t.start("run")
@@ -1469,9 +1426,9 @@ def run_one_model(
     elif model_engine == "spatial_lag_area":
         results = run_spatial_lag(ds, per_area=True, verbose=verbose)
     elif model_engine == "mra":
-        results = run_mra(ds, intercept=intercept, verbose=verbose, log=log)
+        results = run_mra(ds, intercept=intercept, verbose=verbose)
     elif model_engine == "multi_mra":
-        results = run_multi_mra(ds, outpath, location_fields, optimize_vars=optimize_vars, intercept=intercept, verbose=verbose, log=log)
+        results = run_multi_mra(ds, outpath, location_fields, optimize_vars=optimize_vars, intercept=intercept, verbose=verbose)
     elif model_engine == "kernel":
         results = run_kernel(
             ds, outpath, save_params, use_saved_params, verbose=verbose
@@ -1480,23 +1437,23 @@ def run_one_model(
         results = run_gwr(ds, outpath, save_params, use_saved_params, verbose=verbose)
     elif model_engine == "xgboost":
         results = run_xgboost(
-            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, seed=seed
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
     elif model_engine == "lightgbm":
         results = run_lightgbm(
-            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, seed=seed
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
     elif model_engine == "catboost":
         results = run_catboost(
-            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, use_gpu=use_gpu, seed=seed
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, use_gpu=use_gpu
         )
     elif model_engine == "ngboost":
         results = run_ngboost(
-            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, seed=seed
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
     elif model_engine == "lcomp":
         results = run_layeredcomp(
-            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, seed=seed
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
         )
     else:
         raise ValueError(f"Model {model_engine} not found!")
@@ -1603,21 +1560,9 @@ def run_ensemble(
 #######################################
 
 
-def _calc_benchmark(
-    model_results: dict[str, SingleModelResults], drop_assessor_from_test: bool = False
-):
+def _calc_benchmark(model_results: dict[str, SingleModelResults]):
     """
     Calculate benchmark statistics from individual model results.
-
-    Parameters
-    ----------
-    model_results : dict[str, SingleModelResults]
-        Per-model results to summarize.
-    drop_assessor_from_test : bool, optional
-        When True, the assessor is left out of the pre-valuation "Test set" comparison.
-        See the note in the body for why; controlled by ``analysis.ratio_study.assessor_holdout``
-        at the main call site. Defaults to False (the assessor is kept), which is correct for
-        the post-valuation benchmark and for incremental recomputation.
     """
     data_time = {
         "model": [],
@@ -1712,28 +1657,12 @@ def _calc_benchmark(
     df_full = df[df["subset"].eq("Universe set")].drop(columns=["subset"])
     df_time = pd.DataFrame(data_time)
 
-    # The pre-valuation "Test set" is a random holdout we draw ourselves. We have no way to
-    # know whether the assessor's values were produced holding out these same sales, so a
-    # head-to-head here would not be like-for-like: our figures are out-of-sample while the
-    # assessor's may not be. By default we therefore leave the assessor off this set only --
-    # it is still shown on the post-valuation holdout (out-of-sample for both, given an
-    # aligned valuation_date) and on the full "Universe"/study set (an IAAO-style audit of the
-    # finished roll, where evaluating on all sales is standard). If you are the assessor and
-    # know the holdout status, `analysis.ratio_study.assessor_holdout: "shared"` keeps the
-    # assessor here (see get_assessor_holdout_mode).
-    assessor_in_test = "assessor" in model_results
-    if drop_assessor_from_test:
-        df_test = df_test[df_test["model"].ne("assessor")]
-        assessor_in_test = False
-
     df_test.set_index("model", inplace=True)
     df_test_post_val.set_index("model", inplace=True)
     df_full.set_index("model", inplace=True)
     df_time.set_index("model", inplace=True)
 
-    results = BenchmarkResults(
-        df_time, df_test, df_test_post_val, df_full, assessor_in_test=assessor_in_test
-    )
+    results = BenchmarkResults(df_time, df_test, df_test_post_val, df_full)
     return results
 
 
@@ -2408,22 +2337,6 @@ def _write_ensemble_contributions(
         feat_total = pd.DataFrame(index=ref_index)
         for m_key in members:
             w = weights[m_key].reindex(ref_index).fillna(0.0)
-            # Log-transformed members (mra/multi_mra with log=True) have contributions that are
-            # additive in LOG space, not price space — they cannot be combined with the price-space
-            # members. Exclude them from the feature attribution; their prediction still folds into
-            # the ensemble base via the residual below (the ensemble *prediction* is unaffected).
-            member_model = getattr(all_results.model_results.get(m_key), "model", None)
-            if getattr(member_model, "log", False):
-                if m_key not in warned_missing:
-                    warnings.warn(
-                        f"Ensemble member '{m_key}' is log-transformed (log=True); its "
-                        f"contributions are in log space (written as log_contributions_*.csv) and "
-                        f"cannot be meaningfully combined with price-space members, so its "
-                        f"prediction folds into the ensemble base instead of being attributed to "
-                        f"features."
-                    )
-                    warned_missing.add(m_key)
-                continue
             cfile = _find_member_contrib_file(outpath, m_key, candidate_files)
             if cfile is None:
                 # Non-decomposable (or unsaved) member -> folds into the base
@@ -4254,31 +4167,6 @@ def _model_performance_metrics(
     return text
 
 
-_DETERMINISM_ANNOUNCED = False
-
-
-def _announce_determinism(seed: int) -> None:
-    """Loudly state the reproducibility contract once per process.
-
-    Modeling is always deterministic. XGBoost/LightGBM stay parallel *and* reproducible
-    via batched tuning; CatBoost/NGBoost tune serially. The seed is the one knob.
-    """
-    global _DETERMINISM_ANNOUNCED
-    if _DETERMINISM_ANNOUNCED:
-        return
-    _DETERMINISM_ANNOUNCED = True
-    print(
-        "\n"
-        "============================================================\n"
-        f"  DETERMINISTIC MODELING  (seed = {seed})\n"
-        "  Tree-model tuning is reproducible: same inputs -> same model.\n"
-        "    - XGBoost / LightGBM : parallel batched search (fast + deterministic)\n"
-        "    - CatBoost / NGBoost : serial search (deterministic)\n"
-        "  Change the seed via  modeling.metadata.seed  in settings.json.\n"
-        "============================================================\n"
-    )
-
-
 def _run_models(
     sup: SalesUniversePair,
     model_group: str,
@@ -4399,16 +4287,6 @@ def _run_models(
 
     any_results = False
 
-    # Announce the determinism contract once if any tunable tree model will run.
-    _tunable = {"xgboost", "lightgbm", "catboost", "ngboost", "lcomp"}
-    if any(
-        model_entries.get(m, model_entries.get("default", {})).get("engine", m) in _tunable
-        or m in _tunable
-        for m in models_to_run
-        if m not in models_to_skip
-    ):
-        _announce_determinism(get_model_seed(settings))
-
     # Run the models one by one and stash the results
     t.start("run_models")
     for model_name in models_to_run:
@@ -4457,16 +4335,9 @@ def _run_models(
     t.stop("run_models")
 
     t.start("calc benchmarks")
-    # Calculate initial results (ensemble will use them). By default the assessor is left off
-    # the pre-valuation random holdout (we can't know its holdout status); declaring
-    # analysis.ratio_study.assessor_holdout: "shared" keeps it in.
-    drop_assessor_from_test = get_assessor_holdout_mode(settings) != "shared"
+    # Calculate initial results (ensemble will use them)
     all_results = MultiModelResults(
-        model_results=model_results,
-        benchmark=_calc_benchmark(model_results, drop_assessor_from_test=drop_assessor_from_test),
-        df_univ=df_univ,
-        df_sales=df_sales,
-        drop_assessor_from_test=drop_assessor_from_test,
+        model_results=model_results, benchmark=_calc_benchmark(model_results), df_univ=df_univ, df_sales=df_sales
     )
     t.stop("calc benchmarks")
 
