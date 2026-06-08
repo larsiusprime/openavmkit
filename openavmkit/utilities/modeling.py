@@ -14,7 +14,7 @@ Plus helpers (``greedy_forward_loocv``, ``TreeBasedCategoricalData``)
 shared across model fitting routines.
 
 When adding a new model, subclass here and follow the existing pattern;
-register the prediction wrapper in :mod:`openavmkit.benchmark` and the
+register the prediction wrapper in :mod:`openavmkit.model_runner` and the
 params/contribs writer in :mod:`openavmkit.modeling`.
 """
 from __future__ import annotations

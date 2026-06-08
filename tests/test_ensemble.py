@@ -4,8 +4,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import openavmkit.benchmark as benchmark
-from openavmkit.benchmark import (
+import openavmkit.model_runner as benchmark
+from openavmkit.model_runner import (
 	_aggregate_ensemble,
 	_perform_ensemble,
 	_perform_default_ensemble,
@@ -626,7 +626,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # headless: beeswarm smoke tests need no display
 
-from openavmkit.benchmark import _ensemble_beeswarm, _model_shaps
+from openavmkit.model_runner import _ensemble_beeswarm, _model_shaps
 from openavmkit.shap_analysis import (
 	explanation_from_contributions,
 	plot_full_beeswarm,

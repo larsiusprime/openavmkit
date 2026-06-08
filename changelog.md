@@ -3,6 +3,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- Renamed module `openavmkit.benchmark` → `openavmkit.model_runner` (it orchestrates the whole model run, not just the benchmark comparison, and the old name collided with the new research `benchmark/` harness). A deprecating compatibility shim remains at `openavmkit.benchmark` (re-exports everything, emits a `DeprecationWarning`) and **will be removed before 0.7.0** (tracked in AGENTS.md §9). The `BenchmarkResults` class keeps its name. No behavior change.
+
 ### Fixed / clarity
 - Renamed the misleadingly-named inner tuning-CV helpers `_xgb_rolling_origin_cv` / `_lightgbm_rolling_origin_cv` / `_catboost_rolling_origin_cv` → `_xgb_kfold_cv` / `_lightgbm_kfold_cv` / `_catboost_kfold_cv` in `openavmkit/tuning.py`. They use `KFold(shuffle=True)` (random k-fold for hyperparameter selection), **not** temporal/rolling-origin CV; docstrings now say so. No behavior change. (`_catboost_kfold_cv` is currently unused — the live CatBoost tuner uses CatBoost's built-in `cv()`.)
 - Documented in [AGENTS.md](AGENTS.md) §4 that reported holdout metrics are mildly optimistic because time adjustment and variable auto-reduction are fit on all sales (correct for production valuation; a small evaluation-only bias). Spatial lag is already train-only. A leakage-correct evaluation is the job of the planned publish-mode rolling-origin CV, not the everyday path.

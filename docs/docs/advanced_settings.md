@@ -1026,14 +1026,14 @@ collapse_sparse_categories: roof_material
 
 Explicit list of model names to run for the main or vacant stages. Without it, all models defined under `modeling.models.<main|vacant>` are run.
 
-- **Source** — `_run_models` in [openavmkit/benchmark.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/benchmark.py)
+- **Source** — `_run_models` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py)
 - **When to use** — you want a fast iteration on a single model, or you want to skip slow models (e.g. `gwr`) for a quick run.
 
 ### `modeling.instructions.<main|vacant>.skip.<model_group>`
 
 Per-model-group skip list. For the named model group, the listed models are skipped even if they're in `run`.
 
-- **Source** — `_run_models` in [openavmkit/benchmark.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/benchmark.py)
+- **Source** — `_run_models` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py)
 - **When to use** — a particular model is unstable on a particular model group (low sample count, rank-deficient features) and you want to exclude it from that group only.
 
 ### `modeling.models.<main|vacant>.<model_group>` — per-model-group overrides
@@ -1125,7 +1125,7 @@ Fine-tune the variable-selection scoring used during model setup. The thresholds
   }
   ```
 
-- **Source** — `modeling.instructions.feature_selection` in [openavmkit/resources/settings/settings.template.json](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/resources/settings/settings.template.json), consumed in `benchmark.py`.
+- **Source** — `modeling.instructions.feature_selection` in [openavmkit/resources/settings/settings.template.json](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/resources/settings/settings.template.json), consumed in `model_runner.py`.
 - **When to use** — your standard variable-selection results don't reflect domain knowledge. Loosen `correlation` to keep weak-but-meaningful features, or tighten `vif` to drop more multicollinear ones.
 
 ### `modeling.instructions.<main|vacant>.ensemble`
@@ -1151,7 +1151,7 @@ Runs a greedy backward-elimination over the candidate models: starts with all of
   - `models` given → `optimize` defaults to **`false`** (use the listed models exactly).
   - Set `"optimize": true` *with* a `models` list to optimize *from* that whitelist (treat it as a candidate pool to prune).
   - Set `"optimize": false` *without* a `models` list to combine every model that ran with no pruning.
-- **Source** — `_perform_default_ensemble` in [openavmkit/benchmark.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/benchmark.py)
+- **Source** — `_perform_default_ensemble` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py)
 
 ```json
 "main": {
@@ -1175,7 +1175,7 @@ Identical to `median` — same `models` whitelist and `optimize` semantics — e
 
 - **Optional** `models` — explicit list of models to ensemble (whitelist by default). See `median` above.
 - **Optional** `optimize` (bool) — whether to greedily prune. See `median` above for the default rules.
-- **Source** — `_perform_default_ensemble` (with `agg="mean"`) in [openavmkit/benchmark.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/benchmark.py)
+- **Source** — `_perform_default_ensemble` (with `agg="mean"`) in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py)
 
 #### `type: "local"` — best-model-per-location
 
@@ -1195,19 +1195,19 @@ This is **not averaging** — at each parcel, exactly one model's prediction is 
 
 - **`locations`** — list of categorical fields to partition by, ordered specific → general (the painter walks the list and the *most specific* match wins). If omitted, falls back to `field_classification.important.locations`.
 - **Only valid for `main`** — the vacant stage supports `median`/`mean` but not `local`.
-- **Source** — `_perform_local_ensemble` and `_run_local_ensemble_test_and_paint` in [openavmkit/benchmark.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/benchmark.py)
+- **Source** — `_perform_local_ensemble` and `_run_local_ensemble_test_and_paint` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py)
 - **When to use** — different sub-markets favor different models (e.g. tree-based dominates dense urban neighborhoods where it has plenty of sales, but multi-MRA wins in rural areas where signals are sparser). Local ensemble lets each neighborhood pick its own winner. Avoid when (a) you have very few sales per location (many locations will pick a model based on noise), or (b) you want a single coherent global prediction for explainability.
 - **Pairs naturally with** — model engines that themselves vary by location (`multi_mra`, `local_area`, `gwr`), since they often dominate in different parts of the locality.
 
 #### Ensemble interpretability output
 
-All three types reassemble the ensemble's own `params_<subset>.csv` / `contributions_<subset>.csv` (and a `contributions_map.parquet`) from the member models, plus an `ensemble_meta.json` recording the resolved type and member list. Because each strategy is a per-row convex combination of members, the decomposition reconstructs the ensemble prediction exactly: `mean`/`median` average the members' per-feature contributions for the row, `local` passes through the selected model's. Members that don't emit per-feature contributions (e.g. `local_area`, naive baselines) fold into the ensemble's base term rather than breaking the reconstruction. See [models_reference.md § 3.4](models_reference.md) and `_write_ensemble_contributions` in [openavmkit/benchmark.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/benchmark.py).
+All three types reassemble the ensemble's own `params_<subset>.csv` / `contributions_<subset>.csv` (and a `contributions_map.parquet`) from the member models, plus an `ensemble_meta.json` recording the resolved type and member list. Because each strategy is a per-row convex combination of members, the decomposition reconstructs the ensemble prediction exactly: `mean`/`median` average the members' per-feature contributions for the row, `local` passes through the selected model's. Members that don't emit per-feature contributions (e.g. `local_area`, naive baselines) fold into the ensemble's base term rather than breaking the reconstruction. See [models_reference.md § 3.4](models_reference.md) and `_write_ensemble_contributions` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py).
 
 ### `modeling.try_variables.variables`
 
 Run a dedicated variable-importance experiment over a custom set of candidate variables before main modeling. Surfaced via [openavmkit.pipeline.try_variables](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/pipeline.py).
 
-- **Source** — `try_variables` in [openavmkit/benchmark.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/benchmark.py)
+- **Source** — `try_variables` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py)
 - **When to use** — you have hypotheses about which variables matter and want a slower, more thorough comparison than the auto-reduction step does inline.
 
 ---

@@ -22,7 +22,7 @@ import geopandas as gpd
 import openavmkit
 import openavmkit.data
 import openavmkit.area_stats
-import openavmkit.benchmark
+import openavmkit.model_runner
 import openavmkit.checkpoint
 import openavmkit.ratio_study
 import openavmkit.horizontal_equity_study
@@ -1537,7 +1537,7 @@ def try_variables(
         If True, generates PDF reports. Defaults to False.
     """
     sup = fill_unknown_values_sup(sup, settings)
-    openavmkit.benchmark.try_variables(sup, settings, verbose, plot, do_report)
+    openavmkit.model_runner.try_variables(sup, settings, verbose, plot, do_report)
 
 
 def try_models(
@@ -1565,7 +1565,7 @@ def try_models(
     is true, it will run vacant models as well -- models that only use vacant sales as
     evidence to generate land values.
 
-    This function delegates the model execution to `openavmkit.benchmark.run_models`
+    This function delegates the model execution to `openavmkit.model_runner.run_models`
     with the given settings.
 
     Parameters
@@ -1592,7 +1592,7 @@ def try_models(
         Flag to plot scatterplots. Defaults to False.
     """
 
-    openavmkit.benchmark.run_models(
+    openavmkit.model_runner.run_models(
         sup,
         settings,
         save_params,
@@ -2045,7 +2045,7 @@ def finalize_models(
 
     This function iterates over model groups and runs models for main and vacant cases.
 
-    It delegates the model execution to `openavmkit.benchmark.run_models` with the given settings.
+    It delegates the model execution to `openavmkit.model_runner.run_models` with the given settings.
 
     Parameters
     ----------
@@ -2072,7 +2072,7 @@ def finalize_models(
         The MultiModelResults containing all model results and benchmarks.
     """
 
-    openavmkit.benchmark.run_models(
+    openavmkit.model_runner.run_models(
         sup,
         settings,
         save_params,
@@ -2143,7 +2143,7 @@ def run_models(
     MultiModelResults
         The MultiModelResults containing all model results and benchmarks.
     """
-    return openavmkit.benchmark.run_models(
+    return openavmkit.model_runner.run_models(
         sup,
         settings,
         save_params,

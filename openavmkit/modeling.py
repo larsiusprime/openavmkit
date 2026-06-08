@@ -25,7 +25,7 @@ pattern in this module so the new model emits both files.
 
 See Also
 --------
-openavmkit.benchmark : Top-level orchestrator that calls into this module.
+openavmkit.model_runner : Top-level orchestrator that calls into this module.
 openavmkit.utilities.modeling : Underlying model class definitions.
 openavmkit.shap_analysis : SHAP-based contribution computation.
 """
