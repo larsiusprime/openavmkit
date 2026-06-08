@@ -314,9 +314,7 @@ def _tune_xgboost(
         num_boost_round = trial.suggest_int("num_boost_round", 100, 1500)
         return params, num_boost_round
 
-    def evaluate(suggested):
-        params, num_boost_round = suggested
-        return _xgb_kfold_cv(
+        mape = _xgb_kfold_cv(
             X,
             y,
             params,
@@ -423,8 +421,8 @@ def _tune_lightgbm(
             "early_stopping_round": 50,
         }
 
-    def evaluate(params):
-        return _lightgbm_kfold_cv(
+        # Use shuffled k-fold cross-validation (inner selection loop)
+        mape = _lightgbm_kfold_cv(
             X, y, params, n_splits=n_splits, random_state=random_state, cat_vars=cat_vars
         )
 
