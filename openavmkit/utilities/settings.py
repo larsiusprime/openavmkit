@@ -133,6 +133,39 @@ def get_valuation_date(s: dict) -> datetime:
     return val_date
 
 
+def get_assessor_holdout_mode(s: dict) -> str:
+    """Return how the assessor's values relate to the test holdout.
+
+    openavmkit cannot know whether a third party's values respect its randomly-drawn
+    holdout, so by default it does not show the assessor head-to-head on that holdout. If
+    *you* are the assessor (or otherwise know the holdout status), set
+    ``analysis.ratio_study.assessor_holdout`` to declare it:
+
+    - ``"unknown"`` (default): holdout status of the assessor's values is unknown, so the
+      assessor is not shown on the pre-valuation random holdout.
+    - ``"shared"``: the assessor's values were produced honoring this same test holdout
+      (either openavmkit's generated keys, or your own keys supplied via
+      ``modeling.instructions.test_keys_file``), so the assessor *is* shown head-to-head on
+      the holdout.
+
+    Parameters
+    ----------
+    s : dict
+        Settings dictionary.
+
+    Returns
+    -------
+    str
+        ``"unknown"`` or ``"shared"``.
+    """
+    mode = (
+        s.get("analysis", {})
+        .get("ratio_study", {})
+        .get("assessor_holdout", "unknown")
+    )
+    return str(mode).lower()
+
+
 def get_look_back_dates(s: dict):
     rs = s.get("analysis", {}).get("ratio_study", {})
     look_back_years = rs.get("look_back_years", 1)

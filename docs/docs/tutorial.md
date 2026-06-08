@@ -525,6 +525,8 @@ Strong signal: if **all** your models — including the assessor baseline — sh
 
 If your assessor baseline is sales-chasing, the right comparison is the assessor's metrics on **prior-year sales the assessor hadn't seen yet at the time of valuation**, not the current cycle. Several jurisdictions also publish the prior-cycle assessed value separately — comparing your model to *that* avoids the chase confound.
 
+**Automated check.** The ratio study report runs several of these signals for you in its **"Sales-chasing check"** section (ratio spike at 1.0, the COD-vs-CHD divergence above, and a pre- vs. post-valuation COD gap), comparing the assessor baseline against your own model. Thresholds are configurable under `analysis.ratio_study.sales_chasing` (see [advanced settings](advanced_settings.md)). It reports *likely*/*possible* as a context cue, not a verdict, and is not a substitute for the manual investigation above. Relatedly, openavmkit by default **does not show the assessor on the random pre-valuation holdout** — not because the assessor did anything wrong, but because we can't know the holdout status of values we didn't generate, so it wouldn't be a like-for-like comparison. The assessor is shown on the post-valuation holdout and the full study set; the post-valuation comparison assumes your `valuation_date` is aligned with the roll-close date of the values being compared. If you *are* the assessor and know the holdout status, you can opt back into the holdout comparison via `analysis.ratio_study.assessor_holdout` (see [the basics](the_basics.md#when-you-are-the-assessor)).
+
 ##### Diagnostic flow for outlier investigation
 
 Regardless of whether sales chasing is in play, the actual outliers driving the tails need to be looked at:

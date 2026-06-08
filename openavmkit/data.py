@@ -4934,6 +4934,22 @@ def _perform_canonical_split(
     return df_test, df_train
 
 
+def _read_provided_test_keys(filename: str) -> set:
+    """Read a user-supplied set of test (holdout) sale keys from ``in/<filename>``.
+
+    The file is a CSV; the ``key_sale`` column is used if present, otherwise the first
+    column. Values are returned as a set of strings. See ``modeling.instructions.test_keys_file``.
+    """
+    path = f"in/{filename}"
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"modeling.instructions.test_keys_file is set but '{path}' was not found."
+        )
+    df = pd.read_csv(path)
+    col = "key_sale" if "key_sale" in df.columns else df.columns[0]
+    return set(df[col].astype(str))
+
+
 def _do_write_canonical_split(
     model_group: str,
     df_sales_in: pd.DataFrame,
@@ -4945,14 +4961,35 @@ def _do_write_canonical_split(
     """Write the canonical split keys (train and test) for a given model group to disk.
     Also performs outlier detection on training data if enabled in settings.
     """
-    # Get initial split
-    df_test, df_train = _perform_canonical_split(
-        model_group, df_sales_in, settings, test_train_fraction, random_seed, verbose
-    )
+    instr = settings.get("modeling", {}).get("instructions", {})
+    test_keys_file = instr.get("test_keys_file")
 
-    # Get initial keys
-    train_keys = df_train["key_sale"].values
-    test_keys = df_test["key_sale"].values
+    if test_keys_file:
+        # The user supplied their own holdout. This is the "I am the assessor and I know
+        # which sales were held out of my roll" case: the provided keys define the test
+        # set so that both openavmkit and the assessor are scored on the same, genuinely
+        # held-out sales. Training = everything else for this model group, minus
+        # post-valuation sales (which never train, regardless of the split source).
+        provided = _read_provided_test_keys(test_keys_file)
+        mg_sales = df_sales_in[df_sales_in["model_group"].eq(model_group)]
+        in_test = mg_sales["key_sale"].astype(str).isin(provided)
+        is_post_val = mg_sales["sale_age_days"].lt(0)
+        test_keys = mg_sales.loc[in_test, "key_sale"].values
+        train_keys = mg_sales.loc[~in_test & ~is_post_val, "key_sale"].values
+        if verbose:
+            print(
+                f"Using user-provided test keys from in/{test_keys_file}: "
+                f"{len(test_keys)} test / {len(train_keys)} train for {model_group}"
+            )
+    else:
+        # Get initial split
+        df_test, df_train = _perform_canonical_split(
+            model_group, df_sales_in, settings, test_train_fraction, random_seed, verbose
+        )
+
+        # Get initial keys
+        train_keys = df_train["key_sale"].values
+        test_keys = df_test["key_sale"].values
 
     # Create output directory and save keys
     outpath = f"out/models/{model_group}/_data"

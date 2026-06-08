@@ -1244,6 +1244,34 @@ How many years before the valuation date to include sales from when running the 
 - **Source** — `get_look_back_dates` in [openavmkit/utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py)
 - **When to use** — your jurisdiction expects a multi-year ratio-study window, or you want to widen the sample for low-volume model groups.
 
+### `analysis.ratio_study.sales_chasing`
+
+Optional thresholds for the **sales-chasing check** in the ratio study report (see [tutorial.md](tutorial.md)). The check probes whether the assessor's values look suspiciously tight on *sold* parcels relative to how uniformly they treat *similar* parcels — the signature of pushing assessed value toward sale price. It runs three signals: a ratio spike at 1.0, a COD-CHD divergence (mirrors the model utility scorer's `sales_chase_score`), and a pre- vs. post-valuation COD gap.
+
+- **Default** — empty `{}` (uses built-in thresholds)
+- **Source** — `detect_sales_chasing` in [openavmkit/sales_chasing.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/sales_chasing.py)
+- **Keys** (all optional) — `spike_eps` (default `0.02`), `spike_min_share` (`0.10`), `spike_ratio_vs_ref` (`1.5`), `cod_ratio_max` (`0.7`), `chd_ratio_min` (`0.9`), `oos_cod_jump` (`1.5`). Each key is forwarded directly as a keyword argument to `detect_sales_chasing`.
+- **When to use** — the defaults flag tight-to-moderate chasing while leaving honest rolls alone; loosen `cod_ratio_max` / raise `spike_min_share` if you get false positives in a jurisdiction with genuinely excellent assessments, or tighten them to catch subtler chasing.
+
+> **Note** — the check compares the assessor (`assr_market_value`) against our own model (`prediction`) as a baseline, so it only runs when both are present. The post-valuation signals assume `valuation_date` is aligned with the assessor's roll-close date.
+
+### `analysis.ratio_study.assessor_holdout`
+
+Declares how the assessor's values relate to openavmkit's test holdout, controlling whether the assessor is shown head-to-head on the **random pre-valuation "Test" holdout** (it is always shown on the post-valuation holdout and the full study set).
+
+- **Default** — `"unknown"` — we can't know the holdout status of values we didn't generate, so the assessor is left off the random holdout to avoid a comparison that isn't like-for-like. (This is not a judgment on the assessor; see [the basics → comparing against the assessor](the_basics.md#comparing-against-the-assessor).)
+- **`"shared"`** — you certify the assessor's values honor this same test holdout, so the assessor **is** shown on the random holdout. Use this when *you* are the assessor (or know the holdout status). See [the basics → when you are the assessor](the_basics.md#when-you-are-the-assessor).
+- **Source** — `get_assessor_holdout_mode` in [openavmkit/utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py)
+
+### `modeling.instructions.test_keys_file`
+
+Optional. Supply your own holdout instead of openavmkit's randomly-drawn one: a CSV in your `in/` folder listing the `key_sale` values that should form the **test set**. openavmkit uses them as the canonical split (training on everything else for each model group, never on post-valuation sales). Useful when your assessment roll was built holding out a known set of sales and you want both your roll and openavmkit's models scored on exactly those sales.
+
+- **Default** — unset (openavmkit draws the split per `test_train_frac` / `random_seed`)
+- **Format** — path relative to `in/` (e.g. `"my_holdout_keys.csv"`); CSV with a `key_sale` column (or a single-column file)
+- **Source** — `_read_provided_test_keys` / `_do_write_canonical_split` in [openavmkit/data.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/data.py)
+- **When to use** — you are the assessor and know your roll's holdout; typically paired with `analysis.ratio_study.assessor_holdout: "shared"`.
+
 ---
 
 ## 8. Caching & checkpoints
