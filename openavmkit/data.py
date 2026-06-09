@@ -4139,6 +4139,10 @@ def _handle_duplicated_rows(
     """Handle duplicated rows in a DataFrame based on specified rules."""
     if dupes == "allow":
         return df_in
+    # get_dupes() resolves the "allow" string to {"allow": True}; honor it here so a keyed
+    # source declared dupes:"allow" keeps ALL rows instead of silently de-duping on key.
+    if isinstance(dupes, dict) and dupes.get("allow"):
+        return df_in
     subset = dupes.get("subset", "key")
     if not isinstance(subset, list):
         subset = [subset]

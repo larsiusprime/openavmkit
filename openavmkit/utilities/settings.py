@@ -1879,5 +1879,8 @@ def get_dupes(entry: dict, df: pd.DataFrame = None, is_geometry: bool = False):
         else:
             dupes = {"subset": ["key"], "sort_by": ["key", "asc"], "drop": True}
     elif dupes == "allow":
-        dupes = {}
+        # Explicit "keep all rows" signal. Must be distinct from {} (the no-dupes-specified
+        # default), which means "de-dupe on key". Without this flag both collapse to {} and a
+        # keyed source declared dupes:"allow" would be silently de-duplicated on key.
+        dupes = {"allow": True}
     return dupes

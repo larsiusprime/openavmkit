@@ -258,6 +258,31 @@ def test_duplicates():
 	assert dfs_are_equal(df_results, df_expected, primary_key="key")
 
 
+def test_dupes_allow_keeps_all_rows():
+	# Regression: a keyed source declared dupes:"allow" must keep ALL rows, not silently
+	# de-dupe on key. get_dupes() resolves "allow" -> {"allow": True}; _handle_duplicated_rows
+	# must honor that. (Previously "allow" resolved to {} and was de-duped on the "key" default.)
+	from openavmkit.utilities.settings import get_dupes
+
+	# "allow" resolves to an explicit, distinct signal (not the {} no-dupes default)
+	assert get_dupes({"dupes": "allow"}) == {"allow": True}
+	# the no-dupes-specified default still means "de-dupe on key"
+	assert get_dupes({}) == {}
+
+	data = {
+		"key": ["0", "0", "0", "1", "1", "2"],
+		"date": ["a", "b", "c", "d", "e", "f"],
+	}
+	df = pd.DataFrame(data=data)
+
+	# resolved-allow keeps every row even though 'key' has duplicates
+	assert len(_handle_duplicated_rows(df, get_dupes({"dupes": "allow"}))) == 6
+	# the raw string is also honored (defensive guard)
+	assert len(_handle_duplicated_rows(df, "allow")) == 6
+	# sanity: the default {} still de-dupes on key
+	assert len(_handle_duplicated_rows(df, {})) == 3
+
+
 def test_ref_table():
 	print("")
 
