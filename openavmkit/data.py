@@ -181,13 +181,13 @@ class SalesUniversePair:
     def limit_sales_to_keys(self, new_sale_keys: list[str]):
         """
         Update the sales DataFrame to only those that match a key in `new_sale_keys`
-        
+
         Parameters
         ----------
         new_sale_keys : list[str]
             List of sale keys to filter to
         """
-        
+
         s = self.sales.copy()
         s = s[s["key_sale"].isin(new_sale_keys)]
         self.sales = s
@@ -2908,57 +2908,48 @@ def _enrich_df_overture(
         # Get bounding box from data
         bbox = gdf.to_crs("EPSG:4326").total_bounds
 
-        # Fetch building data
-        buildings = overture_service.get_buildings(
-            bbox, use_cache=s_overture.get("cache", True), unit=unit, verbose=verbose
-        )
-
-        if not buildings.empty:
-            # Calculate building footprints
-            sq_unit = area_unit(settings)
-            s_footprint = s_overture.get("footprint", {})
-            footprint_units = s_footprint.get("units", None)
-            if footprint_units is None:
-                warnings.warn(
-                    f"`process.enrich.overture.footprint.units` not specified, defaulting to '{unit}'"
-                )
-                footprint_units = unit
-            footprint_field = s_footprint.get("field", None)
-            if footprint_field is None:
-                warnings.warn(
-                    f"`process.enrich.overture.footprint.field` not specified, defaulting to 'bldg_area_footprint_{footprint_units}'"
-                )
-                footprint_field = f"bldg_area_footprint_{footprint_units}"
-            
-            # Calculate building height
-            len_unit = get_short_distance_unit(settings)
-            s_height = s_overture.get("height", {})
-            height_units = s_height.get("units", None)
-            if height_units is None:
-                warnings.warn(
-                    f"`process.enrich.overture.height.units` not specified, defaulting to {len_unit}'"
-                )
-                height_units = len_unit
-            height_field = s_height.get("field", None)
-            if height_field is None:
-                warnings.warn(
-                    f"`process.enrich.overture.height.field` not specified, defaulting to 'bldg_height_{len_unit}'"
-                )
-                height_field = f"bldg_height_{len_unit}"
-            
-            gdf = overture_service.calculate_building_stats(
-                gdf, 
-                buildings,
-                footprint_units,
-                footprint_field,
-                height_units,
-                height_field,
-                verbose=verbose
+        # Calculate building footprints
+        s_footprint = s_overture.get("footprint", {})
+        footprint_units = s_footprint.get("units", None)
+        if footprint_units is None:
+            warnings.warn(
+                f"`process.enrich.overture.footprint.units` not specified, defaulting to '{unit}'"
             )
-            
-            
-        elif verbose:
-            print("--> No buildings found in the area")
+            footprint_units = unit
+        footprint_field = s_footprint.get("field", None)
+        if footprint_field is None:
+            warnings.warn(
+                f"`process.enrich.overture.footprint.field` not specified, defaulting to 'bldg_area_footprint_{footprint_units}'"
+            )
+            footprint_field = f"bldg_area_footprint_{footprint_units}"
+
+        # Calculate building height
+        len_unit = get_short_distance_unit(settings)
+        s_height = s_overture.get("height", {})
+        height_units = s_height.get("units", None)
+        if height_units is None:
+            warnings.warn(
+                f"`process.enrich.overture.height.units` not specified, defaulting to {len_unit}'"
+            )
+            height_units = len_unit
+        height_field = s_height.get("field", None)
+        if height_field is None:
+            warnings.warn(
+                f"`process.enrich.overture.height.field` not specified, defaulting to 'bldg_height_{len_unit}'"
+            )
+            height_field = f"bldg_height_{len_unit}"
+
+        gdf = overture_service.calculate_building_stats_streaming(
+            gdf,
+            bbox,
+            footprint_units,
+            footprint_field,
+            height_units,
+            height_field,
+            unit=unit,
+            use_cache=s_overture.get("cache", True),
+            verbose=verbose,
+        )
 
         write_cached_df(gdf_in, gdf, "geom/overture", "key", s_enrich_this)
 
