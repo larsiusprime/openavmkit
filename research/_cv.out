@@ -1,0 +1,1019 @@
+C:\git\openavmkit\openavmkit\time_adjustment.py:299: UserWarning: Time adjustment unavailable for 1 sales (model group 'exempt'); falling back to unadjusted sale_price for those rows.
+  warnings.warn(
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\openavmkit\time_adjustment.py:299: UserWarning: Time adjustment unavailable for 6 sales (model group 'commercial_industrial'); falling back to unadjusted sale_price for those rows.
+  warnings.warn(
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\openavmkit\time_adjustment.py:299: UserWarning: Time adjustment unavailable for 69 sales (model group 'single_family_urban'); falling back to unadjusted sale_price for those rows.
+  warnings.warn(
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\openavmkit\time_adjustment.py:299: UserWarning: Time adjustment unavailable for 18 sales (model group 'single_family_suburban'); falling back to unadjusted sale_price for those rows.
+  warnings.warn(
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\openavmkit\time_adjustment.py:299: UserWarning: Time adjustment unavailable for 10 sales (model group 'multi_family'); falling back to unadjusted sale_price for those rows.
+  warnings.warn(
+C:\git\openavmkit\openavmkit\sales_scrutiny_study.py:544: UserWarning: --> Invalid key file in/invalid_sales.csv does not exist, skipping manual exclusions
+  warnings.warn(
+C:\git\openavmkit\openavmkit\data.py:805: UserWarning: Could not find model entry "exempt" in process.enrich.spatial_lag.model_groups, skipping...
+  warnings.warn(f"Could not find model entry \"{model_group}\" in process.enrich.spatial_lag.model_groups, skipping...")
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1214: RuntimeWarning: Mean of empty slice
+  return np.nanmean(a, axis, out=out, keepdims=keepdims)
+[cv] us-va-petersburgcity/single_family_suburban: 4 origins (min_train=100, min_test=30, window=365d, run=['assessor', 'mra', 'lcomp'])
+      tᵢ=2024-01-01  train≤tᵢ=131  test=70
+      tᵢ=2024-07-01  train≤tᵢ=172  test=75
+      tᵢ=2025-01-01  train≤tᵢ=204  test=75
+      tᵢ=2025-07-01  train≤tᵢ=250  test=30
+[cv] === fold tᵢ=2024-01-01 ===
+Before univ merge len = 5784
+After univ merge len = 5784
+Using 663 sales...
+--> 144 vacant sales
+--> 519 improved sales
+--> 514 valid for ratio study
+--> 144 valid for land ratio study
+len before validate = 663
+len after validate = 623
+len after hydrate = 623
+--> Time adjustment calculated for 1 days.
+--> Time adjustment calculated for 351 days.
+--> Time adjustment calculated for 361 days.
+--> Time adjustment calculated for 354 days.
+--> Time adjustment calculated for 352 days.
+len after enrich = 623
+len after clip = 623
+Identified 43 invalid sales keys identified by heuristic, but not dropping them
+collapse_sparse_categories: subdivision_name into 'subdivision_name_collapsed'
+  thresholds: sales_min=5, univ_min=25
+  282 categories collapsed into 'Other' (225 sales rows, 7162 universe rows affected)
+  collapsed: ['30 Franklin Condominium', 'Anchor Industrial Park', 'Andrew Heights', 'Andrews', 'Andrews (Olde Towne)', 'Annie Mae Roberts', 'Ashston Acres', 'Atkinson', 'Battersea', 'Baylor Heights', 'Bellevue Heights', 'Berkeley Manor', 'Bishop', 'Blackwater Swamp', 'Blandford', 'Blick', 'Boisseau', 'Bolling (Old Towne)', 'Bolling Terminal', 'Bragg', 'Brasfield Commons', 'Braswell', 'Brennan', 'Brister', 'Bristow Lane', 'Bruner', 'Bruner (Graham Run)', 'Bryant Dell', 'Budd', 'Bungalow Hills', 'Burks', 'Burner', 'Burnside', 'Butterworth Condominium', 'C & W', 'Camelot', 'Campbell', 'Carter', 'Cavalier Farms', 'Cedar Grove', 'Cedar Lawn', 'Cedar Lawn West', 'Central Market', 'Centre Hill Court', 'Chappell', 'Charlton', 'Clark', 'Clements', 'Collier', 'Collier (Old Towne)', 'Commonwealth Acres', 'Commonwealth Medical Park', 'Community Bank Building Condominium', 'Cool Spring Heights', 'Couch', 'Cox', 'Coxendale', 'Craig', 'Crater Center', 'Crater Commercial Developers', 'Crater Heights', 'Crater Road Acreage (Not Platted)', 'Crater View', 'Crawford', 'Crawley', 'Crockett', 'Crowder', 'Cuthbert', 'Dalton', 'Davis', 'Davis Annex', 'Davis Place', 'Donnan', 'Dulcey', 'Dunlop', 'Dupuy Heights', 'East Hill', 'East Hill Condominium', 'Eastover Heights', 'Eastwood Corporate Park', 'Edenmont', 'Edgewood', 'Ellington', 'Erin Court', 'Evergreen', 'Fairgrounds', 'Foley Estates', 'Fort Davis Village', 'Fort Hayes Condominium', 'Fort Hayes Farm', 'Fort Henry Gardens', 'Frontage Road Industrial Park', 'Gerecke', 'Gerow', 'Gibson Court', 'Gill', 'Gillfield', 'Glenwood Court', 'Goodrich', 'Graham Front', 'Graham Run', 'Grant Court', 'Greenwood Farms', 'Greenwood Hill', 'Grove', 'H R H', 'Habliston', 'Hancock', 'Hannon', 'Harris', 'Harrison-Powell', 'Harrison-Sycamore (Not Platted)', 'Hawks', 'Hayes', 'Hill Park', 'Hillcrest', 'Hobbs', 'Hudson & Greenhow', 'Humphries', 'Ingleside', 'J G Q', 'Jefferson Place', 'John Court', 'John Enniss', 'Jones', 'Joynes', 'Kennilworth West', 'King Avenue', 'Kohilicek', 'Kutchen Farm', 'L & S', 'Lakemont Annex', 'Lakeside', 'Lakewood', 'Lakewood Estates', 'Lavelle', 'Leavenworth', 'Lee View', 'Lewis', 'Lincoln Place', 'Lyons', 'Magnolia Farm', 'Mann', 'Markek', 'Martz Industrial Park', 'Matthews', 'McKesson', 'McKesson (Sycamore Street)', 'Mccubbin', 'Mcilwaine', 'Meadowbrook Farm', 'Merhout', 'Milton', 'Montibello Heights', 'Moore', 'Munford', 'My', 'Myers', 'Myrick', 'N B', 'N B & W', 'Nelson Court', 'New Blandford', 'Newcomb', 'Newsom', 'Nobles', 'North Beck', 'Norwood', 'Nunnally', "O'Farrell", 'Oak Forest', 'Oak Warehouse', 'Old Blandford', 'Olde Town (Not Platted)', 'Osage Farm', 'Overbrook Hills', 'Panhill', 'Panhill (Old Towne)', 'Park', 'Park Place', 'Park View', 'Payne', 'Pembroke', 'Petersburg Industrial Park', 'Petersburg Investment Coporation', 'Pilcher', 'Pine Hill', 'Pine Tree', 'Pleasant Acres', 'Pocahontas', 'Poole', 'Porter Hill', 'Powell', 'Pritchett', 'Prudence', 'Pugh', 'Queencrest Addition', 'R C P', 'R&W', 'Ramblewood', 'Ridgewood', 'Rives', 'Robert Bolling', 'Robertson', 'Robinson', 'Robinson & Wright', "Roby's", 'Roper', 'Rose', 'Rosewood Terrace', 'Ross Court', 'Saddle Back Ridge', 'Scott', "Scott's", 'Seward Bolling Meadows', 'Sheffield', 'Smith Tract', 'South Adams Street Townhouses', 'South Hills', 'South Medical Park', 'South Perry Condominium', 'South Plains', 'St. Andrew Heights', 'St. John Court', 'St. Luke Heights', 'Starke', 'Stedman One Townhouses', 'Steele', 'Stephenson', 'Stratton', 'Strawberry Hill', 'Suburban Lots', 'Sutherland', 'Talley', 'Thrifts', 'Timberly Heights', 'Titus', 'Townes', 'Tucker', 'Turner', 'Tynes', 'Valentine', 'Valentine Court', 'Van Buren', 'Vasatko', 'Vaughn', 'W & C', 'W W R', 'Wachsman', 'Walnut Hill Court', 'Walnut Hill Gardens', 'Walnut Hill Park', 'Walnut Hill Plaza', 'Walnut Hill Terrace', 'Walnut Hill Westover Park', 'Washington Park', 'Wawa Place', 'Webb', 'Weisler', 'West Hill', 'West Park', 'West View', 'Westbourne', 'Westbrook', 'Westchester', 'Westview Gardens', 'Wheelhouse Court', 'White', 'Whitehill Farm', 'Whitehill Industrial Park', 'Whitman', 'Whittaker', 'Whittle', 'Wilkerson', 'Williamson', 'Woodland Hills', 'Woodmere', 'Woodmere Pointe Condominium', 'Woolard', 'Wright', 'Wyoming', 'Young']
+collapse_sparse_categories: bldg_exterior_wall
+  thresholds: sales_min=5, univ_min=25
+  11 categories collapsed into 'Other' (8 sales rows, 312 universe rows affected)
+  collapsed: ['ALUM', 'BV', 'CLB', 'HB', 'HP', 'MTL', 'PLY', 'STFR', 'STON', 'STUC', 'WOOD']
+collapse_sparse_categories: bldg_heat_type
+  thresholds: sales_min=5, univ_min=25
+  4 categories collapsed into 'Other' (4 sales rows, 137 universe rows affected)
+  collapsed: ['0', '6', '7', '8']
+
+Found 13 variables with 0 representation in either sales or universe dataset. You should NOT model with these:
+neighborhood_4075
+is_redev_neighborhood_True
+neighborhood_1250
+neighborhood_1516
+neighborhood_1102
+neighborhood_1211
+subdivision_name_collapsed_Rogers
+neighborhood_2075
+neighborhood_1071
+subdivision_name_collapsed_Burch
+neighborhood_2732
+subdivision_name_collapsed_Kennilworth
+sale_age_days
+
+setup: 0.32 seconds
+variables.markdown: 0.00 seconds
+variables.stuff: 0.00 seconds
+variables.prepare_ds: 0.25 seconds
+variables.one_hot: 0.18 seconds
+variables.split: 0.16 seconds
+variables.rep: 0.05 seconds
+variables.corr: 0.10 seconds
+variables.r2: 0.09 seconds
+variables.p: 0.16 seconds
+variables.t: 0.02 seconds
+variables.vif: 0.19 seconds
+variables.calc_recs: 0.09 seconds
+variables.final_stuff.while: 0.00 seconds
+variables.final_stuff.apply_dd: 0.00 seconds
+variables.final_stuff: 0.01 seconds
+Write model results to out/models/single_family_suburban/main
+write model parameters to out/models/single_family_suburban/main/assessor
+Write model results to out/models/single_family_suburban/main
+write model parameters to out/models/single_family_suburban/main/mra
+Wrote contributions map to out/models/single_family_suburban/main/mra/contributions_map.parquet
+Trained tree 1 of 10 with weight 2.7674310338605546 @ 15224.390537428064
+Trained tree 2 of 10 with weight 4.729024044916154e-06 @ 41049.53084842486
+Trained tree 3 of 10 with weight 3.5618128589133176 @ 16925.251916515303
+Trained tree 4 of 10 with weight 1.5779083405231376 @ 59582.04137355514
+Trained tree 5 of 10 with weight 1.1990399092359803 @ 21713.66704667341
+Trained tree 6 of 10 with weight 2.3414149551854435 @ 46383.16680302093
+Trained tree 7 of 10 with weight 4.729024044916154e-06 @ 48164.603569231775
+Trained tree 8 of 10 with weight 14.99999294044437 @ 38870.88879610604
+Trained tree 9 of 10 with weight 0.3679120072553005 @ 13347.514280025813
+Trained tree 10 of 10 with weight 4.578491624526367 @ 44568.86858203303
+Write model results to out/models/single_family_suburban/main
+write model parameters to out/models/single_family_suburban/main/lcomp
+Wrote contributions map to out/models/single_family_suburban/main/lcomp/contributions_map.parquet
+
+************************************************************
+MAIN Benchmark (single_family_suburban) -- Assessor Metrics
+************************************************************
+Holdout set : 23/122 sales from (2023-01-11 to 2023-11-16)
+  Study set : 118/122 sales from (2023-01-10 to 2023-12-29
+   Full set : 122/122 sales from (2020-04-08 to 2023-12-29)
+================================================================================
+
+
+Timings:
+|       |   assessor |   mra |   lcomp |
+|:------|-----------:|------:|--------:|
+| total |       0.05 |  0.41 |   23.9  |
+| param |       0    |  0    |    0    |
+| train |       0    |  0    |   20.6  |
+| test  |       0    |  0    |    0.04 |
+| univ  |       0    |  0.02 |    2.99 |
+| chd   |       0.04 |  0.03 |    0.03 |
+
+Holdout set:
+  (Assessor not shown here: this is a random pre-valuation holdout we draw
+   ourselves. Our figures are out-of-sample, but we can't know whether values
+   we didn't generate were held out the same way, so the comparison wouldn't be
+   like-for-like. If you are the assessor and know the holdout status, see
+   analysis.ratio_study.assessor_holdout.)
+|               | mra    | lcomp   |
+|:--------------|:-------|:--------|
+| utility_score | 14.7   | 16.2    |
+| count_sales   | 23     | 23      |
+| count_univ    | 3,741  | 3,741   |
+| median_ratio  | 1.00   | 1.02    |
+| cod           | 14.62  | 15.61   |
+| prd           | 1.01   | 1.03    |
+| prb           | -2.35  | -0.10   |
+| vei           | 14.14  | 11.54   |
+| vei_sig       | -16.01 | -34.45  |
+| count_trim    | 21     | 22      |
+| cod_trim      | 10.01  | 13.65   |
+| prd_trim      | 0.99   | 1.02    |
+| prb_trim      | -3.21  | -0.59   |
+| chd           | N/A    | N/A     |
+
+Study set:
+  (Assessor shown as an audit of the finished roll over all sales -- the standard
+   IAAO frame, not a predictive holdout. See the sales-chasing check in the ratio
+   study report for context on interpreting a very tight assessor result.)
+|               | assessor   | mra    | lcomp   |
+|:--------------|:-----------|:-------|:--------|
+| utility_score | 22.4       | 15.6   | 12.8    |
+| count_sales   | 118        | 118    | 118     |
+| count_univ    | 3,741      | 3,741  | 3,741   |
+| median_ratio  | 0.87       | 1.00   | 1.00    |
+| cod           | 16.37      | 13.66  | 13.19   |
+| prd           | 1.04       | 1.03   | 1.05    |
+| prb           | 2.94       | 1.99   | 4.66    |
+| vei           | -6.42      | -0.84  | -14.84  |
+| vei_sig       | -23.63     | -22.48 | -33.16  |
+| count_trim    | 113        | 112    | 112     |
+| cod_trim      | 14.29      | 11.22  | 10.53   |
+| prd_trim      | 1.02       | 1.02   | 1.03    |
+| prb_trim      | 1.44       | 1.03   | 3.20    |
+| chd           | 11.7       | 11.6   | 8.18    |
+
+
+
+************************************************************
+MAIN Benchmark (single_family_suburban) -- Academic Metrics
+************************************************************
+Testing 23/122 sales from (2023-01-11 00:00:00 to 2023-11-16 00:00:00)
+================================================================================
+
+UNTRIMMED
+| Model    |   count |   MAPE | MSE   | RMSE   |   m.ratio |   avg.ratio |    VEI |   Slope |
+|:---------|--------:|-------:|:------|:-------|----------:|------------:|-------:|--------:|
+| assessor |      23 |   0.18 | 2.12B | 46,008 |      0.86 |        0.83 | -13.95 |    0.83 |
+| mra      |      23 |   0.15 | 2.03B | 26,967 |      1    |        1.04 |  14.14 |    1.01 |
+| lcomp    |      23 |   0.16 | 2.3B  | 44,827 |      1.02 |        1.03 |  11.54 |    0.97 |
+
+TRIMMED
+| Model    |   count |   MAPE | MSE   | RMSE   |   m.ratio |   avg.ratio |    VEI |   Slope |
+|:---------|--------:|-------:|:------|:-------|----------:|------------:|-------:|--------:|
+| assessor |      23 |   0.18 | 2.12B | 46,008 |      0.86 |        0.83 | -13.95 |    0.83 |
+| mra      |      21 |   0.1  | 2.03B | 26,967 |      1    |        1.01 |  14.14 |    1.03 |
+| lcomp    |      22 |   0.14 | 2.3B  | 44,827 |      1.02 |        1    |  11.54 |    0.96 |
+================================================================================
+
+
+
+
+****** TIMING FOR _RUN_MODELS ******
+setup: 0.32 seconds
+variables.markdown: 0.00 seconds
+variables.stuff: 0.00 seconds
+variables.prepare_ds: 0.25 seconds
+variables.one_hot: 0.18 seconds
+variables.split: 0.16 seconds
+variables.rep: 0.05 seconds
+variables.corr: 0.10 seconds
+variables.r2: 0.09 seconds
+variables.p: 0.16 seconds
+variables.t: 0.02 seconds
+variables.vif: 0.19 seconds
+variables.calc_recs: 0.09 seconds
+variables.final_stuff.while: 0.00 seconds
+variables.final_stuff.apply_dd: 0.00 seconds
+variables.final_stuff: 0.01 seconds
+var_recs: 1.30 seconds
+run_models: 49.29 seconds
+calc benchmarks: 0.42 seconds
+total: 51.42 seconds
+************************************
+
+**********TIMING FOR RUN ALL MODELS***********
+setup: 0.00 seconds
+model group: single_family_suburban: 51.42 seconds
+run model groups: 51.42 seconds
+write: 0.00 seconds
+***********************************************
+[cv] === fold tᵢ=2024-07-01 ===
+Before univ merge len = 6035
+After univ merge len = 6035
+Using 914 sales...
+--> 165 vacant sales
+--> 749 improved sales
+--> 725 valid for ratio study
+--> 165 valid for land ratio study
+len before validate = 914
+len after validate = 860
+len after hydrate = 860
+--> Time adjustment calculated for 1 days.
+--> Time adjustment calculated for 519 days.
+--> Time adjustment calculated for 543 days.
+--> Time adjustment calculated for 536 days.
+--> Time adjustment calculated for 528 days.
+--> Time adjustment calculated for 1 days.
+len after enrich = 860
+len after clip = 860
+Identified 50 invalid sales keys identified by heuristic, but not dropping them
+collapse_sparse_categories: subdivision_name into 'subdivision_name_collapsed'
+  thresholds: sales_min=5, univ_min=25
+  268 categories collapsed into 'Other' (235 sales rows, 5523 universe rows affected)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1214: RuntimeWarning: Mean of empty slice
+  return np.nanmean(a, axis, out=out, keepdims=keepdims)
+C:\git\openavmkit\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1214: RuntimeWarning: Mean of empty slice
+  return np.nanmean(a, axis, out=out, keepdims=keepdims)
+  collapsed: ['30 Franklin Condominium', 'Anchor Industrial Park', 'Andrew Heights', 'Andrews', 'Andrews (Olde Towne)', 'Annie Mae Roberts', 'Ashston Acres', 'Atkinson', 'Battersea', 'Baylor Heights', 'Bellevue Heights', 'Blackwater Swamp', 'Blandford', 'Blick', 'Boisseau', 'Bolling (Old Towne)', 'Bolling Terminal', 'Bragg', 'Brasfield Commons', 'Braswell', 'Brennan', 'Brister', 'Bristow Lane', 'Bruner (Graham Run)', 'Bryant Dell', 'Budd', 'Bungalow Hills', 'Burks', 'Burner', 'Burnside', 'Butterworth Condominium', 'C & W', 'Campbell', 'Carter', 'Cavalier Farms', 'Cedar Grove', 'Cedar Lawn', 'Cedar Lawn West', 'Central Market', 'Centre Hill Court', 'Chappell', 'Clark', 'Clements', 'Collier', 'Collier (Old Towne)', 'Commonwealth Acres', 'Commonwealth Medical Park', 'Community Bank Building Condominium', 'Cool Spring Heights', 'Couch', 'Cox', 'Coxendale', 'Craig', 'Crater Center', 'Crater Commercial Developers', 'Crater Heights', 'Crater Road Acreage (Not Platted)', 'Crater View', 'Crawford', 'Crawley', 'Crockett', 'Crowder', 'Cuthbert', 'Dalton', 'Davis', 'Davis Annex', 'Davis Place', 'Donnan', 'Dulcey', 'Dunlop', 'Dupuy Heights', 'East Hill', 'East Hill Condominium', 'Eastover Heights', 'Eastwood Corporate Park', 'Edenmont', 'Edgewood', 'Ellington', 'Erin Court', 'Evergreen', 'Fairgrounds', 'Foley Estates', 'Fort Davis Village', 'Fort Hayes Condominium', 'Fort Hayes Farm', 'Fort Henry Gardens', 'Frontage Road Industrial Park', 'Gerecke', 'Gerow', 'Gibson Court', 'Gill', 'Gillfield', 'Glenwood Court', 'Goodrich', 'Graham Front', 'Graham Run', 'Grant Court', 'Greenwood Farms', 'Greenwood Hill', 'Grove', 'H R H', 'Habliston', 'Hancock', 'Hannon', 'Harris', 'Harrison-Powell', 'Harrison-Sycamore (Not Platted)', 'Hawks', 'Hayes', 'Hill Park', 'Hobbs', 'Hudson & Greenhow', 'Humphries', 'Ingleside', 'J G Q', 'Jefferson Place', 'John Court', 'John Enniss', 'Jones', 'Joynes', 'Kennilworth West', 'King Avenue', 'Kohilicek', 'Kutchen Farm', 'L & S', 'Lakemont Annex', 'Lakeside', 'Lakewood', 'Lakewood Estates', 'Lavelle', 'Leavenworth', 'Lee View', 'Lewis', 'Lincoln Place', 'Lyons', 'Magnolia Farm', 'Mann', 'Markek', 'Martz Industrial Park', 'Matthews', 'McKesson (Sycamore Street)', 'Mccubbin', 'Mcilwaine', 'Meadowbrook Farm', 'Merhout', 'Milton', 'Montibello Heights', 'Moore', 'Munford', 'My', 'Myers', 'Myrick', 'N B', 'N B & W', 'Nelson Court', 'Newcomb', 'Newsom', 'Nobles', 'North Beck', 'Norwood', 'Nunnally', "O'Farrell", 'Oak Forest', 'Oak Warehouse', 'Old Blandford', 'Osage Farm', 'Overbrook Hills', 'Panhill', 'Panhill (Old Towne)', 'Park', 'Park Place', 'Park View', 'Payne', 'Petersburg Industrial Park', 'Petersburg Investment Coporation', 'Pilcher', 'Pine Hill', 'Pine Tree', 'Pleasant Acres', 'Pocahontas', 'Poole', 'Porter Hill', 'Powell', 'Pritchett', 'Prudence', 'Pugh', 'Queencrest Addition', 'R C P', 'R&W', 'Ridgewood', 'Rives', 'Robert Bolling', 'Robertson', 'Robinson', 'Robinson & Wright', "Roby's", 'Roper', 'Rose', 'Rosewood Terrace', 'Ross Court', 'Saddle Back Ridge', 'Scott', "Scott's", 'Seward Bolling Meadows', 'Sheffield', 'Smith Tract', 'South Adams Street Townhouses', 'South Hills', 'South Medical Park', 'South Perry Condominium', 'South Plains', 'St. Andrew Heights', 'St. John Court', 'Starke', 'Stedman One Townhouses', 'Steele', 'Stephenson', 'Stratton', 'Strawberry Hill', 'Suburban Lots', 'Sutherland', 'Talley', 'Thrifts', 'Titus', 'Townes', 'Tucker', 'Turner', 'Tynes', 'Valentine', 'Valentine Court', 'Van Buren', 'Vasatko', 'Vaughn', 'W & C', 'W W R', 'Wachsman', 'Walnut Hill Court', 'Walnut Hill Park', 'Walnut Hill Plaza', 'Walnut Hill Terrace', 'Walnut Hill Westover Park', 'Washington Park', 'Wawa Place', 'Webb', 'Weisler', 'West Hill', 'West Park', 'West View', 'Westbourne', 'Westbrook', 'Westchester', 'Westview Gardens', 'Wheelhouse Court', 'White', 'Whitehill Farm', 'Whitehill Industrial Park', 'Whitman', 'Whittaker', 'Whittle', 'Wilkerson', 'Williamson', 'Woodland Hills', 'Woodmere', 'Woodmere Pointe Condominium', 'Woolard', 'Wright', 'Wyoming', 'Young']
+collapse_sparse_categories: bldg_exterior_wall
+  thresholds: sales_min=5, univ_min=25
+  11 categories collapsed into 'Other' (13 sales rows, 312 universe rows affected)
+  collapsed: ['ALUM', 'BV', 'CLB', 'HB', 'HP', 'MTL', 'PLY', 'STFR', 'STON', 'STUC', 'WOOD']
+collapse_sparse_categories: bldg_heat_type
+  thresholds: sales_min=5, univ_min=25
+  4 categories collapsed into 'Other' (4 sales rows, 137 universe rows affected)
+  collapsed: ['0', '6', '7', '8']
+
+Found 13 variables with 0 representation in either sales or universe dataset. You should NOT model with these:
+neighborhood_4075
+is_redev_neighborhood_True
+neighborhood_1516
+neighborhood_1250
+neighborhood_1102
+neighborhood_1211
+subdivision_name_collapsed_Rogers
+neighborhood_1071
+neighborhood_2075
+neighborhood_2732
+subdivision_name_collapsed_Burch
+subdivision_name_collapsed_Kennilworth
+sale_age_days
+
+setup: 0.35 seconds
+variables.markdown: 0.00 seconds
+variables.stuff: 0.00 seconds
+variables.prepare_ds: 0.58 seconds
+variables.one_hot: 0.19 seconds
+variables.split: 0.17 seconds
+variables.rep: 0.06 seconds
+variables.corr: 0.15 seconds
+variables.r2: 0.11 seconds
+variables.p: 0.20 seconds
+variables.t: 0.03 seconds
+variables.vif: 0.21 seconds
+variables.calc_recs: 0.10 seconds
+variables.final_stuff.while: 0.00 seconds
+variables.final_stuff.apply_dd: 0.00 seconds
+variables.final_stuff: 0.00 seconds
+Write model results to out/models/single_family_suburban/main
+write model parameters to out/models/single_family_suburban/main/assessor
+Write model results to out/models/single_family_suburban/main
+write model parameters to out/models/single_family_suburban/main/mra
+Wrote contributions map to out/models/single_family_suburban/main/mra/contributions_map.parquet
+Trained tree 1 of 10 with weight 4.729024044916154e-06 @ 32173.367323601473
+Trained tree 2 of 10 with weight 14.999994168709287 @ 37138.16765931096
+Trained tree 3 of 10 with weight 1.925560074138133 @ 48232.646010130746
+Trained tree 4 of 10 with weight 0.018231560159170483 @ 43308.20301787615
+Trained tree 5 of 10 with weight 1.182979718045186 @ 42125.52902635813
+Trained tree 6 of 10 with weight 4.0587262961222644e-06 @ 17041.846196841587
+Trained tree 7 of 10 with weight 4.729024044916154e-06 @ 47472.04633754985
+Trained tree 8 of 10 with weight 4.729024044916154e-06 @ 15361.150021620306
+Trained tree 9 of 10 with weight 10.70789913824307 @ 37437.22424899269
+Trained tree 10 of 10 with weight 14.99999549346167 @ 38362.52504868009
+Write model results to out/models/single_family_suburban/main
+write model parameters to out/models/single_family_suburban/main/lcomp
+Wrote contributions map to out/models/single_family_suburban/main/lcomp/contributions_map.parquet
+
+************************************************************
+MAIN Benchmark (single_family_suburban) -- Assessor Metrics
+************************************************************
+Holdout set : 32/163 sales from (2023-01-11 to 2024-06-27)
+  Study set : 92/163 sales from (2023-07-06 to 2024-06-28
+   Full set : 163/163 sales from (2020-04-08 to 2024-06-28)
+================================================================================
+
+
+Timings:
+|       |   assessor |   mra |   lcomp |
+|:------|-----------:|------:|--------:|
+| total |       0.06 |  0.47 |   19.7  |
+| param |       0    |  0    |    0    |
+| train |       0    |  0.01 |   16.5  |
+| test  |       0    |  0    |    0.05 |
+| univ  |       0    |  0.02 |    2.88 |
+| chd   |       0.03 |  0.03 |    0.03 |
+
+Holdout set:
+  (Assessor not shown here: this is a random pre-valuation holdout we draw
+   ourselves. Our figures are out-of-sample, but we can't know whether values
+   we didn't generate were held out the same way, so the comparison wouldn't be
+   like-for-like. If you are the assessor and know the holdout status, see
+   analysis.ratio_study.assessor_holdout.)
+|               | mra   | lcomp   |
+|:--------------|:------|:--------|
+| utility_score | 17.7  | 18.6    |
+| count_sales   | 32    | 32      |
+| count_univ    | 3,741 | 3,741   |
+| median_ratio  | 0.96  | 1.03    |
+| cod           | 18.23 | 17.95   |
+| prd           | 1.02  | 1.05    |
+| prb           | -1.14 | 2.36    |
+| vei           | 8.72  | 0.18    |
+| vei_sig       | -191  | -92.41  |
+| count_trim    | 30    | 30      |
+| cod_trim      | 15.08 | 15.50   |
+| prd_trim      | 1.01  | 1.02    |
+| prb_trim      | -0.93 | 0.99    |
+| chd           | N/A   | N/A     |
+
+Study set:
+  (Assessor shown as an audit of the finished roll over all sales -- the standard
+   IAAO frame, not a predictive holdout. See the sales-chasing check in the ratio
+   study report for context on interpreting a very tight assessor result.)
+|               | assessor   | mra    | lcomp   |
+|:--------------|:-----------|:-------|:--------|
+| utility_score | 21.1       | 15.2   | 16      |
+| count_sales   | 92         | 92     | 92      |
+| count_univ    | 3,741      | 3,741  | 3,741   |
+| median_ratio  | 0.89       | 0.99   | 0.99    |
+| cod           | 17.65      | 12.46  | 15.61   |
+| prd           | 1.04       | 1.02   | 1.06    |
+| prb           | 1.63       | 1.70   | 7.96    |
+| vei           | 0.50       | -1.63  | -14.80  |
+| vei_sig       | -18.84     | -22.39 | -49.27  |
+| count_trim    | 89         | 86     | 86      |
+| cod_trim      | 15.92      | 10.14  | 11.41   |
+| prd_trim      | 1.03       | 1.02   | 1.03    |
+| prb_trim      | 1.87       | 1.63   | 5.01    |
+| chd           | 11.7       | 11     | 7.28    |
+
+
+
+************************************************************
+MAIN Benchmark (single_family_suburban) -- Academic Metrics
+************************************************************
+Testing 32/163 sales from (2023-01-11 00:00:00 to 2024-06-27 00:00:00)
+================================================================================
+
+UNTRIMMED
+| Model    |   count |   MAPE | MSE   | RMSE   |   m.ratio |   avg.ratio |   VEI |   Slope |
+|:---------|--------:|-------:|:------|:-------|----------:|------------:|------:|--------:|
+| assessor |      32 |   0.17 | 2.02B | 39,442 |      0.89 |        0.9  | -7.04 |    0.89 |
+| mra      |      32 |   0.18 | 2.21B | 35,773 |      0.96 |        1.05 |  8.72 |    1.01 |
+| lcomp    |      32 |   0.19 | 3.17B | 39,531 |      1.03 |        1.04 |  0.18 |    0.94 |
+
+TRIMMED
+| Model    |   count |   MAPE | MSE   | RMSE   |   m.ratio |   avg.ratio |   VEI |   Slope |
+|:---------|--------:|-------:|:------|:-------|----------:|------------:|------:|--------:|
+| assessor |      31 |   0.15 | 2.02B | 39,442 |      0.89 |        0.87 | -7.04 |    0.87 |
+| mra      |      30 |   0.15 | 2.21B | 35,773 |      0.96 |        1.03 |  8.72 |    1.02 |
+| lcomp    |      30 |   0.16 | 3.17B | 39,531 |      1.03 |        1.04 |  0.18 |    0.99 |
+================================================================================
+
+
+
+
+****** TIMING FOR _RUN_MODELS ******
+setup: 0.35 seconds
+variables.markdown: 0.00 seconds
+variables.stuff: 0.00 seconds
+variables.prepare_ds: 0.58 seconds
+variables.one_hot: 0.19 seconds
+variables.split: 0.17 seconds
+variables.rep: 0.06 seconds
+variables.corr: 0.15 seconds
+variables.r2: 0.11 seconds
+variables.p: 0.20 seconds
+variables.t: 0.03 seconds
+variables.vif: 0.21 seconds
+variables.calc_recs: 0.10 seconds
+variables.final_stuff.while: 0.00 seconds
+variables.final_stuff.apply_dd: 0.00 seconds
+variables.final_stuff: 0.00 seconds
+var_recs: 1.83 seconds
+run_models: 38.25 seconds
+calc benchmarks: 0.40 seconds
+total: 40.92 seconds
+************************************
+
+**********TIMING FOR RUN ALL MODELS***********
+setup: 0.00 seconds
+model group: single_family_suburban: 40.92 seconds
+run model groups: 40.92 seconds
+write: 0.00 seconds
+***********************************************
+[cv] === fold tᵢ=2025-01-01 ===
+Before univ merge len = 6293
+After univ merge len = 6293
+Using 1172 sales...
+--> 185 vacant sales
+--> 987 improved sales
+--> 936 valid for ratio study
+--> 185 valid for land ratio study
+len before validate = 1172
+len after validate = 1097
+len after hydrate = 1097
+--> Time adjustment calculated for 1 days.
+--> Time adjustment calculated for 712 days.
+--> Time adjustment calculated for 728 days.
+--> Time adjustment calculated for 721 days.
+--> Time adjustment calculated for 711 days.
+--> Time adjustment calculated for 1 days.
+len after enrich = 1097
+len after clip = 1097
+Identified 56 invalid sales keys identified by heuristic, but not dropping them
+collapse_sparse_categories: subdivision_name into 'subdivision_name_collapsed'
+  thresholds: sales_min=5, univ_min=25
+  256 categories collapsed into 'Other' (273 sales rows, 4682 universe rows affected)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\geopandas\geodataframe.py:1969: SettingWithCopyWarning: 
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  super().__setitem__(key, value)
+C:\git\openavmkit\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1214: RuntimeWarning: Mean of empty slice
+  return np.nanmean(a, axis, out=out, keepdims=keepdims)
+C:\git\openavmkit\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1214: RuntimeWarning: Mean of empty slice
+  return np.nanmean(a, axis, out=out, keepdims=keepdims)
+C:\git\openavmkit\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1214: RuntimeWarning: Mean of empty slice
+  return np.nanmean(a, axis, out=out, keepdims=keepdims)
+  collapsed: ['30 Franklin Condominium', 'Anchor Industrial Park', 'Andrew Heights', 'Andrews', 'Andrews (Olde Towne)', 'Annie Mae Roberts', 'Ashston Acres', 'Atkinson', 'Battersea', 'Baylor Heights', 'Bellevue Heights', 'Blackwater Swamp', 'Blandford', 'Blick', 'Boisseau', 'Bolling (Old Towne)', 'Bolling Terminal', 'Bragg', 'Brasfield Commons', 'Braswell', 'Brennan', 'Brister', 'Bristow Lane', 'Bruner (Graham Run)', 'Bryant Dell', 'Bungalow Hills', 'Burks', 'Burner', 'Burnside', 'Butterworth Condominium', 'C & W', 'Campbell', 'Carter', 'Cavalier Farms', 'Cedar Grove', 'Cedar Lawn West', 'Central Market', 'Centre Hill Court', 'Chappell', 'Clark', 'Clements', 'Collier', 'Collier (Old Towne)', 'Commonwealth Acres', 'Commonwealth Medical Park', 'Community Bank Building Condominium', 'Cool Spring Heights', 'Couch', 'Cox', 'Coxendale', 'Craig', 'Crater Center', 'Crater Commercial Developers', 'Crater Heights', 'Crater Road Acreage (Not Platted)', 'Crater View', 'Crawford', 'Crawley', 'Crockett', 'Crowder', 'Cuthbert', 'Dalton', 'Davis', 'Davis Annex', 'Davis Place', 'Donnan', 'Dulcey', 'Dunlop', 'Dupuy Heights', 'East Hill', 'East Hill Condominium', 'Eastwood Corporate Park', 'Edgewood', 'Ellington', 'Erin Court', 'Evergreen', 'Fairgrounds', 'Foley Estates', 'Fort Davis Village', 'Fort Hayes Condominium', 'Fort Hayes Farm', 'Frontage Road Industrial Park', 'Gerecke', 'Gerow', 'Gibson Court', 'Gill', 'Gillfield', 'Glenwood Court', 'Goodrich', 'Graham Front', 'Graham Run', 'Grant Court', 'Greenwood Farms', 'Greenwood Hill', 'Grove', 'H R H', 'Hancock', 'Hannon', 'Harris', 'Harrison-Powell', 'Harrison-Sycamore (Not Platted)', 'Hawks', 'Hayes', 'Hill Park', 'Hobbs', 'Hudson & Greenhow', 'Humphries', 'Ingleside', 'J G Q', 'Jefferson Place', 'John Court', 'John Enniss', 'Jones', 'Joynes', 'Kennilworth West', 'King Avenue', 'Kohilicek', 'Kutchen Farm', 'L & S', 'Lakemont Annex', 'Lakeside', 'Lakewood', 'Lakewood Estates', 'Lavelle', 'Leavenworth', 'Lee View', 'Lewis', 'Lincoln Place', 'Lyons', 'Magnolia Farm', 'Mann', 'Markek', 'Martz Industrial Park', 'Matthews', 'McKesson (Sycamore Street)', 'Mccubbin', 'Mcilwaine', 'Merhout', 'Milton', 'Montibello Heights', 'Moore', 'Munford', 'My', 'Myers', 'Myrick', 'N B', 'N B & W', 'Nelson Court', 'Newcomb', 'Newsom', 'Nobles', 'North Beck', 'Norwood', 'Nunnally', "O'Farrell", 'Oak Forest', 'Oak Warehouse', 'Old Blandford', 'Osage Farm', 'Overbrook Hills', 'Panhill', 'Panhill (Old Towne)', 'Park', 'Park Place', 'Park View', 'Payne', 'Petersburg Industrial Park', 'Petersburg Investment Coporation', 'Pilcher', 'Pine Hill', 'Pine Tree', 'Pleasant Acres', 'Poole', 'Porter Hill', 'Powell', 'Pritchett', 'Prudence', 'Pugh', 'Queencrest Addition', 'R C P', 'R&W', 'Ridgewood', 'Rives', 'Robert Bolling', 'Robertson', 'Robinson', 'Robinson & Wright', "Roby's", 'Roper', 'Rose', 'Rosewood Terrace', 'Ross Court', 'Saddle Back Ridge', 'Scott', "Scott's", 'Seward Bolling Meadows', 'Sheffield', 'Smith Tract', 'South Adams Street Townhouses', 'South Hills', 'South Medical Park', 'South Perry Condominium', 'South Plains', 'St. Andrew Heights', 'St. John Court', 'Starke', 'Stedman One Townhouses', 'Steele', 'Stephenson', 'Strawberry Hill', 'Suburban Lots', 'Sutherland', 'Talley', 'Thrifts', 'Titus', 'Townes', 'Turner', 'Tynes', 'Valentine', 'Valentine Court', 'Van Buren', 'Vasatko', 'Vaughn', 'W & C', 'W W R', 'Wachsman', 'Walnut Hill Court', 'Walnut Hill Park', 'Walnut Hill Plaza', 'Walnut Hill Terrace', 'Washington Park', 'Wawa Place', 'Webb', 'Weisler', 'West Hill', 'West Park', 'West View', 'Westbourne', 'Westbrook', 'Westchester', 'Westview Gardens', 'Wheelhouse Court', 'White', 'Whitehill Farm', 'Whitehill Industrial Park', 'Whitman', 'Whittaker', 'Whittle', 'Wilkerson', 'Williamson', 'Woodland Hills', 'Woodmere Pointe Condominium', 'Woolard', 'Wright', 'Wyoming', 'Young']
+collapse_sparse_categories: bldg_exterior_wall
+  thresholds: sales_min=5, univ_min=25
+  9 categories collapsed into 'Other' (9 sales rows, 168 universe rows affected)
+  collapsed: ['ALUM', 'BV', 'CLB', 'HB', 'HP', 'MTL', 'PLY', 'STON', 'STUC']
+collapse_sparse_categories: bldg_heat_type
+  thresholds: sales_min=5, univ_min=25
+  4 categories collapsed into 'Other' (5 sales rows, 137 universe rows affected)
+  collapsed: ['0', '6', '7', '8']
+
+Found 9 variables with 0 representation in either sales or universe dataset. You should NOT model with these:
+neighborhood_4075
+neighborhood_1516
+neighborhood_1211
+neighborhood_1071
+neighborhood_2075
+subdivision_name_collapsed_Kennilworth
+subdivision_name_collapsed_Burch
+subdivision_name_collapsed_Stratton
+sale_age_days
+
+setup: 0.32 seconds
+variables.markdown: 0.00 seconds
+variables.stuff: 0.00 seconds
+variables.prepare_ds: 0.23 seconds
+variables.one_hot: 0.17 seconds
+variables.split: 0.16 seconds
+variables.rep: 0.05 seconds
+variables.corr: 0.16 seconds
+variables.r2: 0.10 seconds
+variables.p: 0.24 seconds
+variables.t: 0.03 seconds
+variables.vif: 0.19 seconds
+variables.calc_recs: 0.08 seconds
+variables.final_stuff.while: 0.00 seconds
+variables.final_stuff.apply_dd: 0.00 seconds
+variables.final_stuff: 0.01 seconds
+Write model results to out/models/single_family_suburban/main
+write model parameters to out/models/single_family_suburban/main/assessor
+Write model results to out/models/single_family_suburban/main
+write model parameters to out/models/single_family_suburban/main/mra
+Wrote contributions map to out/models/single_family_suburban/main/mra/contributions_map.parquet
+Trained tree 1 of 10 with weight 4.729024044916154e-06 @ 38716.16227900016
+Trained tree 2 of 10 with weight 0.07682512760318731 @ 40628.12435929439
+Trained tree 3 of 10 with weight 4.729024044916154e-06 @ 38858.27454936051
+Trained tree 4 of 10 with weight 4.729024044916154e-06 @ 54433.64116660678
+Trained tree 5 of 10 with weight 1.7775849568673008 @ 19298.033296678725
+Trained tree 6 of 10 with weight 1.0914458100075064 @ 48742.26987632471
+Trained tree 7 of 10 with weight 14.999994731320212 @ 58177.65025199166
+Trained tree 8 of 10 with weight 0.5131270642051512 @ 37421.982695481354
+Trained tree 9 of 10 with weight 14.99999549346167 @ 55637.4909401126
+Trained tree 10 of 10 with weight 14.99999549346167 @ 34061.64544663938
+Write model results to out/models/single_family_suburban/main
+write model parameters to out/models/single_family_suburban/main/lcomp
+Wrote contributions map to out/models/single_family_suburban/main/lcomp/contributions_map.parquet
+
+************************************************************
+MAIN Benchmark (single_family_suburban) -- Assessor Metrics
+************************************************************
+Holdout set : 40/193 sales from (2020-04-08 to 2024-09-26)
+  Study set : 71/193 sales from (2024-01-08 to 2024-12-30
+   Full set : 193/193 sales from (2020-04-08 to 2024-12-30)
+================================================================================
+
+
+Timings:
+|       |   assessor |   mra |   lcomp |
+|:------|-----------:|------:|--------:|
+| total |       0.05 |  0.42 |   21.6  |
+| param |       0    |  0    |    0    |
+| train |       0    |  0.01 |   18.2  |
+| test  |       0    |  0    |    0.06 |
+| univ  |       0    |  0.03 |    2.94 |
+| chd   |       0.02 |  0.03 |    0.02 |
+
+Holdout set:
+  (Assessor not shown here: this is a random pre-valuation holdout we draw
+   ourselves. Our figures are out-of-sample, but we can't know whether values
+   we didn't generate were held out the same way, so the comparison wouldn't be
+   like-for-like. If you are the assessor and know the holdout status, see
+   analysis.ratio_study.assessor_holdout.)
+|               | mra   | lcomp   |
+|:--------------|:------|:--------|
+| utility_score | 16    | 18.1    |
+| count_sales   | 40    | 40      |
+| count_univ    | 3,741 | 3,741   |
+| median_ratio  | 0.93  | 1.00    |
+| cod           | 15.74 | 18.04   |
+| prd           | 1.02  | 1.05    |
+| prb           | -0.19 | 4.45    |
+| vei           | -0.09 | -3.78   |
+| vei_sig       | -183  | -340    |
+| count_trim    | 38    | 38      |
+| cod_trim      | 12.63 | 15.88   |
+| prd_trim      | 1.01  | 1.03    |
+| prb_trim      | -0.05 | 2.88    |
+| chd           | N/A   | N/A     |
+
+Study set:
+  (Assessor shown as an audit of the finished roll over all sales -- the standard
+   IAAO frame, not a predictive holdout. See the sales-chasing check in the ratio
+   study report for context on interpreting a very tight assessor result.)
+|               | assessor   | mra    | lcomp   |
+|:--------------|:-----------|:-------|:--------|
+| utility_score | 19.2       | 14.4   | 12.4    |
+| count_sales   | 71         | 71     | 71      |
+| count_univ    | 3,741      | 3,741  | 3,741   |
+| median_ratio  | 0.99       | 1.00   | 0.98    |
+| cod           | 17.63      | 12.64  | 11.32   |
+| prd           | 1.03       | 1.03   | 1.03    |
+| prb           | 0.78       | 2.52   | 4.13    |
+| vei           | 0.33       | -7.73  | -16.81  |
+| vei_sig       | -12.17     | -24.39 | -32.01  |
+| count_trim    | 68         | 67     | 67      |
+| cod_trim      | 14.76      | 10.97  | 9.63    |
+| prd_trim      | 1.02       | 1.02   | 1.02    |
+| prb_trim      | 0.79       | 1.68   | 3.03    |
+| chd           | 11.7       | 11.6   | 8.37    |
+
+
+
+************************************************************
+MAIN Benchmark (single_family_suburban) -- Academic Metrics
+************************************************************
+Testing 40/193 sales from (2020-04-08 00:00:00 to 2024-09-26 00:00:00)
+================================================================================
+
+UNTRIMMED
+| Model    |   count |   MAPE | MSE   | RMSE   |   m.ratio |   avg.ratio |   VEI |   Slope |
+|:---------|--------:|-------:|:------|:-------|----------:|------------:|------:|--------:|
+| assessor |      40 |   0.21 | 973M  | 28,613 |      1.04 |        1.1  |  1.58 |    1.01 |
+| mra      |      40 |   0.16 | 1.08B | 27,687 |      0.93 |        0.98 | -0.09 |    0.95 |
+| lcomp    |      40 |   0.18 | 970M  | 30,943 |      1    |        1.07 | -3.78 |    0.99 |
+
+TRIMMED
+| Model    |   count |   MAPE | MSE   | RMSE   |   m.ratio |   avg.ratio |   VEI |   Slope |
+|:---------|--------:|-------:|:------|:-------|----------:|------------:|------:|--------:|
+| assessor |      38 |   0.14 | 973M  | 28,613 |      1.03 |        1.02 |  1.58 |    1.01 |
+| mra      |      38 |   0.13 | 1.08B | 27,687 |      0.9  |        0.94 | -0.09 |    0.93 |
+| lcomp    |      38 |   0.16 | 970M  | 30,943 |      1    |        1.05 | -3.78 |    1    |
+================================================================================
+
+
+
+
+****** TIMING FOR _RUN_MODELS ******
+setup: 0.32 seconds
+variables.markdown: 0.00 seconds
+variables.stuff: 0.00 seconds
+variables.prepare_ds: 0.23 seconds
+variables.one_hot: 0.17 seconds
+variables.split: 0.16 seconds
+variables.rep: 0.05 seconds
+variables.corr: 0.16 seconds
+variables.r2: 0.10 seconds
+variables.p: 0.24 seconds
+variables.t: 0.03 seconds
+variables.vif: 0.19 seconds
+variables.calc_recs: 0.08 seconds
+variables.final_stuff.while: 0.00 seconds
+variables.final_stuff.apply_dd: 0.00 seconds
+variables.final_stuff: 0.01 seconds
+var_recs: 1.45 seconds
+run_models: 40.27 seconds
+calc benchmarks: 0.40 seconds
+total: 42.53 seconds
+************************************
+
+**********TIMING FOR RUN ALL MODELS***********
+setup: 0.00 seconds
+model group: single_family_suburban: 42.53 seconds
+run model groups: 42.53 seconds
+write: 0.00 seconds
+***********************************************
+[cv] === fold tᵢ=2025-07-01 ===
+Before univ merge len = 6572
+After univ merge len = 6572
+Using 1451 sales...
+--> 185 vacant sales
+--> 1266 improved sales
+--> 1177 valid for ratio study
+--> 185 valid for land ratio study
+len before validate = 1451
+len after validate = 1348
+len after hydrate = 1348
+--> Time adjustment calculated for 1 days.
+--> Time adjustment calculated for 881 days.
+--> Time adjustment calculated for 911 days.
+--> Time adjustment calculated for 903 days.
+--> Time adjustment calculated for 891 days.
+--> Time adjustment calculated for 1 days.
+len after enrich = 1348
+len after clip = 1348
+Identified 62 invalid sales keys identified by heuristic, but not dropping them
+collapse_sparse_categories: subdivision_name into 'subdivision_name_collapsed'
+  thresholds: sales_min=5, univ_min=25
+  246 categories collapsed into 'Other' (308 sales rows, 4142 universe rows affected)
+  collapsed: ['30 Franklin Condominium', 'Anchor Industrial Park', 'Andrew Heights', 'Andrews', 'Andrews (Olde Towne)', 'Annie Mae Roberts', 'Ashston Acres', 'Atkinson', 'Battersea', 'Baylor Heights', 'Bellevue Heights', 'Blackwater Swamp', 'Blandford', 'Blick', 'Boisseau', 'Bolling (Old Towne)', 'Bragg', 'Brasfield Commons', 'Braswell', 'Brennan', 'Brister', 'Bristow Lane', 'Bruner (Graham Run)', 'Bryant Dell', 'Bungalow Hills', 'Burks', 'Burner', 'Burnside', 'Butterworth Condominium', 'C & W', 'Campbell', 'Carter', 'Cavalier Farms', 'Cedar Grove', 'Cedar Lawn West', 'Central Market', 'Centre Hill Court', 'Chappell', 'Clark', 'Clements', 'Collier', 'Collier (Old Towne)', 'Commonwealth Acres', 'Commonwealth Medical Park', 'Community Bank Building Condominium', 'Cool Spring Heights', 'Couch', 'Cox', 'Craig', 'Crater Center', 'Crater Commercial Developers', 'Crater Heights', 'Crater Road Acreage (Not Platted)', 'Crater View', 'Crawford', 'Crawley', 'Crockett', 'Crowder', 'Cuthbert', 'Davis', 'Davis Annex', 'Davis Place', 'Donnan', 'Dulcey', 'Dunlop', 'Dupuy Heights', 'East Hill', 'East Hill Condominium', 'Eastwood Corporate Park', 'Edgewood', 'Ellington', 'Erin Court', 'Evergreen', 'Fairgrounds', 'Foley Estates', 'Fort Davis Village', 'Fort Hayes Farm', 'Frontage Road Industrial Park', 'Gerecke', 'Gerow', 'Gibson Court', 'Gill', 'Gillfield', 'Glenwood Court', 'Goodrich', 'Graham Front', 'Graham Run', 'Grant Court', 'Greenwood Farms', 'Greenwood Hill', 'Grove', 'H R H', 'Hancock', 'Hannon', 'Harrison-Powell', 'Harrison-Sycamore (Not Platted)', 'Hawks', 'Hayes', 'Hill Park', 'Hobbs', 'Hudson & Greenhow', 'Humphries', 'Ingleside', 'J G Q', 'Jefferson Place', 'John Court', 'John Enniss', 'Jones', 'Joynes', 'Kennilworth West', 'King Avenue', 'Kohilicek', 'Kutchen Farm', 'L & S', 'Lakemont Annex', 'Lakeside', 'Lakewood', 'Lakewood Estates', 'Lavelle', 'Leavenworth', 'Lee View', 'Lewis', 'Magnolia Farm', 'Mann', 'Markek', 'Martz Industrial Park', 'Matthews', 'McKesson (Sycamore Street)', 'Mccubbin', 'Mcilwaine', 'Merhout', 'Milton', 'Montibello Heights', 'Moore', 'Munford', 'My', 'Myers', 'Myrick', 'N B', 'N B & W', 'Nelson Court', 'Newcomb', 'Newsom', 'Nobles', 'North Beck', 'Norwood', 'Nunnally', "O'Farrell", 'Oak Forest', 'Oak Warehouse', 'Old Blandford', 'Osage Farm', 'Overbrook Hills', 'Panhill', 'Panhill (Old Towne)', 'Park', 'Park Place', 'Park View', 'Payne', 'Petersburg Industrial Park', 'Pilcher', 'Pine Hill', 'Pine Tree', 'Pleasant Acres', 'Poole', 'Porter Hill', 'Powell', 'Pritchett', 'Prudence', 'Queencrest Addition', 'R C P', 'R&W', 'Ridgewood', 'Rives', 'Robert Bolling', 'Robertson', 'Robinson', 'Robinson & Wright', "Roby's", 'Roper', 'Rose', 'Rosewood Terrace', 'Ross Court', 'Saddle Back Ridge', 'Scott', "Scott's", 'Seward Bolling Meadows', 'Sheffield', 'Smith Tract', 'South Adams Street Townhouses', 'South Hills', 'South Medical Park', 'South Perry Condominium', 'South Plains', 'St. Andrew Heights', 'St. John Court', 'Starke', 'Stedman One Townhouses', 'Steele', 'Stephenson', 'Strawberry Hill', 'Suburban Lots', 'Sutherland', 'Talley', 'Thrifts', 'Titus', 'Townes', 'Turner', 'Tynes', 'Valentine', 'Valentine Court', 'Van Buren', 'Vasatko', 'Vaughn', 'W & C', 'W W R', 'Wachsman', 'Walnut Hill Court', 'Walnut Hill Park', 'Walnut Hill Plaza', 'Walnut Hill Terrace', 'Washington Park', 'Wawa Place', 'Webb', 'Weisler', 'West Hill', 'West Park', 'West View', 'Westbourne', 'Westbrook', 'Westview Gardens', 'Wheelhouse Court', 'White', 'Whitehill Farm', 'Whitehill Industrial Park', 'Whitman', 'Whittaker', 'Whittle', 'Wilkerson', 'Williamson', 'Woodland Hills', 'Woodmere Pointe Condominium', 'Woolard', 'Wright', 'Wyoming', 'Young']
+collapse_sparse_categories: bldg_exterior_wall
+  thresholds: sales_min=5, univ_min=25
+  8 categories collapsed into 'Other' (9 sales rows, 96 universe rows affected)
+  collapsed: ['ALUM', 'BV', 'CLB', 'HB', 'HP', 'MTL', 'PLY', 'STON']
+collapse_sparse_categories: bldg_heat_type
+  thresholds: sales_min=5, univ_min=25
+  3 categories collapsed into 'Other' (3 sales rows, 29 universe rows affected)
+  collapsed: ['6', '7', '8']
+
+Found 10 variables with 0 representation in either sales or universe dataset. You should NOT model with these:
+neighborhood_4075
+subdivision_name_collapsed_Pugh
+neighborhood_1516
+neighborhood_1211
+neighborhood_1071
+neighborhood_2075
+subdivision_name_collapsed_Kennilworth
+subdivision_name_collapsed_Burch
+subdivision_name_collapsed_Stratton
+sale_age_days
+
+setup: 0.33 seconds
+variables.markdown: 0.00 seconds
+variables.stuff: 0.00 seconds
+variables.prepare_ds: 0.23 seconds
+variables.one_hot: 0.19 seconds
+variables.split: 0.17 seconds
+variables.rep: 0.06 seconds
+variables.corr: 0.17 seconds
+variables.r2: 0.13 seconds
+variables.p: 0.29 seconds
+variables.t: 0.05 seconds
+variables.vif: 0.22 seconds
+variables.calc_recs: 0.09 seconds
+variables.final_stuff.while: 0.00 seconds
+variables.final_stuff.apply_dd: 0.00 seconds
+variables.final_stuff: 0.00 seconds
+Write model results to out/models/single_family_suburban/main
+write model parameters to out/models/single_family_suburban/main/assessor
+Write model results to out/models/single_family_suburban/main
+write model parameters to out/models/single_family_suburban/main/mra
+Wrote contributions map to out/models/single_family_suburban/main/mra/contributions_map.parquet
+Trained tree 1 of 10 with weight 5.730733720189136e-06 @ 66700.0474968072
+Trained tree 2 of 10 with weight 4.729024044916154e-06 @ 66374.81219002567
+Trained tree 3 of 10 with weight 14.99999549346167 @ 48798.004368771544
+Trained tree 4 of 10 with weight 14.99999549346167 @ 58714.92918843227
+Trained tree 5 of 10 with weight 4.729024044916154e-06 @ 40587.14178712993
+Trained tree 6 of 10 with weight 1.400263918542882 @ 39068.7586945463
+Trained tree 7 of 10 with weight 0.6843872766443176 @ 37699.52901725476
+Trained tree 8 of 10 with weight 3.3972546295300217e-06 @ 33080.78288113319
+Trained tree 9 of 10 with weight 14.999994378719634 @ 34816.59925095969
+Trained tree 10 of 10 with weight 0.2664407643458707 @ 33270.893634079206
+Write model results to out/models/single_family_suburban/main
+write model parameters to out/models/single_family_suburban/main/lcomp
+Wrote contributions map to out/models/single_family_suburban/main/lcomp/contributions_map.parquet
+
+************************************************************
+MAIN Benchmark (single_family_suburban) -- Assessor Metrics
+************************************************************
+Holdout set : 49/240 sales from (2020-04-08 to 2025-06-26)
+  Study set : 77/240 sales from (2024-07-18 to 2025-06-30
+   Full set : 240/240 sales from (2020-04-08 to 2025-06-30)
+================================================================================
+
+
+Timings:
+|       |   assessor |   mra |   lcomp |
+|:------|-----------:|------:|--------:|
+| total |       0.06 |  0.73 |   25.4  |
+| param |       0    |  0    |    0    |
+| train |       0    |  0.02 |   21.7  |
+| test  |       0    |  0    |    0.05 |
+| univ  |       0    |  0.02 |    3.25 |
+| chd   |       0.02 |  0.03 |    0.03 |
+
+Holdout set:
+  (Assessor not shown here: this is a random pre-valuation holdout we draw
+   ourselves. Our figures are out-of-sample, but we can't know whether values
+   we didn't generate were held out the same way, so the comparison wouldn't be
+   like-for-like. If you are the assessor and know the holdout status, see
+   analysis.ratio_study.assessor_holdout.)
+|               | mra    | lcomp   |
+|:--------------|:-------|:--------|
+| utility_score | 19     | 28.1    |
+| count_sales   | 49     | 49      |
+| count_univ    | 3,741  | 3,741   |
+| median_ratio  | 0.96   | 1.01    |
+| cod           | 19.21  | 27.71   |
+| prd           | 1.06   | 1.14    |
+| prb           | 3.72   | 14.78   |
+| vei           | -17.36 | -28.73  |
+| vei_sig       | -315   | -742    |
+| count_trim    | 47     | 45      |
+| cod_trim      | 16.41  | 17.53   |
+| prd_trim      | 1.03   | 1.03    |
+| prb_trim      | 2.26   | 1.89    |
+| chd           | N/A    | N/A     |
+
+Study set:
+  (Assessor shown as an audit of the finished roll over all sales -- the standard
+   IAAO frame, not a predictive holdout. See the sales-chasing check in the ratio
+   study report for context on interpreting a very tight assessor result.)
+|               | assessor   | mra    | lcomp   |
+|:--------------|:-----------|:-------|:--------|
+| utility_score | 23.4       | 15.3   | 14.3    |
+| count_sales   | 77         | 77     | 77      |
+| count_univ    | 3,741      | 3,741  | 3,741   |
+| median_ratio  | 0.78       | 0.99   | 0.98    |
+| cod           | 19.33      | 16.40  | 14.29   |
+| prd           | 1.05       | 1.05   | 1.06    |
+| prb           | 4.16       | 6.10   | 7.35    |
+| vei           | 3.51       | 2.37   | -8.12   |
+| vei_sig       | -23.40     | -43.29 | -45.06  |
+| count_trim    | 73         | 73     | 73      |
+| cod_trim      | 15.78      | 12.79  | 10.94   |
+| prd_trim      | 1.03       | 1.02   | 1.03    |
+| prb_trim      | 1.31       | 1.44   | 3.30    |
+| chd           | 11.7       | 12.6   | 8.74    |
+
+
+
+************************************************************
+MAIN Benchmark (single_family_suburban) -- Academic Metrics
+************************************************************
+Testing 49/240 sales from (2020-04-08 00:00:00 to 2025-06-26 00:00:00)
+================================================================================
+
+UNTRIMMED
+| Model    |   count |   MAPE | MSE   | RMSE   |   m.ratio |   avg.ratio |    VEI |   Slope |
+|:---------|--------:|-------:|:------|:-------|----------:|------------:|-------:|--------:|
+| assessor |      49 |   0.24 | 2.85B | 53,689 |      0.84 |        0.89 | -12.75 |    0.81 |
+| mra      |      49 |   0.19 | 2.6B  | 48,394 |      0.96 |        1.01 | -17.36 |    0.92 |
+| lcomp    |      49 |   0.28 | 3.16B | 48,122 |      1.01 |        1.12 | -28.73 |    0.94 |
+
+TRIMMED
+| Model    |   count |   MAPE | MSE   | RMSE   |   m.ratio |   avg.ratio |    VEI |   Slope |
+|:---------|--------:|-------:|:------|:-------|----------:|------------:|-------:|--------:|
+| assessor |      47 |   0.19 | 2.85B | 53,689 |      0.83 |        0.82 | -12.75 |    0.81 |
+| mra      |      47 |   0.16 | 2.6B  | 48,394 |      0.93 |        0.97 | -17.36 |    0.91 |
+| lcomp    |      45 |   0.18 | 3.16B | 48,122 |      1.01 |        1.04 | -28.73 |    0.98 |
+================================================================================
+
+
+
+
+****** TIMING FOR _RUN_MODELS ******
+setup: 0.33 seconds
+variables.markdown: 0.00 seconds
+variables.stuff: 0.00 seconds
+variables.prepare_ds: 0.23 seconds
+variables.one_hot: 0.19 seconds
+variables.split: 0.17 seconds
+variables.rep: 0.06 seconds
+variables.corr: 0.17 seconds
+variables.r2: 0.13 seconds
+variables.p: 0.29 seconds
+variables.t: 0.05 seconds
+variables.vif: 0.22 seconds
+variables.calc_recs: 0.09 seconds
+variables.final_stuff.while: 0.00 seconds
+variables.final_stuff.apply_dd: 0.00 seconds
+variables.final_stuff: 0.00 seconds
+var_recs: 1.62 seconds
+run_models: 45.04 seconds
+calc benchmarks: 0.70 seconds
+total: 47.78 seconds
+************************************
+
+**********TIMING FOR RUN ALL MODELS***********
+setup: 0.00 seconds
+model group: single_family_suburban: 47.78 seconds
+run model groups: 47.78 seconds
+write: 0.00 seconds
+***********************************************
+
+[cv] PER-FOLD (held-out via run_ratio_study):
+    origin    model  n_test  median_ratio    cod  cod_trim
+2024-01-01 assessor      70         0.825 16.635    13.757
+2024-01-01      mra      70         1.020 20.495    12.077
+2024-01-01    lcomp      70         0.909 21.116    12.624
+2024-07-01 assessor      75         0.800 16.908    12.876
+2024-07-01      mra      75         1.106 17.786    12.925
+2024-07-01    lcomp      75         0.901 18.549    13.438
+2025-01-01 assessor      75         0.798 20.230    16.348
+2025-01-01      mra      75         0.930 20.778    17.994
+2025-01-01    lcomp      75         0.782 17.331    11.753
+2025-07-01 assessor      30         0.772 22.917    19.837
+2025-07-01      mra      30         1.153 25.517    21.410
+2025-07-01    lcomp      30         0.990 21.449    19.101
+
+[cv] ACROSS-FOLD AGGREGATE (4 folds) — rolling-origin CV:
+   model  folds  median_ratio cod (mean±std) cod_trim (mean±std)
+assessor      4         0.799     19.2 ± 3.0          15.7 ± 3.1
+   lcomp      4         0.895     19.6 ± 2.0          14.2 ± 3.3
+     mra      4         1.052     21.1 ± 3.2          16.1 ± 4.4
+
+[cv] leakage_ok(all folds)=True | isolation_ok(prod out untouched)=True
+[cv] wrote C:\git\openavmkit\notebooks\pipeline\data\us-va-petersburgcity\out\cv/per_fold_single_family_suburban.csv + aggregate_single_family_suburban.csv
