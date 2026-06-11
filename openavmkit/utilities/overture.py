@@ -10,14 +10,12 @@ check on improvement coverage is desired.
 import os
 import warnings
 import gc
+import duckdb
 import geopandas as gpd
 import pandas as pd
 import traceback
 import pyarrow as pa
-import pyarrow.compute as pc
-import pyarrow.dataset as ds
 import pyarrow.fs as fs
-from tqdm import tqdm
 import shapely.wkb
 
 from openavmkit.utilities.geometry import get_crs
@@ -41,6 +39,7 @@ class OvertureService:
         "height", "est_height", "num_floors", "num_floors_underground",
         "subtype", "class", "sources"   # sources = per-property confidence
     ]
+    DEFAULT_STREAM_BATCH_ROWS = 500
 
     def __init__(self, settings: dict):
         """Initialize the Overture service with settings.
@@ -100,10 +99,65 @@ class OvertureService:
             out[c] = out[c].fillna(0)
         return out
 
-    def _get_dataset(self):
-        """Get the PyArrow dataset for buildings."""
-        path = f"{self.bucket}/{self.prefix}"
-        return ds.dataset(path, filesystem=self.fs, format="parquet")
+    def _stream_building_dfs(self, bbox, proj_cols, verbose=False):
+        """Yield matching Overture building rows as pandas DataFrame chunks (DuckDB).
+
+        The bbox-overlap predicate is pushed down to the Parquet row-group statistics
+        on the ``bbox`` struct subfields, so only the row groups that can contain
+        matching buildings are decoded. This bounds peak memory to the matched rows
+        instead of scanning a huge fraction of the GLOBAL buildings theme like the
+        PyArrow dataset scanner does — PyArrow does not prune row groups on nested
+        struct subfields, so a ~1 km box pulled ~3 GB RSS over ~84 s and OOM-killed
+        the 4 GiB worker (ENG-3033); the same fetch under DuckDB is ~0.4 GB.
+
+        ``fetch_df_chunk`` streams the (already-bounded) result so the full building
+        set is never materialized at once, preserving the streaming contract that the
+        per-parcel stats aggregation relies on. Pandas (not Arrow) is used because the
+        ``geometry`` column is a GeoArrow GEOMETRY type whose DuckDB Arrow export
+        resolves its CRS via the ``spatial`` extension catalog (not loaded) and raises
+        an internal error; the pandas path returns the raw stored WKB bytes verbatim
+        (bit-identical to the prior PyArrow read).
+
+        Columns in ``proj_cols`` absent from the current release are dropped, mirroring
+        the prior PyArrow projection behavior.
+        """
+        xmin, ymin, xmax, ymax = bbox
+        path = f"s3://{self.bucket}/{self.prefix}*"
+        con = duckdb.connect()
+        try:
+            con.execute("INSTALL httpfs; LOAD httpfs;")
+            con.execute("SET s3_region = 'us-west-2';")
+            # Public, anonymously-readable bucket: configure an unsigned S3 secret so
+            # DuckDB does not try (and fail) to sign requests with ambient AWS creds.
+            con.execute(
+                "CREATE OR REPLACE SECRET overture_anon "
+                "(TYPE s3, PROVIDER config, REGION 'us-west-2');"
+            )
+            described = con.execute(
+                f"DESCRIBE SELECT * FROM read_parquet('{path}') LIMIT 0"
+            ).fetchall()
+            available = {row[0] for row in described}
+            cols = [c for c in proj_cols if c in available]
+            missing = [c for c in proj_cols if c not in available]
+            if verbose and missing:
+                print(f"--> Skipping unavailable columns: {missing}")
+            if verbose:
+                print(f"--> Fetching Overture buildings via DuckDB for bbox {bbox}")
+            col_sql = ", ".join(f'"{c}"' for c in cols)
+            # Bounding-box overlap test, identical to the prior PyArrow predicate.
+            sql = (
+                f"SELECT {col_sql} FROM read_parquet('{path}') "
+                "WHERE bbox.xmin < ? AND bbox.xmax > ? "
+                "AND bbox.ymin < ? AND bbox.ymax > ?"
+            )
+            res = con.execute(sql, [xmax, xmin, ymax, ymin])
+            while True:
+                chunk = res.fetch_df_chunk()
+                if chunk.empty:
+                    break
+                yield chunk
+        finally:
+            con.close()
 
     def _geoarrow_schema_adapter(self, schema: pa.Schema) -> pa.Schema:
         """Convert a geoarrow-compatible schema to a proper geoarrow schema."""
@@ -114,13 +168,10 @@ class OvertureService:
         )
         return schema.set(geometry_field_index, geoarrow_geometry_field)
 
-    def _batch_to_geodataframe(self, batch: pa.RecordBatch) -> gpd.GeoDataFrame:
-        """Convert a PyArrow batch to a GeoDataFrame with proper geometry handling."""
-        # Convert to pandas DataFrame first
-        df = batch.to_pandas()
-
+    def _to_geodataframe(self, df: pd.DataFrame) -> gpd.GeoDataFrame:
+        """Convert a fetched buildings DataFrame to a GeoDataFrame (WKB -> shapely)."""
         # Convert WKB geometry to shapely geometry
-        df["geometry"] = df["geometry"].apply(lambda wkb: shapely.wkb.loads(wkb) if pd.notnull(wkb) else None)
+        df["geometry"] = df["geometry"].apply(lambda wkb: shapely.wkb.loads(bytes(wkb)) if wkb is not None and pd.notnull(wkb) else None)
 
         # Create GeoDataFrame with WGS84 CRS (EPSG:4326)
         return gpd.GeoDataFrame(df, geometry="geometry", crs="EPSG:4326")
@@ -132,50 +183,22 @@ class OvertureService:
         parcel stats can process one Arrow batch at a time instead of
         materializing the full building set for dense urban bounding boxes.
         """
-        xmin, ymin, xmax, ymax = bbox
-        filter = (
-            (pc.field("bbox", "xmin") < xmax)
-            & (pc.field("bbox", "xmax") > xmin)
-            & (pc.field("bbox", "ymin") < ymax)
-            & (pc.field("bbox", "ymax") > ymin)
-        )
-
-        proj_cols = columns if columns is not None else self.DEFAULT_COLUMNS.copy()
+        proj_cols = list(columns) if columns is not None else self.DEFAULT_COLUMNS.copy()
         for req in ("geometry", "bbox"):
             if req not in proj_cols:
                 proj_cols.append(req)
 
-        dataset = self._get_dataset()
-        if verbose:
-            print("--> Dataset columns:", dataset.schema.names)
-        available = set(dataset.schema.names)
-        missing = [c for c in proj_cols if c not in available]
-        proj_cols = [c for c in proj_cols if c in available]
-        if verbose and missing:
-            print(f"--> Skipping unavailable columns: {missing}")
+        stream_batch_rows = int(
+            self.settings.get("stream_batch_rows", self.DEFAULT_STREAM_BATCH_ROWS)
+            or self.DEFAULT_STREAM_BATCH_ROWS
+        )
+        stream_batch_rows = max(1, stream_batch_rows)
 
-        batches = dataset.to_batches(filter=filter, columns=proj_cols)
-        total_batches = None
-        if verbose:
-            print("--> Counting batches...")
-            total_batches = sum(1 for _ in batches)
-            print(f"--> Found {total_batches} batches")
-            batches = dataset.to_batches(filter=filter, columns=proj_cols)
-
-        with tqdm(
-            total=total_batches,
-            desc="Processing batches",
-            disable=not verbose,
-        ) as pbar:
-            for batch in batches:
-                try:
-                    if batch.num_rows > 0:
-                        yield self._batch_to_geodataframe(batch)
-                except Exception as e:
-                    if verbose:
-                        print(f"--> Error processing batch: {str(e)}")
-                finally:
-                    pbar.update(1)
+        for chunk in self._stream_building_dfs(bbox, proj_cols, verbose=verbose):
+            for offset in range(0, len(chunk), stream_batch_rows):
+                sub = chunk.iloc[offset:offset + stream_batch_rows]
+                if len(sub) > 0:
+                    yield self._to_geodataframe(sub.copy())
 
     def get_buildings(
         self, 

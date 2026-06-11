@@ -16,6 +16,7 @@ HEIGHT = "bldg_height_ft"
 def _svc(tmp_path):
     service = OvertureService.__new__(OvertureService)
     service.cache_dir = str(tmp_path)
+    service.settings = {}
     return service
 
 
@@ -100,6 +101,30 @@ def _assert_streaming_stats_match_legacy(
     )
 
     _assert_stat_columns_equal(old, streamed)
+
+
+def test_building_batches_splits_large_arrow_batches(tmp_path, monkeypatch):
+    service = _svc(tmp_path)
+    service.settings = {"stream_batch_rows": 2}
+    geom = Polygon([(0, 0), (0.001, 0), (0.001, 0.001), (0, 0.001)])
+    fetched = pd.DataFrame(
+        {
+            "id": [f"b{i}" for i in range(5)],
+            "geometry": [geom.wkb for _ in range(5)],
+        }
+    )
+
+    # The DuckDB fetch streams pandas chunks; _building_batches must re-slice them
+    # into stream_batch_rows-sized GeoDataFrames for the per-parcel stats aggregation.
+    def fake_stream(bbox, proj_cols, verbose=False):
+        yield fetched
+
+    monkeypatch.setattr(service, "_stream_building_dfs", fake_stream)
+
+    chunks = list(service._building_batches((0, 0, 1, 1)))
+
+    assert [len(chunk) for chunk in chunks] == [2, 2, 1]
+    assert all(chunk.crs == "EPSG:4326" for chunk in chunks)
 
 
 def test_streaming_stats_match_all_at_once_for_split_batches(tmp_path):
