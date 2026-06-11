@@ -107,7 +107,8 @@ class VerticalEquityStudy:
         sales = df_sales[field_sales].to_numpy()
         
         results = calc_ratio_stats_bootstrap(predictions, sales, confidence_interval, iterations=iterations, seed=seed)
-        
+        self.prd = results["prd"]
+
         prb_point, prb_low, prb_high = calc_prb(predictions, sales, confidence_interval)
         
         self.prb = ConfidenceStat(prb_point, confidence_interval, prb_low, prb_high)
