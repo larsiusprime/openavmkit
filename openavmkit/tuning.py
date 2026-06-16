@@ -252,6 +252,120 @@ def _cleanup_study_files(storage_path):
             pass
 
 
+def _resumable_study(
+    direction, study_name=None, storage_path=None, pruner=None, verbose=False
+):
+    """Create an Optuna study, optionally backed by a persistent journal file.
+
+    When ``storage_path`` is ``None`` this returns a plain in-memory study, exactly
+    matching the historical behavior. When a path is given, the study is backed by a
+    :class:`optuna.storages.JournalStorage` so trials persist to disk as they complete;
+    ``load_if_exists=True`` means an interrupted run reattaches to whatever trials are
+    already on disk instead of starting over.
+
+    The journal (file) backend is used rather than SQLite because the XGBoost/LightGBM
+    tuners run trials with ``n_jobs=-1``; the journal backend is built for concurrent
+    access, whereas SQLite raises "database is locked" under parallel writes.
+
+    Parameters
+    ----------
+    direction : str
+        Optimization direction passed to :func:`optuna.create_study`.
+    study_name : str, optional
+        Stable study name; required for resume to find the prior study in the journal.
+    storage_path : str, optional
+        Path to the journal file. ``None`` (default) keeps the study in memory.
+    pruner : optuna.pruners.BasePruner, optional
+        Pruner to attach (CatBoost passes a ``MedianPruner``; others pass ``None``).
+    verbose : bool, optional
+        If True, print how many trials were resumed from disk.
+
+    Returns
+    -------
+    optuna.study.Study
+    """
+    if storage_path is None:
+        return optuna.create_study(direction=direction, pruner=pruner)
+
+    # Use the open()-based lock rather than Optuna's default symlink lock: on Windows
+    # os.symlink requires elevated privilege (WinError 1314), so the symlink lock fails
+    # for ordinary users. The open lock is cross-platform.
+    journal = optuna.storages.journal
+    storage = optuna.storages.JournalStorage(
+        journal.JournalFileBackend(
+            storage_path, lock_obj=journal.JournalFileOpenLock(storage_path)
+        )
+    )
+    study = optuna.create_study(
+        direction=direction,
+        study_name=study_name,
+        storage=storage,
+        load_if_exists=True,
+        pruner=pruner,
+    )
+    if verbose and len(study.trials):
+        print(
+            f"--> resuming study '{study_name}': {len(study.trials)} trial(s) already on disk"
+        )
+    return study
+
+
+def _remaining_trials(study, n_trials, storage_path):
+    """Number of trials still needed to reach the ``n_trials`` target.
+
+    In-memory studies (``storage_path is None``) always run the full ``n_trials``.
+    Resumable studies subtract the trials already persisted on disk so the *total*
+    across runs converges to ``n_trials`` rather than running ``n_trials`` afresh each
+    time the run is restarted.
+    """
+    if storage_path is None:
+        return n_trials
+    return max(0, n_trials - len(study.trials))
+
+
+def _study_fingerprint(columns, n_rows, n_trials):
+    """Short stable hash identifying a tuning study's search context.
+
+    A resumed study is only valid if it is searching the *same* objective: same feature
+    set, same number of training rows, same trial budget. Baking this fingerprint into
+    the journal filename means a study is resumed only on an exact-context match; a
+    changed ``ind_vars`` list or sales window yields a different fingerprint (and the
+    stale journal is discarded) rather than silently mixing trials scored against a
+    different objective.
+    """
+    key = "|".join(sorted(str(c) for c in columns)) + f"||rows={n_rows}||trials={n_trials}"
+    return hashlib.md5(key.encode("utf-8")).hexdigest()[:10]
+
+
+def _discard_stale_studies(outpath, slug, keep, verbose=False):
+    """Delete any ``{slug}_study_*.journal`` files whose fingerprint != ``keep``.
+
+    Removes journals (and their lock sidecars) left over from a prior tuning run whose
+    search context no longer matches, so a stale study is never resumed.
+    """
+    keep_name = f"{slug}_study_{keep}.journal"
+    for path in glob.glob(f"{outpath}/{slug}_study_*.journal*"):
+        # Keep the matching journal and its lock sidecars; drop everything else.
+        if not os.path.basename(path).startswith(keep_name):
+            try:
+                os.remove(path)
+                if verbose:
+                    print(f"--> discarded stale tuning journal: {path}")
+            except OSError:
+                pass
+
+
+def _cleanup_study_files(storage_path):
+    """Remove a journal file and any lock sidecars; tolerate already-gone files."""
+    if storage_path is None:
+        return
+    for path in glob.glob(f"{storage_path}*"):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def _tune_xgboost(
     X,
     y,
@@ -329,13 +443,13 @@ def _tune_xgboost(
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = _resumable_study(
-        "minimize",
-        study_name=study_name,
-        storage_path=storage_path,
-        sampler=_seeded_sampler(random_state, constant_liar=True),
-        verbose=verbose,
+        "minimize", study_name=study_name, storage_path=storage_path, verbose=verbose
     )
-    _run_batched(study, suggest, evaluate, n_trials, storage_path, verbose, label="XGBoost")
+    remaining = _remaining_trials(study, n_trials, storage_path)
+    if remaining > 0:
+        study.optimize(
+            objective, n_trials=remaining, n_jobs=-1, callbacks=[_plateau_callback]
+        )
     if verbose:
         print(
             f"Best trial: {study.best_trial.number} with MAPE: {study.best_trial.value:0.4f} and params: {study.best_trial.params}"
@@ -433,10 +547,13 @@ def _tune_lightgbm(
         study_name=study_name,
         storage_path=storage_path,
         pruner=optuna.pruners.MedianPruner(),
-        sampler=_seeded_sampler(random_state, constant_liar=True),
         verbose=verbose,
     )
-    _run_batched(study, suggest, evaluate, n_trials, storage_path, verbose, label="LightGBM")
+    remaining = _remaining_trials(study, n_trials, storage_path)
+    if remaining > 0:
+        study.optimize(
+            objective, n_trials=remaining, n_jobs=-1, callbacks=[_plateau_callback]
+        )  # Use parallelism if available
 
     if verbose:
         print(
@@ -524,18 +641,12 @@ def _tune_catboost(
         pruner=optuna.pruners.MedianPruner(
             n_startup_trials=15, n_warmup_steps=100, interval_steps=10
         ),
-        sampler=_seeded_sampler(random_state),
         verbose=verbose,
     )
 
     remaining = _remaining_trials(study, n_trials, storage_path)
     if remaining > 0:
-        # Study-level plateau stop, consistent with NGBoost (and the batched _is_plateaued check
-        # in LightGBM/XGBoost): bail out of the trial budget once the best value stops improving
-        # rather than grinding all n_trials x n_splits folds. CatBoost uses serial optimize, so the
-        # callback applies cleanly. (The MedianPruner above can't save time here — the objective
-        # reports its curve only after CatBoost's built-in cv() has already run all folds.)
-        study.optimize(objective, n_trials=remaining, n_jobs=1, callbacks=[_plateau_callback])
+        study.optimize(objective, n_trials=remaining, n_jobs=1)
 
     if verbose:
         print(
@@ -624,11 +735,7 @@ def _tune_ngboost(
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = _resumable_study(
-        "minimize",
-        study_name=study_name,
-        storage_path=storage_path,
-        sampler=_seeded_sampler(random_state),
-        verbose=verbose,
+        "minimize", study_name=study_name, storage_path=storage_path, verbose=verbose
     )
     # NGBoost training is not thread-safe enough for n_jobs=-1; tune serially.
     remaining = _remaining_trials(study, n_trials, storage_path)

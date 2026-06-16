@@ -5271,6 +5271,9 @@ def _get_params(
         storage_path = study_name = None
         if save_params:
             os.makedirs(outpath, exist_ok=True)
+            fp = _study_fingerprint(
+                ds.X_train.columns, len(ds.X_train), kwargs.get("n_trials", 50)
+            )
             storage_path = f"{outpath}/{slug}_study_{fp}.journal"
             study_name = slug
             _discard_stale_studies(outpath, slug, keep=fp, verbose=verbose)
@@ -5287,8 +5290,7 @@ def _get_params(
             **kwargs,
         )
         if save_params:
-            # Persist params with the fingerprint embedded; keep the returned dict clean.
-            json.dump({**params, "__fingerprint": fp}, open(params_path, "w"))
+            json.dump(params, open(f"{outpath}/{slug}_params.json", "w"))
             # Final params written → the resume journal is no longer needed.
             _cleanup_study_files(storage_path)
     return params
