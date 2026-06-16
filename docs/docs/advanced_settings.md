@@ -1334,7 +1334,8 @@ This is a separate concern from the other two layers. Tunable models (XGBoost, L
 
 | File | Produced by | Contains |
 | --- | --- | --- |
-| `<slug>_params.json` | XGBoost / LightGBM / CatBoost (Optuna) | Best tuned hyperparameters from the last search |
+| `<slug>_params.json` | XGBoost / LightGBM / CatBoost / NGBoost (Optuna) | Best tuned hyperparameters from the last *completed* search |
+| `<slug>_study_<fingerprint>.journal` | XGBoost / LightGBM / CatBoost / NGBoost (Optuna) | **Transient** incremental trial log for crash-resume; deleted on a clean finish (see below) |
 | `<model_name>_bw.json` | GWR | Optimal bandwidth from the last search |
 | `kernel_bw.pkl` | Kernel regression | Optimal per-variable bandwidth from the last search |
 

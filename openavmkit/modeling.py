@@ -135,7 +135,15 @@ from openavmkit.utilities.stats import (
     calc_prb,
     trim_outliers_mask,
 )
-from openavmkit.tuning import _tune_lightgbm, _tune_xgboost, _tune_catboost, _tune_ngboost
+from openavmkit.tuning import (
+    _tune_lightgbm,
+    _tune_xgboost,
+    _tune_catboost,
+    _tune_ngboost,
+    _study_fingerprint,
+    _discard_stale_studies,
+    _cleanup_study_files,
+)
 from openavmkit.utilities.timing import TimingData
 
 pd.set_option("future.no_silent_downcasting", True)
@@ -5044,7 +5052,17 @@ def _get_params(
     verbose: bool,
     **kwargs,
 ):
-    """Obtain model parameters by tuning, with option to save or load saved parameters."""
+    """Obtain model parameters by tuning, with option to save or load saved parameters.
+
+    When ``save_params`` is true the Optuna study is journal-backed so an interrupted
+    tuning run resumes from the trials already on disk. The journal lives next to the
+    final ``{slug}_params.json`` as ``{slug}_study_{fingerprint}.journal`` and is deleted
+    once the final parameters are written, so a leftover journal means "interrupted" and
+    is the resume trigger. The fingerprint scopes the journal to the current search
+    context (feature set / row count / trial budget); a stale journal from a different
+    context is discarded rather than resumed. Tuning stays fully in-memory (historical
+    behavior) when ``save_params`` is false.
+    """
     if verbose:
         print(f"Tuning {name}: searching for optimal parameters...")
 
@@ -5056,6 +5074,19 @@ def _get_params(
                 print(f"--> using saved parameters")
     if params is None:
         cat_vars = [c for c in (ds.categorical_vars or []) if c in ds.X_train.columns]
+
+        # Resumable (crash-safe) tuning is only enabled when we intend to persist the
+        # final params; otherwise tuning is ephemeral and needs no journal.
+        storage_path = study_name = None
+        if save_params:
+            os.makedirs(outpath, exist_ok=True)
+            fp = _study_fingerprint(
+                ds.X_train.columns, len(ds.X_train), kwargs.get("n_trials", 50)
+            )
+            storage_path = f"{outpath}/{slug}_study_{fp}.journal"
+            study_name = slug
+            _discard_stale_studies(outpath, slug, keep=fp, verbose=verbose)
+
         params = tune_func(
             ds.X_train,
             ds.y_train,
@@ -5063,11 +5094,14 @@ def _get_params(
             he_ids=ds.train_he_ids,
             verbose=verbose,
             cat_vars=cat_vars,
+            storage_path=storage_path,
+            study_name=study_name,
             **kwargs,
         )
         if save_params:
-            os.makedirs(outpath, exist_ok=True)
             json.dump(params, open(f"{outpath}/{slug}_params.json", "w"))
+            # Final params written → the resume journal is no longer needed.
+            _cleanup_study_files(storage_path)
     return params
 
 

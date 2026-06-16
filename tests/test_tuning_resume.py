@@ -1,0 +1,180 @@
+"""Tests for resumable (crash-safe) Optuna tuning and its auto-cleanup.
+
+Covers the helpers in :mod:`openavmkit.tuning` and the journal lifecycle that
+:func:`openavmkit.modeling._get_params` drives: a journal-backed study persists trials
+incrementally, an interrupted run resumes from disk, and a clean finish writes the final
+``{slug}_params.json`` and deletes the journal.
+"""
+import glob
+import os
+import types
+
+import optuna
+import pandas as pd
+import pytest
+
+from openavmkit.tuning import (
+    _resumable_study,
+    _remaining_trials,
+    _study_fingerprint,
+    _discard_stale_studies,
+    _cleanup_study_files,
+)
+from openavmkit.modeling import _get_params
+
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+
+def _quadratic(trial):
+    x = trial.suggest_float("x", 0.0, 1.0)
+    return (x - 0.5) ** 2
+
+
+def _fake_ds(cols=("a", "b"), n=6):
+    """Minimal stand-in for a DataSplit exposing only what _get_params reads."""
+    df = pd.DataFrame({c: list(range(n)) for c in cols})
+    return types.SimpleNamespace(
+        categorical_vars=[],
+        X_train=df,
+        y_train=list(range(n)),
+        train_sizes=None,
+        train_he_ids=None,
+    )
+
+
+# --------------------------------------------------------------------------- helpers
+
+
+def test_remaining_trials_inmemory_runs_full_target():
+    study = optuna.create_study()
+    assert _remaining_trials(study, 5, None) == 5
+
+
+def test_fingerprint_is_order_stable_and_context_sensitive():
+    assert _study_fingerprint(["b", "a"], 10, 5) == _study_fingerprint(["a", "b"], 10, 5)
+    assert _study_fingerprint(["a", "b"], 10, 5) != _study_fingerprint(["a", "b"], 11, 5)
+    assert _study_fingerprint(["a", "b"], 10, 5) != _study_fingerprint(["a", "b"], 10, 6)
+    assert _study_fingerprint(["a"], 10, 5) != _study_fingerprint(["a", "b"], 10, 5)
+
+
+def test_resumable_study_persists_and_resumes(tmp_path):
+    sp = str(tmp_path / "m_study_abc.journal")
+    study = _resumable_study("minimize", study_name="m", storage_path=sp)
+    study.optimize(_quadratic, n_trials=3)
+    assert len(study.trials) == 3
+
+    # Reattaching to the same journal sees the prior trials and only needs the remainder.
+    study2 = _resumable_study("minimize", study_name="m", storage_path=sp)
+    assert len(study2.trials) == 3
+    assert _remaining_trials(study2, 5, sp) == 2
+
+
+def test_cleanup_removes_journal_and_sidecars(tmp_path):
+    sp = str(tmp_path / "m_study_abc.journal")
+    study = _resumable_study("minimize", study_name="m", storage_path=sp)
+    study.optimize(_quadratic, n_trials=1)
+    assert glob.glob(sp + "*")
+    _cleanup_study_files(sp)
+    assert glob.glob(sp + "*") == []
+    # Idempotent / tolerant of already-gone files.
+    _cleanup_study_files(sp)
+
+
+def test_discard_stale_studies_keeps_matching(tmp_path):
+    out = str(tmp_path)
+    # One stale journal (old fingerprint) and one matching the keep fingerprint.
+    open(os.path.join(out, "mdl_study_stale0.journal"), "w").close()
+    keep_path = os.path.join(out, "mdl_study_keep01.journal")
+    open(keep_path, "w").close()
+
+    _discard_stale_studies(out, "mdl", keep="keep01")
+
+    assert not os.path.exists(os.path.join(out, "mdl_study_stale0.journal"))
+    assert os.path.exists(keep_path)
+
+
+# ------------------------------------------------------------------ _get_params lifecycle
+
+
+def _stub_tune(records_trials=2, then_raise=False):
+    """Build a stub tune_func that exercises the journal exactly like a real tuner."""
+
+    def tune_func(X, y, sizes=None, he_ids=None, verbose=False, cat_vars=None,
+                  storage_path=None, study_name=None, **kwargs):
+        if storage_path is not None:
+            study = _resumable_study("minimize", study_name=study_name,
+                                     storage_path=storage_path)
+            study.optimize(_quadratic, n_trials=records_trials)
+        if then_raise:
+            raise RuntimeError("simulated interruption")
+        return {"x": 0.5}
+
+    return tune_func
+
+
+def test_get_params_writes_final_and_removes_journal(tmp_path):
+    out = str(tmp_path)
+    params = _get_params(
+        "Stub", "mymodel", _fake_ds(), _stub_tune(), out,
+        save_params=True, use_saved_params=False, verbose=False, n_trials=4,
+    )
+    assert params == {"x": 0.5}
+    assert os.path.exists(os.path.join(out, "mymodel_params.json"))
+    # Final params written -> journal cleaned up.
+    assert glob.glob(os.path.join(out, "mymodel_study_*.journal*")) == []
+
+
+def test_get_params_interrupted_keeps_journal_and_writes_no_params(tmp_path):
+    out = str(tmp_path)
+    with pytest.raises(RuntimeError):
+        _get_params(
+            "Stub", "mymodel", _fake_ds(), _stub_tune(then_raise=True), out,
+            save_params=True, use_saved_params=False, verbose=False, n_trials=4,
+        )
+    # Interruption leaves the journal on disk (resume trigger) and writes no final params.
+    assert glob.glob(os.path.join(out, "mymodel_study_*.journal*"))
+    assert not os.path.exists(os.path.join(out, "mymodel_params.json"))
+
+
+def test_get_params_no_storage_when_not_saving(tmp_path):
+    out = str(tmp_path)
+    seen = {}
+
+    def tune_func(X, y, sizes=None, he_ids=None, verbose=False, cat_vars=None,
+                  storage_path=None, study_name=None, **kwargs):
+        seen["storage_path"] = storage_path
+        return {"x": 1.0}
+
+    params = _get_params(
+        "Stub", "mymodel", _fake_ds(), tune_func, out,
+        save_params=False, use_saved_params=False, verbose=False, n_trials=4,
+    )
+    assert params == {"x": 1.0}
+    # Ephemeral tuning: no journal requested, nothing written to disk.
+    assert seen["storage_path"] is None
+    assert glob.glob(os.path.join(out, "mymodel_study_*")) == []
+    assert not os.path.exists(os.path.join(out, "mymodel_params.json"))
+
+
+def test_get_params_resumes_to_target_then_cleans(tmp_path):
+    """A journal left by an interrupted run is resumed, reaches the target, and is removed."""
+    out = str(tmp_path)
+    # First run is interrupted after recording 2 trials.
+    with pytest.raises(RuntimeError):
+        _get_params(
+            "Stub", "mdl", _fake_ds(), _stub_tune(records_trials=2, then_raise=True), out,
+            save_params=True, use_saved_params=False, verbose=False, n_trials=5,
+        )
+    journals = glob.glob(os.path.join(out, "mdl_study_*.journal"))
+    assert len(journals) == 1
+    study = _resumable_study("minimize", study_name="mdl", storage_path=journals[0])
+    assert len(study.trials) == 2  # only the pre-interruption trials survived
+
+    # Second run resumes the same journal (same fingerprint -> same filename) and finishes.
+    params = _get_params(
+        "Stub", "mdl", _fake_ds(), _stub_tune(records_trials=3), out,
+        save_params=True, use_saved_params=False, verbose=False, n_trials=5,
+    )
+    assert params == {"x": 0.5}
+    assert os.path.exists(os.path.join(out, "mdl_params.json"))
+    assert glob.glob(os.path.join(out, "mdl_study_*.journal*")) == []
