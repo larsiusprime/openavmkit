@@ -3299,7 +3299,8 @@ def run_xgboost(
     save_params: bool = False,
     use_saved_params: bool = False,
     verbose: bool = False,
-    n_trials: int = 50
+    n_trials: int = 50,
+    seed: int | None = 42,
 ) -> SingleModelResults:
     """
     Run an XGBoost model by tuning parameters, training, and predicting.
@@ -3344,16 +3345,19 @@ def run_xgboost(
         save_params,
         use_saved_params,
         verbose,
-        n_trials=n_trials
+        n_trials=n_trials,
+        random_state=seed,
     )
 
     parameters["verbosity"] = 0
     parameters["device"] = "cpu"
     parameters["objective"] = "reg:squarederror"
-    
+
     parameters["enable_categorical"] = True
     parameters.setdefault("tree_method", "hist")
     parameters.setdefault("max_cat_to_onehot", 1)
+    if seed is not None:
+        parameters.setdefault("random_state", seed)
 
     # parameters["eval_metric"] = "rmse"
     regressor = xgb.XGBRegressor(**parameters)
@@ -3443,6 +3447,7 @@ def run_lightgbm(
     use_saved_params: bool = False,
     n_trials: int = 50,
     verbose: bool = False,
+    seed: int | None = 42,
 ) -> SingleModelResults:
     """
     Run a LightGBM model by tuning parameters, training, and predicting.
@@ -3490,6 +3495,7 @@ def run_lightgbm(
         use_saved_params,
         verbose,
         n_trials=n_trials,
+        random_state=seed,
     )
 
     # Remove any problematic parameters that might cause errors with forced splits
@@ -3522,6 +3528,12 @@ def run_lightgbm(
     lgb_train = lgb.Dataset(ds.X_train, ds.y_train, categorical_feature=cat_vars)
 
     params["verbosity"] = -1
+    if seed is not None:
+        # LightGBM derives its bagging/feature-sampling sub-seeds from `seed`; the
+        # deterministic/force_row_wise pair makes the fit bit-reproducible even multi-threaded.
+        params.setdefault("seed", seed)
+        params.setdefault("deterministic", True)
+        params.setdefault("force_row_wise", True)
 
     num_boost_round = 1000
     if "num_iterations" in params:
@@ -3625,7 +3637,8 @@ def run_catboost(
     use_saved_params: bool = False,
     n_trials: int = 50,
     verbose: bool = False,
-    use_gpu: bool = True
+    use_gpu: bool = True,
+    seed: int | None = 42,
 ) -> SingleModelResults:
     """
     Run a CatBoost model by tuning parameters, training, and predicting.
@@ -3675,7 +3688,8 @@ def run_catboost(
         use_saved_params,
         verbose,
         n_trials=n_trials,
-        use_gpu=use_gpu
+        use_gpu=use_gpu,
+        random_state=seed,
     )
     timing.stop("parameter_search")
 
@@ -3683,6 +3697,8 @@ def run_catboost(
     params["verbose"] = False
     params["train_dir"] = f"{outpath}/catboost/catboost_info"
     os.makedirs(params["train_dir"], exist_ok=True)
+    if seed is not None:
+        params.setdefault("random_seed", seed)
     cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
 
     regressor = catboost.CatBoostRegressor(**params)
@@ -3799,6 +3815,7 @@ def run_ngboost(
     use_saved_params: bool = False,
     verbose: bool = False,
     n_trials: int = 50,
+    seed: int | None = 42,
 ) -> SingleModelResults:
     """
     Run an NGBoost model by tuning parameters, training, and predicting.
@@ -3850,6 +3867,7 @@ def run_ngboost(
         use_saved_params,
         verbose,
         n_trials=n_trials,
+        random_state=seed,
     )
     timing.stop("parameter_search")
 
@@ -3863,7 +3881,13 @@ def run_ngboost(
     # Base-learner depth is tuned alongside the booster params; split it out.
     params = dict(parameters)
     max_depth = params.pop("max_depth", 3)
-    base = DecisionTreeRegressor(max_depth=max_depth, criterion="friedman_mse")
+    # NGBoost's minibatch_frac<1 subsamples per boosting round, so it is nondeterministic
+    # unless random_state is set on both the base learner and the booster.
+    base = DecisionTreeRegressor(
+        max_depth=max_depth, criterion="friedman_mse", random_state=seed
+    )
+    if seed is not None:
+        params.setdefault("random_state", seed)
     regressor = NGBRegressor(Dist=Normal, Base=base, verbose=False, **params)
     timing.stop("setup")
 
@@ -3886,6 +3910,7 @@ def run_layeredcomp(
     use_saved_params: bool = False,
     n_trials: int = 50,
     verbose: bool = False,
+    seed: int | None = 42,
 ) -> SingleModelResults:
     """
     Run a LayeredComp model by training and predicting.
@@ -3933,7 +3958,9 @@ def run_layeredcomp(
     timing.start("train")
     
     # Train the LayeredComp model
-    lcomp_model = LCompModel(tree_count=10, sample_pct=0.95, random_state=42, n_jobs=4)
+    lcomp_model = LCompModel(
+        tree_count=10, sample_pct=0.95, random_state=(42 if seed is None else seed), n_jobs=4
+    )
     lcomp_model.fit(ds.X_train, ds.y_train)
     
     # Wrap it in our wrapper class
@@ -5081,7 +5108,10 @@ def _get_params(
         if save_params:
             os.makedirs(outpath, exist_ok=True)
             fp = _study_fingerprint(
-                ds.X_train.columns, len(ds.X_train), kwargs.get("n_trials", 50)
+                ds.X_train.columns,
+                len(ds.X_train),
+                kwargs.get("n_trials", 50),
+                seed=kwargs.get("random_state"),
             )
             storage_path = f"{outpath}/{slug}_study_{fp}.journal"
             study_name = slug

@@ -1351,6 +1351,10 @@ This is a separate concern from the other two layers. Tunable models (XGBoost, L
 
 > **In other words**: the saved params don't cache *predictions*. The model still re-fits on whatever training data it sees. They cache the *tuning step* — the search for which hyperparameters to use. That's a much bigger deal for tree-based models with deep search spaces (Optuna trials can take minutes to hours) than for fast-fitting linear models.
 
+**Crash-resume during tuning** (Optuna tree models, when `save_params=True`) — the parameter search itself can take a long time, so it is made resumable. While a study runs, each completed trial is appended to a journal file `<slug>_study_<fingerprint>.journal` next to the eventual `<slug>_params.json`. If the run is interrupted (crash, `Ctrl-C`, OOM, killed job), the next run **reattaches to that journal and continues from the last completed trial** rather than restarting at trial 0; it runs only the *remaining* trials needed to reach `n_trials`. On a clean finish, `<slug>_params.json` is written and the journal is **deleted** — so a leftover `*_study_*.journal` file always means "the last tuning run was interrupted and will be resumed."
+
+The `<fingerprint>` is a short hash of the feature columns, training-row count, and `n_trials`. It scopes the journal to its exact search context: if you change `ind_vars`, the sales window, or the trial budget, the fingerprint changes, the old journal no longer matches, and it is discarded (not resumed) — so you never silently mix trials scored against a different objective. Implementation: `_resumable_study` / `_study_fingerprint` in [tuning.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/tuning.py), driven by `_get_params` in [modeling.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/modeling.py). When `save_params=False` tuning stays fully in-memory (no journal). GWR/kernel bandwidth searches are single-shot and are not journaled.
+
 **When to delete saved params:**
 
 - You've meaningfully changed the training data (different sales, different features, different model group definitions, different fill rules) and want the tuning to adapt.
@@ -1361,6 +1365,28 @@ This is a separate concern from the other two layers. Tunable models (XGBoost, L
 
 - You want fast, reproducible re-runs (e.g. for iterating on downstream analysis without paying the tuning cost again).
 - You're confident the previous tuning is still appropriate — incremental data changes that aren't likely to shift the optimal hyperparameters.
+
+### 8.4.1 Reproducibility — `modeling.metadata.seed`
+
+The tree-based models (XGBoost, LightGBM, CatBoost, NGBoost, lcomp) involve randomness in both the Optuna hyperparameter search and the model fit; MRA does not. To make their output reproducible, all of that randomness is fed from a single seed at `modeling.metadata.seed`.
+
+- **Default** — `42`. Modeling is **always deterministic**; there is no nondeterministic mode. Change the integer to vary the seed; a `null`/absent value falls back to `42`.
+- **Effect** — the seed is threaded into the Optuna TPE sampler, the cross-validation folds, and the final model fits (`get_model_seed` in [utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py); `_seeded_sampler` in [tuning.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/tuning.py)). Two runs on the same data produce identical hyperparameters and identical predictions.
+
+```json
+{ "modeling": { "metadata": { "seed": 42 } } }   // default
+{ "modeling": { "metadata": { "seed": 12345 } } } // a different reproducible run
+```
+
+**Determinism does NOT cost parallelism.** A naive seeded search would have to run serially, because Optuna's TPE sampler proposes each trial from the results of *completed* trials — so under `n_jobs=-1` the racing completion order makes the search non-reproducible even with a seeded sampler. OpenAVMKit sidesteps this for XGBoost and LightGBM with **synchronous batched ask-and-tell** (`_run_batched` in [tuning.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/tuning.py)):
+
+1. A batch of trials is *asked sequentially* — parameters are sampled in a deterministic order (never inside the parallel section, which would race on the sampler RNG).
+2. The batch is *evaluated in parallel*; each fit is single-threaded so it is itself bit-reproducible and doesn't oversubscribe cores.
+3. Results are *told back in ask order*, so the study's state after each generation is identical run-to-run regardless of who finished first.
+
+You get reproducibility **and** up to batch-width parallelism. The only cost is that TPE adapts once per batch instead of once per trial — a minor sample-efficiency nuance, not a speed or correctness one. CatBoost and NGBoost tune serially (CatBoost's pruning is hard to parallelize deterministically; NGBoost isn't thread-safe) but are still fully reproducible via the seeded sampler.
+
+> **Interaction with the tuning journal (§8.4).** The seed is part of the resume-journal fingerprint, so changing the seed starts a fresh study rather than resuming one tuned under a different seed. A study that is interrupted and *resumed* is not guaranteed bit-identical to a single-process run (the sampler re-seeds on reattach); clean start-to-finish runs are reproducible.
 
 ### 8.5 When self-invalidation isn't enough
 

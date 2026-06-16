@@ -33,9 +33,14 @@ from openavmkit.utilities.modeling import TreeBasedCategoricalData
 # PRIVATE
 #######################################
 
+# Trials per generation in the batched (deterministic-parallel) XGBoost/LightGBM search.
+# Fixed (not core count) so the TPE adaptivity cadence — and thus the result — is
+# machine-independent; only how many of a batch run concurrently scales with cores.
+_TUNING_BATCH_SIZE = 8
+
 
 def _resumable_study(
-    direction, study_name=None, storage_path=None, pruner=None, verbose=False
+    direction, study_name=None, storage_path=None, pruner=None, sampler=None, verbose=False
 ):
     """Create an Optuna study, optionally backed by a persistent journal file.
 
@@ -59,6 +64,9 @@ def _resumable_study(
         Path to the journal file. ``None`` (default) keeps the study in memory.
     pruner : optuna.pruners.BasePruner, optional
         Pruner to attach (CatBoost passes a ``MedianPruner``; others pass ``None``).
+    sampler : optuna.samplers.BaseSampler, optional
+        Sampler to attach. Pass a seeded sampler (e.g. ``TPESampler(seed=...)``) for a
+        reproducible search; ``None`` uses Optuna's default entropy-seeded sampler.
     verbose : bool, optional
         If True, print how many trials were resumed from disk.
 
@@ -67,7 +75,7 @@ def _resumable_study(
     optuna.study.Study
     """
     if storage_path is None:
-        return optuna.create_study(direction=direction, pruner=pruner)
+        return optuna.create_study(direction=direction, pruner=pruner, sampler=sampler)
 
     # Use the open()-based lock rather than Optuna's default symlink lock: on Windows
     # os.symlink requires elevated privilege (WinError 1314), so the symlink lock fails
@@ -84,12 +92,97 @@ def _resumable_study(
         storage=storage,
         load_if_exists=True,
         pruner=pruner,
+        sampler=sampler,
     )
     if verbose and len(study.trials):
         print(
             f"--> resuming study '{study_name}': {len(study.trials)} trial(s) already on disk"
         )
     return study
+
+
+def _seeded_sampler(random_state, constant_liar=False):
+    """A seeded TPE sampler when ``random_state`` is set, else ``None`` (default sampler).
+
+    Optuna's default sampler is seeded from OS entropy, so the hyperparameter search path
+    differs every run even on identical data. Seeding it is the main lever for making the
+    tree-based models reproducible.
+
+    ``constant_liar=True`` is used by the batched XGBoost/LightGBM tuners: it accounts for
+    trials that have been asked but not yet told (the in-flight batch), so the parallel
+    proposals within a generation spread out instead of clustering.
+    """
+    if random_state is None:
+        return None
+    return optuna.samplers.TPESampler(seed=random_state, constant_liar=constant_liar)
+
+
+def _is_plateaued(study, plateau_trials=10, improvement_threshold=0.01):
+    """True if the best value hasn't improved by >= ``improvement_threshold`` over the
+    last ``plateau_trials`` completed trials. Generation-boundary equivalent of
+    :func:`_plateau_callback`, used by :func:`_run_batched`.
+    """
+    completed = [t for t in study.trials if t.value is not None]
+    if len(completed) < plateau_trials:
+        return False
+    best_value = study.best_trial.value
+    if best_value is None:
+        return False
+    recent = completed[-plateau_trials:]
+    return all(t.value >= best_value * (1 + improvement_threshold) for t in recent)
+
+
+def _run_batched(study, suggest, evaluate, n_trials, storage_path, verbose, label="", batch_size=None):
+    """Deterministic *and* parallel hyperparameter search via synchronous batched ask-and-tell.
+
+    The non-determinism in plain ``study.optimize(n_jobs>1)`` comes from telling trial
+    results back in *completion* order, which races. This avoids that:
+
+    1. **Ask a batch sequentially** (main thread): ``suggest(trial)`` samples each trial's
+       params in a deterministic order, so the proposed params are a pure function of
+       ``(seed, told-set)`` — no RNG race. (Sampling must NOT happen inside the parallel
+       step.)
+    2. **Evaluate the batch in parallel**: ``evaluate`` runs the (single-threaded, hence
+       deterministic) CV for each trial concurrently; completion order is irrelevant
+       because each evaluation is independent.
+    3. **Tell in ask order**, so the study's state after each generation is identical
+       run-to-run regardless of who finished first.
+
+    Net: reproducible results with up to ``batch_size``-way parallelism. ``batch_size`` is
+    a fixed constant (not core count) so the TPE adaptivity cadence — and therefore the
+    result — does not depend on the machine; only how many evaluations run at once does.
+
+    Resumes cleanly: only ``COMPLETE`` trials count toward the target, so a journal-backed
+    study continues from where it left off.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from optuna.trial import TrialState
+
+    if batch_size is None:
+        batch_size = _TUNING_BATCH_SIZE
+    workers = max(1, min(batch_size, (os.cpu_count() or 2) - 2))
+
+    n_done = len([t for t in study.trials if t.state == TrialState.COMPLETE])
+    while n_done < n_trials:
+        b = min(batch_size, n_trials - n_done)
+        asked = []
+        for _ in range(b):
+            trial = study.ask()
+            asked.append((trial, suggest(trial)))  # sequential -> deterministic sampling
+
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            values = list(ex.map(lambda item: evaluate(item[1]), asked))
+
+        for (trial, _), value in zip(asked, values):  # tell in ask order, not finish order
+            study.tell(trial, value)
+        n_done += b
+
+        if verbose:
+            print(f"-->{label} tuning: {n_done}/{n_trials} trials (best MAPE {study.best_value:0.4f})")
+        if _is_plateaued(study):
+            if verbose:
+                print(f"Plateau detected: stopping {label} search early at {n_done} trials.")
+            break
 
 
 def _remaining_trials(study, n_trials, storage_path):
@@ -105,17 +198,20 @@ def _remaining_trials(study, n_trials, storage_path):
     return max(0, n_trials - len(study.trials))
 
 
-def _study_fingerprint(columns, n_rows, n_trials):
+def _study_fingerprint(columns, n_rows, n_trials, seed=None):
     """Short stable hash identifying a tuning study's search context.
 
     A resumed study is only valid if it is searching the *same* objective: same feature
-    set, same number of training rows, same trial budget. Baking this fingerprint into
-    the journal filename means a study is resumed only on an exact-context match; a
-    changed ``ind_vars`` list or sales window yields a different fingerprint (and the
-    stale journal is discarded) rather than silently mixing trials scored against a
-    different objective.
+    set, same number of training rows, same trial budget, same seed. Baking this
+    fingerprint into the journal filename means a study is resumed only on an exact-context
+    match; a changed ``ind_vars`` list, sales window, or seed yields a different
+    fingerprint (and the stale journal is discarded) rather than silently mixing trials
+    scored against a different objective or sampler.
     """
-    key = "|".join(sorted(str(c) for c in columns)) + f"||rows={n_rows}||trials={n_trials}"
+    key = (
+        "|".join(sorted(str(c) for c in columns))
+        + f"||rows={n_rows}||trials={n_trials}||seed={seed}"
+    )
     return hashlib.md5(key.encode("utf-8")).hexdigest()[:10]
 
 
@@ -168,14 +264,20 @@ def _tune_xgboost(
     resumes from the trials already on disk (see :func:`_resumable_study`).
     """
 
-    def objective(trial):
-        """Objective function for Optuna to optimize XGBoost hyperparameters."""
+    # Split into a sequential `suggest` (samples params from the trial) and a parallel
+    # `evaluate` (runs CV). The suggest step MUST run sequentially in the ask-phase so the
+    # sampler RNG is advanced in a deterministic order; only the CV evaluation is
+    # parallelized across trials. nthread=1 keeps each fit deterministic and avoids
+    # oversubscription when many trials evaluate concurrently. See `_run_batched`.
+    def suggest(trial):
         params = {
             "objective": "reg:squarederror",  # Regression objective
             "eval_metric": "mape",  # Mean Absolute Percentage Error
             "tree_method": "hist",  # Use 'hist' for performance; use 'gpu_hist' for GPUs
             "enable_categorical": True,
             "max_cat_to_onehot": 1,
+            "nthread": 1,
+            "seed": random_state if random_state is not None else 0,
             "learning_rate": trial.suggest_float("learning_rate", 0.001, 0.1, log=True),
             "max_depth": trial.suggest_int("max_depth", 3, 15),
             "min_child_weight": trial.suggest_float(
@@ -202,8 +304,11 @@ def _tune_xgboost(
             ),
         }
         num_boost_round = trial.suggest_int("num_boost_round", 100, 3000)
+        return params, num_boost_round
 
-        mape = _xgb_kfold_cv(
+    def evaluate(suggested):
+        params, num_boost_round = suggested
+        return _xgb_kfold_cv(
             X,
             y,
             params,
@@ -215,21 +320,16 @@ def _tune_xgboost(
             he_ids=he_ids,
             custom_alpha=0.1,
         )
-        if verbose:
-            print(
-                f"-->trial # {trial.number}/{n_trials}, MAPE: {mape:0.4f}"
-            )  # , params: {params}")
-        return mape  # Optuna minimizes, so return the MAPE directly
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = _resumable_study(
-        "minimize", study_name=study_name, storage_path=storage_path, verbose=verbose
+        "minimize",
+        study_name=study_name,
+        storage_path=storage_path,
+        sampler=_seeded_sampler(random_state, constant_liar=True),
+        verbose=verbose,
     )
-    remaining = _remaining_trials(study, n_trials, storage_path)
-    if remaining > 0:
-        study.optimize(
-            objective, n_trials=remaining, n_jobs=-1, callbacks=[_plateau_callback]
-        )
+    _run_batched(study, suggest, evaluate, n_trials, storage_path, verbose, label="XGBoost")
     if verbose:
         print(
             f"Best trial: {study.best_trial.number} with MAPE: {study.best_trial.value:0.4f} and params: {study.best_trial.params}"
@@ -280,12 +380,18 @@ def _tune_lightgbm(
             f"num_leaves capped at {max_num_leaves}, min_data_in_leaf capped at {max_min_data_in_leaf}"
         )
 
-    def objective(trial):
-        """Objective function for Optuna to optimize LightGBM hyperparameters."""
-        params = {
+    # Sequential `suggest` (deterministic sampling) + parallel `evaluate` (CV). The
+    # deterministic/force_row_wise/num_threads=1 trio makes each fit bit-reproducible and
+    # keeps concurrent trials from oversubscribing cores. See `_run_batched`.
+    def suggest(trial):
+        return {
             "objective": "regression",
             "metric": "mape",
             "boosting_type": "gbdt",
+            "num_threads": 1,
+            "deterministic": True,
+            "force_row_wise": True,
+            "seed": random_state if random_state is not None else 0,
             "num_iterations": trial.suggest_int("num_iterations", 300, 5000),
             "learning_rate": trial.suggest_float(
                 "learning_rate", 0.0001, 0.1, log=True
@@ -308,15 +414,10 @@ def _tune_lightgbm(
             "early_stopping_round": 50,
         }
 
-        # Use shuffled k-fold cross-validation (inner selection loop)
-        mape = _lightgbm_kfold_cv(
+    def evaluate(params):
+        return _lightgbm_kfold_cv(
             X, y, params, n_splits=n_splits, random_state=random_state, cat_vars=cat_vars
         )
-        if verbose:
-            print(
-                f"-->trial # {trial.number}/{n_trials}, MAPE: {mape:0.4f}"
-            )  # , params: {params}")
-        return mape  # Optuna minimizes, so return the MAPE directly
 
     # Run Bayesian Optimization with Optuna
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -325,13 +426,10 @@ def _tune_lightgbm(
         study_name=study_name,
         storage_path=storage_path,
         pruner=optuna.pruners.MedianPruner(),
+        sampler=_seeded_sampler(random_state, constant_liar=True),
         verbose=verbose,
     )
-    remaining = _remaining_trials(study, n_trials, storage_path)
-    if remaining > 0:
-        study.optimize(
-            objective, n_trials=remaining, n_jobs=-1, callbacks=[_plateau_callback]
-        )  # Use parallelism if available
+    _run_batched(study, suggest, evaluate, n_trials, storage_path, verbose, label="LightGBM")
 
     if verbose:
         print(
@@ -419,6 +517,7 @@ def _tune_catboost(
         pruner=optuna.pruners.MedianPruner(
             n_startup_trials=15, n_warmup_steps=100, interval_steps=10
         ),
+        sampler=_seeded_sampler(random_state),
         verbose=verbose,
     )
 
@@ -513,7 +612,11 @@ def _tune_ngboost(
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = _resumable_study(
-        "minimize", study_name=study_name, storage_path=storage_path, verbose=verbose
+        "minimize",
+        study_name=study_name,
+        storage_path=storage_path,
+        sampler=_seeded_sampler(random_state),
+        verbose=verbose,
     )
     # NGBoost training is not thread-safe enough for n_jobs=-1; tune serially.
     remaining = _remaining_trials(study, n_trials, storage_path)

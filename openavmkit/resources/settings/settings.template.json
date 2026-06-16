@@ -49,7 +49,9 @@
 	},
 	"modeling": {
 		"metadata": {
-			"modeler": "Modeler"
+			"modeler": "Modeler",
+			"__seed": "Random seed for reproducible tree-model tuning/fitting (Optuna sampler, CV folds, final fits). Modeling is always deterministic; XGBoost/LightGBM stay parallel AND reproducible via batched tuning. Change this integer to vary the seed (default 42).",
+			"seed": 42
 		},
 		"instructions": {
 			"feature_selection": {

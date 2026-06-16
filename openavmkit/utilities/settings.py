@@ -133,6 +133,34 @@ def get_valuation_date(s: dict) -> datetime:
     return val_date
 
 
+def get_model_seed(s: dict) -> int:
+    """Return the random seed used for model tuning and fitting.
+
+    Read from ``modeling.metadata.seed`` (default ``42``). This is the single source of
+    truth for reproducibility of the (otherwise nondeterministic) tree-based models: it
+    seeds the Optuna hyperparameter sampler, the cross-validation folds, and the final
+    model fits.
+
+    Modeling is **always deterministic** — there is no nondeterministic mode. The
+    XGBoost/LightGBM tuners stay parallel *and* reproducible via batched ask-and-tell
+    (see ``_run_batched`` in :mod:`openavmkit.tuning`), so determinism costs no
+    parallelism. Provide your own integer to vary the seed; an absent or ``null`` value
+    falls back to ``42``.
+
+    Parameters
+    ----------
+    s : dict
+        Settings dictionary.
+
+    Returns
+    -------
+    int
+        The model seed (always an integer).
+    """
+    seed = s.get("modeling", {}).get("metadata", {}).get("seed", 42)
+    return 42 if seed is None else int(seed)
+
+
 def get_assessor_holdout_mode(s: dict) -> str:
     """Return how the assessor's values relate to the test holdout.
 
