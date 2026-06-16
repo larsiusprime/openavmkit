@@ -119,6 +119,7 @@ from openavmkit.utilities.settings import (
     get_fields_categorical,
     get_variable_interactions,
     get_valuation_date,
+    get_model_seed,
     get_model_group,
     _apply_dd_to_df_rows,
     get_model_group_ids,
@@ -1428,6 +1429,7 @@ def run_one_model(
     intercept = entry.get("intercept", True)
     n_trials = entry.get("n_trials", 50)
     use_gpu = entry.get("use_gpu", True)
+    seed = get_model_seed(settings)
     t.stop("setup")
 
     t.start("run")
@@ -1474,23 +1476,23 @@ def run_one_model(
         results = run_gwr(ds, outpath, save_params, use_saved_params, verbose=verbose)
     elif model_engine == "xgboost":
         results = run_xgboost(
-            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, seed=seed
         )
     elif model_engine == "lightgbm":
         results = run_lightgbm(
-            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, seed=seed
         )
     elif model_engine == "catboost":
         results = run_catboost(
-            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, use_gpu=use_gpu
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, use_gpu=use_gpu, seed=seed
         )
     elif model_engine == "ngboost":
         results = run_ngboost(
-            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, seed=seed
         )
     elif model_engine == "lcomp":
         results = run_layeredcomp(
-            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose
+            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, seed=seed
         )
     else:
         raise ValueError(f"Model {model_engine} not found!")
@@ -4232,6 +4234,31 @@ def _model_performance_metrics(
     return text
 
 
+_DETERMINISM_ANNOUNCED = False
+
+
+def _announce_determinism(seed: int) -> None:
+    """Loudly state the reproducibility contract once per process.
+
+    Modeling is always deterministic. XGBoost/LightGBM stay parallel *and* reproducible
+    via batched tuning; CatBoost/NGBoost tune serially. The seed is the one knob.
+    """
+    global _DETERMINISM_ANNOUNCED
+    if _DETERMINISM_ANNOUNCED:
+        return
+    _DETERMINISM_ANNOUNCED = True
+    print(
+        "\n"
+        "============================================================\n"
+        f"  DETERMINISTIC MODELING  (seed = {seed})\n"
+        "  Tree-model tuning is reproducible: same inputs -> same model.\n"
+        "    - XGBoost / LightGBM : parallel batched search (fast + deterministic)\n"
+        "    - CatBoost / NGBoost : serial search (deterministic)\n"
+        "  Change the seed via  modeling.metadata.seed  in settings.json.\n"
+        "============================================================\n"
+    )
+
+
 def _run_models(
     sup: SalesUniversePair,
     model_group: str,
@@ -4351,6 +4378,16 @@ def _run_models(
         best_variables = None
 
     any_results = False
+
+    # Announce the determinism contract once if any tunable tree model will run.
+    _tunable = {"xgboost", "lightgbm", "catboost", "ngboost", "lcomp"}
+    if any(
+        model_entries.get(m, model_entries.get("default", {})).get("engine", m) in _tunable
+        or m in _tunable
+        for m in models_to_run
+        if m not in models_to_skip
+    ):
+        _announce_determinism(get_model_seed(settings))
 
     # Run the models one by one and stash the results
     t.start("run_models")

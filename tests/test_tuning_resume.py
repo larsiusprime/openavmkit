@@ -9,6 +9,7 @@ import glob
 import os
 import types
 
+import numpy as np
 import optuna
 import pandas as pd
 import pytest
@@ -19,8 +20,12 @@ from openavmkit.tuning import (
     _study_fingerprint,
     _discard_stale_studies,
     _cleanup_study_files,
+    _seeded_sampler,
+    _is_plateaued,
+    _run_batched,
 )
 from openavmkit.modeling import _get_params
+from openavmkit.utilities.settings import get_model_seed
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -55,6 +60,50 @@ def test_fingerprint_is_order_stable_and_context_sensitive():
     assert _study_fingerprint(["a", "b"], 10, 5) != _study_fingerprint(["a", "b"], 11, 5)
     assert _study_fingerprint(["a", "b"], 10, 5) != _study_fingerprint(["a", "b"], 10, 6)
     assert _study_fingerprint(["a"], 10, 5) != _study_fingerprint(["a", "b"], 10, 5)
+    # Seed is part of the search context: a different seed must not resume an old journal.
+    assert _study_fingerprint(["a"], 10, 5, seed=42) != _study_fingerprint(["a"], 10, 5, seed=7)
+    assert _study_fingerprint(["a"], 10, 5, seed=42) != _study_fingerprint(["a"], 10, 5, seed=None)
+
+
+def test_seeded_sampler():
+    # A seed -> seeded TPE sampler; None -> default sampler.
+    assert isinstance(_seeded_sampler(42), optuna.samplers.TPESampler)
+    assert isinstance(_seeded_sampler(42, constant_liar=True), optuna.samplers.TPESampler)
+    assert _seeded_sampler(None) is None
+
+
+def test_get_model_seed_always_returns_int():
+    assert get_model_seed({}) == 42  # default
+    assert get_model_seed({"modeling": {"metadata": {"seed": 7}}}) == 7
+    # Determinism is always on: a null/absent seed falls back to the default.
+    assert get_model_seed({"modeling": {"metadata": {"seed": None}}}) == 42
+
+
+def test_run_batched_is_deterministic_and_parallel():
+    """Batched ask-and-tell gives identical results run-to-run despite parallel eval."""
+
+    def make_study():
+        return optuna.create_study(
+            direction="minimize", sampler=_seeded_sampler(42, constant_liar=True)
+        )
+
+    def suggest(trial):
+        return {"x": trial.suggest_float("x", -5.0, 5.0), "y": trial.suggest_float("y", -5.0, 5.0)}
+
+    def evaluate(p):
+        return (p["x"] - 1.3) ** 2 + (p["y"] + 0.7) ** 2
+
+    s1 = make_study()
+    _run_batched(s1, suggest, evaluate, n_trials=24, storage_path=None, verbose=False, batch_size=8)
+    s2 = make_study()
+    _run_batched(s2, suggest, evaluate, n_trials=24, storage_path=None, verbose=False, batch_size=8)
+    # Reproducible: identical best params AND identical stop point (plateau triggers
+    # deterministically), even though the batch was evaluated in parallel.
+    n1 = len([t for t in s1.trials if t.value is not None])
+    n2 = len([t for t in s2.trials if t.value is not None])
+    assert s1.best_params == s2.best_params
+    assert n1 == n2
+    assert 0 < n1 <= 24  # may stop early via plateau; never exceeds the target
 
 
 def test_resumable_study_persists_and_resumes(tmp_path):
@@ -154,6 +203,19 @@ def test_get_params_no_storage_when_not_saving(tmp_path):
     assert seen["storage_path"] is None
     assert glob.glob(os.path.join(out, "mymodel_study_*")) == []
     assert not os.path.exists(os.path.join(out, "mymodel_params.json"))
+
+
+def test_seeded_tuning_is_reproducible():
+    """The core determinism guarantee: same seed + same data -> identical best params."""
+    from openavmkit.tuning import _tune_lightgbm
+
+    rng = np.random.RandomState(0)
+    X = pd.DataFrame({"a": rng.rand(120), "b": rng.rand(120)})
+    y = pd.Series(3 * X["a"] - 2 * X["b"] + rng.rand(120) * 0.1)
+
+    p1 = _tune_lightgbm(X, y, sizes=None, he_ids=None, n_trials=6, random_state=42)
+    p2 = _tune_lightgbm(X, y, sizes=None, he_ids=None, n_trials=6, random_state=42)
+    assert p1 == p2
 
 
 def test_get_params_resumes_to_target_then_cleans(tmp_path):
