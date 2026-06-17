@@ -2367,8 +2367,10 @@ def _clip_sales_to_use(
 
     val_year = get_valuation_date(settings).year
 
-    from openavmkit.utilities.settings import resolve_use_sales_from
-    use_sales_from_impr, use_sales_from_vacant = resolve_use_sales_from(settings)
+    # Global clip uses the FLOOR (widest window any group needs); per-group narrowing
+    # happens later at the train/test split. See use_sales_from_floor for rationale.
+    from openavmkit.utilities.settings import use_sales_from_floor
+    use_sales_from_impr, use_sales_from_vacant = use_sales_from_floor(settings)
     if use_sales_from_impr is None:
         use_sales_from_impr = val_year - 5
     if use_sales_from_vacant is None:

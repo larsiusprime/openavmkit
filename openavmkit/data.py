@@ -1639,6 +1639,12 @@ def _enrich_df_distances(
                 continue
             features_config[key] = dist_settings[key]
 
+        # Project parcels to the equal-distance CRS ONCE and reuse across every feature
+        # and named-feature distance call below, instead of re-projecting all parcels on
+        # each call (the dominant cost when many features / store_top are configured).
+        crs_eq = get_crs(df, "equal_distance")
+        parcels_proj = df[["key", "geometry"]].to_crs(crs_eq)
+
         # Loop through each feature configuration:
         for feature, config in features_config.items():
             # Check if feature is enabled in the osm_settings
@@ -1683,7 +1689,8 @@ def _enrich_df_distances(
 
                         # Calculate distances to all features
                         df = _do_perform_distance_calculations_osm(
-                            df, result, feature_id, max_distance=max_distance, unit=unit
+                            df, result, feature_id, max_distance=max_distance, unit=unit,
+                            parcels_proj=parcels_proj,
                         )
 
                         # If store_top is enabled, calculate distances to top features
@@ -1757,6 +1764,7 @@ def _enrich_df_distances(
                                     col_id,
                                     max_distance=max_distance,
                                     unit=unit,
+                                    parcels_proj=parcels_proj,
                                 )
 
                 except Exception as e:
@@ -3526,9 +3534,22 @@ def _do_perform_distance_calculations_osm(
     _id: str,
     max_distance: float = None,
     unit: str = "km",
+    parcels_proj: gpd.GeoDataFrame = None,
 ) -> pd.DataFrame:
-    """Perform a divide-by-zero-safe nearest neighbor spatial join to calculate
-    distances.
+    """Nearest-neighbor distance + proximity for one OSM feature class.
+
+    Produces ``dist_to_<id>`` (target unit; NaN beyond ``max_distance``), ``within_<id>``
+    (bool), and ``proximity_to_<id>`` (``max(dist) - dist``; 0 beyond range).
+
+    Two performance levers vs. the previous implementation, both behavior-preserving:
+
+    1. **Buffer pre-filter** — when ``max_distance`` is set, only parcels intersecting the
+       features buffered by ``max_distance`` can be in range, so the (expensive) nearest
+       join runs on just those; everyone else gets ``proximity 0`` / ``within False``
+       without a join. This is the same pattern the source-shapefile path uses, and is a
+       big win for sparse features (rivers) and the per-named-feature ``store_top`` calls.
+    2. **Reproject once** — pass ``parcels_proj`` (parcels already in the equal-distance
+       CRS) and we skip re-projecting all parcels on every feature/named-feature call.
     """
     unit_factors = {"m": 1, "km": 0.001, "mile": 0.000621371, "ft": 3.28084}
     if unit not in unit_factors:
@@ -3543,16 +3564,13 @@ def _do_perform_distance_calculations_osm(
             f"Duplicate keys found before distance calculation for '{_id}.' This should not happen."
         )
 
-    if max_distance is not None:
-        # Convert max_distance to meters (since our distances are in meters)
-        max_distance_m = max_distance / unit_factors[unit]
-    else:
-        max_distance_m = None
+    max_distance_m = (max_distance / unit_factors[unit]) if max_distance is not None else None
 
     print(f"Calculating distance, id={_id}, max_distance={max_distance}, unit={unit}, max_distance (in meters)={max_distance_m}")
 
-    # Construct cache signature
+    # Construct cache signature ("v" bumped: pre-filter + reproject-once implementation)
     signature = {
+        "v": 2,
         "crs": crs.name,
         "_id": _id,
         "max_distance": max_distance,
@@ -3568,56 +3586,60 @@ def _do_perform_distance_calculations_osm(
     if df_out is not None:
         return df_out
 
-    # Project geometries
-    df_projected = df_in.to_crs(crs).copy()
-    gdf_projected = gdf_in.to_crs(crs).copy()
-
-    # Calculate distances for all parcels first
-    nearest = gpd.sjoin_nearest(
-        df_projected, gdf_projected, how="left", distance_col="distance", max_distance=max_distance_m
-    )
-
-    # Handle duplicates by keeping shortest distance
-    if nearest.duplicated(subset="key").sum() > 0:
-        nearest = nearest.sort_values("distance").drop_duplicates("key")
-
-    # Create distance series (distances are in meters at this point)
-    distance_series = pd.Series(nearest["distance"].values, index=nearest.index)
-
-    # Initialize within flag
-    within_series = pd.Series(False, index=df_projected.index)
-
-    if max_distance is not None:
-        # Mark parcels within max_distance
-        within_series[distance_series <= max_distance_m] = True
-
-        # Set distances beyond max_distance to max_distance + 1 (in the target unit)
-        distance_series[distance_series > max_distance_m] = (
-            max_distance + 1
-        ) / unit_factors[unit]
-
-        # Convert all distances to target unit
-        distance_series = distance_series * unit_factors[unit]
+    # Parcels in the equal-distance CRS. Reuse the caller's pre-projected frame when given
+    # (so we don't re-project all parcels once per feature / named-feature call).
+    if parcels_proj is not None and parcels_proj.crs is not None and parcels_proj.crs == crs:
+        df_projected = parcels_proj
     else:
-        # If no max_distance, all parcels are considered "within"
-        within_series[:] = True
-        # Convert distances to target unit
-        distance_series = distance_series * unit_factors[unit]
+        df_projected = df_in.to_crs(crs)
+    gdf_projected = gdf_in.to_crs(crs)
 
-    proximity_series = np.max(distance_series) - distance_series
+    # distance in METERS, indexed like df_projected; NaN == beyond range / no match
+    dist_m = pd.Series(np.nan, index=df_projected.index)
+    within = pd.Series(False, index=df_projected.index)
 
-    # Create output DataFrame with new columns
+    def _nearest_distances(parcels_subset):
+        """Nearest-feature distance (m) per parcel, indexed by parcels_subset.index."""
+        nn = gpd.sjoin_nearest(
+            parcels_subset, gdf_projected, how="left", distance_col="__dist_m"
+        ).drop(columns=["index_right"], errors="ignore")
+        # sjoin_nearest emits one row per tie; keep the shortest distance per parcel
+        if nn.index.has_duplicates:
+            nn = nn.sort_values("__dist_m")
+            nn = nn[~nn.index.duplicated(keep="first")]
+        return nn["__dist_m"]
+
+    if max_distance_m is not None:
+        # Only parcels intersecting the features' max_distance buffer can be in range.
+        buffered = gdf_projected[["geometry"]].copy()
+        buffered["geometry"] = buffered.geometry.buffer(max_distance_m)
+        in_range = gpd.sjoin(df_projected, buffered, how="inner", predicate="intersects")
+        in_range_idx = in_range.index.unique()
+        if len(in_range_idx) > 0:
+            d = _nearest_distances(df_projected.loc[in_range_idx])
+            dist_m.loc[d.index] = d
+            within.loc[d.index] = True
+    else:
+        d = _nearest_distances(df_projected)
+        dist_m.loc[d.index] = d
+        within[:] = True
+
+    # Convert to target unit; far/no-match parcels stay NaN -> proximity 0 (as before).
+    dist_unit = dist_m * unit_factors[unit]
+    max_finite = dist_unit.max()  # Series.max() skips NaN
+    if pd.notna(max_finite):
+        proximity = (max_finite - dist_unit).fillna(0.0)
+    else:
+        proximity = pd.Series(0.0, index=dist_unit.index)
+
     new_df = pd.DataFrame(
         {
-            f"dist_to_{_id}": distance_series,
-            f"within_{_id}": within_series,
-            f"proximity_to_{_id}": proximity_series
+            f"dist_to_{_id}": dist_unit,
+            f"within_{_id}": within,
+            f"proximity_to_{_id}": proximity,
         },
         index=df_projected.index,
     )
-
-    # Fill null proximity with 0.0 (maximum distance)
-    new_df[f"proximity_to_{_id}"] = new_df[f"proximity_to_{_id}"].fillna(0.0)
 
     # Combine with original DataFrame
     df_out = pd.concat([df_in, new_df], axis=1)
@@ -4764,8 +4786,11 @@ def _perform_canonical_split(
     rs = settings.get("analysis", {}).get("ratio_study", {})
     look_back_years = rs.get("look_back_years", 1)
 
+    # Per-model-group window: this is where each group narrows to its own use_sales_from
+    # (the cleaning/clip stages kept the widest floor). Falls back to the default/global
+    # window when no per-group override is configured.
     from openavmkit.utilities.settings import resolve_use_sales_from
-    use_sales_from_impr, use_sales_from_vacant = resolve_use_sales_from(settings)
+    use_sales_from_impr, use_sales_from_vacant = resolve_use_sales_from(settings, model_group=model_group)
 
     val_date = get_valuation_date(settings)
 

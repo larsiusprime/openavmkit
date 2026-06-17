@@ -384,3 +384,53 @@ def test_recursive_replace_variables_in_settings():
 
 	assert objects_are_equal(replaced, expected), f"Expected VS Result:\n{expected}\n{replaced}"
 	assert not objects_are_equal(data, replaced), f"Unexpected VS Result:\n{data}\n{replaced}"
+
+def _md(use_sales_from):
+	return {"modeling": {"metadata": {"use_sales_from": use_sales_from, "valuation_date": "2026-01-01"}}}
+
+
+def test_use_sales_from_scalar_and_legacy():
+	from openavmkit.utilities.settings import resolve_use_sales_from, use_sales_from_floor
+	# scalar -> same cutoff both types; model_group ignored
+	assert resolve_use_sales_from(_md(2020)) == (2020, 2020)
+	assert resolve_use_sales_from(_md(2020), model_group="anything") == (2020, 2020)
+	assert use_sales_from_floor(_md(2020)) == (2020, 2020)
+	# legacy per-type dict
+	leg = _md({"improved": 2023, "vacant": 2018})
+	assert resolve_use_sales_from(leg) == (2023, 2018)
+	assert use_sales_from_floor(leg) == (2023, 2018)
+	# missing entirely
+	assert resolve_use_sales_from({"modeling": {"metadata": {"valuation_date": "2026-01-01"}}}) == (None, None)
+
+
+def test_use_sales_from_per_model_group():
+	from openavmkit.utilities.settings import resolve_use_sales_from, use_sales_from_floor
+	s = _md({"default": 2022, "by_model_group": {"sf_suburban": 2023, "commercial": 2016}})
+	# listed groups use their own window; everything else (and None) uses default
+	assert resolve_use_sales_from(s, model_group="sf_suburban") == (2023, 2023)
+	assert resolve_use_sales_from(s, model_group="commercial") == (2016, 2016)
+	assert resolve_use_sales_from(s, model_group="sf_urban") == (2022, 2022)
+	assert resolve_use_sales_from(s) == (2022, 2022)
+	# floor = widest (oldest) across all windows -> driven by commercial 2016
+	assert use_sales_from_floor(s) == (2016, 2016)
+
+
+def test_use_sales_from_per_group_entries_can_be_per_type():
+	from openavmkit.utilities.settings import resolve_use_sales_from, use_sales_from_floor
+	# a per-group entry may itself be an {improved, vacant} dict
+	s = _md({"default": {"improved": 2022, "vacant": 2019},
+	         "by_model_group": {"commercial": {"improved": 2016, "vacant": 2014}}})
+	assert resolve_use_sales_from(s, model_group="commercial") == (2016, 2014)
+	assert resolve_use_sales_from(s) == (2022, 2019)
+	# floor takes the min per type independently
+	assert use_sales_from_floor(s) == (2016, 2014)
+
+
+def test_use_sales_from_floor_unbounded_when_default_missing():
+	from openavmkit.utilities.settings import use_sales_from_floor, resolve_use_sales_from
+	# only per-group overrides, no default -> unlisted groups are unbounded, so the
+	# cleaning floor must be None (don't drop) to preserve their sales
+	s = _md({"by_model_group": {"commercial": 2016}})
+	assert use_sales_from_floor(s) == (None, None)
+	assert resolve_use_sales_from(s, model_group="commercial") == (2016, 2016)
+	assert resolve_use_sales_from(s, model_group="sf_urban") == (None, None)

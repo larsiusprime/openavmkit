@@ -209,42 +209,75 @@ class DEMService:
         ``elevation_mean_m``, ``elevation_stdev_m``, ``slope_mean_deg``.
         Parcels whose geometry has no valid raster cells receive NaN.
         """
+        import time
+
         import rasterio
-        from rasterio.mask import mask as rio_mask
+        from rasterio.features import rasterize
+
+        n = len(gdf)
+        elev_mean = np.full(n, np.nan)
+        elev_std = np.full(n, np.nan)
+        slope_mean = np.full(n, np.nan)
 
         with rasterio.open(dem_path) as dem_src, rasterio.open(slope_path) as slope_src:
             gdf_proj = gdf.to_crs(dem_src.crs) if gdf.crs != dem_src.crs else gdf
-            dem_nodata = dem_src.nodata
-            slope_nodata = slope_src.nodata
 
-            elev_mean = np.full(len(gdf_proj), np.nan)
-            elev_std = np.full(len(gdf_proj), np.nan)
-            slope_mean = np.full(len(gdf_proj), np.nan)
+            # Burn every parcel onto the DEM grid in ONE pass, each parcel getting a
+            # unique label (positional index + 1; 0 = background), then compute per-label
+            # stats with vectorized bincounts. This replaces a per-parcel mask loop
+            # (~2N windowed raster reads, single-threaded, no progress) that took ~30+ min
+            # on a 584k-parcel county; rasterize + bincount is O(raster) and runs in
+            # seconds-to-a-minute. all_touched=True keeps the old behavior of letting
+            # sub-cell parcels still capture a cell.
+            t = time.time()
+            shapes = [
+                (geom, i + 1)
+                for i, geom in enumerate(gdf_proj.geometry.values)
+                if geom is not None and not geom.is_empty
+            ]
+            labels = rasterize(
+                shapes,
+                out_shape=(dem_src.height, dem_src.width),
+                transform=dem_src.transform,
+                fill=0,
+                all_touched=True,
+                dtype="int32",
+            )
+            if verbose:
+                print(f"--> rasterized {len(shapes)} parcels onto DEM grid ({time.time() - t:.1f}s)")
+            labels_flat = labels.ravel()
 
-            for i, geom in enumerate(gdf_proj.geometry.values):
-                if geom is None or geom.is_empty:
-                    continue
-                try:
-                    dem_arr, _ = rio_mask(dem_src, [geom], crop=True, all_touched=True)
-                    slope_arr, _ = rio_mask(slope_src, [geom], crop=True, all_touched=True)
-                except ValueError:
-                    # geometry does not overlap raster
-                    continue
+            def _zonal(src, with_std):
+                """Per-label mean (and optional population stdev), excluding nodata cells."""
+                arr = src.read(1)
+                if arr.shape != labels.shape:
+                    # slope is derived from the UTM mosaic, so the grids should be identical
+                    raise ValueError(
+                        f"Raster grid {arr.shape} != DEM grid {labels.shape}; labels cannot be aligned."
+                    )
+                valid = (labels_flat > 0) & (~_nodata_mask(arr.ravel(), src.nodata))
+                lab = labels_flat[valid]
+                val = arr.ravel()[valid].astype(np.float64)
+                counts = np.bincount(lab, minlength=n + 1)[1:]
+                sums = np.bincount(lab, weights=val, minlength=n + 1)[1:]
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    mean = np.where(counts > 0, sums / counts, np.nan)
+                    std = None
+                    if with_std:
+                        sumsq = np.bincount(lab, weights=val * val, minlength=n + 1)[1:]
+                        var = np.where(counts > 0, sumsq / counts - mean ** 2, np.nan)
+                        std = np.sqrt(np.clip(var, 0.0, None))  # clip tiny negative float error
+                return mean, std
 
-                dem_vals = dem_arr[0]
-                slope_vals = slope_arr[0]
-                dem_vals = dem_vals[~_nodata_mask(dem_vals, dem_nodata)]
-                slope_vals = slope_vals[~_nodata_mask(slope_vals, slope_nodata)]
-
-                if dem_vals.size > 0:
-                    elev_mean[i] = float(np.mean(dem_vals))
-                    elev_std[i] = float(np.std(dem_vals))
-                if slope_vals.size > 0:
-                    slope_mean[i] = float(np.mean(slope_vals))
+            t = time.time()
+            elev_mean, elev_std = _zonal(dem_src, with_std=True)
+            slope_mean, _ = _zonal(slope_src, with_std=False)
+            if verbose:
+                print(f"--> computed zonal stats ({time.time() - t:.1f}s)")
 
         if verbose:
-            valid = np.isfinite(elev_mean).sum()
-            print(f"--> computed DEM stats for {valid}/{len(gdf)} parcels")
+            valid = int(np.isfinite(elev_mean).sum())
+            print(f"--> computed DEM stats for {valid}/{n} parcels")
 
         return pd.DataFrame(
             {

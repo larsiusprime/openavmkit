@@ -371,7 +371,7 @@ For each configured feature class (e.g. `parks`), every parcel gets **three** co
 
 | Column                         | Meaning                                                                                                                                |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `dist_to_<feature>`            | Raw distance to the nearest instance, in the configured unit (default `km`). Past `max_distance`, clipped to `max_distance + 1`.       |
+| `dist_to_<feature>`            | Raw distance to the nearest instance, in the configured unit (default `km`). Past `max_distance` it is `NaN` (no measured distance) — regress on `proximity_to_` instead, which is defined everywhere. |
 | `within_<feature>`             | Boolean: is the parcel within `max_distance` of any instance?                                                                          |
 | `proximity_to_<feature>`       | `max(dist_to_<feature>) - dist_to_<feature>`. Past `max_distance`, falls to `0.0`. **Higher value = closer.**                          |
 
@@ -395,7 +395,7 @@ You can use either column (or both, or `log_dist_to_*`) in your modeling — the
 | `enabled`      | `true`           | Toggle this specific feature.                                                                                   |
 | `osm`          | `false`          | **Geometry source — option A.** Pull this feature's geometry from OpenStreetMap automatically.                  |
 | `source`       | (none)           | **Geometry source — option B.** Reference the ID of a dataframe you've loaded under `data.load.<id>` (must contain a `geometry` column). Use this for jurisdiction-supplied shapefiles or anything OSM doesn't cover well. Mutually exclusive with `osm`. |
-| `max_distance` | (none)           | Beyond this distance (in `unit`), parcels are clipped: `dist_to` saturates at `max_distance + 1`, `proximity_to` falls to `0.0`. Strongly recommended — sets the "no longer care" threshold. |
+| `max_distance` | (none)           | Beyond this distance (in `unit`): `dist_to` is `NaN`, `proximity_to` falls to `0.0`. Strongly recommended — sets the "no longer care" threshold, and (see note below) lets the enrichment **skip the nearest-neighbor join entirely for parcels beyond range**, which is a large speed-up for sparse features. |
 | `unit`         | `km`             | Distance unit. Affects every `dist_to` / `proximity_to` value for this feature.                                 |
 | `store_top`    | `false`          | If `true`, also compute distances to the **top N individual named instances** (see below).                      |
 | `top_n`        | `0`              | How many top instances to single out when `store_top` is true.                                                  |
@@ -403,6 +403,10 @@ You can use either column (or both, or `log_dist_to_*`) in your modeling — the
 | `type_field`   | feature-specific | Field used as a fallback name when an OSM feature has no `name` tag.                                            |
 
 > Specify **either** `osm: true` **or** `source: "<id>"` per feature — not both, and not neither.
+
+#### Performance — set `max_distance`
+
+The cost of a distance feature is the nearest-neighbor spatial join over every parcel. When `max_distance` is set, the enrichment first finds the parcels that intersect the features buffered by `max_distance` and runs the join on **only those**; every other parcel is assigned `proximity 0` / `within False` without a join. For a *sparse* feature (e.g. rivers, with most of the jurisdiction beyond range) and especially for `store_top` named-feature columns (each named feature is tiny), this skips the vast majority of the work. So always set `max_distance` — it's both a modeling threshold and the main performance lever. (Parcels are also projected to the distance CRS once and reused across all features, so adding more feature classes is comparatively cheap.)
 
 #### Distance to specific named features — `store_top` + `top_n`
 
@@ -1021,6 +1025,46 @@ collapse_sparse_categories: roof_material
 ## 6. Modeling control
 
 > For the **full catalog of model engines** (XGBoost, LightGBM, CatBoost, MRA, GWR, kernel, baselines, etc.), the **model-name-vs-engine dispatch** mechanism, and how to run **multiple variants of the same engine** (e.g. two XGBoost configurations side-by-side), see **[Models reference](models_reference.md)**. The settings on this page are the orchestration layer; that page documents each model.
+
+### `modeling.metadata.use_sales_from` — how far back to reach for sales
+
+Controls the **training lookback window**: how old a sale may be and still be used to *calibrate* the models. (This is distinct from the *evaluation* window — see `analysis.ratio_study.look_back_years` in § 7 — which governs which sales the IAAO ratio study scores against. Training reach and evaluation window are set independently.)
+
+Older sales add data but are less representative of the current market (time adjustment compensates only so far), so this is the main lever for trading data quantity against recency. It takes four forms:
+
+| Form | Example | Meaning |
+| --- | --- | --- |
+| (omitted) | — | No cutoff; falls back to `valuation_year − 5` at the cleaning stage. |
+| Scalar year | `"use_sales_from": 2021` | One cutoff for all sales, both improved and vacant. |
+| Per-type | `{"improved": 2023, "vacant": 2020}` | Different cutoffs for improved vs vacant sales (e.g. a tight improved window for the ratio study, a looser vacant window to feed a thin land-sale pool). Missing keys fall back to `valuation_year − 5`. |
+| **Per-model-group** | see below | A `default` plus per-group overrides. Each entry is itself a scalar **or** a per-type `{improved, vacant}` dict. |
+
+- **Source** — `resolve_use_sales_from` and `use_sales_from_floor` in [openavmkit/utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py).
+
+#### Per-model-group windows
+
+Different model groups often have opposite needs: a data-rich group (a big residential class) floods and wants a *recent* window for fast, current calibration, while a data-starved group (commercial in a small county) needs to reach *further back* just to assemble enough sales. Set them independently:
+
+```json
+"modeling": {
+  "metadata": {
+    "use_sales_from": {
+      "default": 2022,
+      "by_model_group": {
+        "residential_single_family_suburban": 2023,
+        "commercial": 2016
+      }
+    }
+  }
+}
+```
+
+- A group listed in `by_model_group` uses its own window; every other group (and any global context) uses `default`.
+- Each value may be a scalar year or a `{"improved": …, "vacant": …}` dict, so the per-type axis composes with the per-group axis.
+
+**How it's applied (two layers).** The cleaning and clipping stages permanently *drop* too-old sales, and they run **before** the per-group train/test split. If they dropped down to a narrow group's window, a longer-reach group would lose its older sales before it was ever modeled. So those stages keep the **floor** — the widest (oldest) window across `default` and all per-group entries (here, `2016`, driven by commercial). The per-group narrowing then happens at the train/test split, where each group is restricted to its own window. Net effect for the example above: commercial trains on sales back to 2016, the big suburban group trains on 2023+, everything else on 2022+, and none of them lose sales they were entitled to.
+
+> **Tip.** Set `default` to your common window and override only the groups that genuinely differ. The floor widens automatically to accommodate the longest-reaching group — you don't set it yourself.
 
 ### `modeling.instructions.<main|vacant>.run`
 

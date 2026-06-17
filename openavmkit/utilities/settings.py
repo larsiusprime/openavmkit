@@ -205,36 +205,105 @@ def get_look_back_dates(s: dict):
     return look_back_date, val_date
 
 
-def resolve_use_sales_from(s: dict) -> tuple[int | None, int | None]:
+def _parse_use_sales_from_entry(entry, val_year: int) -> tuple[int | None, int | None]:
+    """Resolve one ``use_sales_from`` entry into ``(improved_year, vacant_year)``.
+
+    An entry is either an ``int`` (same cutoff for both sale types) or a dict
+    ``{"improved": YYYY, "vacant": YYYY}`` (missing keys fall back to ``val_year - 5``).
+    ``None`` -> ``(None, None)`` (no threshold).
+    """
+    if entry is None:
+        return None, None
+    if isinstance(entry, int):
+        return entry, entry
+    if isinstance(entry, dict):
+        return entry.get("improved", val_year - 5), entry.get("vacant", val_year - 5)
+    return None, None
+
+
+def _is_per_group_use_sales_from(usf) -> bool:
+    """True if ``use_sales_from`` uses the per-model-group schema (``default`` /
+    ``by_model_group``) rather than the legacy scalar / ``{improved, vacant}`` forms."""
+    return isinstance(usf, dict) and ("by_model_group" in usf or "default" in usf)
+
+
+def resolve_use_sales_from(
+    s: dict, model_group: str | None = None
+) -> tuple[int | None, int | None]:
     """Resolve ``modeling.metadata.use_sales_from`` into per-type year thresholds.
 
-    The setting can take three forms:
+    The setting can take four forms:
 
-      * ``None`` (missing) — returns ``(None, None)``; callers should treat
-        as "no threshold".
+      * ``None`` (missing) — returns ``(None, None)``; callers should treat as
+        "no threshold".
       * ``int`` — single cutoff applied to both improved and vacant sales.
-      * ``dict`` — ``{"improved": YYYY, "vacant": YYYY}`` for per-type cutoffs.
-        Missing keys fall back to ``val_year - 5``.
+      * ``dict`` ``{"improved": YYYY, "vacant": YYYY}`` — per-type cutoffs (missing
+        keys fall back to ``val_year - 5``).
+      * ``dict`` ``{"default": <entry>, "by_model_group": {<group>: <entry>}}`` —
+        **per-model-group** cutoffs, where each ``<entry>`` is itself an ``int`` or a
+        ``{improved, vacant}`` dict. A group listed in ``by_model_group`` uses its own
+        window; any other group (or ``model_group=None``) uses ``default``.
 
-    Returns a tuple ``(improved_year, vacant_year)``. Always use this helper
-    instead of parsing ``use_sales_from`` inline — the dict form needs careful
-    branching, and naïve scalar comparisons against a ``Series`` crash with
-    "TypeError: len() of unsized object".
+    Returns ``(improved_year, vacant_year)`` for the requested ``model_group`` (or the
+    default when no group is given). Always use this helper instead of parsing
+    ``use_sales_from`` inline — the dict forms need careful branching, and naïve scalar
+    comparisons against a ``Series`` crash with "TypeError: len() of unsized object".
+
+    See also :func:`use_sales_from_floor`, which the cleaning/clipping stages use to keep
+    the widest window any group needs (they hard-drop, and run before the per-group split).
     """
     md = s.get("modeling", {}).get("metadata", {})
     if "use_sales_from" not in md:
         return None, None
-    use_sales_from = md["use_sales_from"]
-    if use_sales_from is None:
+    usf = md["use_sales_from"]
+    if usf is None:
         return None, None
-    if isinstance(use_sales_from, int):
-        return use_sales_from, use_sales_from
-    if isinstance(use_sales_from, dict):
+    if isinstance(usf, int):
+        return usf, usf
+    if isinstance(usf, dict):
         val_year = get_valuation_date(s).year
-        impr = use_sales_from.get("improved", val_year - 5)
-        vac = use_sales_from.get("vacant", val_year - 5)
-        return impr, vac
+        if _is_per_group_use_sales_from(usf):
+            by_group = usf.get("by_model_group", {}) or {}
+            if model_group is not None and model_group in by_group:
+                return _parse_use_sales_from_entry(by_group[model_group], val_year)
+            return _parse_use_sales_from_entry(usf.get("default"), val_year)
+        # legacy per-type {improved, vacant}
+        return usf.get("improved", val_year - 5), usf.get("vacant", val_year - 5)
     # Fall through: malformed value — return None/None and let callers no-op.
+    return None, None
+
+
+def use_sales_from_floor(s: dict) -> tuple[int | None, int | None]:
+    """The most-permissive (oldest) ``use_sales_from`` across all groups.
+
+    The cleaning / clipping stages permanently drop too-old sales *before* the per-group
+    train/test split runs, so they must keep down to the widest window any model group
+    needs — otherwise a group with a longer reach (e.g. data-starved commercial) would
+    have its older sales deleted before it is ever modeled. This returns that floor; the
+    per-group narrowing then happens in ``get_data_split_for`` via
+    :func:`resolve_use_sales_from` with a ``model_group``.
+
+    Floor semantics, per sale type: ``None`` (unbounded) if *any* relevant window is
+    ``None``; otherwise the minimum year. For scalar / legacy ``{improved, vacant}``
+    configs this is identical to :func:`resolve_use_sales_from`.
+    """
+    md = s.get("modeling", {}).get("metadata", {})
+    if "use_sales_from" not in md or md["use_sales_from"] is None:
+        return None, None
+    usf = md["use_sales_from"]
+    if isinstance(usf, int):
+        return usf, usf
+    if isinstance(usf, dict):
+        val_year = get_valuation_date(s).year
+        if _is_per_group_use_sales_from(usf):
+            entries = [usf.get("default")] + list((usf.get("by_model_group", {}) or {}).values())
+            pairs = [_parse_use_sales_from_entry(e, val_year) for e in entries]
+            imprs = [p[0] for p in pairs]
+            vacs = [p[1] for p in pairs]
+            floor_impr = None if any(x is None for x in imprs) else min(imprs)
+            floor_vac = None if any(x is None for x in vacs) else min(vacs)
+            return floor_impr, floor_vac
+        return usf.get("improved", val_year - 5), usf.get("vacant", val_year - 5)
     return None, None
 
 

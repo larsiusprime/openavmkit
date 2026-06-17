@@ -61,8 +61,12 @@ def clean_valid_sales(sup: SalesUniversePair, settings: dict) -> SalesUniversePa
     # load metadata
     val_date = get_valuation_date(settings)
     val_year = val_date.year
-    from openavmkit.utilities.settings import resolve_use_sales_from
-    use_sales_from_impr, use_sales_from_vacant = resolve_use_sales_from(settings)
+    # Use the FLOOR (widest window any model group needs), not a per-group window: this
+    # stage permanently drops too-old sales and runs before the per-group train/test
+    # split, so dropping to a group's narrower window here would starve a longer-reach
+    # group (e.g. commercial). Per-group narrowing happens later in get_data_split_for.
+    from openavmkit.utilities.settings import use_sales_from_floor
+    use_sales_from_impr, use_sales_from_vacant = use_sales_from_floor(settings)
     if use_sales_from_impr is None:
         use_sales_from_impr = val_year - 5
     if use_sales_from_vacant is None:
