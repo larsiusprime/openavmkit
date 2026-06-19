@@ -4066,13 +4066,47 @@ def run_layeredcomp(
     timing.stop("parameter_search")
 
     timing.start("train")
-    
-    # Train the LayeredComp model
-    lcomp_model = LCompModel(
-        tree_count=10, sample_pct=0.95, random_state=(42 if seed is None else seed), n_jobs=4
-    )
-    lcomp_model.fit(ds.X_train, ds.y_train)
-    
+
+    random_state = 42 if seed is None else seed
+    import layeredcompmodel as _lcm
+    falloffs_path = f"{outpath}/lcomp_falloffs.json"
+    fingerprint = _lcomp_fingerprint(ds.X_train, random_state)
+
+    # Try the saved-falloff fast path: rebuild the ensemble injecting the learned per-tree
+    # weight_falloffs, skipping the ~60% minimize_scalar search. Guarded by package version +
+    # fingerprint; ANY problem falls back to a normal (search) fit so we never produce a wrong model.
+    lcomp_model = None
+    if use_saved_params and getattr(_lcm, "__version__", None) == _LCOMP_VERIFIED_VERSION and os.path.exists(falloffs_path):
+        try:
+            saved = json.load(open(falloffs_path))
+            if saved.get("fingerprint") == fingerprint and len(saved.get("weight_falloffs", [])) == _LCOMP_TREE_COUNT:
+                if verbose:
+                    print(f"--> lcomp: reusing saved weight_falloffs (skipping search) from {falloffs_path}")
+                lcomp_model = _reconstruct_lcomp_with_falloffs(
+                    ds.X_train, ds.y_train, saved["weight_falloffs"], random_state
+                )
+        except Exception as e:
+            warnings.warn(f"lcomp: could not reuse saved falloffs ({e}); refitting from scratch.")
+            lcomp_model = None
+
+    if lcomp_model is None:
+        # Full fit (runs the per-tree weight_falloff search).
+        lcomp_model = LCompModel(
+            tree_count=_LCOMP_TREE_COUNT, sample_pct=_LCOMP_SAMPLE_PCT,
+            random_state=random_state, split_metric=_LCOMP_SPLIT_METRIC, n_jobs=_LCOMP_N_JOBS,
+        )
+        lcomp_model.fit(ds.X_train, ds.y_train)
+        if save_params and getattr(_lcm, "__version__", None) == _LCOMP_VERIFIED_VERSION:
+            os.makedirs(outpath, exist_ok=True)
+            json.dump(
+                {
+                    "weight_falloffs": [float(est.weight_falloff) for est in lcomp_model.estimators_],
+                    "fingerprint": fingerprint,
+                    "lcompmodel_version": _LCOMP_VERIFIED_VERSION,
+                },
+                open(falloffs_path, "w"),
+            )
+
     # Wrap it in our wrapper class
     wrapped_model = LayeredCompModel(lcomp_model)
     
@@ -5237,12 +5271,6 @@ def _get_params(
         storage_path = study_name = None
         if save_params:
             os.makedirs(outpath, exist_ok=True)
-            fp = _study_fingerprint(
-                ds.X_train.columns,
-                len(ds.X_train),
-                kwargs.get("n_trials", 50),
-                seed=kwargs.get("random_state"),
-            )
             storage_path = f"{outpath}/{slug}_study_{fp}.journal"
             study_name = slug
             _discard_stale_studies(outpath, slug, keep=fp, verbose=verbose)
@@ -5259,7 +5287,8 @@ def _get_params(
             **kwargs,
         )
         if save_params:
-            json.dump(params, open(f"{outpath}/{slug}_params.json", "w"))
+            # Persist params with the fingerprint embedded; keep the returned dict clean.
+            json.dump({**params, "__fingerprint": fp}, open(params_path, "w"))
             # Final params written → the resume journal is no longer needed.
             _cleanup_study_files(storage_path)
     return params

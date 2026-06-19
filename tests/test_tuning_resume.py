@@ -6,6 +6,7 @@ incrementally, an interrupted run resumes from disk, and a clean finish writes t
 ``{slug}_params.json`` and deletes the journal.
 """
 import glob
+import json
 import os
 import types
 
@@ -203,6 +204,60 @@ def test_get_params_no_storage_when_not_saving(tmp_path):
     assert seen["storage_path"] is None
     assert glob.glob(os.path.join(out, "mymodel_study_*")) == []
     assert not os.path.exists(os.path.join(out, "mymodel_params.json"))
+
+
+def _counting_tune(result=None):
+    """A tune_func that records how many times it's actually invoked (i.e. re-tuned)."""
+    calls = {"n": 0}
+
+    def tune_func(X, y, sizes=None, he_ids=None, verbose=False, cat_vars=None,
+                  storage_path=None, study_name=None, **kwargs):
+        calls["n"] += 1
+        return dict(result if result is not None else {"x": 0.5})
+
+    return tune_func, calls
+
+
+def test_get_params_embeds_fingerprint_and_reuses_on_match(tmp_path):
+    out = str(tmp_path)
+    tune, calls = _counting_tune()
+    p1 = _get_params("Stub", "m", _fake_ds(), tune, out,
+                     save_params=True, use_saved_params=False, verbose=False, n_trials=4)
+    assert calls["n"] == 1
+    # Saved file carries the fingerprint; the returned params do NOT (model never sees it).
+    saved = json.load(open(os.path.join(out, "m_params.json")))
+    assert "__fingerprint" in saved
+    assert "__fingerprint" not in p1 and p1 == {"x": 0.5}
+
+    # Same context -> reused, tuner NOT called again, and the fingerprint key is stripped.
+    tune2, calls2 = _counting_tune()
+    p2 = _get_params("Stub", "m", _fake_ds(), tune2, out,
+                     save_params=True, use_saved_params=True, verbose=False, n_trials=4)
+    assert calls2["n"] == 0
+    assert "__fingerprint" not in p2 and p2 == {"x": 0.5}
+
+
+def test_get_params_retunes_on_fingerprint_mismatch(tmp_path):
+    out = str(tmp_path)
+    tune, _ = _counting_tune()
+    _get_params("Stub", "m", _fake_ds(), tune, out,
+                save_params=True, use_saved_params=False, verbose=False, n_trials=4)
+    # A changed trial budget (part of the fingerprint) must invalidate the saved params.
+    tune2, calls2 = _counting_tune()
+    _get_params("Stub", "m", _fake_ds(), tune2, out,
+                save_params=True, use_saved_params=True, verbose=False, n_trials=8)
+    assert calls2["n"] == 1
+
+
+def test_get_params_retunes_on_legacy_params_without_fingerprint(tmp_path):
+    out = str(tmp_path)
+    os.makedirs(out, exist_ok=True)
+    # A params.json saved before this guard existed (no "__fingerprint") is treated as stale.
+    json.dump({"x": 9.9}, open(os.path.join(out, "m_params.json"), "w"))
+    tune, calls = _counting_tune(result={"x": 0.5})
+    p = _get_params("Stub", "m", _fake_ds(), tune, out,
+                    save_params=True, use_saved_params=True, verbose=False, n_trials=4)
+    assert calls["n"] == 1 and p == {"x": 0.5}
 
 
 def test_seeded_tuning_is_reproducible():

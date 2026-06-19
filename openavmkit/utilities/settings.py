@@ -306,40 +306,6 @@ def use_sales_from_floor(s: dict) -> tuple[int | None, int | None]:
     return None, None
 
 
-def use_sales_from_floor(s: dict) -> tuple[int | None, int | None]:
-    """The most-permissive (oldest) ``use_sales_from`` across all groups.
-
-    The cleaning / clipping stages permanently drop too-old sales *before* the per-group
-    train/test split runs, so they must keep down to the widest window any model group
-    needs — otherwise a group with a longer reach (e.g. data-starved commercial) would
-    have its older sales deleted before it is ever modeled. This returns that floor; the
-    per-group narrowing then happens in ``get_data_split_for`` via
-    :func:`resolve_use_sales_from` with a ``model_group``.
-
-    Floor semantics, per sale type: ``None`` (unbounded) if *any* relevant window is
-    ``None``; otherwise the minimum year. For scalar / legacy ``{improved, vacant}``
-    configs this is identical to :func:`resolve_use_sales_from`.
-    """
-    md = s.get("modeling", {}).get("metadata", {})
-    if "use_sales_from" not in md or md["use_sales_from"] is None:
-        return None, None
-    usf = md["use_sales_from"]
-    if isinstance(usf, int):
-        return usf, usf
-    if isinstance(usf, dict):
-        val_year = get_valuation_date(s).year
-        if _is_per_group_use_sales_from(usf):
-            entries = [usf.get("default")] + list((usf.get("by_model_group", {}) or {}).values())
-            pairs = [_parse_use_sales_from_entry(e, val_year) for e in entries]
-            imprs = [p[0] for p in pairs]
-            vacs = [p[1] for p in pairs]
-            floor_impr = None if any(x is None for x in imprs) else min(imprs)
-            floor_vac = None if any(x is None for x in vacs) else min(vacs)
-            return floor_impr, floor_vac
-        return usf.get("improved", val_year - 5), usf.get("vacant", val_year - 5)
-    return None, None
-
-
 def get_center(s: dict, gdf: gpd.GeoDataFrame = None) -> tuple[float, float]:
     """
     Get the centroid of all the provided parcel geometry
