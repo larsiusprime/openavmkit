@@ -38,6 +38,13 @@ from openavmkit.utilities.modeling import TreeBasedCategoricalData
 # machine-independent; only how many of a batch run concurrently scales with cores.
 _TUNING_BATCH_SIZE = 8
 
+# Bump this whenever ANY tuner's search space changes (param ranges, bounds, added/removed
+# hyperparameters). It is folded into _study_fingerprint, so a bump invalidates both resume
+# journals and saved params.json files — forcing a re-tune against the new space instead of
+# silently reusing params/trials scored against the old one. v2 = LightGBM/XGBoost lr-floor
+# raised to 0.01 + iteration/leaf caps tightened (2026-06-18).
+_SEARCH_SPACE_VERSION = 2
+
 
 def _resumable_study(
     direction, study_name=None, storage_path=None, pruner=None, sampler=None, verbose=False
@@ -201,16 +208,17 @@ def _remaining_trials(study, n_trials, storage_path):
 def _study_fingerprint(columns, n_rows, n_trials, seed=None):
     """Short stable hash identifying a tuning study's search context.
 
-    A resumed study is only valid if it is searching the *same* objective: same feature
-    set, same number of training rows, same trial budget, same seed. Baking this
-    fingerprint into the journal filename means a study is resumed only on an exact-context
-    match; a changed ``ind_vars`` list, sales window, or seed yields a different
-    fingerprint (and the stale journal is discarded) rather than silently mixing trials
-    scored against a different objective or sampler.
+    A resumed study (or reused ``params.json``) is only valid if it is searching the *same*
+    objective: same feature set, same number of training rows, same trial budget, same seed,
+    and same search-space version (``_SEARCH_SPACE_VERSION``). Baking this fingerprint into the
+    journal filename / saved params means they are reused only on an exact-context match; a
+    changed ``ind_vars`` list, sales window, seed, or tuner search space yields a different
+    fingerprint (stale artifacts are discarded) rather than silently mixing trials/params
+    scored against a different objective.
     """
     key = (
         "|".join(sorted(str(c) for c in columns))
-        + f"||rows={n_rows}||trials={n_trials}||seed={seed}"
+        + f"||rows={n_rows}||trials={n_trials}||seed={seed}||space=v{_SEARCH_SPACE_VERSION}"
     )
     return hashlib.md5(key.encode("utf-8")).hexdigest()[:10]
 
@@ -278,7 +286,7 @@ def _tune_xgboost(
             "max_cat_to_onehot": 1,
             "nthread": 1,
             "seed": random_state if random_state is not None else 0,
-            "learning_rate": trial.suggest_float("learning_rate", 0.001, 0.1, log=True),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.1, log=True),
             "max_depth": trial.suggest_int("max_depth", 3, 15),
             "min_child_weight": trial.suggest_float(
                 "min_child_weight", 1, 10, log=True
@@ -303,7 +311,7 @@ def _tune_xgboost(
                 "grow_policy", ["depthwise", "lossguide"]
             ),
         }
-        num_boost_round = trial.suggest_int("num_boost_round", 100, 3000)
+        num_boost_round = trial.suggest_int("num_boost_round", 100, 1500)
         return params, num_boost_round
 
     def evaluate(suggested):
@@ -369,9 +377,10 @@ def _tune_lightgbm(
     # Bound search space by training-fold size to prevent memorisation on thin datasets.
     # Each CV fold trains on roughly (n_splits-1)/n_splits of the data.
     n_train_per_fold = int(len(X) * (n_splits - 1) / n_splits)
-    # num_leaves: cap at n_train_per_fold // 4 so each leaf covers ~4+ samples on average.
-    # This prevents the tuner from selecting thousands of leaves from a few hundred rows.
-    max_num_leaves = max(8, min(2048, n_train_per_fold // 4))
+    # num_leaves: cap at min(256, n_train_per_fold // 8). 256 leaves is already very expressive
+    # for a few dozen features; the old n//4 cap (e.g. ~1371 leaves on 5.5k rows) bloated per-round
+    # cost with no accuracy benefit and overfit thin folds. //8 keeps ~8+ samples/leaf.
+    max_num_leaves = max(8, min(256, n_train_per_fold // 8))
     # min_data_in_leaf: upper bound must not exceed training fold size or every split is illegal.
     max_min_data_in_leaf = max(2, min(500, n_train_per_fold // 4))
     if verbose and max_num_leaves < 64:
@@ -392,9 +401,9 @@ def _tune_lightgbm(
             "deterministic": True,
             "force_row_wise": True,
             "seed": random_state if random_state is not None else 0,
-            "num_iterations": trial.suggest_int("num_iterations", 300, 5000),
+            "num_iterations": trial.suggest_int("num_iterations", 300, 1500),
             "learning_rate": trial.suggest_float(
-                "learning_rate", 0.0001, 0.1, log=True
+                "learning_rate", 0.01, 0.1, log=True
             ),
             "max_bin": trial.suggest_int("max_bin", 64, 1024),
             "num_leaves": trial.suggest_int("num_leaves", min(64, max_num_leaves), max_num_leaves),
@@ -523,7 +532,12 @@ def _tune_catboost(
 
     remaining = _remaining_trials(study, n_trials, storage_path)
     if remaining > 0:
-        study.optimize(objective, n_trials=remaining, n_jobs=1)
+        # Study-level plateau stop, consistent with NGBoost (and the batched _is_plateaued check
+        # in LightGBM/XGBoost): bail out of the trial budget once the best value stops improving
+        # rather than grinding all n_trials x n_splits folds. CatBoost uses serial optimize, so the
+        # callback applies cleanly. (The MedianPruner above can't save time here — the objective
+        # reports its curve only after CatBoost's built-in cv() has already run all folds.)
+        study.optimize(objective, n_trials=remaining, n_jobs=1, callbacks=[_plateau_callback])
 
     if verbose:
         print(

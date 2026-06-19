@@ -29,6 +29,7 @@ openavmkit.model_runner : Top-level orchestrator that calls into this module.
 openavmkit.utilities.modeling : Underlying model class definitions.
 openavmkit.shap_analysis : SHAP-based contribution computation.
 """
+import hashlib
 import json
 import os
 import pickle
@@ -57,6 +58,7 @@ from ngboost import NGBRegressor
 from ngboost.distns import Normal
 from sklearn.tree import DecisionTreeRegressor
 from layeredcompmodel import LayeredCompBaggingModel as LCompModel
+from layeredcompmodel import LayeredCompModel as _LCompTree
 from catboost import CatBoostRegressor, Pool
 from lightgbm import Booster
 from matplotlib import pyplot as plt
@@ -1240,6 +1242,16 @@ class DataSplit:
         self.X_univ = _sanitize_categoricals(self.X_univ)
 
 
+def _as_float64_array(x) -> np.ndarray:
+    """Coerce a predictions/target array or Series to a plain float64 numpy array.
+
+    Pipeline frames use pandas nullable dtypes, so a model's ``y_train`` / predictions can come
+    back as a nullable ``Float64`` / object Series, which breaks numpy ufuncs like ``np.log`` /
+    ``np.exp`` ("'float' object has no callable log method"). The cleaned, index-free array is
+    also what downstream ``df[field] = ...`` assignments expect (positional)."""
+    return pd.to_numeric(pd.Series(x).reset_index(drop=True), errors="coerce").to_numpy(dtype="float64")
+
+
 class SingleModelResults:
     """
     Container for results from a single prediction model.
@@ -1789,8 +1801,15 @@ def predict_mra(
     y_pred_univ = safe_predict(fitted_model.predict, ds.X_univ)
     timing.stop("predict_univ")
 
+    # Log model: predictions are in log space — bring them back to price space here so the model's
+    # output is always price-space and the rest of the pipeline stays log-agnostic.
+    if getattr(model, "log", False):
+        y_pred_test = np.exp(_as_float64_array(y_pred_test))
+        y_pred_sales = np.exp(_as_float64_array(y_pred_sales))
+        y_pred_univ = np.exp(_as_float64_array(y_pred_univ))
+
     timing.stop("total")
-    
+
     model_name = ds.name
     model_engine = "mra"
     
@@ -1816,6 +1835,7 @@ def run_mra(
     intercept: bool = True,
     verbose: bool = False,
     model: MRAModel | None = None,
+    log: bool = False,
 ) -> SingleModelResults:
     """
     Train an MRA model and return its prediction results.
@@ -1830,6 +1850,12 @@ def run_mra(
         Whether to print verbose output. Defaults to False.
     model : MRAModel or None, optional
         Optional pre-trained MRAModel. Defaults to None.
+    log : bool, optional
+        If True, fit the regression on the natural log of the target and exponentiate the
+        predictions back to price space (handled in ``predict_mra``). This keeps a linear model
+        from extrapolating negative values for expensive/atypical parcels. The model's output is
+        always in price space, so nothing downstream (metrics, ensemble) needs to know. Defaults
+        to False.
 
     Returns
     -------
@@ -1843,7 +1869,7 @@ def run_mra(
     timing.start("setup")
     ds = ds.encode_categoricals_with_one_hot()
     ds.split()
-    
+
     if intercept:
         ds.X_train = sm.add_constant(ds.X_train, has_constant='add')
         ds.X_test = sm.add_constant(ds.X_test, has_constant='add')
@@ -1860,9 +1886,18 @@ def run_mra(
 
     timing.start("train")
     if model is None:
-        linear_model = sm.OLS(ds.y_train, ds.X_train)
+        y_fit = ds.y_train
+        if log:
+            y_arr = _as_float64_array(ds.y_train)
+            if not np.all(y_arr > 0):
+                raise ValueError(
+                    "run_mra(log=True) requires strictly positive targets, but found values "
+                    "<= 0 (or NaN). Filter non-positive / invalid sales before log-modeling."
+                )
+            y_fit = pd.Series(np.log(y_arr), index=ds.y_train.index)
+        linear_model = sm.OLS(y_fit, ds.X_train)
         fitted_model = linear_model.fit()
-        model = MRAModel(fitted_model, intercept)
+        model = MRAModel(fitted_model, intercept, log=log)
     timing.stop("train")
 
     return predict_mra(ds, model, timing, verbose)
@@ -1875,7 +1910,8 @@ def run_multi_mra(
     optimize_vars: bool = False,
     intercept: bool = True,
     verbose: bool = False,
-    min_sample_size: int = 15
+    min_sample_size: int = 15,
+    log: bool = False,
 ) -> SingleModelResults:
     """
     Train a hierarchical Multi-MRA model and return its prediction results.
@@ -1913,6 +1949,7 @@ def run_multi_mra(
         optimize_vars=optimize_vars,
         intercept=intercept,
         verbose=verbose,
+        log=log,
     )
     return predict_multi_mra(ds_prepped, multi_model, timing, verbose=verbose)
 
@@ -1924,6 +1961,7 @@ def _run_multi_mra(
     optimize_vars: bool = True,
     intercept: bool = True,
     verbose: bool = False,
+    log: bool = False,
 ) -> tuple[DataSplit, MultiMRAModel, TimingData]:
     """
     Internal training routine for Multi-MRA.
@@ -1956,6 +1994,18 @@ def _run_multi_mra(
     # Ensure numeric dtypes
     ds_prepped.X_train = ds_prepped.X_train.astype(float)
     ds_prepped.y_train = ds_prepped.y_train.astype(float)
+
+    # Log model: fit every regression (global + per-location) and the variable search on the log
+    # of the target. Transform once here; predict_multi_mra exponentiates the predictions back to
+    # price space, so the model's output stays price-space and downstream code is log-agnostic.
+    if log:
+        y_arr = _as_float64_array(ds_prepped.y_train)
+        if not np.all(y_arr > 0):
+            raise ValueError(
+                "run_multi_mra(log=True) requires strictly positive targets, but found values "
+                "<= 0 (or NaN). Filter non-positive / invalid sales before log-modeling."
+            )
+        ds_prepped.y_train = pd.Series(np.log(y_arr), index=ds_prepped.y_train.index)
 
     # Record the consistent feature order used for ALL regressions
     feature_names = list(ds_prepped.X_train.columns)
@@ -2136,7 +2186,8 @@ def _run_multi_mra(
         global_coef=global_coef,
         feature_names=feature_names,
         intercept=intercept,
-        location_fields=location_fields
+        location_fields=location_fields,
+        log=log,
     )
 
     return ds_prepped, multi_model, timing
@@ -2304,6 +2355,13 @@ def predict_multi_mra(
     df_univ = ds.df_universe.copy()
     y_pred_univ = _predict_split(X_univ, None, df_univ, split_name="universe")
     timing.stop("predict_univ")
+
+    # Log model: bring predictions back to price space (see _run_multi_mra). Keeps the model's
+    # output price-space so the rest of the pipeline stays log-agnostic.
+    if getattr(multi_model, "log", False):
+        y_pred_test = np.exp(_as_float64_array(y_pred_test))
+        y_pred_sales = np.exp(_as_float64_array(y_pred_sales))
+        y_pred_univ = np.exp(_as_float64_array(y_pred_univ))
 
     timing.stop("total")
 
@@ -3903,6 +3961,58 @@ def run_ngboost(
     return predict_ngboost(ds, ngboost_model, timing, verbose)
 
 
+# LayeredComp hyperparameters are fixed (no search), so the only thing fit "learns" is one
+# weight_falloff per bagging tree — the per-tree minimize_scalar search, which is ~60% of fit time
+# (the rest builds the comp-tree structure, which is unavoidable on reload). We persist just those
+# floats and, on reload, rebuild the ensemble injecting them so the search is skipped. Reconstruction
+# replicates LayeredCompBaggingModel.fit() exactly MINUS the search, so it is only safe against the
+# verified package version; any mismatch (version / fingerprint / error) falls back to a normal fit,
+# and a test asserts reconstruction reproduces a normal fit bit-for-bit. The clean long-term fix is an
+# upstream LayeredCompBaggingModel.fit(weight_falloffs=...) hook, after which this can be deleted.
+_LCOMP_VERIFIED_VERSION = "0.2.1"
+_LCOMP_TREE_COUNT = 10
+_LCOMP_SAMPLE_PCT = 0.95
+_LCOMP_SPLIT_METRIC = "mae"
+_LCOMP_N_JOBS = 4
+
+
+def _lcomp_fingerprint(X: pd.DataFrame, random_state: int) -> str:
+    """Scope a saved-falloff cache to the feature set + row count + hyperparams that produced it."""
+    payload = "|".join([
+        ",".join(map(str, list(X.columns))),
+        str(len(X)),
+        str(_LCOMP_TREE_COUNT), str(_LCOMP_SAMPLE_PCT), str(_LCOMP_SPLIT_METRIC),
+        str(random_state),
+    ])
+    return hashlib.md5(payload.encode()).hexdigest()[:12]
+
+
+def _reconstruct_lcomp_with_falloffs(X, y, falloffs: list[float], random_state: int) -> LCompModel:
+    """Rebuild a fitted LayeredCompBaggingModel injecting saved per-tree weight_falloffs, skipping the
+    minimize_scalar search. Mirrors LayeredCompBaggingModel.fit() (v0.2.1) minus the search."""
+    from sklearn.utils.validation import check_random_state
+    from sklearn.model_selection import train_test_split
+
+    model = LCompModel(
+        tree_count=_LCOMP_TREE_COUNT, sample_pct=_LCOMP_SAMPLE_PCT,
+        random_state=random_state, split_metric=_LCOMP_SPLIT_METRIC, n_jobs=_LCOMP_N_JOBS,
+    )
+    model.n_features_in_ = X.shape[1]
+    model.feature_names_in_ = list(X.columns)
+    model.estimators_ = []
+    rs = check_random_state(random_state)
+    for i in range(_LCOMP_TREE_COUNT):
+        seed_i = rs.randint(np.iinfo(np.int32).max)
+        X_tr, _, y_tr, _ = train_test_split(
+            X, y, test_size=(1 - _LCOMP_SAMPLE_PCT), random_state=seed_i
+        )
+        tree = _LCompTree(split_metric=_LCOMP_SPLIT_METRIC, n_jobs=_LCOMP_N_JOBS)
+        tree.fit(X_tr, y_tr)               # structure (unavoidable)
+        tree.weight_falloff = falloffs[i]  # injected — skips the per-tree minimize_scalar search
+        model.estimators_.append(tree)
+    return model
+
+
 def run_layeredcomp(
     ds: DataSplit,
     outpath: str,
@@ -3956,13 +4066,47 @@ def run_layeredcomp(
     timing.stop("parameter_search")
 
     timing.start("train")
-    
-    # Train the LayeredComp model
-    lcomp_model = LCompModel(
-        tree_count=10, sample_pct=0.95, random_state=(42 if seed is None else seed), n_jobs=4
-    )
-    lcomp_model.fit(ds.X_train, ds.y_train)
-    
+
+    random_state = 42 if seed is None else seed
+    import layeredcompmodel as _lcm
+    falloffs_path = f"{outpath}/lcomp_falloffs.json"
+    fingerprint = _lcomp_fingerprint(ds.X_train, random_state)
+
+    # Try the saved-falloff fast path: rebuild the ensemble injecting the learned per-tree
+    # weight_falloffs, skipping the ~60% minimize_scalar search. Guarded by package version +
+    # fingerprint; ANY problem falls back to a normal (search) fit so we never produce a wrong model.
+    lcomp_model = None
+    if use_saved_params and getattr(_lcm, "__version__", None) == _LCOMP_VERIFIED_VERSION and os.path.exists(falloffs_path):
+        try:
+            saved = json.load(open(falloffs_path))
+            if saved.get("fingerprint") == fingerprint and len(saved.get("weight_falloffs", [])) == _LCOMP_TREE_COUNT:
+                if verbose:
+                    print(f"--> lcomp: reusing saved weight_falloffs (skipping search) from {falloffs_path}")
+                lcomp_model = _reconstruct_lcomp_with_falloffs(
+                    ds.X_train, ds.y_train, saved["weight_falloffs"], random_state
+                )
+        except Exception as e:
+            warnings.warn(f"lcomp: could not reuse saved falloffs ({e}); refitting from scratch.")
+            lcomp_model = None
+
+    if lcomp_model is None:
+        # Full fit (runs the per-tree weight_falloff search).
+        lcomp_model = LCompModel(
+            tree_count=_LCOMP_TREE_COUNT, sample_pct=_LCOMP_SAMPLE_PCT,
+            random_state=random_state, split_metric=_LCOMP_SPLIT_METRIC, n_jobs=_LCOMP_N_JOBS,
+        )
+        lcomp_model.fit(ds.X_train, ds.y_train)
+        if save_params and getattr(_lcm, "__version__", None) == _LCOMP_VERIFIED_VERSION:
+            os.makedirs(outpath, exist_ok=True)
+            json.dump(
+                {
+                    "weight_falloffs": [float(est.weight_falloff) for est in lcomp_model.estimators_],
+                    "fingerprint": fingerprint,
+                    "lcompmodel_version": _LCOMP_VERIFIED_VERSION,
+                },
+                open(falloffs_path, "w"),
+            )
+
     # Wrap it in our wrapper class
     wrapped_model = LayeredCompModel(lcomp_model)
     
@@ -5093,12 +5237,32 @@ def _get_params(
     if verbose:
         print(f"Tuning {name}: searching for optimal parameters...")
 
+    # Fingerprint the search context (feature set + row count + trial budget + seed + search-space
+    # version). Used both to scope the resume journal AND to guard the saved params.json: a changed
+    # ind_vars list, sales window, trial budget, or tuner search space yields a different fingerprint,
+    # so stale params are re-tuned instead of silently reused. (params.json embeds this under the
+    # reserved "__fingerprint" key; files without it — saved before this guard — are treated as stale.)
+    fp = _study_fingerprint(
+        ds.X_train.columns,
+        len(ds.X_train),
+        kwargs.get("n_trials", 50),
+        seed=kwargs.get("random_state"),
+    )
+    params_path = f"{outpath}/{slug}_params.json"
+
     params = None
-    if use_saved_params:
-        if os.path.exists(f"{outpath}/{slug}_params.json"):
-            params = json.load(open(f"{outpath}/{slug}_params.json", "r"))
+    if use_saved_params and os.path.exists(params_path):
+        saved = json.load(open(params_path, "r"))
+        saved_fp = saved.pop("__fingerprint", None) if isinstance(saved, dict) else None
+        if saved_fp == fp:
+            params = saved  # "__fingerprint" already popped, so the model never sees it
             if verbose:
                 print(f"--> using saved parameters")
+        else:
+            print(
+                f"--> {name}: saved params at {params_path} are stale "
+                f"(fingerprint {saved_fp} != {fp}: features / rows / trials / search space changed); re-tuning."
+            )
     if params is None:
         cat_vars = [c for c in (ds.categorical_vars or []) if c in ds.X_train.columns]
 
@@ -5107,12 +5271,6 @@ def _get_params(
         storage_path = study_name = None
         if save_params:
             os.makedirs(outpath, exist_ok=True)
-            fp = _study_fingerprint(
-                ds.X_train.columns,
-                len(ds.X_train),
-                kwargs.get("n_trials", 50),
-                seed=kwargs.get("random_state"),
-            )
             storage_path = f"{outpath}/{slug}_study_{fp}.journal"
             study_name = slug
             _discard_stale_studies(outpath, slug, keep=fp, verbose=verbose)
@@ -5129,7 +5287,8 @@ def _get_params(
             **kwargs,
         )
         if save_params:
-            json.dump(params, open(f"{outpath}/{slug}_params.json", "w"))
+            # Persist params with the fingerprint embedded; keep the returned dict clean.
+            json.dump({**params, "__fingerprint": fp}, open(params_path, "w"))
             # Final params written → the resume journal is no longer needed.
             _cleanup_study_files(storage_path)
     return params
@@ -5713,9 +5872,16 @@ def write_mra_params(
     dfs: dict,
     do_plot: bool = False
 ):
-    
+
+    # Log models fit on log(price): the coefficients are log-space (semi-elasticities) and the
+    # per-feature contributions are additive in LOG space (they sum to log(prediction), NOT to the
+    # price-space prediction). To avoid anyone reading these as dollars — and to opt them out of
+    # the price-space consumers that key off the bare names (the ensemble contribution builder, the
+    # contributions_map) — we write them under a "log_" prefix. See _write_ensemble_contributions.
+    prefix = "log_" if getattr(model, "log", False) else ""
+
     # 1) Coefficients as a clean two-column CSV
-    csv_path = f"{outpath}/params.csv"
+    csv_path = f"{outpath}/{prefix}params.csv"
     params = model.fitted_model.params.copy()        # pandas Series
     params = params.rename(index={"const": "intercept"})  # const -> intercept
     errors = model.fitted_model.bse.copy()
@@ -5759,8 +5925,19 @@ def write_mra_params(
         df_contrib["contribution_sum"] = df_contrib[["intercept"] + xcols].sum(axis=1)
         
         df_final = _add_prediction_to_contribution(df, df_contrib, split_name=subset)
-        
-        contrib_path = f"{outpath}/contributions_{subset}.csv"
+
+        if prefix:
+            # These contributions are additive in LOG space (they sum to log(prediction)), but the
+            # model's "prediction" column is price-space, so the default check_delta is meaningless.
+            # Reconcile in log space instead: log(prediction) == contribution_sum, so the file is
+            # self-consistent (check_delta ~ 0) and clearly a log-space artifact.
+            df_final["prediction"] = np.log(
+                pd.to_numeric(df_final["prediction"], errors="coerce").where(lambda s: s > 0)
+            )
+            df_final = df_final.rename(columns={"prediction": "log_prediction"})
+            df_final["check_delta"] = df_final["log_prediction"] - df_final["contribution_sum"]
+
+        contrib_path = f"{outpath}/{prefix}contributions_{subset}.csv"
         df_final.to_csv(contrib_path, index=False)
 
 
@@ -5802,6 +5979,11 @@ def write_multi_mra_params(
     feature_names = list(model.feature_names)
     location_fields = list(model.location_fields)
 
+    # Log models: coefficients are log-space and contributions are additive in LOG space. Write
+    # everything under a "log_" prefix so they aren't read as dollars and are opted out of the
+    # price-space consumers (ensemble contribution builder, contributions_map). See write_mra_params.
+    prefix = "log_" if getattr(model, "log", False) else ""
+
     # ------------------------------------------------------------------
     # 1) GLOBAL COEFFICIENTS
     # ------------------------------------------------------------------
@@ -5810,7 +5992,7 @@ def write_multi_mra_params(
     df_global = params_global.to_frame(name="coefficient")
     df_global.index.name = "variable"
 
-    csv_path_global = f"{outpath}/params_global.csv"
+    csv_path_global = f"{outpath}/{prefix}params_global.csv"
     df_global.to_csv(csv_path_global)
 
     # ------------------------------------------------------------------
@@ -5835,7 +6017,7 @@ def write_multi_mra_params(
         df_field.index.name = location_field
         df_field = df_field.rename(columns={"const": "intercept"})
 
-        csv_path_field = f"{outpath}/params_{location_field}.csv"
+        csv_path_field = f"{outpath}/{prefix}params_{location_field}.csv"
         df_field.to_csv(csv_path_field)
 
     # ------------------------------------------------------------------
@@ -6008,7 +6190,17 @@ def write_multi_mra_params(
         if df_final is None:
             continue
 
-        contrib_path = f"{outpath}/contributions_{subset}.csv"
+        if prefix:
+            # Contributions are additive in LOG space (sum to log(prediction)); reconcile against
+            # the log prediction so the file is self-consistent (check_delta ~ 0) and unmistakably
+            # a log-space artifact rather than dollars.
+            df_final["prediction"] = np.log(
+                pd.to_numeric(df_final["prediction"], errors="coerce").where(lambda s: s > 0)
+            )
+            df_final = df_final.rename(columns={"prediction": "log_prediction"})
+            df_final["check_delta"] = df_final["log_prediction"] - df_final["contribution_sum"]
+
+        contrib_path = f"{outpath}/{prefix}contributions_{subset}.csv"
         df_final.to_csv(contrib_path, index=False)
 
 

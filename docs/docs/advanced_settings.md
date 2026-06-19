@@ -898,6 +898,8 @@ For `custom`, the list contains dicts instead of plain field names:
 }
 ```
 
+> **Critical: every field in a model's `ind_vars` must be NaN-free, or the linear models crash.** `mra` / `multi_mra` go through `statsmodels` OLS, which raises `MissingDataError: exog contains inf or nans` on the first NaN/inf in the design matrix. Tree engines (LightGBM / XGBoost / CatBoost) tolerate NaN, so a missing fill rule only surfaces when a *linear* model runs. This bites most often with **enrichment-derived fields that have partial coverage** — `census` (block-group misses), `dem` (coverage gaps / parcels outside the tile footprint), `ref_tables` (unmatched keys) — because `data.process.fill` only fills the fields you explicitly list. **Rule of thumb: whenever you add an enrichment numeric to `ind_vars`, add it to `data.process.fill` too** (usually `median` for continuous). `proximity_to_*` (0-filled by the distance enricher) and the basic-geo fields are already safe. Because fill runs in the **clean** stage, fixing a missed field requires re-running notebook 2 — not just the modeling notebook.
+
 #### Conditional suffixes — `_impr` and `_vacant`
 
 Any fill method can be scoped to improved or vacant parcels by suffixing the method name. The cleaner strips the suffix and applies the underlying method to the matching subset only:
@@ -949,6 +951,37 @@ Filter out non-arms-length sales after data processing, using the conditions def
 - **Effect** — when `true`, sales matching the filter are excluded. When `false`, the step is skipped silently.
 - **Source** — `filter_invalid_sales` in [openavmkit/cleaning.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/cleaning.py)
 - **When to use** — if you have a set of sales you know are invalid and can exclude by rule, that aren't covered by your existing sales validity codes
+
+The filter runs on the **hydrated** sales frame, so it can reference universe (parcel/CAMA) fields such as `assr_market_value` alongside the raw sale fields.
+
+#### `data.process.invalid_sales.calc` — derived fields for relative rules
+
+The filter DSL compares a field to a scalar or to another field, but it cannot do inline arithmetic (you can write `["<", "sale_price", "assr_market_value"]` but not `["<", "sale_price", ["*", 0.5, "assr_market_value"]]`). To express a **relative** rule, precompute the needed column with an optional `calc` block (same expression DSL as `data.process.calc` / `enrich.*.calc`, including the zero-safe `/0` divide). `calc` runs on the hydrated frame immediately before the filter resolves, so the derived column is available to the filter.
+
+Example — drop any improved sale closing below half the assessor's fair-market total (a strong distressed / non-arms-length signal that the validity code missed), while exempting vacant land and parcels with no assessed total:
+
+```json
+{
+  "data": {
+    "process": {
+      "invalid_sales": {
+        "enabled": true,
+        "calc": {
+          "sale_to_assr_ratio": ["/0", "sale_price", "assr_market_value"]
+        },
+        "filter": [
+          "or",
+          ["<", "sale_price", 1000],
+          ["and", ["==", "vacant_sale", false], ["<", "sale_price", 5000]],
+          ["and", ["==", "vacant_sale", false], [">", "assr_market_value", 0], ["<", "sale_to_assr_ratio", 0.5]]
+        ]
+      }
+    }
+  }
+}
+```
+
+The `["/0", ...]` divide yields `0` when the denominator is `0`/blank; the `[">", "assr_market_value", 0]` guard then keeps those parcels out of the relative clause so they're judged only by the absolute floors.
 
 ### 5.4 `data.process.collapse_sparse_categories`
 
@@ -1083,6 +1116,39 @@ Per-model-group skip list. For the named model group, the listed models are skip
 ### `modeling.models.<main|vacant>.<model_group>` — per-model-group overrides
 
 The entries under `modeling.models.<main|vacant>` can be **overridden per model group** by nesting a block keyed on the model-group id. When present, the override block replaces the top-level entries wholesale for that group (no merge). Use this when one model group needs a different set of `ind_vars`, `n_trials`, or even a different list of models entirely. See [models_reference.md § 1.5](models_reference.md#15-per-model-group-overrides) for the resolution rule and a worked example.
+
+### `log` — train a linear model on log(price) (per-model)
+
+Linear models (`mra`, `multi_mra`) fit price additively, so for expensive or atypical parcels they can extrapolate **negative** predictions. Setting `"log": true` on the model's entry under `modeling.models.<main|vacant>.<model_group>.<model>` fits that model on the natural log of the target instead; `exp()` of a linear prediction is always positive and the log scale tames tail regressivity.
+
+- **Source** — `run_mra` / `run_multi_mra` in [openavmkit/modeling.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/modeling.py), via `entry.get("log")` in `run_one_model`.
+- **Scope** — read **only** by `mra` and `multi_mra`. Other engines ignore the flag. It is deliberately *not* a `dep_var` change: the model log-transforms its target internally and **exponentiates its own predictions back to price space**, so everything downstream (metrics, ratio study, ensemble) sees ordinary price-space predictions and needs no log awareness. Zero blast radius.
+- **Requirement** — the target must be strictly positive (the invalid-sales scrub already removes non-positive sales); `run_mra(log=True)` raises if it finds a value `<= 0`.
+
+```json
+{
+  "modeling": {
+    "models": {
+      "main": {
+        "residential_single_family_suburban_prewar": {
+          "mra":       { "log": true },
+          "multi_mra": { "log": true },
+          "default":   { "ind_vars": ["...", "..."] }
+        }
+      }
+    }
+  }
+}
+```
+
+The `mra` / `multi_mra` entries above carry no `ind_vars`, so they inherit the group's `default` (or auto-selected) feature list — `log` is the only override. Leave it off (the default) for tree and nearest-neighbor models, which don't extrapolate negative and don't need it.
+
+**Contributions & params for log models.** A log model's coefficients are log-space (semi-elasticities, not $/unit) and its per-feature contributions are additive in **log** space (they sum to `log(prediction)`, not to the dollar prediction). To keep these from being misread as dollars — and to keep them out of the price-space consumers that would otherwise mix incommensurable units — `write_mra_params` / `write_multi_mra_params` write a log model's artifacts under a `log_` prefix: `log_params.csv`, `log_params_global.csv`, `log_contributions_<subset>.csv` (with a `log_prediction` column, reconciled in log space). The ordinary `params.csv` / `contributions_*.csv` are therefore absent for that model, which means:
+
+- the per-model `contributions_map.parquet` is not built for it (the builder finds no `contributions_universe.csv` and skips), and
+- the **ensemble contribution builder excludes it** — `_write_ensemble_contributions` detects the log member and warns (`'<model>' is log-transformed … cannot be meaningfully combined with price-space members`); the member's *prediction* still folds into the ensemble base, so the ensemble **valuation** is unchanged, but the log member contributes no per-feature attribution.
+
+None of this affects the model's predictions, the benchmark metrics, the ratio study, or the published `market_value` — those are all price-space and consume neither contributions nor params.
 
 ### Train / test split rules
 

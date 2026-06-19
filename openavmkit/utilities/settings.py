@@ -272,7 +272,6 @@ def resolve_use_sales_from(
     # Fall through: malformed value — return None/None and let callers no-op.
     return None, None
 
-
 def use_sales_from_floor(s: dict) -> tuple[int | None, int | None]:
     """The most-permissive (oldest) ``use_sales_from`` across all groups.
 

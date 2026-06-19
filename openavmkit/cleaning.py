@@ -35,7 +35,7 @@ from openavmkit.utilities.settings import (
   _is_series_all_bools,
 )
 from openavmkit.utilities.cache import write_cache
-from openavmkit.calculations import resolve_filter
+from openavmkit.calculations import resolve_filter, perform_calculations
 
 
 def clean_valid_sales(sup: SalesUniversePair, settings: dict) -> SalesUniversePair:
@@ -485,11 +485,20 @@ def filter_invalid_sales(
     if verbose:
         print("Filtering out invalid sales...")
 
-    # Get sales data
+    # Get sales data (hydrated: universe fields such as assr_market_value are merged on,
+    # so the filter / calc below can reference them alongside the raw sale fields).
     df_sales = get_hydrated_sales_from_sup(sup)
     total_sales = len(df_sales)
     excluded_sales = []
     total_excluded = 0
+
+    # Optional derived fields for the filter. The filter DSL compares a field to a scalar
+    # or another field but cannot do inline arithmetic, so relative rules
+    # (e.g. "sale_price < 0.5 * assr_market_value") need a precomputed ratio column. Compute
+    # any `invalid_sales.calc` entries on the hydrated frame before resolving the filter.
+    s_calc = s_validation.get("calc", {})
+    if s_calc:
+        df_sales = perform_calculations(df_sales, s_calc)
 
     # Identify sales by filter
     filter_conditions = s_validation.get("filter", [])

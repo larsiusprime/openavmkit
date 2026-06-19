@@ -1789,13 +1789,13 @@ def identify_outliers(
         print(f"MODEL GROUP = {id}")
 
         # Fit comp-analysis models once per model group (reused across mtypes / pred files).
-        ind_vars_lc = (
-            settings.get("modeling", {})
-            .get("models", {})
-            .get("main", {})
-            .get("lcomp", {})
-            .get("ind_vars", [])
-        )
+        # Resolve lcomp ind_vars with the canonical per-group pattern: narrow models.main to
+        # this model group (falling back to the top-level dict for the legacy/global layout),
+        # then read lcomp's ind_vars (falling back to the group "default" entry).
+        model_entries = settings.get("modeling", {}).get("models", {}).get("main", {})
+        model_entries = model_entries.get(id, model_entries)
+        lc_entry = model_entries.get("lcomp", model_entries.get("default", {}))
+        ind_vars_lc = lc_entry.get("ind_vars", []) if isinstance(lc_entry, dict) else []
         if not isinstance(ind_vars_lc, list):
             ind_vars_lc = []
         comp_models = (None, None, None, [])

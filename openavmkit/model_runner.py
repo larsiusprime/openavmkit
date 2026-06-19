@@ -1427,6 +1427,10 @@ def run_one_model(
 
     optimize_vars = entry.get("optimize_vars", False)
     intercept = entry.get("intercept", True)
+    # Per-model opt-in to log-target training (mra / multi_mra only). Fitting on log(price) keeps
+    # the linear models from extrapolating negative values; the model exponentiates its own
+    # predictions back to price space, so this stays contained to the model (no dep_var changes).
+    log = entry.get("log", False)
     n_trials = entry.get("n_trials", 50)
     use_gpu = entry.get("use_gpu", True)
     seed = get_model_seed(settings)
@@ -1465,9 +1469,9 @@ def run_one_model(
     elif model_engine == "spatial_lag_area":
         results = run_spatial_lag(ds, per_area=True, verbose=verbose)
     elif model_engine == "mra":
-        results = run_mra(ds, intercept=intercept, verbose=verbose)
+        results = run_mra(ds, intercept=intercept, verbose=verbose, log=log)
     elif model_engine == "multi_mra":
-        results = run_multi_mra(ds, outpath, location_fields, optimize_vars=optimize_vars, intercept=intercept, verbose=verbose)
+        results = run_multi_mra(ds, outpath, location_fields, optimize_vars=optimize_vars, intercept=intercept, verbose=verbose, log=log)
     elif model_engine == "kernel":
         results = run_kernel(
             ds, outpath, save_params, use_saved_params, verbose=verbose
@@ -2404,6 +2408,22 @@ def _write_ensemble_contributions(
         feat_total = pd.DataFrame(index=ref_index)
         for m_key in members:
             w = weights[m_key].reindex(ref_index).fillna(0.0)
+            # Log-transformed members (mra/multi_mra with log=True) have contributions that are
+            # additive in LOG space, not price space — they cannot be combined with the price-space
+            # members. Exclude them from the feature attribution; their prediction still folds into
+            # the ensemble base via the residual below (the ensemble *prediction* is unaffected).
+            member_model = getattr(all_results.model_results.get(m_key), "model", None)
+            if getattr(member_model, "log", False):
+                if m_key not in warned_missing:
+                    warnings.warn(
+                        f"Ensemble member '{m_key}' is log-transformed (log=True); its "
+                        f"contributions are in log space (written as log_contributions_*.csv) and "
+                        f"cannot be meaningfully combined with price-space members, so its "
+                        f"prediction folds into the ensemble base instead of being attributed to "
+                        f"features."
+                    )
+                    warned_missing.add(m_key)
+                continue
             cfile = _find_member_contrib_file(outpath, m_key, candidate_files)
             if cfile is None:
                 # Non-decomposable (or unsaved) member -> folds into the base
