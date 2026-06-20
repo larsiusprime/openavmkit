@@ -1031,7 +1031,7 @@ def run_models(
 
     if save_results:
         t.start("write")
-        write_out_all_results(sup, dict_all_results)
+        write_out_all_results(sup, dict_all_results, settings)
         t.stop("write")
 
     print("**********TIMING FOR RUN ALL MODELS***********")
@@ -1041,12 +1041,16 @@ def run_models(
     return dict_all_results
 
 
-def write_out_all_results(sup: SalesUniversePair, all_results: dict):
+def write_out_all_results(sup: SalesUniversePair, all_results: dict, settings: dict):
     """Write out all model results to CSV and Parquet files.
 
     This function collects predictions from all model groups and writes them to a single
     DataFrame, which is then saved to both CSV and Parquet formats. It also merges the
     predictions with the universe DataFrame to include all keys.
+
+    It additionally writes the openratiostudy.com export (``open_ratio_study_sales.csv``
+    and ``open_ratio_study_test.csv``) — the slim per-sale frames that website consumes —
+    by concatenating the ensemble (production) results across all model groups.
 
     Parameters
     ----------
@@ -1055,9 +1059,13 @@ def write_out_all_results(sup: SalesUniversePair, all_results: dict):
     all_results : dict
         A dictionary where keys are model group identifiers and values are MultiModelResults
         containing the results for each model group.
+    settings : dict
+        The settings dictionary, used to resolve the report-location fields for the
+        open-ratio-study export.
     """
     t = TimingData()
     df_all = None
+    ors_frames = {"sales": [], "test": []}
 
     for model_group in all_results:
         t.start(f"model group: {model_group}")
@@ -1078,6 +1086,12 @@ def write_out_all_results(sup: SalesUniversePair, all_results: dict):
             t.stop("read")
             t.stop(f"model group: {model_group}")
             continue
+
+        # Accumulate the openratiostudy.com export from the ensemble (production) model.
+        ors = _assemble_open_ratio_study(mm_results.model_results["ensemble"], settings)
+        for subset, df_ors in ors.items():
+            df_ors["model_group"] = model_group
+            ors_frames[subset].append(df_ors)
 
         # For each output model, extract predictions and add to df_univ_local
         df_univ_local = None
@@ -1125,6 +1139,20 @@ def write_out_all_results(sup: SalesUniversePair, all_results: dict):
         t.start("parquet")
         df_univ.to_parquet(f"{outpath}/universe.parquet", engine="pyarrow")
         t.stop("parquet")
+
+    # Write the openratiostudy.com export (study + test subsets, all model groups).
+    if ors_frames["sales"] or ors_frames["test"]:
+        outpath = "out/models/all_model_groups"
+        if not os.path.exists(outpath):
+            os.makedirs(outpath)
+        t.start("open_ratio_study")
+        for subset, fname in (("sales", "open_ratio_study_sales.csv"),
+                              ("test", "open_ratio_study_test.csv")):
+            frames = ors_frames[subset]
+            if not frames:
+                continue
+            pd.concat(frames, ignore_index=True).to_csv(f"{outpath}/{fname}", index=False)
+        t.stop("open_ratio_study")
 
 
 def get_data_split_for(
@@ -2079,6 +2107,76 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
     return dfs
 
 
+def _assemble_open_ratio_study(results: SingleModelResults, settings: dict) -> dict[str, pd.DataFrame]:
+    """Build the slim per-row frames consumed by openratiostudy.com.
+
+    Selects only the columns that website needs — identifiers, the production
+    prediction, raw and time-adjusted sale price, point coordinates, and the
+    report-location breakdown fields — for the ``sales`` (study) and ``test``
+    subsets.
+
+    Parameters
+    ----------
+    results : SingleModelResults
+        A fitted model's results, typically the ensemble (production) model for a
+        model group.
+    settings : dict
+        The settings dictionary, used to resolve the report-location fields.
+
+    Returns
+    -------
+    dict[str, pandas.DataFrame]
+        Keyed by subset name (``"sales"``, ``"test"``); each value holds only the
+        open-ratio-study columns present in the source frame.
+    """
+    cols = [
+        "key",
+        "key_sale",
+        "prediction",
+        "sale_price",
+        "sale_price_time_adj",
+        "latitude",
+        "longitude",
+    ] + get_report_locations(settings)
+
+    out = {}
+    for subset, df_src in (("sales", results.df_sales), ("test", results.df_test)):
+        if df_src is None:
+            continue
+        present = [c for c in cols if c in df_src.columns]
+        out[subset] = df_src[present].copy()
+    return out
+
+
+def _write_open_ratio_study(results: SingleModelResults, path: str, settings: dict):
+    """Write the openratiostudy.com export for one model into ``path``.
+
+    Emits ``open_ratio_study_sales.csv`` (study set) and
+    ``open_ratio_study_test.csv`` (held-out test set) alongside the model's
+    ``pred_*.csv`` files. A ``model_group`` column is appended so the per-model
+    files share a schema with the combined all-model-groups export.
+
+    Parameters
+    ----------
+    results : SingleModelResults
+        The model's results.
+    path : str
+        Directory to write the two CSVs into (the model's output folder).
+    settings : dict
+        The settings dictionary.
+    """
+    ors = _assemble_open_ratio_study(results, settings)
+    model_group = getattr(getattr(results, "ds", None), "model_group", None)
+    for subset, fname in (("sales", "open_ratio_study_sales.csv"),
+                          ("test", "open_ratio_study_test.csv")):
+        if subset not in ors:
+            continue
+        df = ors[subset]
+        if model_group is not None and "model_group" not in df.columns:
+            df["model_group"] = model_group
+        df.to_csv(f"{path}/{fname}", index=False)
+
+
 def _write_model_results(results: SingleModelResults, outpath: str, settings: dict, location: str = None, verbose:bool = False):
     """
     Write model results to disk in parquet and CSV formats.
@@ -2102,6 +2200,8 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
         if "geometry" in df:
             df = df.drop(columns=["geometry"])
         df.to_csv(f"{path}/pred_{key}.csv", index=False)
+
+    _write_open_ratio_study(results, path, settings)
 
     results.df_sales.to_csv(f"{path}/sales.csv", index=False)
     results.df_universe.to_csv(f"{path}/universe.csv", index=False)
@@ -2210,6 +2310,8 @@ def _write_ensemble_model_results(
             df = df_basic
         df.to_parquet(f"{path}/pred_{key}.parquet")
         df.to_csv(f"{path}/pred_{key}.csv", index=False)
+
+    _write_open_ratio_study(results, path, settings)
 
 
 def _write_ensemble_meta(path: str, ensemble_type: str, members: list[str]):

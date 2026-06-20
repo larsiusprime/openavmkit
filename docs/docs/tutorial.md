@@ -70,7 +70,8 @@ Now run, in order:
 After all four notebooks run cleanly:
 
 - `data/us-nc-guilford/out/` has parquet files for the universe, sales, and predictions
-- `data/us-nc-guilford/out/models/<model_group>/` has per-model output: predictions, `params_<subset>.csv`, `contributions_<subset>.csv` — including an `ensemble/` folder with its own reassembled params/contributions
+- `data/us-nc-guilford/out/models/<model_group>/` has per-model output: predictions, `params_<subset>.csv`, `contributions_<subset>.csv` — including an `ensemble/` folder with its own reassembled params/contributions. Each model folder (and the `ensemble/` folder) also gets the [openratiostudy.com](https://openratiostudy.com) export pair, written alongside its `pred_sales.csv`/`pred_test.csv`.
+- `data/us-nc-guilford/out/models/all_model_groups/` has the combined `universe.csv`/`universe.parquet` (all model groups merged onto the universe), plus a combined [openratiostudy.com](https://openratiostudy.com) export concatenated from each model group's **ensemble**: `open_ratio_study_sales.csv` (study set) and `open_ratio_study_test.csv` (held-out test set). Each open-ratio-study file is one row per sale with `key`, `key_sale`, `prediction`, `sale_price`, `sale_price_time_adj`, `latitude`, `longitude`, the report-location breakdown fields, and `model_group`.
 - `data/us-nc-guilford/out/reports/` has ratio study and equity reports
 - The `examine_sup` output shows non-null fields for every parcel, sales correctly partitioned into model groups
 
