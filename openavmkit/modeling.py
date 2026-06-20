@@ -1241,6 +1241,49 @@ class DataSplit:
         self.X_sales = _sanitize_categoricals(self.X_sales)
         self.X_univ = _sanitize_categoricals(self.X_univ)
 
+    def drop_all_nan_ind_vars(self, verbose: bool = False) -> list[str]:
+        """
+        Drop independent-variable columns that have no finite values (entirely
+        NaN/inf) in the training matrix, consistently across X_train / X_test /
+        X_sales / X_univ (and from ``ind_vars``).
+
+        Such a column carries zero signal and makes linear models crash:
+        statsmodels OLS raises ``MissingDataError("exog contains inf or nans")``
+        on the first NaN/inf in the design matrix. The usual cause is a
+        model-group-scoped feature — e.g. ``spatial_lag_*``, which is enriched for
+        ``single_family`` only — being listed in a non-SF group's ind_vars, where
+        it is 100% NaN. Rather than crash the whole run, drop the dead column and
+        warn. Columns that are merely *partially* NaN are left alone (those signal
+        a missing fill rule and must be fixed in ``data.process.fill``).
+
+        Returns the list of dropped column names.
+        """
+        if self.X_train is None or self.X_train.shape[0] == 0 or self.X_train.shape[1] == 0:
+            return []
+        numeric = self.X_train.select_dtypes(include=[np.number])
+        if numeric.shape[1] == 0:
+            return []
+        finite = numeric.replace([np.inf, -np.inf], np.nan).notna()
+        dead = [col for col in numeric.columns if not bool(finite[col].any())]
+        if not dead:
+            return []
+        warnings.warn(
+            f"DataSplit '{self.name}' (model_group '{self.model_group}'): dropping "
+            f"{len(dead)} independent variable(s) with no finite values in the training "
+            f"set — they would crash linear models (exog contains nan) and carry no "
+            f"signal: {dead}. This usually means a model-group-scoped feature "
+            f"(e.g. spatial_lag, enriched for single_family only) is absent for this group.",
+            stacklevel=2,
+        )
+        for attr in ("X_train", "X_test", "X_sales", "X_univ"):
+            X = getattr(self, attr, None)
+            if X is not None and X.shape[1] > 0:
+                cols = [c for c in dead if c in X.columns]
+                if cols:
+                    setattr(self, attr, X.drop(columns=cols))
+        self.ind_vars = [v for v in self.ind_vars if v not in dead]
+        return dead
+
 
 def _as_float64_array(x) -> np.ndarray:
     """Coerce a predictions/target array or Series to a plain float64 numpy array.
@@ -1870,6 +1913,11 @@ def run_mra(
     ds = ds.encode_categoricals_with_one_hot()
     ds.split()
 
+    # Drop any all-NaN feature columns before fitting, so an absent model-group-scoped
+    # feature (e.g. spatial_lag on a non-single_family group) degrades to a warning
+    # instead of MissingDataError("exog contains inf or nans").
+    ds.drop_all_nan_ind_vars(verbose=verbose)
+
     if intercept:
         ds.X_train = sm.add_constant(ds.X_train, has_constant='add')
         ds.X_test = sm.add_constant(ds.X_test, has_constant='add')
@@ -1983,6 +2031,10 @@ def _run_multi_mra(
 
     # Re-split after encoding to refresh X_* and y_*
     ds_prepped.split()
+
+    # Drop any all-NaN feature columns before fitting (see run_mra) so an absent
+    # model-group-scoped feature degrades to a warning rather than crashing OLS.
+    ds_prepped.drop_all_nan_ind_vars(verbose=verbose)
 
     # Add intercept column (constant) consistently across all X matrices
     if intercept:
