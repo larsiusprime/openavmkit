@@ -66,7 +66,10 @@ class CensusService:
             "B19013_001E": "median_income",
             "B01003_001E": "total_population",
             "B25064_001E": "median_g_rent",
-            "B25058_001E": "median_c_rent"
+            "B25058_001E": "median_c_rent",
+            # B03002: Hispanic or Latino origin by race — used to compute pct_minority
+            "B03002_001E": "_race_total",
+            "B03002_003E": "_race_nh_white",
         }
     
     
@@ -129,6 +132,12 @@ class CensusService:
         df = df.rename(
             columns=map
         )
+
+        # Compute pct_minority from B03002 racial composition variables
+        if "_race_total" in df.columns and "_race_nh_white" in df.columns:
+            total = df["_race_total"].replace(0, float("nan"))
+            df["pct_minority"] = 1.0 - (df["_race_nh_white"] / total)
+            df = df.drop(columns=["_race_total", "_race_nh_white"])
 
         # Create GEOID for block groups (state+county+tract+block group)
         df["state_fips"] = df["state"]
