@@ -157,10 +157,10 @@ def clear_cache(filename: str, filetype: str) -> None:
     path = f"cache/{filename}"
     if os.path.exists(f"{path}.{ext}"):
         os.remove(f"{path}.{ext}")
-    if os.path.exists(f"{path}.cols{ext}"):
-        os.remove(f"{path}..cols.{ext}")
-    if os.path.exists(f"{path}.rows{ext}"):
-        os.remove(f"{path}.rows{ext}")
+    if os.path.exists(f"{path}.cols.{ext}"):
+        os.remove(f"{path}.cols.{ext}")
+    if os.path.exists(f"{path}.rows.{ext}"):
+        os.remove(f"{path}.rows.{ext}")
     if os.path.exists(f"{path}.signature.json"):
         os.remove(f"{path}.signature.json")
     if os.path.exists(f"{path}.cols.signature.json"):
