@@ -350,6 +350,22 @@ class OvertureService:
         gdf = self.calculate_building_heights(gdf, buildings, height_units, height_field, verbose)
         return gdf
 
+    def _footprint_unit_multiplier(self, unit: str) -> float:
+        if unit == "sqft":
+            return 10.764
+        if unit == "sqm":
+            return 1.0
+        raise ValueError(
+            f"Unsupported footprint units: {unit}. Supported units are 'sqft' and 'sqm'."
+        )
+
+    def _height_unit_multiplier(self, unit: str) -> float:
+        if unit == "ft":
+            return 3.2808399
+        if unit == "m":
+            return 1.0
+        raise ValueError(f"Unsupported height units: {unit}. Use 'ft' or 'm'.")
+
     def calculate_building_stats_streaming(
         self,
         gdf: gpd.GeoDataFrame,
@@ -358,7 +374,6 @@ class OvertureService:
         footprint_field: str,
         height_units: str,
         height_field: str,
-        unit: str = "sqft",
         use_cache: bool = True,
         verbose: bool = False,
     ) -> gpd.GeoDataFrame:
@@ -394,21 +409,8 @@ class OvertureService:
         verbose: bool = False,
     ) -> gpd.GeoDataFrame:
         """Streaming implementation shared by the dataset path and tests."""
-        if footprint_units == "sqft":
-            footprint_mult = 10.764
-        elif footprint_units == "sqm":
-            footprint_mult = 1.0
-        else:
-            raise ValueError(
-                f"Unsupported units: {footprint_units}. Supported units are 'sqft' and 'sqm'."
-            )
-
-        if height_units == "ft":
-            height_mult = 3.2808399
-        elif height_units == "m":
-            height_mult = 1.0
-        else:
-            raise ValueError("Unsupported units: {height_units}. Use 'ft' or 'm'.")
+        footprint_mult = self._footprint_unit_multiplier(footprint_units)
+        height_mult = self._height_unit_multiplier(height_units)
 
         area_cache_path = self._get_cache_path("intersections_area", gdf.total_bounds)
         height_cache_path = self._get_cache_path("intersections_height", gdf.total_bounds)
@@ -425,9 +427,10 @@ class OvertureService:
                     return height_cached
 
         gdf_projected = gdf.to_crs(get_crs(gdf, "equal_area"))
-        footprint_totals = pd.Series(0.0, index=gdf["key"], dtype="float64")
-        height_max = pd.Series(pd.NA, index=gdf["key"], dtype="Float64")
-        floors_max = pd.Series(pd.NA, index=gdf["key"], dtype="Float64")
+        keys = pd.Index(gdf["key"].drop_duplicates())
+        footprint_totals = pd.Series(0.0, index=keys, dtype="float64")
+        height_max = pd.Series(pd.NA, index=keys, dtype="Float64")
+        floors_max = pd.Series(pd.NA, index=keys, dtype="Float64")
         buildings_found = 0
 
         for buildings in building_frames:
@@ -454,8 +457,11 @@ class OvertureService:
                             return parcel_geom.intersection(building_geom).area * footprint_mult
                         return 0.0
                     except Exception as e:
-                        if verbose:
-                            print(f"Warning: Error calculating intersection area: {e}")
+                        parcel_key = row.get("key", "<unknown>")
+                        warnings.warn(
+                            "Error calculating Overture building intersection area "
+                            f"for parcel key={parcel_key!r}, building_idx={row.get('index_right')!r}: {e}"
+                        )
                         return 0.0
 
                 joined_area[footprint_field] = joined_area.apply(

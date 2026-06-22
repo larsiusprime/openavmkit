@@ -188,3 +188,38 @@ def test_streaming_stats_match_all_at_once_when_heights_are_absent(tmp_path):
     )
 
     _assert_stat_columns_equal(old, streamed)
+
+
+def test_streaming_stats_handles_duplicate_parcel_keys(tmp_path):
+    service = _svc(tmp_path)
+    parcels = _parcel_gdf()
+    parcels = pd.concat([parcels, parcels.iloc[[0]].copy()], ignore_index=True)
+    batch = service._derive_height_and_floors(
+        _building_frame(
+            [
+                {
+                    "id": "b1",
+                    "height": 6.0,
+                    "num_floors": 2,
+                    "geometry": Polygon(
+                        [(0.0005, 0.0005), (0.0015, 0.0005), (0.0015, 0.0015), (0.0005, 0.0015)]
+                    ),
+                }
+            ]
+        )
+    )
+
+    streamed = service._calculate_building_stats_from_frames(
+        parcels.copy(),
+        [batch],
+        "sqft",
+        FOOTPRINT,
+        "ft",
+        HEIGHT,
+        use_cache=False,
+    )
+
+    assert len(streamed) == len(parcels)
+    duplicated = streamed[streamed["key"].eq("p1")]
+    assert duplicated[FOOTPRINT].notna().all()
+    assert duplicated[HEIGHT].notna().all()

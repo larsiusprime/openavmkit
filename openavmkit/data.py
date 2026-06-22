@@ -2937,7 +2937,7 @@ def _enrich_df_overture(
         height_units = s_height.get("units", None)
         if height_units is None:
             warnings.warn(
-                f"`process.enrich.overture.height.units` not specified, defaulting to {len_unit}'"
+                f"`process.enrich.overture.height.units` not specified, defaulting to '{len_unit}'"
             )
             height_units = len_unit
         height_field = s_height.get("field", None)
@@ -2947,17 +2947,24 @@ def _enrich_df_overture(
             )
             height_field = f"bldg_height_{len_unit}"
 
-        gdf = overture_service.calculate_building_stats_streaming(
-            gdf,
-            bbox,
-            footprint_units,
-            footprint_field,
-            height_units,
-            height_field,
-            unit=unit,
-            use_cache=s_overture.get("cache", True),
-            verbose=verbose,
-        )
+        try:
+            gdf = overture_service.calculate_building_stats_streaming(
+                gdf,
+                bbox,
+                footprint_units,
+                footprint_field,
+                height_units,
+                height_field,
+                use_cache=s_overture.get("cache", True),
+                verbose=verbose,
+            )
+        except Exception as e:
+            if verbose:
+                print(f"--> Failed to calculate Overture building stats: {str(e)}")
+                print(f"--> Traceback: {traceback.format_exc()}")
+            warnings.warn(
+                f"Failed to calculate Overture building stats: {str(e)}\n{traceback.format_exc()}"
+            )
 
         write_cached_df(gdf_in, gdf, "geom/overture", "key", s_enrich_this)
 
