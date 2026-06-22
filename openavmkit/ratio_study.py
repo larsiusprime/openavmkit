@@ -419,6 +419,52 @@ def _clean_label(label: str) -> str:
     return label
 
 
+def _compute_breakdown_edges(values, quantiles=0, bins_cfg=None, bin_labels=None):
+    """Compute monotonic bin edges + labels for a ratio-study breakdown.
+
+    Returns ``(edges, labels)`` for :func:`pandas.cut`, or ``(None, None)``
+    when the column is degenerate (fewer than two distinct edges, e.g. an
+    all-NaN or constant column) and so cannot be binned.
+
+    Two modes:
+
+    - ``bins_cfg`` given: explicit value edges (e.g. ``[0, 0.1, 0.25, 0.5,
+      0.75, 1.0]``); ``bin_labels`` optionally overrides the auto-generated
+      "lo - hi" labels.
+    - otherwise: ``quantiles`` equal-count bins computed from ``values``.
+
+    Robust to NaN (uses ``np.nanquantile``) and to heavily-skewed columns
+    where many rows share a value: an edge is only kept when it strictly
+    increases, so the result never trips pandas' "bins must increase
+    monotonically" error.
+    """
+    if bins_cfg:
+        edges = list(bins_cfg)
+        if len(edges) < 2:
+            return None, None
+        if bin_labels is None:
+            bin_labels = [f"{edges[i]:g} - {edges[i + 1]:g}" for i in range(len(edges) - 1)]
+        return edges, list(bin_labels)
+
+    if quantiles and quantiles > 0:
+        edges = [0]
+        labels = []
+        last = 0
+        for q in range(quantiles + 1):
+            try:
+                qv = np.nanquantile(values, q / quantiles)
+            except IndexError:
+                continue
+            label = f"{q / quantiles * 100:3.0f}th %ile<br>({last:,.0f} - {qv:,.0f})"
+            if np.isfinite(qv) and qv > edges[-1]:
+                edges.append(qv)
+                labels.append(label)
+            last = qv
+        return (edges, labels) if len(edges) >= 2 else (None, None)
+
+    return None, None
+
+
 def _run_ratio_study_breakdowns(
     settings: dict, model_group: str, df_sales: pd.DataFrame, confidence_interval=0.95, iterations=10000
 ) -> dict:
@@ -547,20 +593,13 @@ def _run_ratio_study_breakdowns(
                     quantiles = breakdown.get("quantiles", 0)
                     slice_size = breakdown.get("slice_size", 0)
                     df_sub = df.copy()
-                    if quantiles > 0:
-                        bins = [0]
-                        labels = []
-                        last_value = 0
-                        for q in range(quantiles + 1):
-                            try:
-                                quantile_value = np.quantile(df_sub[by], q / quantiles)
-                            except IndexError:
-                                continue
-                            percentile = f"{q / quantiles * 100:3.0f}th %ile<br>({last_value:,.0f} - {quantile_value:,.0f})"
-                            if quantile_value not in bins:
-                                bins.append(quantile_value)
-                                labels.append(percentile)
-                            last_value = quantile_value
+                    bins, labels = _compute_breakdown_edges(
+                        df_sub[by],
+                        quantiles=quantiles,
+                        bins_cfg=breakdown.get("bins"),
+                        bin_labels=breakdown.get("bin_labels"),
+                    )
+                    if bins is not None:
                         df_sub["quantile"] = pd.cut(
                             df_sub[by],
                             bins=bins,
