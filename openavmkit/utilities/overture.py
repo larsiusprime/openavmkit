@@ -431,6 +431,8 @@ class OvertureService:
         gdf_rows = gdf.reset_index(drop=True)
         gdf_projected = gdf_rows.to_crs(get_crs(gdf, "equal_area"))
         gdf_projected["_overture_row_id"] = row_ids
+        gdf_for_height = gdf_rows.copy()
+        gdf_for_height["_overture_row_id"] = row_ids
         footprint_totals = pd.Series(0.0, index=row_ids, dtype="float64")
         height_max = pd.Series(pd.NA, index=row_ids, dtype="Float64")
         floors_max = pd.Series(pd.NA, index=row_ids, dtype="Float64")
@@ -445,10 +447,10 @@ class OvertureService:
 
             buildings_area = buildings.to_crs(gdf_projected.crs)
             joined_area = gpd.sjoin(
-                gdf_projected, buildings_area, how="inner", predicate="intersects"
+                gdf_projected, buildings_area, how="left", predicate="intersects"
             )
 
-            if not joined_area.empty:
+            if not joined_area.empty and not joined_area["index_right"].isna().all():
                 def calculate_intersection_area(row):
                     try:
                         row_id = int(row["_overture_row_id"])
@@ -474,21 +476,26 @@ class OvertureService:
                 area_agg = joined_area.groupby("_overture_row_id")[footprint_field].sum()
                 footprint_totals = footprint_totals.add(area_agg, fill_value=0)
 
-                joined_area["_height_out"] = (
-                    pd.to_numeric(joined_area["height_m_best"], errors="coerce") * height_mult
+            buildings_height = buildings.to_crs(gdf_for_height.crs)
+            joined_height = gpd.sjoin(
+                gdf_for_height, buildings_height, how="left", predicate="intersects"
+            )
+            if not joined_height.empty and not joined_height["index_right"].isna().all():
+                joined_height["_height_out"] = (
+                    pd.to_numeric(joined_height["height_m_best"], errors="coerce") * height_mult
                 )
-                if "floors_best" in joined_area.columns:
-                    joined_area["_floors_out"] = pd.to_numeric(
-                        joined_area["floors_best"], errors="coerce"
+                if "floors_best" in joined_height.columns:
+                    joined_height["_floors_out"] = pd.to_numeric(
+                        joined_height["floors_best"], errors="coerce"
                     )
                 else:
-                    joined_area["_floors_out"] = pd.NA
-                height_agg = joined_area.groupby("_overture_row_id")["_height_out"].max(min_count=1)
-                floors_agg = joined_area.groupby("_overture_row_id")["_floors_out"].max(min_count=1)
+                    joined_height["_floors_out"] = pd.NA
+                height_agg = joined_height.groupby("_overture_row_id")["_height_out"].max(min_count=1)
+                floors_agg = joined_height.groupby("_overture_row_id")["_floors_out"].max(min_count=1)
                 height_max = pd.concat([height_max, height_agg], axis=1).max(axis=1)
                 floors_max = pd.concat([floors_max, floors_agg], axis=1).max(axis=1)
 
-            del buildings, buildings_area, joined_area
+            del buildings, buildings_area, joined_area, buildings_height, joined_height
             gc.collect()
 
         out = gdf.copy()
@@ -548,7 +555,16 @@ class OvertureService:
             gdf[field_name] = 0
             return gdf
 
-        unit_mult = self._footprint_unit_multiplier(desired_units)
+        # Get appropriate unit conversion
+        unit_mult = 1.0
+        if desired_units == "sqft":
+            unit_mult = 10.764  # Convert m² to sqft
+        elif desired_units == "sqm":
+            unit_mult = 1.0
+        else:
+            raise ValueError(
+                f"Unsupported units: {desired_units}. Supported units are 'sqft' and 'sqm'."
+            )
 
         t.start("crs")
         # Footprint stats depend only on the buildings (bbox-derived) and parcel geometry, so
@@ -690,7 +706,13 @@ class OvertureService:
             gdf["bldg_stories"] = 0
             return gdf
 
-        unit_mult = self._height_unit_multiplier(desired_units)
+        # Units
+        if desired_units == "ft":
+            unit_mult = 3.2808399
+        elif desired_units == "m":
+            unit_mult = 1.0
+        else:
+            raise ValueError("Unsupported units: {desired_units}. Use 'ft' or 'm'.")
 
         # Height/stories depend only on the buildings (bbox-derived) and parcel geometry, so the
         # bounding box is the correct cache key. Cache ONLY the computed per-parcel stats and
