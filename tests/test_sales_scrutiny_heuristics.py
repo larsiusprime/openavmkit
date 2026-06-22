@@ -86,3 +86,32 @@ def test_dupe_date_price_with_jurisdiction_keeps_distinct_parcels():
     df = _df(sales)
     out = flag_dupe_date_price(df, jurisdiction="county")
     assert _flagged_sales(out) == {"s3", "s4"}
+
+
+def test_dupe_date_price_without_parcel_key_falls_back_to_sale_key():
+    df = pd.DataFrame(
+        {
+            "key_sale": ["s1", "s2"],
+            "sale_date": ["2020-01-01", "2020-01-01"],
+            "sale_price": [75000, 75000],
+        }
+    )
+
+    out = flag_dupe_date_price(df)
+
+    assert _flagged_sales(out) == set()
+
+
+def test_dupe_date_price_null_parcel_key_falls_back_to_sale_key():
+    df = _df(
+        [
+            _sale(None, "s1", "2020-01-01", 75000),
+            _sale(None, "s2", "2020-01-01", 75000),
+            _sale(None, "s3", "2021-01-01", 50000),
+            _sale(None, "s3", "2021-01-01", 50000),
+        ]
+    )
+
+    out = flag_dupe_date_price(df)
+
+    assert _flagged_sales(out) == {"s3"}
