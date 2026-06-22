@@ -29,7 +29,7 @@ def _make_service():
         return OvertureService({"overture": {"enabled": True}})
 
 
-def _result_df():
+def _building_result_df():
     return pd.DataFrame({
         "id": ["bldg-1"],
         "geometry": [swkb.dumps(_POLY)],
@@ -41,7 +41,7 @@ def _result_df():
     })
 
 
-def _fake_connection(describe_cols, result_df, captured):
+def _fake_connection(describe_cols, building_rows, captured):
     con = MagicMock()
 
     def _execute(sql, params=None):
@@ -50,21 +50,27 @@ def _fake_connection(describe_cols, result_df, captured):
         if sql.strip().upper().startswith("DESCRIBE"):
             cursor.fetchall.return_value = [(c,) for c in describe_cols]
         # fetch_df_chunk streams: yield the frame once, then an empty frame.
-        cursor.fetch_df_chunk.side_effect = [result_df, result_df.iloc[0:0]]
+        cursor.fetch_df_chunk.side_effect = [building_rows, building_rows.iloc[0:0]]
         return cursor
 
     con.execute.side_effect = _execute
     return con
 
 
-def test_stream_pushes_bbox_predicate_and_drops_unavailable_columns():
+def _patched_overture_stream(describe_cols=None, captured=None):
     svc = _make_service()
+    captured = [] if captured is None else captured
+    describe_cols = describe_cols or ["id", "geometry", "bbox", "height", "num_floors", "sources"]
+    con = _fake_connection(describe_cols, _building_result_df(), captured)
+    return svc, patch("openavmkit.utilities.overture.duckdb.connect", return_value=con)
+
+
+def test_stream_pushes_bbox_predicate_and_drops_unavailable_columns():
     captured = []
     # est_height / num_floors_underground / subtype / class are absent from this
     # release and must be dropped from the projection (mirrors prior PyArrow behavior).
-    describe_cols = ["id", "geometry", "bbox", "height", "num_floors", "sources"]
-    con = _fake_connection(describe_cols, _result_df(), captured)
-    with patch("openavmkit.utilities.overture.duckdb.connect", return_value=con):
+    svc, duckdb_connect = _patched_overture_stream(captured=captured)
+    with duckdb_connect:
         chunks = list(svc._stream_building_dfs(
             _BBOX, OvertureService.DEFAULT_COLUMNS.copy()))
     assert len(chunks) == 1 and len(chunks[0]) == 1
@@ -81,10 +87,8 @@ def test_stream_pushes_bbox_predicate_and_drops_unavailable_columns():
 
 
 def test_get_buildings_builds_geodataframe_with_footprint():
-    svc = _make_service()
-    describe_cols = ["id", "geometry", "bbox", "height", "num_floors", "sources"]
-    con = _fake_connection(describe_cols, _result_df(), [])
-    with patch("openavmkit.utilities.overture.duckdb.connect", return_value=con):
+    svc, duckdb_connect = _patched_overture_stream()
+    with duckdb_connect:
         gdf = svc.get_buildings(_BBOX, use_cache=False)
     assert isinstance(gdf, gpd.GeoDataFrame)
     assert len(gdf) == 1
@@ -98,10 +102,8 @@ def test_get_buildings_builds_geodataframe_with_footprint():
 
 
 def test_building_batches_yields_geodataframes_from_stream():
-    svc = _make_service()
-    describe_cols = ["id", "geometry", "bbox", "height", "num_floors", "sources"]
-    con = _fake_connection(describe_cols, _result_df(), [])
-    with patch("openavmkit.utilities.overture.duckdb.connect", return_value=con):
+    svc, duckdb_connect = _patched_overture_stream()
+    with duckdb_connect:
         frames = list(svc._building_batches(_BBOX))
     assert len(frames) == 1
     assert isinstance(frames[0], gpd.GeoDataFrame)
@@ -110,7 +112,7 @@ def test_building_batches_yields_geodataframes_from_stream():
 
 def test_stream_uses_real_duckdb_bbox_predicate_on_local_parquet(tmp_path):
     path = tmp_path / "buildings.parquet"
-    matching = _result_df()
+    matching = _building_result_df()
     outside = pd.DataFrame(
         {
             "id": ["outside"],
@@ -166,9 +168,10 @@ def test_enrich_df_overture_calls_streaming_stats_and_preserves_input_on_failure
     service.calculate_building_stats_streaming.side_effect = RuntimeError("duckdb failed")
     with patch("openavmkit.data.get_cached_df", return_value=None), patch(
         "openavmkit.data.write_cached_df"
-    ), patch("openavmkit.data.init_service_overture", return_value=service):
+    ) as write_cached_df, patch("openavmkit.data.init_service_overture", return_value=service):
         with pytest.warns(UserWarning, match="Failed to calculate Overture building stats"):
             failed = _enrich_df_overture(parcels, enrich_settings, {}, settings)
 
     assert list(failed.columns) == list(parcels.columns)
     assert failed.geometry.equals(parcels.geometry)
+    write_cached_df.assert_not_called()
