@@ -63,12 +63,13 @@ def test_enrich_df_overture_skips_outer_cache_for_duplicate_keys(tmp_path, monke
         height_ft=[10.0, 10.0],
     )
 
-    with patch("openavmkit.data.get_cached_df", return_value=None), patch(
+    with patch("openavmkit.data.get_cached_df") as get_cached_df, patch(
         "openavmkit.data.write_cached_df"
     ) as write_cached_df, patch("openavmkit.data.init_service_overture", return_value=service):
         out = _enrich_df_overture(parcels, enrich_settings, {}, settings)
 
     assert out["footprint_sqft"].tolist() == [100.0, 100.0]
+    get_cached_df.assert_not_called()
     write_cached_df.assert_not_called()
 
 

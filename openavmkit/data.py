@@ -2892,11 +2892,13 @@ def _enrich_df_overture(
     
     unit = area_unit(settings)
     
-    gdf_out = get_cached_df(gdf_in, "geom/overture", "key", s_enrich_this)
-    if gdf_out is not None:
-        if verbose:
-            print("--> found cached data...")
-        return gdf_out
+    duplicate_keys = gdf_in["key"].duplicated(keep=False).any()
+    if not duplicate_keys:
+        gdf_out = get_cached_df(gdf_in, "geom/overture", "key", s_enrich_this)
+        if gdf_out is not None:
+            if verbose:
+                print("--> found cached data...")
+            return gdf_out
 
     gdf = gdf_in.copy()
 
@@ -2973,7 +2975,7 @@ def _enrich_df_overture(
                 f"{message}\n{traceback.format_exc()}"
             )
 
-        if overture_succeeded and not gdf_in["key"].duplicated(keep=False).any():
+        if overture_succeeded and not duplicate_keys:
             write_cached_df(gdf_in, gdf, "geom/overture", "key", s_enrich_this)
 
     return gdf

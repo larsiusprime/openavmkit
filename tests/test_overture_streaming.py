@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import geopandas as gpd
 import pandas as pd
 import pytest
@@ -44,21 +46,22 @@ def _building_frame(records):
     )
 
 
+def _building_one_record(extra=None):
+    record = {
+        "id": "b1",
+        "height": 6.0,
+        "num_floors": 2,
+        "geometry": Polygon(
+            [(0.0005, 0.0005), (0.0015, 0.0005), (0.0015, 0.0015), (0.0005, 0.0015)]
+        ),
+    }
+    if extra:
+        record.update(extra)
+    return record
+
+
 def _single_building_batch(service):
-    return service._derive_height_and_floors(
-        _building_frame(
-            [
-                {
-                    "id": "b1",
-                    "height": 6.0,
-                    "num_floors": 2,
-                    "geometry": Polygon(
-                        [(0.0005, 0.0005), (0.0015, 0.0005), (0.0015, 0.0015), (0.0005, 0.0015)]
-                    ),
-                }
-            ]
-        )
-    )
+    return service._derive_height_and_floors(_building_frame([_building_one_record()]))
 
 
 def _assert_stat_columns_equal(old, streamed):
@@ -80,15 +83,7 @@ def test_streaming_stats_match_all_at_once_for_split_batches(tmp_path):
     parcels = _parcel_gdf()
     batch_1 = _building_frame(
         [
-            {
-                "id": "b1",
-                "height": 6.0,
-                "est_height": None,
-                "num_floors": 2,
-                "geometry": Polygon(
-                    [(0.0005, 0.0005), (0.0015, 0.0005), (0.0015, 0.0015), (0.0005, 0.0015)]
-                ),
-            },
+            _building_one_record({"est_height": None}),
             {
                 "id": "b2",
                 "height": None,
@@ -171,12 +166,7 @@ def test_streaming_stats_match_all_at_once_when_heights_are_absent(tmp_path):
     parcels = _parcel_gdf()
     raw_buildings = _building_frame(
         [
-            {
-                "id": "b1",
-                "geometry": Polygon(
-                    [(0.0005, 0.0005), (0.0015, 0.0005), (0.0015, 0.0015), (0.0005, 0.0015)]
-                ),
-            },
+            _building_one_record({"height": None, "num_floors": None}),
             {
                 "id": "b2",
                 "geometry": Polygon(
@@ -223,16 +213,21 @@ def test_streaming_stats_handles_duplicate_parcel_keys(tmp_path):
     parcels = pd.concat([parcels, parcels.iloc[[0]].copy()], ignore_index=True)
     batch = _single_building_batch(service)
 
-    streamed = service._calculate_building_stats_from_frames(
-        parcels.copy(),
-        [batch],
-        "sqft",
-        FOOTPRINT,
-        "ft",
-        HEIGHT,
-    )
+    with patch.object(service, "_stats_cache_load") as stats_cache_load, patch.object(
+        service, "_stats_cache_save"
+    ) as stats_cache_save:
+        streamed = service._calculate_building_stats_from_frames(
+            parcels.copy(),
+            [batch],
+            "sqft",
+            FOOTPRINT,
+            "ft",
+            HEIGHT,
+        )
 
     assert len(streamed) == len(parcels)
+    stats_cache_load.assert_not_called()
+    stats_cache_save.assert_not_called()
     duplicated = streamed[streamed["key"].eq("p1")]
     expected = baseline.loc[baseline["key"].eq("p1")].iloc[0]
     assert duplicated[FOOTPRINT].tolist() == pytest.approx(
