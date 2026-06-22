@@ -2673,6 +2673,16 @@ def _enrich_universe_spatial_lag(
 
     # we TRAIN on these coordinates -- coordinates that are NOT in the test set
     coords_train = df_train_univ[["latitude", "longitude"]].values
+
+    # Guard: with no training parcels there is nothing to build a neighbour tree
+    # from (cKDTree of an empty array raises), so return the universe unchanged --
+    # no spatial-lag columns are produced. This mirrors the sales-side guard in
+    # _enrich_sup_spatial_lag_for_model_group, which `continue`s when its training
+    # set is too small; the universe side was missing the equivalent check.
+    n_train = len(df_train_univ)
+    if n_train == 0:
+        return df
+
     tree = cKDTree(coords_train)
 
     # we PREDICT on these coordinates -- all the coordinates in the universe
@@ -2682,8 +2692,14 @@ def _enrich_universe_spatial_lag(
         if value_field not in df:
             continue
 
-        # Choose the number of nearest neighbors to use
-        k = value_fields[value_field]
+        # Choose the number of nearest neighbors to use, clamped to the number of
+        # training parcels available. cKDTree.query with k greater than the number
+        # of points returns the sentinel index `n_train` (out of range) for the
+        # missing neighbours, which then raises IndexError at
+        # `parcel_values[indices]` below. Clamping keeps the lag well-defined for a
+        # small universe (e.g. a sparse subject with only a handful of comps)
+        # instead of crashing the whole prediction.
+        k = min(value_fields[value_field], n_train)
 
         # Query the tree: for each parcel in df_universe, find the k nearest parcels
         # distances: shape (n_universe, k); indices: corresponding indices in df_sales
