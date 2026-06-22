@@ -46,12 +46,12 @@ def _fake_connection(describe_cols, result_df, captured):
 
     def _execute(sql, params=None):
         captured.append((sql, params))
-        result = MagicMock()
+        cursor = MagicMock()
         if sql.strip().upper().startswith("DESCRIBE"):
-            result.fetchall.return_value = [(c,) for c in describe_cols]
+            cursor.fetchall.return_value = [(c,) for c in describe_cols]
         # fetch_df_chunk streams: yield the frame once, then an empty frame.
-        result.fetch_df_chunk.side_effect = [result_df, result_df.iloc[0:0]]
-        return result
+        cursor.fetch_df_chunk.side_effect = [result_df, result_df.iloc[0:0]]
+        return cursor
 
     con.execute.side_effect = _execute
     return con
@@ -127,8 +127,8 @@ def test_stream_uses_real_duckdb_bbox_predicate_on_local_parquet(tmp_path):
     with patch.object(svc, "_buildings_parquet_path", return_value=str(path)):
         chunks = list(svc._stream_building_dfs(_BBOX, OvertureService.DEFAULT_COLUMNS.copy()))
 
-    result = pd.concat(chunks, ignore_index=True)
-    assert result["id"].tolist() == ["bldg-1"]
+    fetched_buildings = pd.concat(chunks, ignore_index=True)
+    assert fetched_buildings["id"].tolist() == ["bldg-1"]
 
 
 def test_enrich_df_overture_calls_streaming_stats_and_preserves_input_on_failure(tmp_path, monkeypatch):
