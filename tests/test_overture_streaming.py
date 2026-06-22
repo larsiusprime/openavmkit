@@ -78,6 +78,30 @@ def _assert_stat_columns_equal(old, streamed):
         )
 
 
+def _assert_streaming_stats_match_legacy(
+    service, parcels, legacy_buildings, streaming_frames
+):
+    old = service.calculate_building_stats(
+        parcels.copy(),
+        legacy_buildings,
+        "sqft",
+        FOOTPRINT,
+        "ft",
+        HEIGHT,
+    )
+    streamed = service._calculate_building_stats_from_frames(
+        parcels.copy(),
+        streaming_frames,
+        "sqft",
+        FOOTPRINT,
+        "ft",
+        HEIGHT,
+        use_cache=False,
+    )
+
+    _assert_stat_columns_equal(old, streamed)
+
+
 def test_streaming_stats_match_all_at_once_for_split_batches(tmp_path):
     service = _svc(tmp_path)
     parcels = _parcel_gdf()
@@ -114,25 +138,12 @@ def test_streaming_stats_match_all_at_once_for_split_batches(tmp_path):
     ]
     all_buildings = pd.concat(batches, ignore_index=True)
 
-    old = service.calculate_building_stats(
-        parcels.copy(),
+    _assert_streaming_stats_match_legacy(
+        service,
+        parcels,
         all_buildings,
-        "sqft",
-        FOOTPRINT,
-        "ft",
-        HEIGHT,
-    )
-    streamed = service._calculate_building_stats_from_frames(
-        parcels.copy(),
         [batch.copy() for batch in batches],
-        "sqft",
-        FOOTPRINT,
-        "ft",
-        HEIGHT,
-        use_cache=False,
     )
-
-    _assert_stat_columns_equal(old, streamed)
 
 
 def test_streaming_stats_match_all_at_once_for_empty_buildings(tmp_path):
@@ -140,25 +151,7 @@ def test_streaming_stats_match_all_at_once_for_empty_buildings(tmp_path):
     parcels = _parcel_gdf()
     empty_buildings = gpd.GeoDataFrame({"id": []}, geometry=[], crs="EPSG:4326")
 
-    old = service.calculate_building_stats(
-        parcels.copy(),
-        empty_buildings,
-        "sqft",
-        FOOTPRINT,
-        "ft",
-        HEIGHT,
-    )
-    streamed = service._calculate_building_stats_from_frames(
-        parcels.copy(),
-        [],
-        "sqft",
-        FOOTPRINT,
-        "ft",
-        HEIGHT,
-        use_cache=False,
-    )
-
-    _assert_stat_columns_equal(old, streamed)
+    _assert_streaming_stats_match_legacy(service, parcels, empty_buildings, [])
 
 
 def test_streaming_stats_match_all_at_once_when_heights_are_absent(tmp_path):
@@ -177,25 +170,12 @@ def test_streaming_stats_match_all_at_once_when_heights_are_absent(tmp_path):
     )
     derived_buildings = service._derive_height_and_floors(raw_buildings.copy())
 
-    old = service.calculate_building_stats(
-        parcels.copy(),
+    _assert_streaming_stats_match_legacy(
+        service,
+        parcels,
         derived_buildings,
-        "sqft",
-        FOOTPRINT,
-        "ft",
-        HEIGHT,
-    )
-    streamed = service._calculate_building_stats_from_frames(
-        parcels.copy(),
         [raw_buildings],
-        "sqft",
-        FOOTPRINT,
-        "ft",
-        HEIGHT,
-        use_cache=False,
     )
-
-    _assert_stat_columns_equal(old, streamed)
 
 
 def test_streaming_stats_handles_duplicate_parcel_keys(tmp_path):
