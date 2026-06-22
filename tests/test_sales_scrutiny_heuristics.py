@@ -91,15 +91,15 @@ def test_dupe_date_price_with_jurisdiction_keeps_distinct_parcels():
 def test_dupe_date_price_without_parcel_key_falls_back_to_sale_key():
     df = pd.DataFrame(
         {
-            "key_sale": ["s1", "s2"],
-            "sale_date": ["2020-01-01", "2020-01-01"],
-            "sale_price": [75000, 75000],
+            "key_sale": ["s1", "s2", "s3", "s3"],
+            "sale_date": ["2020-01-01", "2020-01-01", "2021-01-01", "2021-01-01"],
+            "sale_price": [75000, 75000, 50000, 50000],
         }
     )
 
     out = flag_dupe_date_price(df)
 
-    assert _flagged_sales(out) == set()
+    assert _flagged_sales(out) == {"s3"}
 
 
 def test_dupe_date_price_null_parcel_key_falls_back_to_sale_key():
@@ -109,6 +109,21 @@ def test_dupe_date_price_null_parcel_key_falls_back_to_sale_key():
             _sale(None, "s2", "2020-01-01", 75000),
             _sale(None, "s3", "2021-01-01", 50000),
             _sale(None, "s3", "2021-01-01", 50000),
+        ]
+    )
+
+    out = flag_dupe_date_price(df)
+
+    assert _flagged_sales(out) == {"s3"}
+
+
+def test_dupe_date_price_blank_parcel_key_falls_back_to_sale_key():
+    df = _df(
+        [
+            _sale("", "s1", "2020-01-01", 75000),
+            _sale(" ", "s2", "2020-01-01", 75000),
+            _sale("", "s3", "2021-01-01", 50000),
+            _sale("", "s3", "2021-01-01", 50000),
         ]
     )
 

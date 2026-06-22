@@ -21,9 +21,9 @@ def flag_dupe_date_price(df_sales: pd.DataFrame, jurisdiction=None) -> pd.DataFr
     # deed. Include the parcel key so only same-parcel repeats are flagged.
     if "key" in df_sales.columns:
         parcel_id = df_sales["key"].astype(str)
-        null_key = df_sales["key"].isna()
-        if null_key.any() and "key_sale" in df_sales.columns:
-            parcel_id = parcel_id.mask(null_key, df_sales["key_sale"].astype(str))
+        missing_key = df_sales["key"].isna() | df_sales["key"].astype(str).str.strip().eq("")
+        if missing_key.any() and "key_sale" in df_sales.columns:
+            parcel_id = parcel_id.mask(missing_key, df_sales["key_sale"].astype(str))
         date_price = date_price + "---" + parcel_id
     elif "key_sale" in df_sales.columns:
         date_price = date_price + "---" + df_sales["key_sale"].astype(str)
