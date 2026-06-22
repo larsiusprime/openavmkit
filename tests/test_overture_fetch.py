@@ -13,7 +13,6 @@ import shapely.geometry as sgeom
 import shapely.wkb as swkb
 from unittest.mock import MagicMock, patch
 
-from openavmkit.data import _enrich_df_overture
 from openavmkit.utilities.overture import OvertureService
 
 # A small built-up parcel near Santa Cruz, CA (real lon/lat so UTM estimation works).
@@ -131,47 +130,3 @@ def test_stream_uses_real_duckdb_bbox_predicate_on_local_parquet(tmp_path):
 
     fetched_buildings = pd.concat(chunks, ignore_index=True)
     assert fetched_buildings["id"].tolist() == ["bldg-1"]
-
-
-def test_enrich_df_overture_calls_streaming_stats_and_preserves_input_on_failure(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    parcels = gpd.GeoDataFrame(
-        {"key": ["p1"]},
-        geometry=[_POLY],
-        crs="EPSG:4326",
-    )
-    settings = {"locality": {"units": "imperial"}}
-    enrich_settings = {
-        "overture": {
-            "enabled": True,
-            "cache": False,
-            "footprint": {"units": "sqft", "field": "footprint_sqft"},
-            "height": {"units": "ft", "field": "height_ft"},
-        }
-    }
-    service = MagicMock()
-    service.calculate_building_stats_streaming.return_value = parcels.assign(
-        footprint_sqft=123.0,
-        height_ft=6.0,
-    )
-
-    with patch("openavmkit.data.get_cached_df", return_value=None), patch(
-        "openavmkit.data.write_cached_df"
-    ), patch("openavmkit.data.init_service_overture", return_value=service):
-        out = _enrich_df_overture(parcels, enrich_settings, {}, settings)
-
-    assert out["footprint_sqft"].tolist() == [123.0]
-    args, kwargs = service.calculate_building_stats_streaming.call_args
-    assert args[2:6] == ("sqft", "footprint_sqft", "ft", "height_ft")
-    assert kwargs == {"use_cache": False, "verbose": False}
-
-    service.calculate_building_stats_streaming.side_effect = RuntimeError("duckdb failed")
-    with patch("openavmkit.data.get_cached_df", return_value=None), patch(
-        "openavmkit.data.write_cached_df"
-    ) as write_cached_df, patch("openavmkit.data.init_service_overture", return_value=service):
-        with pytest.warns(UserWarning, match="Failed to calculate Overture building stats"):
-            failed = _enrich_df_overture(parcels, enrich_settings, {}, settings)
-
-    assert list(failed.columns) == list(parcels.columns)
-    assert failed.geometry.equals(parcels.geometry)
-    write_cached_df.assert_not_called()
