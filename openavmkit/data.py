@@ -2943,6 +2943,7 @@ def _enrich_df_overture(
             height_field = f"bldg_height_{len_unit}"
 
         overture_succeeded = False
+        bbox = None
         try:
             overture_service = init_service_overture(overture_settings)
             bbox = gdf.to_crs("EPSG:4326").total_bounds
@@ -2957,15 +2958,22 @@ def _enrich_df_overture(
                 verbose=verbose,
             )
             overture_succeeded = True
+        except ValueError:
+            raise
         except Exception as e:
+            message = (
+                "Failed to calculate Overture building stats "
+                f"(bbox={bbox}, footprint_field={footprint_field!r}, "
+                f"height_field={height_field!r}, cache={s_overture.get('cache', True)}): {str(e)}"
+            )
             if verbose:
-                print(f"--> Failed to calculate Overture building stats: {str(e)}")
+                print(f"--> {message}")
                 print(f"--> Traceback: {traceback.format_exc()}")
             warnings.warn(
-                f"Failed to calculate Overture building stats: {str(e)}\n{traceback.format_exc()}"
+                f"{message}\n{traceback.format_exc()}"
             )
 
-        if overture_succeeded:
+        if overture_succeeded and not gdf_in["key"].duplicated(keep=False).any():
             write_cached_df(gdf_in, gdf, "geom/overture", "key", s_enrich_this)
 
     return gdf

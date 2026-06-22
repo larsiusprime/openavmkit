@@ -44,6 +44,23 @@ def _building_frame(records):
     )
 
 
+def _single_building_batch(service):
+    return service._derive_height_and_floors(
+        _building_frame(
+            [
+                {
+                    "id": "b1",
+                    "height": 6.0,
+                    "num_floors": 2,
+                    "geometry": Polygon(
+                        [(0.0005, 0.0005), (0.0015, 0.0005), (0.0015, 0.0015), (0.0005, 0.0015)]
+                    ),
+                }
+            ]
+        )
+    )
+
+
 def _assert_stat_columns_equal(old, streamed):
     assert list(streamed["address"]) == ["1 Main", "2 Main", "3 Main"]
     for column in (FOOTPRINT, HEIGHT, "bldg_stories"):
@@ -196,27 +213,7 @@ def test_streaming_stats_handles_duplicate_parcel_keys(tmp_path):
     parcels = _parcel_gdf()
     baseline = service._calculate_building_stats_from_frames(
         parcels.copy(),
-        [
-            service._derive_height_and_floors(
-                _building_frame(
-                    [
-                        {
-                            "id": "b1",
-                            "height": 6.0,
-                            "num_floors": 2,
-                            "geometry": Polygon(
-                                [
-                                    (0.0005, 0.0005),
-                                    (0.0015, 0.0005),
-                                    (0.0015, 0.0015),
-                                    (0.0005, 0.0015),
-                                ]
-                            ),
-                        }
-                    ]
-                )
-            )
-        ],
+        [_single_building_batch(service)],
         "sqft",
         FOOTPRINT,
         "ft",
@@ -224,20 +221,7 @@ def test_streaming_stats_handles_duplicate_parcel_keys(tmp_path):
         use_cache=False,
     )
     parcels = pd.concat([parcels, parcels.iloc[[0]].copy()], ignore_index=True)
-    batch = service._derive_height_and_floors(
-        _building_frame(
-            [
-                {
-                    "id": "b1",
-                    "height": 6.0,
-                    "num_floors": 2,
-                    "geometry": Polygon(
-                        [(0.0005, 0.0005), (0.0015, 0.0005), (0.0015, 0.0015), (0.0005, 0.0015)]
-                    ),
-                }
-            ]
-        )
-    )
+    batch = _single_building_batch(service)
 
     streamed = service._calculate_building_stats_from_frames(
         parcels.copy(),
@@ -246,7 +230,6 @@ def test_streaming_stats_handles_duplicate_parcel_keys(tmp_path):
         FOOTPRINT,
         "ft",
         HEIGHT,
-        use_cache=False,
     )
 
     assert len(streamed) == len(parcels)
