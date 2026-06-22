@@ -2907,14 +2907,9 @@ def _enrich_df_overture(
         if verbose:
             print("Enriching with Overture building data...")
 
-        # Initialize Overture service with the correct settings path
         overture_settings = {
             "overture": s_overture  # Pass the overture settings directly
         }
-        overture_service = init_service_overture(overture_settings)
-
-        # Get bounding box from data
-        bbox = gdf.to_crs("EPSG:4326").total_bounds
 
         # Calculate building footprints
         s_footprint = s_overture.get("footprint", {})
@@ -2947,7 +2942,10 @@ def _enrich_df_overture(
             )
             height_field = f"bldg_height_{len_unit}"
 
+        overture_succeeded = False
         try:
+            overture_service = init_service_overture(overture_settings)
+            bbox = gdf.to_crs("EPSG:4326").total_bounds
             gdf = overture_service.calculate_building_stats_streaming(
                 gdf,
                 bbox,
@@ -2958,6 +2956,7 @@ def _enrich_df_overture(
                 use_cache=s_overture.get("cache", True),
                 verbose=verbose,
             )
+            overture_succeeded = True
         except Exception as e:
             if verbose:
                 print(f"--> Failed to calculate Overture building stats: {str(e)}")
@@ -2966,7 +2965,8 @@ def _enrich_df_overture(
                 f"Failed to calculate Overture building stats: {str(e)}\n{traceback.format_exc()}"
             )
 
-        write_cached_df(gdf_in, gdf, "geom/overture", "key", s_enrich_this)
+        if overture_succeeded:
+            write_cached_df(gdf_in, gdf, "geom/overture", "key", s_enrich_this)
 
     return gdf
 

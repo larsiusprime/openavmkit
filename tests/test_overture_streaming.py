@@ -1,5 +1,6 @@
 import geopandas as gpd
 import pandas as pd
+import pytest
 from pandas.testing import assert_series_equal
 from shapely.geometry import Polygon
 
@@ -193,6 +194,35 @@ def test_streaming_stats_match_all_at_once_when_heights_are_absent(tmp_path):
 def test_streaming_stats_handles_duplicate_parcel_keys(tmp_path):
     service = _svc(tmp_path)
     parcels = _parcel_gdf()
+    baseline = service._calculate_building_stats_from_frames(
+        parcels.copy(),
+        [
+            service._derive_height_and_floors(
+                _building_frame(
+                    [
+                        {
+                            "id": "b1",
+                            "height": 6.0,
+                            "num_floors": 2,
+                            "geometry": Polygon(
+                                [
+                                    (0.0005, 0.0005),
+                                    (0.0015, 0.0005),
+                                    (0.0015, 0.0015),
+                                    (0.0005, 0.0015),
+                                ]
+                            ),
+                        }
+                    ]
+                )
+            )
+        ],
+        "sqft",
+        FOOTPRINT,
+        "ft",
+        HEIGHT,
+        use_cache=False,
+    )
     parcels = pd.concat([parcels, parcels.iloc[[0]].copy()], ignore_index=True)
     batch = service._derive_height_and_floors(
         _building_frame(
@@ -221,5 +251,12 @@ def test_streaming_stats_handles_duplicate_parcel_keys(tmp_path):
 
     assert len(streamed) == len(parcels)
     duplicated = streamed[streamed["key"].eq("p1")]
-    assert duplicated[FOOTPRINT].notna().all()
-    assert duplicated[HEIGHT].notna().all()
+    expected = baseline.loc[baseline["key"].eq("p1")].iloc[0]
+    assert duplicated[FOOTPRINT].tolist() == pytest.approx(
+        [expected[FOOTPRINT], expected[FOOTPRINT]]
+    )
+    assert duplicated[HEIGHT].tolist() == pytest.approx([expected[HEIGHT], expected[HEIGHT]])
+    assert duplicated["bldg_stories"].tolist() == [
+        expected["bldg_stories"],
+        expected["bldg_stories"],
+    ]
