@@ -2,16 +2,18 @@
 
 `_stream_building_dfs` reads Overture's global buildings theme with the bbox-overlap
 predicate pushed down to Parquet row-group statistics, so peak memory is bounded to
-the matching rows instead of scanning the whole theme. These tests mock DuckDB so they
-are fully network-free; the real S3 fetch and its bit-for-bit equivalence to the prior
-PyArrow path are exercised by the avm-python-service scorecard.
+the matching rows instead of scanning the whole theme. The tests are network-free:
+most mock DuckDB, and one uses a local Parquet file to exercise DuckDB's real struct
+predicate handling.
 """
 import geopandas as gpd
 import pandas as pd
+import pytest
 import shapely.geometry as sgeom
 import shapely.wkb as swkb
 from unittest.mock import MagicMock, patch
 
+from openavmkit.data import _enrich_df_overture
 from openavmkit.utilities.overture import OvertureService
 
 # A small built-up parcel near Santa Cruz, CA (real lon/lat so UTM estimation works).
@@ -44,12 +46,12 @@ def _fake_connection(describe_cols, result_df, captured):
 
     def _execute(sql, params=None):
         captured.append((sql, params))
-        res = MagicMock()
+        result = MagicMock()
         if sql.strip().upper().startswith("DESCRIBE"):
-            res.fetchall.return_value = [(c,) for c in describe_cols]
+            result.fetchall.return_value = [(c,) for c in describe_cols]
         # fetch_df_chunk streams: yield the frame once, then an empty frame.
-        res.fetch_df_chunk.side_effect = [result_df, result_df.iloc[0:0]]
-        return res
+        result.fetch_df_chunk.side_effect = [result_df, result_df.iloc[0:0]]
+        return result
 
     con.execute.side_effect = _execute
     return con
@@ -75,6 +77,7 @@ def test_stream_pushes_bbox_predicate_and_drops_unavailable_columns():
     assert params == [xmax, xmin, ymax, ymin]
     assert '"est_height"' not in sql and '"class"' not in sql
     assert '"id"' in sql and '"geometry"' in sql
+    assert "read_parquet('s3://overturemaps-us-west-2/" in sql
 
 
 def test_get_buildings_builds_geodataframe_with_footprint():
@@ -86,7 +89,10 @@ def test_get_buildings_builds_geodataframe_with_footprint():
     assert isinstance(gdf, gpd.GeoDataFrame)
     assert len(gdf) == 1
     assert gdf.geometry.iloc[0].equals(_POLY)
-    assert gdf["bldg_area_footprint_sqft"].iloc[0] > 0
+    expected_area = gpd.GeoSeries([_POLY], crs="EPSG:4326").to_crs(
+        gdf.estimate_utm_crs()
+    ).area.iloc[0] * 10.764
+    assert gdf["bldg_area_footprint_sqft"].iloc[0] == pytest.approx(expected_area)
     assert gdf["height_m_best"].iloc[0] == 6.5
     assert gdf["floors_best"].iloc[0] == 2
 
@@ -100,3 +106,69 @@ def test_building_batches_yields_geodataframes_from_stream():
     assert len(frames) == 1
     assert isinstance(frames[0], gpd.GeoDataFrame)
     assert frames[0].geometry.iloc[0].equals(_POLY)
+
+
+def test_stream_uses_real_duckdb_bbox_predicate_on_local_parquet(tmp_path):
+    path = tmp_path / "buildings.parquet"
+    matching = _result_df()
+    outside = pd.DataFrame(
+        {
+            "id": ["outside"],
+            "geometry": [swkb.dumps(sgeom.box(-123, 37, -122.9, 37.1))],
+            "bbox": [{"xmin": -123.0, "xmax": -122.9, "ymin": 37.0, "ymax": 37.1}],
+            "height": [4.0],
+            "num_floors": [1],
+            "sources": [[]],
+        }
+    )
+    pd.concat([matching, outside], ignore_index=True).to_parquet(path)
+
+    svc = _make_service()
+    with patch.object(svc, "_buildings_parquet_path", return_value=str(path)):
+        chunks = list(svc._stream_building_dfs(_BBOX, OvertureService.DEFAULT_COLUMNS.copy()))
+
+    result = pd.concat(chunks, ignore_index=True)
+    assert result["id"].tolist() == ["bldg-1"]
+
+
+def test_enrich_df_overture_calls_streaming_stats_and_preserves_input_on_failure(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    parcels = gpd.GeoDataFrame(
+        {"key": ["p1"]},
+        geometry=[_POLY],
+        crs="EPSG:4326",
+    )
+    settings = {"locality": {"units": "imperial"}}
+    enrich_settings = {
+        "overture": {
+            "enabled": True,
+            "cache": False,
+            "footprint": {"units": "sqft", "field": "footprint_sqft"},
+            "height": {"units": "ft", "field": "height_ft"},
+        }
+    }
+    service = MagicMock()
+    service.calculate_building_stats_streaming.return_value = parcels.assign(
+        footprint_sqft=123.0,
+        height_ft=6.0,
+    )
+
+    with patch("openavmkit.data.get_cached_df", return_value=None), patch(
+        "openavmkit.data.write_cached_df"
+    ), patch("openavmkit.data.init_service_overture", return_value=service):
+        out = _enrich_df_overture(parcels, enrich_settings, {}, settings)
+
+    assert out["footprint_sqft"].tolist() == [123.0]
+    args, kwargs = service.calculate_building_stats_streaming.call_args
+    assert args[2:6] == ("sqft", "footprint_sqft", "ft", "height_ft")
+    assert kwargs == {"use_cache": False, "verbose": False}
+
+    service.calculate_building_stats_streaming.side_effect = RuntimeError("duckdb failed")
+    with patch("openavmkit.data.get_cached_df", return_value=None), patch(
+        "openavmkit.data.write_cached_df"
+    ), patch("openavmkit.data.init_service_overture", return_value=service):
+        with pytest.warns(UserWarning, match="Failed to calculate Overture building stats"):
+            failed = _enrich_df_overture(parcels, enrich_settings, {}, settings)
+
+    assert list(failed.columns) == list(parcels.columns)
+    assert failed.geometry.equals(parcels.geometry)

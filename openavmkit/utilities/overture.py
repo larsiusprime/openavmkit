@@ -14,7 +14,6 @@ import duckdb
 import geopandas as gpd
 import pandas as pd
 import traceback
-import pyarrow as pa
 import pyarrow.fs as fs
 import shapely.wkb
 
@@ -39,7 +38,7 @@ class OvertureService:
         "height", "est_height", "num_floors", "num_floors_underground",
         "subtype", "class", "sources"   # sources = per-property confidence
     ]
-    DEFAULT_STREAM_BATCH_ROWS = 500
+    DEFAULT_STREAM_BATCH_ROWS = 10_000
 
     def __init__(self, settings: dict):
         """Initialize the Overture service with settings.
@@ -99,6 +98,30 @@ class OvertureService:
             out[c] = out[c].fillna(0)
         return out
 
+    def _buildings_parquet_path(self) -> str:
+        return f"s3://{self.bucket}/{self.prefix}*"
+
+    def _quote_sql_literal(self, value: str) -> str:
+        return "'" + str(value).replace("'", "''") + "'"
+
+    def _quote_identifier(self, value: str) -> str:
+        return '"' + str(value).replace('"', '""') + '"'
+
+    def _configure_duckdb_for_path(self, con, path: str) -> None:
+        if not path.startswith("s3://"):
+            return
+        try:
+            con.execute("LOAD httpfs;")
+        except Exception:
+            con.execute("INSTALL httpfs; LOAD httpfs;")
+        con.execute("SET s3_region = 'us-west-2';")
+        # Public, anonymously-readable bucket: configure an unsigned S3 secret so
+        # DuckDB does not try (and fail) to sign requests with ambient AWS creds.
+        con.execute(
+            "CREATE OR REPLACE SECRET overture_anon "
+            "(TYPE s3, PROVIDER config, REGION 'us-west-2');"
+        )
+
     def _stream_building_dfs(self, bbox, proj_cols, verbose=False):
         """Yield matching Overture building rows as pandas DataFrame chunks (DuckDB).
 
@@ -122,19 +145,13 @@ class OvertureService:
         the prior PyArrow projection behavior.
         """
         xmin, ymin, xmax, ymax = bbox
-        path = f"s3://{self.bucket}/{self.prefix}*"
+        path = self._buildings_parquet_path()
+        path_sql = self._quote_sql_literal(path)
         con = duckdb.connect()
         try:
-            con.execute("INSTALL httpfs; LOAD httpfs;")
-            con.execute("SET s3_region = 'us-west-2';")
-            # Public, anonymously-readable bucket: configure an unsigned S3 secret so
-            # DuckDB does not try (and fail) to sign requests with ambient AWS creds.
-            con.execute(
-                "CREATE OR REPLACE SECRET overture_anon "
-                "(TYPE s3, PROVIDER config, REGION 'us-west-2');"
-            )
+            self._configure_duckdb_for_path(con, path)
             described = con.execute(
-                f"DESCRIBE SELECT * FROM read_parquet('{path}') LIMIT 0"
+                f"DESCRIBE SELECT * FROM read_parquet({path_sql}) LIMIT 0"
             ).fetchall()
             available = {row[0] for row in described}
             cols = [c for c in proj_cols if c in available]
@@ -143,30 +160,23 @@ class OvertureService:
                 print(f"--> Skipping unavailable columns: {missing}")
             if verbose:
                 print(f"--> Fetching Overture buildings via DuckDB for bbox {bbox}")
-            col_sql = ", ".join(f'"{c}"' for c in cols)
+            if not cols:
+                raise ValueError("No requested Overture columns are available in the buildings dataset")
+            col_sql = ", ".join(self._quote_identifier(c) for c in cols)
             # Bounding-box overlap test, identical to the prior PyArrow predicate.
             sql = (
-                f"SELECT {col_sql} FROM read_parquet('{path}') "
+                f"SELECT {col_sql} FROM read_parquet({path_sql}) "
                 "WHERE bbox.xmin < ? AND bbox.xmax > ? "
                 "AND bbox.ymin < ? AND bbox.ymax > ?"
             )
-            res = con.execute(sql, [xmax, xmin, ymax, ymin])
+            result_cursor = con.execute(sql, [xmax, xmin, ymax, ymin])
             while True:
-                chunk = res.fetch_df_chunk()
+                chunk = result_cursor.fetch_df_chunk()
                 if chunk.empty:
                     break
                 yield chunk
         finally:
             con.close()
-
-    def _geoarrow_schema_adapter(self, schema: pa.Schema) -> pa.Schema:
-        """Convert a geoarrow-compatible schema to a proper geoarrow schema."""
-        geometry_field_index = schema.get_field_index("geometry")
-        geometry_field = schema.field(geometry_field_index)
-        geoarrow_geometry_field = geometry_field.with_metadata(
-            {b"ARROW:extension:name": b"geoarrow.wkb"}
-        )
-        return schema.set(geometry_field_index, geoarrow_geometry_field)
 
     def _to_geodataframe(self, df: pd.DataFrame) -> gpd.GeoDataFrame:
         """Convert a fetched buildings DataFrame to a GeoDataFrame (WKB -> shapely)."""
