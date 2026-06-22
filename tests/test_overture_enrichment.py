@@ -7,22 +7,36 @@ from shapely.geometry import Polygon
 from openavmkit.data import _enrich_df_overture
 
 
-def test_enrich_df_overture_fails_open_on_service_init_error(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    parcels = gpd.GeoDataFrame(
-        {"key": ["p1"]},
-        geometry=[Polygon([(0, 0), (0.001, 0), (0.001, 0.001), (0, 0.001)])],
+def _parcel_gdf(keys=None):
+    keys = ["p1"] if keys is None else keys
+    return gpd.GeoDataFrame(
+        {"key": keys},
+        geometry=[
+            Polygon([(0, 0), (0.001, 0), (0.001, 0.001), (0, 0.001)])
+            for _ in keys
+        ],
         crs="EPSG:4326",
     )
-    settings = {"locality": {"units": "imperial"}}
-    enrich_settings = {
+
+
+def _settings():
+    return {"locality": {"units": "imperial"}}
+
+
+def _enrich_settings(footprint_units="sqft", footprint_field="footprint_sqft"):
+    return {
         "overture": {
             "enabled": True,
             "cache": True,
-            "footprint": {"units": "sqft", "field": "footprint_sqft"},
+            "footprint": {"units": footprint_units, "field": footprint_field},
             "height": {"units": "ft", "field": "height_ft"},
         }
     }
+
+
+def test_enrich_df_overture_fails_open_on_service_init_error(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    parcels = _parcel_gdf()
 
     with patch("openavmkit.data.get_cached_df", return_value=None), patch(
         "openavmkit.data.write_cached_df"
@@ -31,7 +45,7 @@ def test_enrich_df_overture_fails_open_on_service_init_error(tmp_path, monkeypat
         side_effect=RuntimeError("prefix lookup failed"),
     ):
         with pytest.warns(UserWarning, match="Failed to calculate Overture building stats"):
-            out = _enrich_df_overture(parcels, enrich_settings, {}, settings)
+            out = _enrich_df_overture(parcels, _enrich_settings(), {}, _settings())
 
     assert list(out.columns) == list(parcels.columns)
     assert out.geometry.equals(parcels.geometry)
@@ -40,23 +54,7 @@ def test_enrich_df_overture_fails_open_on_service_init_error(tmp_path, monkeypat
 
 def test_enrich_df_overture_skips_outer_cache_for_duplicate_keys(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    parcels = gpd.GeoDataFrame(
-        {"key": ["p1", "p1"]},
-        geometry=[
-            Polygon([(0, 0), (0.001, 0), (0.001, 0.001), (0, 0.001)]),
-            Polygon([(0, 0), (0.001, 0), (0.001, 0.001), (0, 0.001)]),
-        ],
-        crs="EPSG:4326",
-    )
-    settings = {"locality": {"units": "imperial"}}
-    enrich_settings = {
-        "overture": {
-            "enabled": True,
-            "cache": True,
-            "footprint": {"units": "sqft", "field": "footprint_sqft"},
-            "height": {"units": "ft", "field": "height_ft"},
-        }
-    }
+    parcels = _parcel_gdf(["p1", "p1"])
     service = MagicMock()
     service.calculate_building_stats_streaming.return_value = parcels.assign(
         footprint_sqft=[100.0, 100.0],
@@ -66,7 +64,7 @@ def test_enrich_df_overture_skips_outer_cache_for_duplicate_keys(tmp_path, monke
     with patch("openavmkit.data.get_cached_df") as get_cached_df, patch(
         "openavmkit.data.write_cached_df"
     ) as write_cached_df, patch("openavmkit.data.init_service_overture", return_value=service):
-        out = _enrich_df_overture(parcels, enrich_settings, {}, settings)
+        out = _enrich_df_overture(parcels, _enrich_settings(), {}, _settings())
 
     assert out["footprint_sqft"].tolist() == [100.0, 100.0]
     get_cached_df.assert_not_called()
@@ -75,20 +73,7 @@ def test_enrich_df_overture_skips_outer_cache_for_duplicate_keys(tmp_path, monke
 
 def test_enrich_df_overture_invalid_units_fail_fast(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    parcels = gpd.GeoDataFrame(
-        {"key": ["p1"]},
-        geometry=[Polygon([(0, 0), (0.001, 0), (0.001, 0.001), (0, 0.001)])],
-        crs="EPSG:4326",
-    )
-    settings = {"locality": {"units": "imperial"}}
-    enrich_settings = {
-        "overture": {
-            "enabled": True,
-            "cache": True,
-            "footprint": {"units": "acres", "field": "footprint_acres"},
-            "height": {"units": "ft", "field": "height_ft"},
-        }
-    }
+    parcels = _parcel_gdf()
     service = MagicMock()
     service.calculate_building_stats_streaming.side_effect = ValueError("Unsupported footprint units")
 
@@ -96,6 +81,11 @@ def test_enrich_df_overture_invalid_units_fail_fast(tmp_path, monkeypatch):
         "openavmkit.data.write_cached_df"
     ) as write_cached_df, patch("openavmkit.data.init_service_overture", return_value=service):
         with pytest.raises(ValueError, match="Unsupported footprint units"):
-            _enrich_df_overture(parcels, enrich_settings, {}, settings)
+            _enrich_df_overture(
+                parcels,
+                _enrich_settings("acres", "footprint_acres"),
+                {},
+                _settings(),
+            )
 
     write_cached_df.assert_not_called()

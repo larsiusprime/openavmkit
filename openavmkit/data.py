@@ -2945,10 +2945,9 @@ def _enrich_df_overture(
             height_field = f"bldg_height_{len_unit}"
 
         overture_succeeded = False
-        bbox = None
+        bbox = gdf.to_crs("EPSG:4326").total_bounds
         try:
             overture_service = init_service_overture(overture_settings)
-            bbox = gdf.to_crs("EPSG:4326").total_bounds
             gdf = overture_service.calculate_building_stats_streaming(
                 gdf,
                 bbox,
