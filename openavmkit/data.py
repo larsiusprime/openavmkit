@@ -181,13 +181,13 @@ class SalesUniversePair:
     def limit_sales_to_keys(self, new_sale_keys: list[str]):
         """
         Update the sales DataFrame to only those that match a key in `new_sale_keys`
-        
+
         Parameters
         ----------
         new_sale_keys : list[str]
             List of sale keys to filter to
         """
-        
+
         s = self.sales.copy()
         s = s[s["key_sale"].isin(new_sale_keys)]
         self.sales = s
@@ -2892,11 +2892,13 @@ def _enrich_df_overture(
     
     unit = area_unit(settings)
     
-    gdf_out = get_cached_df(gdf_in, "geom/overture", "key", s_enrich_this)
-    if gdf_out is not None:
-        if verbose:
-            print("--> found cached data...")
-        return gdf_out
+    duplicate_keys = gdf_in["key"].duplicated(keep=False).any()
+    if not duplicate_keys:
+        gdf_out = get_cached_df(gdf_in, "geom/overture", "key", s_enrich_this)
+        if gdf_out is not None:
+            if verbose:
+                print("--> found cached data...")
+            return gdf_out
 
     gdf = gdf_in.copy()
 
@@ -2907,68 +2909,73 @@ def _enrich_df_overture(
         if verbose:
             print("Enriching with Overture building data...")
 
-        # Initialize Overture service with the correct settings path
         overture_settings = {
             "overture": s_overture  # Pass the overture settings directly
         }
-        overture_service = init_service_overture(overture_settings)
 
-        # Get bounding box from data
+        # Calculate building footprints
+        s_footprint = s_overture.get("footprint", {})
+        footprint_units = s_footprint.get("units", None)
+        if footprint_units is None:
+            warnings.warn(
+                f"`process.enrich.overture.footprint.units` not specified, defaulting to '{unit}'"
+            )
+            footprint_units = unit
+        footprint_field = s_footprint.get("field", None)
+        if footprint_field is None:
+            warnings.warn(
+                f"`process.enrich.overture.footprint.field` not specified, defaulting to 'bldg_area_footprint_{footprint_units}'"
+            )
+            footprint_field = f"bldg_area_footprint_{footprint_units}"
+
+        # Calculate building height
+        len_unit = get_short_distance_unit(settings)
+        s_height = s_overture.get("height", {})
+        height_units = s_height.get("units", None)
+        if height_units is None:
+            warnings.warn(
+                f"`process.enrich.overture.height.units` not specified, defaulting to '{len_unit}'"
+            )
+            height_units = len_unit
+        height_field = s_height.get("field", None)
+        if height_field is None:
+            warnings.warn(
+                f"`process.enrich.overture.height.field` not specified, defaulting to 'bldg_height_{len_unit}'"
+            )
+            height_field = f"bldg_height_{len_unit}"
+
+        overture_succeeded = False
         bbox = gdf.to_crs("EPSG:4326").total_bounds
-
-        # Fetch building data
-        buildings = overture_service.get_buildings(
-            bbox, use_cache=s_overture.get("cache", True), unit=unit, verbose=verbose
-        )
-
-        if not buildings.empty:
-            # Calculate building footprints
-            sq_unit = area_unit(settings)
-            s_footprint = s_overture.get("footprint", {})
-            footprint_units = s_footprint.get("units", None)
-            if footprint_units is None:
-                warnings.warn(
-                    f"`process.enrich.overture.footprint.units` not specified, defaulting to '{unit}'"
-                )
-                footprint_units = unit
-            footprint_field = s_footprint.get("field", None)
-            if footprint_field is None:
-                warnings.warn(
-                    f"`process.enrich.overture.footprint.field` not specified, defaulting to 'bldg_area_footprint_{footprint_units}'"
-                )
-                footprint_field = f"bldg_area_footprint_{footprint_units}"
-            
-            # Calculate building height
-            len_unit = get_short_distance_unit(settings)
-            s_height = s_overture.get("height", {})
-            height_units = s_height.get("units", None)
-            if height_units is None:
-                warnings.warn(
-                    f"`process.enrich.overture.height.units` not specified, defaulting to {len_unit}'"
-                )
-                height_units = len_unit
-            height_field = s_height.get("field", None)
-            if height_field is None:
-                warnings.warn(
-                    f"`process.enrich.overture.height.field` not specified, defaulting to 'bldg_height_{len_unit}'"
-                )
-                height_field = f"bldg_height_{len_unit}"
-            
-            gdf = overture_service.calculate_building_stats(
-                gdf, 
-                buildings,
+        try:
+            overture_service = init_service_overture(overture_settings)
+            gdf = overture_service.calculate_building_stats_streaming(
+                gdf,
+                bbox,
                 footprint_units,
                 footprint_field,
                 height_units,
                 height_field,
-                verbose=verbose
+                use_cache=s_overture.get("cache", True),
+                verbose=verbose,
             )
-            
-            
-        elif verbose:
-            print("--> No buildings found in the area")
+            overture_succeeded = True
+        except ValueError:
+            raise
+        except Exception as e:
+            message = (
+                "Failed to calculate Overture building stats "
+                f"(bbox={bbox}, footprint_field={footprint_field!r}, "
+                f"height_field={height_field!r}, cache={s_overture.get('cache', True)}): {str(e)}"
+            )
+            if verbose:
+                print(f"--> {message}")
+                print(f"--> Traceback: {traceback.format_exc()}")
+            warnings.warn(
+                f"{message}\n{traceback.format_exc()}"
+            )
 
-        write_cached_df(gdf_in, gdf, "geom/overture", "key", s_enrich_this)
+        if overture_succeeded and not duplicate_keys:
+            write_cached_df(gdf_in, gdf, "geom/overture", "key", s_enrich_this)
 
     return gdf
 
