@@ -36,6 +36,7 @@ from openavmkit.utilities.data import (
     combine_dfs,
 )
 from openavmkit.utilities.excel import write_to_excel
+from openavmkit.utilities.sales_scrutiny import flag_dupe_date_price
 from openavmkit.utilities.settings import get_fields_categorical, _apply_dd_to_df_cols, area_unit, get_locations, warn_if_location_collapsed
 
 
@@ -615,20 +616,7 @@ def run_heuristics(
             warnings.warn(f"You provided a `deed_id`: \"{deed_id}\", but it wasn't found in in the sales dataframe, so no deed-based sales validation heuristic can be run")
 
     # 2 -- Flag sales made on the same date for the same price
-    
-    if jurisdiction != None:
-        df_sales["date_price"] = df_sales[jurisdiction].astype(str) + "---" + df_sales["sale_date"].astype(str) + "---" + df_sales["sale_price"].astype(str)
-    else:
-        df_sales["date_price"] = df_sales["sale_date"].astype(str) + "---" + df_sales["sale_price"].astype(str)
-    vcs_date_price = df_sales["date_price"].value_counts()
-    idx_dupe_date_price = vcs_date_price[vcs_date_price > 1].index.values
-    df_sales.loc[
-        df_sales["date_price"].isin(idx_dupe_date_price),
-        "flag_dupe_date_price",
-    ] = True
-    
-    # drop extraneous column
-    df_sales = df_sales.drop(columns="date_price")
+    df_sales = flag_dupe_date_price(df_sales, jurisdiction)
 
     #### Misclassified vacant sales detection heuristics
 
