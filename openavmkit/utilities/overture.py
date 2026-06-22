@@ -9,14 +9,12 @@ check on improvement coverage is desired.
 """
 import os
 import warnings
+import gc
+import duckdb
 import geopandas as gpd
 import pandas as pd
 import traceback
-import pyarrow as pa
-import pyarrow.compute as pc
-import pyarrow.dataset as ds
 import pyarrow.fs as fs
-from tqdm import tqdm
 import shapely.wkb
 
 from openavmkit.utilities.geometry import get_crs
@@ -40,6 +38,7 @@ class OvertureService:
         "height", "est_height", "num_floors", "num_floors_underground",
         "subtype", "class", "sources"   # sources = per-property confidence
     ]
+    DEFAULT_STREAM_BATCH_ROWS = 10_000
 
     def __init__(self, settings: dict):
         """Initialize the Overture service with settings.
@@ -99,30 +98,117 @@ class OvertureService:
             out[c] = out[c].fillna(0)
         return out
 
-    def _get_dataset(self):
-        """Get the PyArrow dataset for buildings."""
-        path = f"{self.bucket}/{self.prefix}"
-        return ds.dataset(path, filesystem=self.fs, format="parquet")
+    def _buildings_parquet_path(self) -> str:
+        return f"s3://{self.bucket}/{self.prefix}*"
 
-    def _geoarrow_schema_adapter(self, schema: pa.Schema) -> pa.Schema:
-        """Convert a geoarrow-compatible schema to a proper geoarrow schema."""
-        geometry_field_index = schema.get_field_index("geometry")
-        geometry_field = schema.field(geometry_field_index)
-        geoarrow_geometry_field = geometry_field.with_metadata(
-            {b"ARROW:extension:name": b"geoarrow.wkb"}
+    def _quote_sql_literal(self, value: str) -> str:
+        return "'" + str(value).replace("'", "''") + "'"
+
+    def _quote_identifier(self, value: str) -> str:
+        return '"' + str(value).replace('"', '""') + '"'
+
+    def _configure_duckdb_for_path(self, con, path: str) -> None:
+        if not path.startswith("s3://"):
+            return
+        try:
+            con.execute("LOAD httpfs;")
+        except Exception:
+            con.execute("INSTALL httpfs; LOAD httpfs;")
+        con.execute("SET s3_region = 'us-west-2';")
+        # Public, anonymously-readable bucket: configure an unsigned S3 secret so
+        # DuckDB does not try (and fail) to sign requests with ambient AWS creds.
+        con.execute(
+            "CREATE OR REPLACE SECRET overture_anon "
+            "(TYPE s3, PROVIDER config, REGION 'us-west-2');"
         )
-        return schema.set(geometry_field_index, geoarrow_geometry_field)
 
-    def _batch_to_geodataframe(self, batch: pa.RecordBatch) -> gpd.GeoDataFrame:
-        """Convert a PyArrow batch to a GeoDataFrame with proper geometry handling."""
-        # Convert to pandas DataFrame first
-        df = batch.to_pandas()
+    def _stream_building_dfs(self, bbox, proj_cols, verbose=False):
+        """Yield matching Overture building rows as pandas DataFrame chunks (DuckDB).
 
+        The bbox-overlap predicate is pushed down to the Parquet row-group statistics
+        on the ``bbox`` struct subfields, so only the row groups that can contain
+        matching buildings are decoded. This bounds peak memory to the matched rows
+        instead of scanning a huge fraction of the GLOBAL buildings theme like the
+        PyArrow dataset scanner does — PyArrow does not prune row groups on nested
+        struct subfields, so a ~1 km box pulled ~3 GB RSS over ~84 s and OOM-killed
+        the 4 GiB worker (ENG-3033); the same fetch under DuckDB is ~0.4 GB.
+
+        ``fetch_df_chunk`` streams the (already-bounded) result so the full building
+        set is never materialized at once, preserving the streaming contract that the
+        per-parcel stats aggregation relies on. Pandas (not Arrow) is used because the
+        ``geometry`` column is a GeoArrow GEOMETRY type whose DuckDB Arrow export
+        resolves its CRS via the ``spatial`` extension catalog (not loaded) and raises
+        an internal error; the pandas path returns the raw stored WKB bytes verbatim
+        (bit-identical to the prior PyArrow read).
+
+        Columns in ``proj_cols`` absent from the current release are dropped, mirroring
+        the prior PyArrow projection behavior.
+        """
+        xmin, ymin, xmax, ymax = bbox
+        path = self._buildings_parquet_path()
+        path_sql = self._quote_sql_literal(path)
+        con = duckdb.connect()
+        try:
+            self._configure_duckdb_for_path(con, path)
+            described = con.execute(
+                f"DESCRIBE SELECT * FROM read_parquet({path_sql}) LIMIT 0"
+            ).fetchall()
+            available = {row[0] for row in described}
+            cols = [c for c in proj_cols if c in available]
+            missing = [c for c in proj_cols if c not in available]
+            if verbose and missing:
+                print(f"--> Skipping unavailable columns: {missing}")
+            if verbose:
+                print(f"--> Fetching Overture buildings via DuckDB for bbox {bbox}")
+            if not cols:
+                raise ValueError("No requested Overture columns are available in the buildings dataset")
+            col_sql = ", ".join(self._quote_identifier(c) for c in cols)
+            # Bounding-box overlap test, identical to the prior PyArrow predicate.
+            sql = (
+                f"SELECT {col_sql} FROM read_parquet({path_sql}) "
+                "WHERE bbox.xmin < ? AND bbox.xmax > ? "
+                "AND bbox.ymin < ? AND bbox.ymax > ?"
+            )
+            result_cursor = con.execute(sql, [xmax, xmin, ymax, ymin])
+            while True:
+                chunk = result_cursor.fetch_df_chunk()
+                if chunk.empty:
+                    break
+                yield chunk
+        finally:
+            con.close()
+
+    def _to_geodataframe(self, df: pd.DataFrame) -> gpd.GeoDataFrame:
+        """Convert a fetched buildings DataFrame to a GeoDataFrame (WKB -> shapely)."""
         # Convert WKB geometry to shapely geometry
-        df["geometry"] = df["geometry"].apply(lambda wkb: shapely.wkb.loads(wkb) if pd.notnull(wkb) else None)
+        df["geometry"] = df["geometry"].apply(lambda wkb: shapely.wkb.loads(bytes(wkb)) if wkb is not None and pd.notnull(wkb) else None)
 
         # Create GeoDataFrame with WGS84 CRS (EPSG:4326)
         return gpd.GeoDataFrame(df, geometry="geometry", crs="EPSG:4326")
+
+    def _building_batches(self, bbox, columns: list[str] | None = None, verbose: bool = False):
+        """Yield Overture building batches as GeoDataFrames for a bbox.
+
+        This is intentionally a generator so callers that only need aggregate
+        parcel stats can process one Arrow batch at a time instead of
+        materializing the full building set for dense urban bounding boxes.
+        """
+        proj_cols = list(columns) if columns is not None else self.DEFAULT_COLUMNS.copy()
+        for req in ("geometry", "bbox"):
+            if req not in proj_cols:
+                proj_cols.append(req)
+
+        stream_batch_rows = int(
+            self.settings.get("stream_batch_rows", self.DEFAULT_STREAM_BATCH_ROWS)
+            or self.DEFAULT_STREAM_BATCH_ROWS
+        )
+        stream_batch_rows = max(1, stream_batch_rows)
+
+        for chunk in self._stream_building_dfs(bbox, proj_cols, verbose=verbose):
+            for offset in range(0, len(chunk), stream_batch_rows):
+                sub = chunk.iloc[offset:offset + stream_batch_rows]
+                if len(sub) > 0:
+                    yield self._to_geodataframe(sub.copy())
 
     def get_buildings(
         self, 
@@ -190,62 +276,14 @@ class OvertureService:
                 print("--> Fetching data from Overture...")
 
             try:
-                # Create bounding box filter
-                xmin, ymin, xmax, ymax = bbox
-                filter = (
-                    (pc.field("bbox", "xmin") < xmax)
-                    & (pc.field("bbox", "xmax") > xmin)
-                    & (pc.field("bbox", "ymin") < ymax)
-                    & (pc.field("bbox", "ymax") > ymin)
-                )
-                
-                # Decide which columns to fetch
-                proj_cols = columns if columns is not None else self.DEFAULT_COLUMNS.copy()
-                # Ensure required columns are present
-                for req in ("geometry", "bbox"):
-                    if req not in proj_cols:
-                        proj_cols.append(req)
-                
-                # Get dataset and apply filter+projection
-                dataset = self._get_dataset()
-                if verbose:
-                    print("--> Dataset columns:", dataset.schema.names)
-                available = set(dataset.schema.names)
-                missing = [c for c in proj_cols if c not in available]
-                proj_cols = [c for c in proj_cols if c in available]
-                if verbose and missing:
-                    print(f"--> Skipping unavailable columns: {missing}")
-                batches = dataset.to_batches(filter=filter, columns=proj_cols)
-
-                # Count total batches for progress bar
-                if verbose:
-                    print("--> Counting batches...")
-                    total_batches = sum(1 for _ in batches)
-                    print(f"--> Found {total_batches} batches")
-                    batches = dataset.to_batches(filter=filter, columns=proj_cols)  # Reset iterator
-
-                # Process batches with progress bar
                 dfs = []
                 buildings_found = 0
 
-                with tqdm(
-                    total=total_batches if verbose else None,
-                    desc="Processing batches",
-                    disable=not verbose,
-                ) as pbar:
-                    for batch in batches:
-                        if batch.num_rows > 0:
-                            try:
-                                # Convert batch to GeoDataFrame with proper geometry handling
-                                df = self._batch_to_geodataframe(batch)
-                                if not df.empty:
-                                    df = self._derive_height_and_floors(df, typical_floor_height_m)
-                                    dfs.append(df)
-                                    buildings_found += len(df)
-                            except Exception as e:
-                                if verbose:
-                                    print(f"--> Error processing batch: {str(e)}")
-                        pbar.update(1)
+                for df in self._building_batches(bbox, columns=columns, verbose=verbose):
+                    if not df.empty:
+                        df = self._derive_height_and_floors(df, typical_floor_height_m)
+                        dfs.append(df)
+                        buildings_found += len(df)
 
                 if verbose:
                     print(f"--> Found {buildings_found} buildings")
@@ -344,6 +382,170 @@ class OvertureService:
         gdf = self.calculate_building_footprints(gdf, buildings, footprint_units, footprint_field, verbose)
         gdf = self.calculate_building_heights(gdf, buildings, height_units, height_field, verbose)
         return gdf
+
+    def _footprint_unit_multiplier(self, unit: str) -> float:
+        if unit == "sqft":
+            return 10.764
+        if unit == "sqm":
+            return 1.0
+        raise ValueError(
+            f"Unsupported footprint units: {unit}. Supported units are 'sqft' and 'sqm'."
+        )
+
+    def _height_unit_multiplier(self, unit: str) -> float:
+        if unit == "ft":
+            return 3.2808399
+        if unit == "m":
+            return 1.0
+        raise ValueError(f"Unsupported height units: {unit}. Use 'ft' or 'm'.")
+
+    def calculate_building_stats_streaming(
+        self,
+        gdf: gpd.GeoDataFrame,
+        bbox,
+        footprint_units: str,
+        footprint_field: str,
+        height_units: str,
+        height_field: str,
+        use_cache: bool = True,
+        verbose: bool = False,
+    ) -> gpd.GeoDataFrame:
+        """Calculate Overture parcel stats without materializing all buildings.
+
+        The full Overture bbox is still processed. The memory saving comes from
+        iterating the source dataset in Arrow batches, aggregating each batch's
+        parcel intersections into per-key totals/maxima, and dropping the batch
+        intermediates before reading the next batch.
+        """
+        columns = self.DEFAULT_COLUMNS.copy()
+        frames = self._building_batches(bbox, columns=columns, verbose=verbose)
+        return self._calculate_building_stats_from_frames(
+            gdf,
+            frames,
+            footprint_units,
+            footprint_field,
+            height_units,
+            height_field,
+            use_cache=use_cache,
+            verbose=verbose,
+        )
+
+    def _calculate_building_stats_from_frames(
+        self,
+        gdf: gpd.GeoDataFrame,
+        building_frames,
+        footprint_units: str,
+        footprint_field: str,
+        height_units: str,
+        height_field: str,
+        use_cache: bool = True,
+        verbose: bool = False,
+    ) -> gpd.GeoDataFrame:
+        """Streaming implementation shared by the dataset path and tests."""
+        footprint_mult = self._footprint_unit_multiplier(footprint_units)
+        height_mult = self._height_unit_multiplier(height_units)
+
+        duplicate_keys = gdf["key"].duplicated(keep=False).any()
+        area_cache_path = self._get_cache_path("intersections_area", gdf.total_bounds)
+        height_cache_path = self._get_cache_path("intersections_height", gdf.total_bounds)
+        if use_cache and not duplicate_keys:
+            area_cached = self._stats_cache_load(area_cache_path, gdf, [footprint_field], verbose)
+            if area_cached is not None:
+                height_cached = self._stats_cache_load(
+                    height_cache_path,
+                    area_cached,
+                    [height_field, "bldg_stories"],
+                    verbose,
+                )
+                if height_cached is not None:
+                    return height_cached
+
+        row_ids = pd.RangeIndex(len(gdf))
+        gdf_rows = gdf.reset_index(drop=True)
+        gdf_projected = gdf_rows.to_crs(get_crs(gdf, "equal_area"))
+        gdf_projected["_overture_row_id"] = row_ids
+        gdf_for_height = gdf_rows.copy()
+        gdf_for_height["_overture_row_id"] = row_ids
+        footprint_totals = pd.Series(0.0, index=row_ids, dtype="float64")
+        height_max = pd.Series(pd.NA, index=row_ids, dtype="Float64")
+        floors_max = pd.Series(pd.NA, index=row_ids, dtype="Float64")
+        buildings_found = 0
+
+        for buildings in building_frames:
+            if buildings is None or buildings.empty:
+                continue
+            buildings_found += len(buildings)
+            if "height_m_best" not in buildings.columns or "floors_best" not in buildings.columns:
+                buildings = self._derive_height_and_floors(buildings.copy())
+
+            buildings_area = buildings.to_crs(gdf_projected.crs)
+            joined_area = gpd.sjoin(
+                gdf_projected, buildings_area, how="left", predicate="intersects"
+            )
+
+            if not joined_area.empty and not joined_area["index_right"].isna().all():
+                def calculate_intersection_area(row):
+                    try:
+                        row_id = int(row["_overture_row_id"])
+                        parcel_geom = gdf_projected.loc[row_id, "geometry"]
+                        building_idx = row["index_right"]
+                        if pd.isna(building_idx):
+                            return 0.0
+                        building_geom = buildings_area.loc[building_idx, "geometry"]
+                        if parcel_geom.intersects(building_geom):
+                            return parcel_geom.intersection(building_geom).area * footprint_mult
+                        return 0.0
+                    except Exception as e:
+                        parcel_key = row.get("key", "<unknown>")
+                        warnings.warn(
+                            "Error calculating Overture building intersection area "
+                            f"for parcel key={parcel_key!r}, building_idx={row.get('index_right')!r}: {e}"
+                        )
+                        return 0.0
+
+                joined_area[footprint_field] = joined_area.apply(
+                    calculate_intersection_area, axis=1
+                )
+                area_agg = joined_area.groupby("_overture_row_id")[footprint_field].sum()
+                footprint_totals = footprint_totals.add(area_agg, fill_value=0)
+
+            buildings_height = buildings.to_crs(gdf_for_height.crs)
+            joined_height = gpd.sjoin(
+                gdf_for_height, buildings_height, how="left", predicate="intersects"
+            )
+            if not joined_height.empty and not joined_height["index_right"].isna().all():
+                joined_height["_height_out"] = (
+                    pd.to_numeric(joined_height["height_m_best"], errors="coerce") * height_mult
+                )
+                if "floors_best" in joined_height.columns:
+                    joined_height["_floors_out"] = pd.to_numeric(
+                        joined_height["floors_best"], errors="coerce"
+                    )
+                else:
+                    joined_height["_floors_out"] = pd.NA
+                height_agg = joined_height.groupby("_overture_row_id")["_height_out"].max(min_count=1)
+                floors_agg = joined_height.groupby("_overture_row_id")["_floors_out"].max(min_count=1)
+                height_max = pd.concat([height_max, height_agg], axis=1).max(axis=1)
+                floors_max = pd.concat([floors_max, floors_agg], axis=1).max(axis=1)
+
+            del buildings, buildings_area, joined_area, buildings_height, joined_height
+            gc.collect()
+
+        out = gdf.copy()
+        out[footprint_field] = footprint_totals.reindex(row_ids).fillna(0).to_numpy()
+        out[height_field] = height_max.reindex(row_ids).fillna(0).to_numpy()
+        out["bldg_stories"] = floors_max.reindex(row_ids).fillna(0).to_numpy()
+
+        if verbose:
+            print(f"--> Streamed {buildings_found} buildings")
+            print(
+                f"--> Number of parcels with buildings: {(out[footprint_field] > 0).sum():,}"
+            )
+
+        if use_cache and not duplicate_keys:
+            self._stats_cache_save(area_cache_path, out, [footprint_field])
+            self._stats_cache_save(height_cache_path, out, [height_field, "bldg_stories"])
+        return out
     
     
     def calculate_building_footprints(
