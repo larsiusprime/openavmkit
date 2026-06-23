@@ -2063,46 +2063,25 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
             )
         for location in locations:
             if location in df:
-                df[f"prediction_cod_{location}"] = None
-                df[f"assr_cod_{location}"] = None
-                location_values = df[location].unique()
-                for value in location_values:
-                    predictions = df.loc[
-                        df[location].eq(value), "prediction_ratio"
-                    ].values
-                    predictions = predictions[~pd.isna(predictions)]
-                    df.loc[df[location].eq(value), f"prediction_cod_{location}"] = (
-                        calc_cod(predictions)
+                # COD per location group, computed in a single grouped pass and mapped back to
+                # every row. The previous per-value boolean-mask loop was O(unique_values x rows)
+                # — pathological for high-cardinality fields (e.g. neighborhood_filled with
+                # thousands of codes on the full universe); groupby makes it O(rows).
+                def _cod_by(value_field):
+                    cods = df.groupby(location)[value_field].apply(
+                        lambda s: calc_cod(s.dropna().values)
                     )
+                    return df[location].map(cods)
 
-                    if "assr_market_value" in df:
-                        assr_ratios = df.loc[
-                            df[location].eq(value), "assr_ratio"
-                        ].values
-                        assr_ratios = assr_ratios[~pd.isna(assr_ratios)]
-                        df.loc[df[location].eq(value), f"assr_cod_{location}"] = (
-                            calc_cod(assr_ratios)
-                        )
-                    if "true_market_value" in df:
-                        true_vs_sales_ratios = df.loc[
-                            df[location].eq(value), "true_vs_sale_ratio"
-                        ].values
-                        true_vs_sales_ratios = true_vs_sales_ratios[
-                            ~pd.isna(true_vs_sales_ratios)
-                        ]
-                        df.loc[
-                            df[location].eq(value), f"true_vs_sale_cod_{location}"
-                        ] = calc_cod(true_vs_sales_ratios)
+                df[f"prediction_cod_{location}"] = _cod_by("prediction_ratio")
 
-                        pred_vs_true_ratios = df.loc[
-                            df[location].eq(value), "pred_vs_true_ratio"
-                        ].values
-                        pred_vs_true_ratios = pred_vs_true_ratios[
-                            ~pd.isna(pred_vs_true_ratios)
-                        ]
-                        df.loc[
-                            df[location].eq(value), f"pred_vs_true_cod_{location}"
-                        ] = calc_cod(pred_vs_true_ratios)
+                if "assr_market_value" in df:
+                    df[f"assr_cod_{location}"] = _cod_by("assr_ratio")
+                else:
+                    df[f"assr_cod_{location}"] = None
+                if "true_market_value" in df:
+                    df[f"true_vs_sale_cod_{location}"] = _cod_by("true_vs_sale_ratio")
+                    df[f"pred_vs_true_cod_{location}"] = _cod_by("pred_vs_true_ratio")
 
     return dfs
 
@@ -2183,7 +2162,7 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
     """
     
     print(f"Write model results to {outpath}")
-    
+
     dfs = _assemble_model_results(results, settings)
     path = f"{outpath}/{results.model_name}"
     if "*" in path:
@@ -2191,11 +2170,11 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
     os.makedirs(path, exist_ok=True)
     for key in dfs:
         df = dfs[key]
-        
+
         if "geometry" in df.columns:
             df = gpd.GeoDataFrame(df, geometry="geometry", crs=getattr(df, "crs", None))
             df = ensure_geometries(df)
-        
+
         df.to_parquet(f"{path}/pred_{key}.parquet")
         if "geometry" in df:
             df = df.drop(columns=["geometry"])
@@ -2214,9 +2193,9 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
 
     with open(f"{path}/pred_universe.pkl", "wb") as f:
         pickle.dump(results.pred_univ, f, protocol=pickle.HIGHEST_PROTOCOL)
-    
+
     params_path = f"{path}"
-    
+
     write_model_parameters(results.model, results, location, params_path, verbose=verbose)
 
     try:
