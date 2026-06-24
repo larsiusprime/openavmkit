@@ -1,0 +1,139 @@
+{
+  "land_value_integrity": {
+    "__comment": "Config for the openavmkit.lvi battery. EVERY key is optional — omit it and it falls back to the Wake/IAAO default shown here. A new jurisdiction typically overrides only a few entries under `columns`, `vocab`, and `evidence.frozen_sov`; everything else can be deleted and will use these defaults.",
+
+    "model_group": "single_family",
+    "__comment_model_group": "Which model group to score. For multi-group jurisdictions, see `per_model_group` at the very bottom.",
+
+    "columns": {
+      "__comment": "Maps the battery's logical roles to YOUR column names. Defaults are openavmkit's canonical names (the assemble/clean pipeline already produces them), so list only the ones that differ in your data.",
+
+      "land_value":  "land_value",
+      "impr_value":  "impr_value",
+      "total_value": "total_value",
+      "__comment_series": "The land series under test. FOR FLORIDA: map these to JUST (market) value land/building/total — NEVER the Save-Our-Homes-capped 'assessed value', or the tests measure the cap instead of the assessment.",
+
+      "cost_bldg_value": "assr_impr_value",
+      "pctgood":         "bldg_condition_pct",
+      "__comment_cost": "Cost basis for the RCN-residual evidence streams and the depreciation diagnostic. `cost_bldg_value` = the cost-book depreciated building value (RCNLD). `pctgood` = percent-good (0-100 or 0-1; auto-detected). If `pctgood` is absent in your data, set it to null — the RCN streams degrade to vacant-only gold rather than breaking.",
+
+      "qualification": "disq_flag",
+      "vacant_sale":   "vacant_sale",
+      "__comment_sale_flags": "`qualification` = the deed/sale qualification code column (Wake Disq_and_Qual; FL = DOR sale-qualification code). `vacant_sale` = boolean, true when the parcel sold as vacant land.",
+
+      "neighborhood":  "neighborhood_filled",
+      "model_group":   "model_group",
+      "land_area":     "land_area_sqft",
+      "bldg_area":     "bldg_area_finished_sqft",
+      "rectangularity":"geom_rectangularity_num",
+      "is_vacant":     "is_vacant",
+      "bldg_year_built":"bldg_year_built",
+      "sale_price":    "sale_price",
+      "sale_price_time_adj":"sale_price_time_adj",
+      "sale_date":     "sale_date",
+      "sale_age_days": "sale_age_days",
+      "land_he_id":    "land_he_id",
+      "impr_he_id":    "impr_he_id",
+      "latitude":      "latitude",
+      "longitude":     "longitude",
+      "valid_for_ratio_study":      "valid_for_ratio_study",
+      "valid_for_land_ratio_study": "valid_for_land_ratio_study",
+      "__comment_canonical": "The block above is openavmkit-canonical; the pipeline normalizes to these names, so you usually leave them as-is.",
+
+      "impr_feats": ["bldg_area_finished_sqft", "bldg_age_years", "bldg_quality_num", "bldg_condition_num"],
+      "__comment_impr_feats": "A1 (improvement-independence) regresses land $/sqft on these building features. Use whatever building attributes your data carries."
+    },
+
+    "vocab": {
+      "__comment": "The two things column-renaming can't fix: which sale codes count as qualified, and how to read zoning. These almost always need per-jurisdiction values.",
+
+      "qualified_sale_codes": ["A", "C"],
+      "__comment_qualified": "WHITELIST of arm's-length deed codes for the land gold standard (non-circular). Wake = A/C. FLORIDA = the DOR qualified-sale codes (e.g. ['01','02']). Unstamped/NaN and all other codes are excluded — positive confirmation only.",
+
+      "residential_model_groups": ["single_family", "multifamily", "apartment", "UNKNOWN"],
+      "__comment_resgroups": "Model groups treated as residential for the prime-lot zoning filter.",
+
+      "classify_mode": "regex",
+      "__comment_classify_mode": "'regex' (Wake) OR 'set' (recommended elsewhere). 'set' = classify on a clean code column against an explicit residential allowlist. 'regex' = ordered pattern rules, for messy zoning vocabularies.",
+
+      "classify_field": "zoning",
+      "__comment_classify_field": "Column to classify on. With mode 'set', point this at a clean code column — e.g. FL DOR use code 'dor_use_code' — rather than raw zoning.",
+
+      "residential_codes": [],
+      "__comment_residential_codes": "Used ONLY when classify_mode='set': the residential allowlist (e.g. FL DOR ['0100','0200']). Everything else is treated as non-residential. Leave [] when using regex mode.",
+
+      "zoning_regex": [
+        ["rural",       ["^(RA|RR)(\\b|[\\d-])"]],
+        ["nonres",      ["^(IX|LI|HI|IND|OX|OI|ORD|CX|CC|CM|CMX|GC|GCP|GCM|HB|HC|NMX|NMU|NX|NC|NAC|UMX|DT|TCR)"]],
+        ["residential", ["^(R[\\d-]|R&|R/|RL|RM|RX|RHD|RT|GR\\d|SR|UR|MDR?|LDR?|HDR?|NR|TR|TND|MF|MH|PUD|PD|CU-R)"]]
+      ],
+      "__comment_zoning_regex": "Used ONLY when classify_mode='regex' (Wake default). Ordered [bucket, [patterns]] rules, evaluated top-down; first match wins, anything unmatched = 'other'. These are Wake/Raleigh's patterns verbatim — replace for your codes, or switch to 'set' mode."
+    },
+
+    "prime_lot": {
+      "__comment": "Defines a 'prime buildable' comp: genuinely vacant, residentially zoned, locally comparable in size, sanely shaped. Tunable; Wake defaults shown.",
+      "rect_min": 0.40,
+      "__comment_rect": "geom_rectangularity_num below this = weird/irregular shape, disqualified.",
+      "min_peers": 10,
+      "__comment_peers": "A neighborhood needs at least this many BUILT peers to define a size band.",
+      "size_lo": 0.05,
+      "size_hi": 0.95,
+      "__comment_size": "A vacant lot must fall within this percentile band of its neighborhood's built-lot sizes to be comparable."
+    },
+
+    "evidence": {
+      "__comment": "How the evidence streams are gated. The frozen_sov flag is the key per-jurisdiction judgment.",
+      "frozen_sov": true,
+      "__comment_frozen": "TRUE only if building cost (RCN) comes from a frozen, publicly-adopted cost schedule (Wake's NC Schedule of Values). When true, depreciation~0 cost-residuals JOIN the A3 gold standard (~60x the vacant sample). Set FALSE if your cost basis isn't a trusted frozen schedule — gold then = prime+qualified vacant only.",
+      "rcn_pctgood_min": 0.95,
+      "__comment_rcn_gate": "percent-good >= this => 'depreciation ~ 0' => the clean RCN-residual stream (assr_impr ~ RCN).",
+      "rcnld_pctgood_lo": 0.75,
+      "rcnld_pctgood_hi": 0.95,
+      "__comment_rcnld_gate": "percent-good in [lo,hi) => the low/moderate-depreciation residual stream (reserved for external series, not the assessor's own gold).",
+      "teardown_frac": 0.50,
+      "__comment_teardown": "A sale counts as a teardown only if its price/land-sqft is below this fraction of the neighborhood's developed $/land-sqft (priced like land, not a finished home).",
+      "vacant_price_floor": 2000,
+      "__comment_floor": "Drop vacant sales below this price (noise / token transfers).",
+      "pctgood_clip": [0.10, 1.20],
+      "__comment_clip": "RCN reconstruction clamps percent-good to this range so a near-zero or wild over-100 factor can't manufacture an absurd RCN."
+    },
+
+    "verdicts": {
+      "__comment": "pass/warn thresholds as [pass_at, warn_at]. Defaults are IAAO standards; override to retune. A metric better-when-LOW (COD, violations) passes at <= pass_at; better-when-HIGH (rho) passes at >= pass_at.",
+      "total_cod":       [15, 25],
+      "a1_partial_r2":   [0.05, 0.15],
+      "a2_chd":          [15, 25],
+      "a3_cod":          [15, 25],
+      "__comment_a3": "IAAO vacant-land COD band (very-active/large => 15, mid => 20, rural-depressed => 25).",
+      "a5_rho":          [0.6, 0.4],
+      "a7_pct":          [1.0, 5.0],
+      "a8_chd":          [15, 25],
+      "b3_hot":          [0.05, 0.10],
+      "ve_vei_abs":      [10, 25],
+      "depreciation_drift50": [5, 15],
+      "__comment_dep": "Allowed residual-land drift ($/sqft) over 50 years of building age; ~0 = well-calibrated depreciation."
+    },
+
+    "support": {
+      "__comment": "Coverage map (B1) and matched-building propagation (B1b) settings.",
+      "bldg_psf_bounds": [20, 600],
+      "__comment_bpsf": "Sane building $/sqft range when calibrating location-invariant building value for propagation.",
+      "min_anchor_sales": 3,
+      "__comment_anchor": "A matched-building cluster needs this many anchor-zone sales before it can transfer a land level.",
+      "distance_bands_mi": [0.5, 1.0, 2.0]
+    },
+
+    "confidence": {
+      "__comment": "Per-parcel evidence-packet grading. A parcel is 'high' confidence when no sanity flags fire AND its land sits within these bands of the corroborating evidence.",
+      "residual_band": [0.6, 1.6],
+      "anchor_band":   [0.6, 1.6],
+      "cluster_band":  [0.5, 2.0],
+      "min_anchor_n":  3
+    },
+
+    "__comment_per_group": "OPTIONAL: multi-group jurisdictions can override any of the above per model group. Keys here win over the top-level block for that group.",
+    "per_model_group": {
+      "commercial": { "vocab": { "qualified_sale_codes": ["A"] }, "evidence": { "frozen_sov": false } }
+    }
+  }
+}

@@ -1148,3 +1148,42 @@ subdivisions, $X premium" — the most concrete protest evidence), (3) relative 
 location ranking holds even where absolutes are noisy). Per-zone premiums in
 `out/lvi/location_differentials.csv`. Older-only zones still need §20's depreciation-handling
 abstraction.
+
+---
+
+## 22. Config-driven genericization → `openavmkit.lvi` package (2026-06-24)
+
+The research scripts were consolidated and genericized into a shipped, settings-driven package
+`openavmkit/lvi/` (separate from `openavmkit/land/`, the creation/painter system; reconcile later
+per `research/land_reconciliation_map.md`).
+
+**Architecture decisions (Lars):**
+- **No bespoke classification in LVI.** Removed `classify_zoning` (regex), `qualified_sale_mask`
+  (deed-code lists), `prime_lot_mask`, `QUAL_CODES`, `RESIDENTIAL_GROUPS`, the teardown price
+  heuristic. *Which* sales are evidence is decided by **filters the user owns**, resolved by
+  `openavmkit.filters.resolve_filter` (same engine as model groups / valid_sale). Trivial case =
+  `["==","field",true]`; rich case = a composed filter. "The pipeline rules, LVI tests."
+- **One general helper kept in code:** `prime_comp` — size-comparability to neighborhood built
+  peers + shape. Jurisdiction-agnostic (no vocabulary) and *can't* be a static filter (the bound
+  is a per-neighborhood percentile). Tunable + disable-able. (Option (a) of §21's fork.)
+- **Config keyed by model group;** unconfigured groups are skipped. `land_value_integrity` block
+  in settings.json; every knob defaults to Wake/IAAO values. See `openavmkit/lvi/config.py`,
+  `research/lvi_config_design.md`, and the fully-commented `research/lvi_settings_example.json`.
+
+**Package:** `config.py` (GroupConfig + load_lvi_configs) · `evidence.py` (filter-driven
+direct/cost_residual streams + prime_comp + reconstruct_rcn) · `battery.py` (per-series tests +
+A0/depreciation diagnostics) · `support.py` (coverage / propagation / Tier-2) · `report.py`
+(scorecard + evidence_packet) · `run.py` (driver/CLI: `python -m openavmkit.lvi.run`).
+
+**Parity (Wake, config reproducing prime+qualified):** A1 0.093, A2 8.9/6.3, A8 6.3, B3 0.150, A7
+0.03%, A0 β0.38/$lot, depreciation −0.036, propagation ρ0.899/n578, confidence 362k/15k/128 —
+all match. A3 gold 0.849/COD 24.9 (vs 0.850/25.3). Intended deltas from dropping the zoning regex
+(now the user's filter): direct stream n 67→188 (median 0.842/COD 20.1, negligible move), VE
+−10.5→−7.6 (larger sample, both mild-regressive), A5 0.911→0.899.
+
+**Wake `settings.json` block** (gitignored/local): land_evidence_filter = vacant & valid_for_land
+& disq_flag in [A,C]; cost_residual_filter = improved & bldg_condition_pct>=95; frozen_sov=true.
+
+**Generalizing to a new jurisdiction (e.g. FL Lee):** onboard to the openavmkit pipeline (canonical
+columns; FL → map JUST value not SOH-capped), then write the `land_value_integrity` block — the
+qualified/relevant-sale filters (FL DOR codes) and `frozen_sov`. No code changes.
