@@ -107,7 +107,8 @@ class VerticalEquityStudy:
         sales = df_sales[field_sales].to_numpy()
         
         results = calc_ratio_stats_bootstrap(predictions, sales, confidence_interval, iterations=iterations, seed=seed)
-        
+        self.prd = results["prd"]
+
         prb_point, prb_low, prb_high = calc_prb(predictions, sales, confidence_interval)
         
         self.prb = ConfidenceStat(prb_point, confidence_interval, prb_low, prb_high)
@@ -232,6 +233,7 @@ def _calc_quantiles(df: pd.DataFrame, field: str):
 def _calc_grouped_quantiles(df_in: pd.DataFrame, value_field: str, group_field: str):
     df = df_in.copy()
     df["quantile"] = _calc_quantiles(df, value_field)
+    df_group_to_quantile = df.groupby(group_field)["quantile"].agg(lambda x: pd.Series.mode(x)[0]).reset_index()
     df2 = df_in.merge(df_group_to_quantile, on=group_field, how="left")
     return df2["quantile"]
 
