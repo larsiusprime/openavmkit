@@ -634,6 +634,19 @@ def process_data(
         dataframes, merge_sales, settings, required_key="key_sale"
     )
 
+    # Record multi-parcel ("bulk") deed multiplicity BEFORE the sales table is
+    # filtered to valid sales and de-duplicated to one row per parcel below. A
+    # single deed (``key_sale``) recorded against many parcels (``key``) stamps the
+    # full bundle consideration onto each parcel; once the sibling rows are dropped,
+    # that signal is invisible to the duplicate-based scrutiny heuristics (a lone
+    # surviving "orphan" row has nothing left to be a duplicate of). Persisting the
+    # count here lets run_heuristics flag such sales even when only one row of the
+    # deed survives. See flag_bulk_deeds() in sales_scrutiny_study.py.
+    if "key_sale" in df_sales.columns and "key" in df_sales.columns:
+        df_sales["sale_parcel_count"] = (
+            df_sales.groupby("key_sale")["key"].transform("nunique").astype("Int64")
+        )
+
     if "valid_sale" not in df_sales:
         raise ValueError("The 'valid_sale' column is required in the sales data. If you don't have anything to go on, you can just create that column and fill it with an assumption (i.e. all are valid), but ideally you should look for some kind of validation criteria for your sales.")
     if "vacant_sale" not in df_sales:

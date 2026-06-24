@@ -563,6 +563,45 @@ def drop_manual_exclusions(
     return sup
 
 
+def flag_bulk_deeds(df_sales: pd.DataFrame) -> pd.Series:
+    """Flag multi-parcel ("bulk") deed sales.
+
+    A single deed (``key_sale``) recorded against multiple parcels (``key``) carries
+    one consideration that covers the whole bundle, so the per-parcel sale price is
+    not a usable arm's-length signal. These are best dropped from modeling.
+
+    The duplicate-based heuristics in :func:`run_heuristics` (repeated deed+date,
+    repeated date+price) can only catch bulk deeds whose sibling rows are still
+    present in the sales table. Once sales are de-duplicated to one row per parcel
+    (and invalid sales are filtered out), a deed can be reduced to a single "orphan"
+    row whose siblings are gone -- leaving nothing for those heuristics to match
+    against, even though the surviving row still carries the inflated bundle price.
+
+    To stay robust to that thinning, this helper prefers the ``sale_parcel_count``
+    column computed at ingestion in :func:`openavmkit.data.process_data` (before the
+    sales table is filtered/de-duplicated). When that column is absent it falls back
+    to counting distinct parcels per deed in the current table, which still catches
+    bulk deeds whose duplicate rows survive.
+
+    Parameters
+    ----------
+    df_sales : pd.DataFrame
+        Sales table. Must contain ``key_sale``; ``sale_parcel_count`` (preferred) or
+        ``key`` enables detection.
+
+    Returns
+    -------
+    pd.Series
+        Boolean Series, indexed like ``df_sales``, True for bulk-deed sales.
+    """
+    if "sale_parcel_count" in df_sales.columns:
+        return df_sales["sale_parcel_count"].fillna(1).astype("int64").gt(1)
+    if "key_sale" in df_sales.columns and "key" in df_sales.columns:
+        counts = df_sales.groupby("key_sale")["key"].transform("nunique")
+        return counts.gt(1)
+    return pd.Series(False, index=df_sales.index)
+
+
 def run_heuristics(
     sup: SalesUniversePair, settings: dict, drop: bool = True, verbose: bool = False
 ) -> SalesUniversePair:
@@ -640,10 +679,20 @@ def run_heuristics(
     )
     df_sales.loc[idx_false_vacant, "flag_false_vacant"] = True
 
+    # 4 -- Flag multi-parcel ("bulk") deeds. Robust to the one-row-per-parcel
+    # de-duplication that happens during ingestion: uses the sale_parcel_count
+    # column computed in process_data when present (catches "orphan" bulk-deed
+    # sales whose sibling rows were dropped), else falls back to counting parcels
+    # per deed in the current table. See flag_bulk_deeds().
+    idx_bulk_deed = flag_bulk_deeds(df_sales)
+    if idx_bulk_deed.any():
+        df_sales.loc[idx_bulk_deed, "flag_bulk_deed"] = True
+
     files = {
         "flag_dupe_deed_date": "duplicated_deeds_and_dates",
         "flag_dupe_date_price": "duplicated_dates_and_prices",
         "flag_false_vacant": "classified_vacant_but_bldg_older_than_sale_year",
+        "flag_bulk_deed": "multi_parcel_bulk_deeds",
     }
 
     locations = get_locations(settings, df_sales)
@@ -711,6 +760,7 @@ def run_heuristics(
                         "flag_dupe_deed_date": "Repeated\ndeed & sale date",
                         "flag_dupe_date_price": "Repeated\nsale date & price",
                         "flag_false_vacant": "Bldg older\nthan sale year",
+                        "flag_bulk_deed": "Multi-parcel\nbulk deed",
                     }
                 )
 
