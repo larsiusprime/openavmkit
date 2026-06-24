@@ -2012,7 +2012,7 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
     
     unit = area_unit(settings)
     
-    locations = get_report_locations(settings)
+    locations = get_locations(settings)
     fields = [
         "key",
         "geometry",
