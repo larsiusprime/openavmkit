@@ -53,7 +53,6 @@ from openavmkit.data import (
     _read_split_keys,
     SalesUniversePair,
     get_hydrated_sales_from_sup,
-    get_report_locations,
     get_sale_field,
     filter_df_by_date_range
 )
@@ -2091,8 +2090,11 @@ def _assemble_open_ratio_study(results: SingleModelResults, settings: dict) -> d
 
     Selects only the columns that website needs — identifiers, the production
     prediction, raw and time-adjusted sale price, point coordinates, and the
-    report-location breakdown fields — for the ``sales`` (study) and ``test``
-    subsets.
+    full location fields — for the ``sales`` (study) and ``test`` subsets.
+
+    Note: this uses the complete ``locations`` list (the fine-grained location
+    fields), not the narrower ``report_locations`` used for report breakdowns,
+    so the export can carry finer location detail than the reports do.
 
     Parameters
     ----------
@@ -2100,7 +2102,7 @@ def _assemble_open_ratio_study(results: SingleModelResults, settings: dict) -> d
         A fitted model's results, typically the ensemble (production) model for a
         model group.
     settings : dict
-        The settings dictionary, used to resolve the report-location fields.
+        The settings dictionary, used to resolve the location fields.
 
     Returns
     -------
@@ -2116,7 +2118,7 @@ def _assemble_open_ratio_study(results: SingleModelResults, settings: dict) -> d
         "sale_price_time_adj",
         "latitude",
         "longitude",
-    ] + get_report_locations(settings)
+    ] + get_locations(settings)
 
     out = {}
     for subset, df_src in (("sales", results.df_sales), ("test", results.df_test)):
