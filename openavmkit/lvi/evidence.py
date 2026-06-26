@@ -59,12 +59,35 @@ def prime_comp(d, u, cfg):
     return ok.fillna(False).to_numpy()
 
 
+def build_land_price_index(u, cfg):
+    """A land price index from the prior_land_xfer transfers themselves: neighborhood-demeaned
+    log($/sqft) median by year, normalized so the latest year = 0. Returns (index Series keyed by
+    year, target_year) or (None, None) if there aren't enough transfers. Non-circular: built from
+    land sale prices + dates only."""
+    F, E = cfg.fields, cfg.evidence
+    if F.prior_xfer_price not in u.columns:
+        return None, None
+    px = pd.to_numeric(u[F.prior_xfer_price], errors="coerce")
+    yr = pd.to_datetime(u[F.prior_xfer_date], errors="coerce").dt.year
+    la = pd.to_numeric(u[F.land_area], errors="coerce")
+    disq = u[F.prior_xfer_disq].astype(str) if F.prior_xfer_disq in u.columns else pd.Series("", index=u.index)
+    psf = px / la
+    ok = (px > 0) & (la > 0) & yr.notna() & disq.isin(list(E.prior_xfer_disq)) & psf.between(*E.prior_xfer_psf_bounds)
+    d = pd.DataFrame({"yr": yr, "nb": u[F.neighborhood].astype(str), "lpsf": np.log(psf)})[ok.to_numpy()]
+    if len(d) < 100:
+        return None, None
+    d["resid"] = d["lpsf"] - d.groupby("nb")["lpsf"].transform("median")
+    idx = d.groupby("yr")["resid"].median()
+    target = int(idx.index.max())
+    return idx - idx.get(target, 0.0), target
+
+
 def build_land_observations(s, u, cfg):
     """Return observed land values across the evidence streams selected by the config's filters.
 
     Columns: key, kind {direct, cost_residual}, observed_land, land_sqft, observed_land_sqft, nbhd.
     One row per parcel per kind (deduped on key)."""
-    F = cfg.fields
+    F, E = cfg.fields, cfg.evidence
     ucols = u.drop_duplicates(F.key).set_index(F.key)
     s = s.copy()
     s[F.key] = s[F.key].astype(str)
@@ -72,6 +95,8 @@ def build_land_observations(s, u, cfg):
     price = price.where(price > 0, pd.to_numeric(s[F.sale_price], errors="coerce"))  # coalesce raw
     land_sqft = s[F.key].map(ucols[F.land_area])
     nbhd = s[F.key].map(ucols[F.neighborhood])
+    cost_bldg = pd.to_numeric(s[F.key].map(ucols[F.cost_bldg_value]), errors="coerce")
+    bldg_area = pd.to_numeric(s[F.key].map(ucols[F.bldg_area]), errors="coerce")
 
     def _pack(mask, observed_land, kind):
         d = pd.DataFrame({"key": s[F.key], "kind": kind, "observed_land": observed_land,
@@ -80,14 +105,55 @@ def build_land_observations(s, u, cfg):
         return d.drop_duplicates("key")
 
     frames = []
-    direct = _pack(resolve_filter(s, cfg.land_evidence_filter), price, "direct")
-    if cfg.prime.enabled and len(direct):
+    # --- direct (vacant-sale) stream + a-priori validity gates V1/V4/S3 ---
+    dmask = resolve_filter(s, cfg.land_evidence_filter)
+    if E.exclude_teardowns and "is_teardown_sale" in s.columns:        # V1
+        dmask = dmask & ~(s["is_teardown_sale"] == True)
+    if E.token_price_floor > 0:                                        # S3
+        dmask = dmask & (price >= E.token_price_floor)
+    if E.vacant_psf_floor > 0:                                         # V4
+        dmask = dmask & ((price / land_sqft) >= E.vacant_psf_floor)
+    direct = _pack(dmask, price, "direct")
+    if cfg.prime.enabled and len(direct):                             # V3
         direct = direct[prime_comp(direct, u, cfg)]
     frames.append(direct)
 
+    # --- sale-RCN residual stream + a-priori validity gates C4/C5 (+ S3) ---
     if cfg.cost_residual_filter is not None:
-        cost = pd.to_numeric(s[F.key].map(ucols[F.cost_bldg_value]), errors="coerce")
-        frames.append(_pack(resolve_filter(s, cfg.cost_residual_filter), price - cost, "cost_residual"))
+        land_resid = price - cost_bldg
+        land_share = land_resid / price
+        cmask = resolve_filter(s, cfg.cost_residual_filter)
+        if E.land_share_lo > 0:                                       # C4 lower
+            cmask = cmask & (land_share >= E.land_share_lo)
+        if E.land_share_hi < 1.0:                                     # C4 upper
+            cmask = cmask & (land_share <= E.land_share_hi)
+        if E.rcn_psf_lo > 0:                                          # C5 lower
+            cmask = cmask & ((cost_bldg / bldg_area) >= E.rcn_psf_lo)
+        if E.rcn_psf_hi > 0:                                          # C5 upper
+            cmask = cmask & ((cost_bldg / bldg_area) <= E.rcn_psf_hi)
+        if E.token_price_floor > 0:
+            cmask = cmask & (price >= E.token_price_floor)
+        frames.append(_pack(cmask, land_resid, "cost_residual"))
+
+    # --- prior_land_xfer stream: time-adjusted historical vacant-land transfers (coverage lever) ---
+    if E.use_prior_xfer and F.prior_xfer_price in u.columns:
+        idx, target = build_land_price_index(u, cfg)
+        if idx is not None:
+            px = pd.to_numeric(u[F.prior_xfer_price], errors="coerce")
+            yr = pd.to_datetime(u[F.prior_xfer_date], errors="coerce").dt.year
+            la_u = pd.to_numeric(u[F.land_area], errors="coerce")
+            disq = u[F.prior_xfer_disq].astype(str) if F.prior_xfer_disq in u.columns else pd.Series("", index=u.index)
+            psf = px / la_u
+            adj = px * np.exp(-yr.map(idx).fillna(0.0))            # bring each transfer to target year
+            keep = ((px > 0) & (la_u > 0) & yr.notna() & disq.isin(list(E.prior_xfer_disq))
+                    & psf.between(*E.prior_xfer_psf_bounds) & (yr >= target - E.prior_xfer_max_age))
+            pf = pd.DataFrame({"key": u[F.key].astype(str), "kind": "prior_xfer", "observed_land": adj,
+                               "land_sqft": la_u, "nbhd": u[F.neighborhood]})[keep.to_numpy()]
+            pf = pf[(pf["observed_land"] > 0) & (pf["land_sqft"] > 0)].drop_duplicates("key")
+            pf = pf[~pf["key"].isin(set(direct["key"]))]          # prefer a recent direct sale
+            if cfg.prime.enabled and len(pf):
+                pf = pf[prime_comp(pf, u, cfg)]
+            frames.append(pf)
 
     obs = pd.concat(frames, ignore_index=True)
     obs["observed_land_sqft"] = obs["observed_land"] / obs["land_sqft"]
@@ -97,4 +163,4 @@ def build_land_observations(s, u, cfg):
 def summarize(obs):
     counts = obs.groupby("kind").size().to_dict()
     return (f"land observations: total={len(obs)}  " +
-            "  ".join(f"{k}={counts.get(k, 0)}" for k in ("direct", "cost_residual")))
+            "  ".join(f"{k}={counts.get(k, 0)}" for k in ("direct", "cost_residual", "prior_xfer")))

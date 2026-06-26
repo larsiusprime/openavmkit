@@ -39,6 +39,10 @@ class Fields:
     sale_price_time_adj: str = "sale_price_time_adj"
     sale_date: str = "sale_date"
     sale_age_days: str = "sale_age_days"
+    # per-parcel most-recent prior vacant-land transfer (universe fields; a historical land signal)
+    prior_xfer_price: str = "prior_land_xfer_price"
+    prior_xfer_date: str = "prior_land_xfer_date"
+    prior_xfer_disq: str = "prior_land_xfer_disq_flag"
     impr_feats: tuple = ("bldg_area_finished_sqft", "bldg_age_years", "bldg_quality_num", "bldg_condition_num")
 
 
@@ -55,6 +59,25 @@ class PrimeComp:
 @dataclass
 class Evidence:
     frozen_sov: bool = True      # promote cost-residual stream into the A3 gold standard
+    # --- a-priori, non-circular validity gates (research/land_evidence_validity_spec.md) ---
+    # Defaults are a LENIENT garbage-rejection band, NOT a reliability trim. The face-off proved a
+    # tight band (e.g. land_share>=0.30) backfires: it collapses coverage and biases the sample,
+    # while the cell calibration's robust median already absorbs per-point RCN noise. So these reject
+    # only clearly-broken records and preserve coverage (coverage dominates).
+    land_share_lo: float = 0.05  # C4 lower: (sale-RCN)/sale >= this (reject ~zero/negative residuals)
+    land_share_hi: float = 0.95  # C4 upper: (sale-RCN)/sale <= this (reject implausible all-land sales)
+    rcn_psf_lo: float = 20.0     # C5: RCN/bldg_area physical floor ($/sqft; 0 = off)
+    rcn_psf_hi: float = 600.0    # C5: RCN/bldg_area physical ceiling ($/sqft; 0 = off)
+    # direct (vacant-sale) stream:
+    exclude_teardowns: bool = True   # V1: drop is_teardown_sale (no-op where the column is absent)
+    vacant_psf_floor: float = 0.0    # V4: sale/land_area >= this absolute physical floor ($; jurisdiction-set)
+    token_price_floor: float = 0.0   # S3: drop sales below this nominal price ($; jurisdiction-set)
+    # prior_land_xfer stream: historical vacant-land transfers (huge coverage lever where present).
+    # Time-adjusted via a land price index built from the transfers themselves; gate by recency.
+    use_prior_xfer: bool = False         # off by default; enable where prior_land_xfer columns exist
+    prior_xfer_max_age: int = 15         # only transfers within this many years (index under-corrects older)
+    prior_xfer_disq: tuple = ("A", "C")  # arm's-length deed whitelist for prior transfers
+    prior_xfer_psf_bounds: tuple = (0.10, 500.0)   # sane land $/sqft
 
 
 @dataclass
