@@ -59,11 +59,16 @@ def prime_comp(d, u, cfg):
     return ok.fillna(False).to_numpy()
 
 
-def build_land_price_index(u, cfg):
-    """A land price index from the prior_land_xfer transfers themselves: neighborhood-demeaned
-    log($/sqft) median by year, normalized so the latest year = 0. Returns (index Series keyed by
-    year, target_year) or (None, None) if there aren't enough transfers. Non-circular: built from
-    land sale prices + dates only."""
+def build_land_price_index(u, cfg, s=None):
+    """A land price index for time-adjusting old transfers, as **two-way (year x neighborhood)
+    fixed effects** on log($/sqft) over a pool of land sales — the prior_land_xfer transfers plus
+    (when given) the current vacant sales, which anchor the recent end. Returns (index Series keyed
+    by year, target_year) or (None, None) if too few. Non-circular: land prices + dates only.
+
+    The year coefficients (relative to the latest year = 0) control for which neighborhoods
+    transacted in which years (composition). A simple demean-then-median index instead flattens
+    long-run appreciation; FE recovers it (and its residual level bias is corrected at use time by
+    recentering to recent vacant sales)."""
     F, E = cfg.fields, cfg.evidence
     if F.prior_xfer_price not in u.columns:
         return None, None
@@ -73,13 +78,32 @@ def build_land_price_index(u, cfg):
     disq = u[F.prior_xfer_disq].astype(str) if F.prior_xfer_disq in u.columns else pd.Series("", index=u.index)
     psf = px / la
     ok = (px > 0) & (la > 0) & yr.notna() & disq.isin(list(E.prior_xfer_disq)) & psf.between(*E.prior_xfer_psf_bounds)
-    d = pd.DataFrame({"yr": yr, "nb": u[F.neighborhood].astype(str), "lpsf": np.log(psf)})[ok.to_numpy()]
-    if len(d) < 100:
+    pool = pd.DataFrame({"yr": yr, "nb": u[F.neighborhood].astype(str), "psf": psf})[ok.to_numpy()]
+    if s is not None:                                  # anchor the recent end with current vacant sales
+        sp = pd.to_numeric(s[cfg.dep], errors="coerce")
+        sp = sp.where(sp > 0, pd.to_numeric(s[F.sale_price], errors="coerce"))
+        sla = pd.to_numeric(s[F.key].astype(str).map(u.drop_duplicates(F.key).set_index(F.key)[F.land_area]), errors="coerce")
+        syr = pd.to_datetime(s[F.sale_date], errors="coerce").dt.year
+        spsf = sp / sla
+        vmask = resolve_filter(s, cfg.land_evidence_filter) & syr.notna() & spsf.between(*E.prior_xfer_psf_bounds)
+        vv = pd.DataFrame({"yr": syr, "nb": s[F.neighborhood].astype(str), "psf": spsf})[vmask.to_numpy()]
+        pool = pd.concat([pool, vv], ignore_index=True)
+    pool = pool[pool["psf"] > 0]
+    if len(pool) < 100:
         return None, None
-    d["resid"] = d["lpsf"] - d.groupby("nb")["lpsf"].transform("median")
-    idx = d.groupby("yr")["resid"].median()
-    target = int(idx.index.max())
-    return idx - idx.get(target, 0.0), target
+    pool["yr"] = pool["yr"].astype(int)
+    pool["lpsf"] = np.log(pool["psf"])
+    target = int(pool["yr"].max())
+    yd = pd.get_dummies(pool["yr"], prefix="y").astype(float)
+    nb = pool["nb"]
+    yw = (pool["lpsf"] - pool.groupby(nb)["lpsf"].transform("mean")).to_numpy()
+    ydw = (yd - yd.groupby(nb.values).transform("mean")).to_numpy()
+    cols = list(yd.columns)
+    keep = [i for i, c in enumerate(cols) if c != f"y_{target}"]   # latest year = baseline (0)
+    beta, *_ = np.linalg.lstsq(ydw[:, keep], yw, rcond=None)
+    idx = {int(cols[i].split("_")[1]): float(beta[j]) for j, i in enumerate(keep)}
+    idx[target] = 0.0
+    return pd.Series(idx).sort_index(), target
 
 
 def build_land_observations(s, u, cfg):
@@ -137,7 +161,7 @@ def build_land_observations(s, u, cfg):
 
     # --- prior_land_xfer stream: time-adjusted historical vacant-land transfers (coverage lever) ---
     if E.use_prior_xfer and F.prior_xfer_price in u.columns:
-        idx, target = build_land_price_index(u, cfg)
+        idx, target = build_land_price_index(u, cfg, s=s)
         if idx is not None:
             px = pd.to_numeric(u[F.prior_xfer_price], errors="coerce")
             yr = pd.to_datetime(u[F.prior_xfer_date], errors="coerce").dt.year
@@ -151,6 +175,14 @@ def build_land_observations(s, u, cfg):
                                "land_sqft": la_u, "nbhd": u[F.neighborhood]})[keep.to_numpy()]
             pf = pf[(pf["observed_land"] > 0) & (pf["land_sqft"] > 0)].drop_duplicates("key")
             pf = pf[~pf["key"].isin(set(direct["key"]))]          # prefer a recent direct sale
+            # recenter to the recent vacant level (corrects the FE index's residual level bias),
+            # using neighborhoods that carry both — non-circular (vs recent direct evidence, not model)
+            if len(direct) and len(pf):
+                vnb = (direct["observed_land"] / direct["land_sqft"]).groupby(direct["nbhd"].values).median()
+                pnb = (pf["observed_land"] / pf["land_sqft"]).groupby(pf["nbhd"].values).median()
+                sh = pd.DataFrame({"v": vnb, "p": pnb}).dropna()
+                if len(sh) >= 5:
+                    pf["observed_land"] = pf["observed_land"] * float((sh["v"] / sh["p"]).median())
             if cfg.prime.enabled and len(pf):
                 pf = pf[prime_comp(pf, u, cfg)]
             frames.append(pf)

@@ -75,7 +75,7 @@ class Evidence:
     # prior_land_xfer stream: historical vacant-land transfers (huge coverage lever where present).
     # Time-adjusted via a land price index built from the transfers themselves; gate by recency.
     use_prior_xfer: bool = False         # off by default; enable where prior_land_xfer columns exist
-    prior_xfer_max_age: int = 15         # only transfers within this many years (index under-corrects older)
+    prior_xfer_max_age: int = 40         # FE index + recentering hold older transfers; ~40y ≈ 2x roll coverage
     prior_xfer_disq: tuple = ("A", "C")  # arm's-length deed whitelist for prior transfers
     prior_xfer_psf_bounds: tuple = (0.10, 500.0)   # sane land $/sqft
 
