@@ -38,6 +38,26 @@ def get_vertical_equity_scores(df, sale_field: str, valuation_field: str) -> Dic
             "group_stats": None
         }
 
+    # Guard against a degenerate market proxy. When the valuation is all-zero or
+    # all-NaN (e.g. a tax-exempt model group with $0 assessed values), median_ratio
+    # collapses to 0 or NaN and market_proxy becomes non-finite; likewise a proxy
+    # with fewer distinct values than requested percentile groups makes pd.qcut
+    # raise "Bin edges must be unique". Degrade to NaN -- as we already do for
+    # fewer than 20 observations -- rather than crashing the whole modeling run.
+    market_proxy_finite = (
+        df["market_proxy"].replace([np.inf, -np.inf], np.nan).dropna()
+    )
+    if (
+        not np.isfinite(median_ratio)
+        or median_ratio == 0
+        or market_proxy_finite.nunique() < 2
+    ):
+        return {
+            "vei": np.nan,
+            "vei_significance": np.nan,
+            "group_stats": None
+        }
+
     def ci_90_lower(x):
         if len(x) <= 1: return np.nan
         # 90% CI uses the 95th percentile for a two-tailed test
@@ -47,18 +67,33 @@ def get_vertical_equity_scores(df, sale_field: str, valuation_field: str) -> Dic
         if len(x) <= 1: return np.nan
         return np.mean(x) + stats.sem(x) * stats.t.ppf(0.95, df=len(x) - 1)
 
-    #split the df into percentile_group_count groups based on the market proxy
-    df["percentile_group"] = pd.qcut(df["market_proxy"], q=percentile_group_count, labels=False)
+    # Split the df into value tiers by the market proxy. duplicates="drop"
+    # tolerates concentrated values (repeated quantile edges) instead of raising;
+    # it can yield fewer tiers than requested, so we index the actual top/bottom
+    # tiers below rather than assuming labels 0..percentile_group_count-1.
+    df["percentile_group"] = pd.qcut(
+        df["market_proxy"], q=percentile_group_count, labels=False,
+        duplicates="drop"
+    )
     grouped = df.groupby("percentile_group")
     group_stats = grouped['ratio'].agg(
         ratio='median',
         lower=ci_90_lower,
         upper=ci_90_upper
     )
-    #VEI is 100 * (median of last percentile grop - median of first percentile group)/median_ratio
-    vei_score = 100 * (group_stats[group_stats.index == (percentile_group_count - 1)].iloc[0]["ratio"] - group_stats[group_stats.index == 0].iloc[0]["ratio"]) / median_ratio
-    # VEI significance = 100 * (Lower CI for Highest PG - Upper CI for Lowest PG)/median
-    vei_significance = 100 * (group_stats[group_stats.index == (percentile_group_count -1)].iloc[0]["lower"] - group_stats[group_stats.index == 0].iloc[0]["upper"]) / median_ratio
+    if len(group_stats) < 2:
+        # need at least a bottom and top tier to measure vertical equity
+        return {
+            "vei": np.nan,
+            "vei_significance": np.nan,
+            "group_stats": None
+        }
+    bottom = group_stats.index.min()
+    top = group_stats.index.max()
+    # VEI is 100 * (top-tier median ratio - bottom-tier median ratio) / median_ratio
+    vei_score = 100 * (group_stats.loc[top, "ratio"] - group_stats.loc[bottom, "ratio"]) / median_ratio
+    # VEI significance = 100 * (Lower CI for top tier - Upper CI for bottom tier) / median_ratio
+    vei_significance = 100 * (group_stats.loc[top, "lower"] - group_stats.loc[bottom, "upper"]) / median_ratio
     return {
         "vei": vei_score,
         "vei_significance": vei_significance,
