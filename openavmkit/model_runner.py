@@ -51,6 +51,7 @@ from sklearn.linear_model import LinearRegression
 from openavmkit.data import (
     get_important_field,
     _read_split_keys,
+    _read_fold_keys,
     SalesUniversePair,
     get_hydrated_sales_from_sup,
     get_sale_field,
@@ -92,7 +93,8 @@ from openavmkit.modeling import (
     AverageModel,
     DataSplit,
     write_model_parameters, get_shap_contributions_map,
-    _add_prediction_to_contribution, _contrib_to_unit_values
+    _add_prediction_to_contribution, _contrib_to_unit_values,
+    _CV_AGGREGATE_FINGERPRINT,
 )
 from openavmkit.reports import MarkdownReport, _markdown_to_pdf
 from openavmkit.time_adjustment import enrich_time_adjustment
@@ -1372,11 +1374,14 @@ def run_one_model(
 
     are_ind_vars_default = entry.get("ind_vars", None) is None
     ind_vars: list | None = entry.get("ind_vars", default_entry.get("ind_vars", None))
- 
-    # no duplicates!
-    ind_vars = list(set(ind_vars))
+
     if ind_vars is None:
         raise ValueError(f"ind_vars not found for model {model_name}")
+    # De-duplicate with a DETERMINISTIC order: sorted() is independent of PYTHONHASHSEED, so the
+    # feature column order (and thus XGBoost/LightGBM column-subsampling selections) is reproducible
+    # across processes and separate invocations. Plain list(set(...)) is hash-ordered and was a
+    # latent source of run-to-run nondeterminism (see run_one_model_cv worker pinning).
+    ind_vars = sorted(set(ind_vars))
 
     if are_ind_vars_default:
         if (best_variables is not None) and (set(ind_vars) != set(best_variables)):
@@ -1544,6 +1549,299 @@ def run_one_model(
         t.stop("write")
 
     return results
+
+
+# Hyperparameters aggregated by MODE (most-common) rather than median across CV folds:
+# categorical/choice HPs and the discrete/multimodal ones (tree depth, leaf/round counts) where
+# a coordinate-wise median could manufacture a between-basin value no fold actually validated.
+_CV_DISCRETE_HP_KEYS = {
+    "max_depth", "num_leaves", "max_leaves", "depth",
+    "grow_policy", "boosting_type", "bootstrap_type",
+    "num_boost_round", "num_iterations", "iterations", "n_estimators",
+}
+
+
+def _aggregate_fold_params(param_dicts: list[dict]) -> dict:
+    """Aggregate per-fold tuned hyperparameters into one production config.
+
+    Median for continuous HPs (robust, variance-reducing across folds); mode for categorical
+    and discrete/multimodal HPs (see ``_CV_DISCRETE_HP_KEYS``) so we never synthesize a
+    between-basin value no fold validated. Keys present in only some folds are aggregated over
+    the folds that carry them. This is a cheap, defensible estimate of what tuning on all data
+    would pick; because the honest metrics come from the OOF holdout, the exact production HPs
+    affect only the shipped values' quality, never a reported statistic.
+    """
+    from collections import Counter
+    import statistics
+
+    keys = set()
+    for d in param_dicts:
+        keys.update(k for k in d.keys() if k != "__fingerprint")
+
+    agg: dict = {}
+    for k in sorted(keys):
+        vals = [d[k] for d in param_dicts if k in d]
+        if not vals:
+            continue
+        if k in _CV_DISCRETE_HP_KEYS or all(isinstance(v, str) for v in vals) \
+                or all(isinstance(v, bool) for v in vals):
+            agg[k] = Counter(vals).most_common(1)[0][0]  # mode; ties -> first-most-common
+        else:
+            med = statistics.median(vals)
+            if all(isinstance(v, (int, float)) and float(v).is_integer() for v in vals):
+                med = int(round(med))
+            agg[k] = med
+    return agg
+
+
+def _run_cv_fold(
+    k, holdout_keys, train_keys_k, tune_workers,
+    df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
+    settings, dep_var, dep_var_test, best_variables, fields_cat, outpath,
+    use_saved_params, verbose,
+):
+    """Run one CV fold and return only the lightweight bits the orchestrator needs.
+
+    Module-level (so it is picklable for loky) and returns small tuples rather than the whole
+    SingleModelResults, to keep inter-process transfer cheap. ``tune_workers`` (set per task, so
+    it survives loky worker reuse) caps this fold's trial-level thread pool when folds run in
+    parallel; ``None`` leaves the tuner at its default (full cores) for the sequential path. Fold
+    params are persisted (save_params=True) for aggregation into the production config and reuse.
+    """
+    if tune_workers is not None:
+        os.environ["OPENAVMKIT_TUNE_WORKERS"] = str(tune_workers)
+    fr = run_one_model(
+        df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
+        settings, dep_var, dep_var_test, best_variables, fields_cat, f"{outpath}/cv_fold{k}",
+        save_params=True, use_saved_params=use_saved_params, save_results=False,
+        verbose=verbose, test_keys=holdout_keys, train_keys=train_keys_k,
+    )
+    if fr is None:
+        return None
+    field = fr.field_prediction
+    oof = list(zip(
+        fr.df_test["key_sale"].astype(str).tolist(),
+        [float(v) for v in fr.df_test[field].values],
+    ))
+    fpath = f"{outpath}/cv_fold{k}/{model_name}_params.json"
+    return (oof, float(fr.utility_test), fpath if os.path.exists(fpath) else None)
+
+
+def run_one_model_cv(
+    df_sales: pd.DataFrame,
+    df_universe: pd.DataFrame,
+    vacant_only: bool,
+    model_group: str,
+    model_name: str,
+    model_entries: dict,
+    settings: dict,
+    dep_var: str,
+    dep_var_test: str,
+    best_variables: list[str],
+    fields_cat: list[str],
+    outpath: str,
+    save_params: bool,
+    use_saved_params: bool,
+    save_results: bool,
+    verbose: bool = False,
+) -> SingleModelResults | None:
+    """Nested cross-validation wrapper around :func:`run_one_model`.
+
+    Two phases, both driven through the ordinary single-model path so every engine, ratio
+    study, and back-transform is reused unchanged:
+
+    - **Phase 1 (holdout):** run the model once per fold — each fold trains on the other folds
+      (parcels intact, post-val excluded) and predicts its own held-out slice. Because each
+      fold re-tunes from scratch on its own training data (distinct ``outpath`` → distinct
+      ``params.json``), the held-out slice is leakage-free w.r.t. training *and* HP selection.
+      The slices stitch into an out-of-fold (OOF) prediction for every trainable sale.
+    - **Phase 2 (study/ship):** refit once on ALL trainable sales; its predictions on all sales
+      (study) and the universe (shipped values) are kept as-is, and its held-out post-val
+      predictions cover the post-valuation sales in the report (leakage-free — post-val never
+      trains).
+
+    The returned result is the Phase-2 result with its test side replaced by the 100%-coverage
+    OOF frame (see :meth:`SingleModelResults.override_test_predictions`), so ``pred_test`` is the
+    honest full-coverage holdout, while ``pred_sales`` / ``pred_univ`` are the study / shipped
+    values.
+
+    Falls back to a single split when no ``folds.csv`` exists (legacy mode / skipped group) or
+    when ``dep_var_test`` is log-transformed (the OOF stitch assumes price-space test targets;
+    see the guard below).
+    """
+    fold_data = _read_fold_keys(model_group)
+    if fold_data is None or fold_data["n_folds"] < 2:
+        return run_one_model(
+            df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
+            settings, dep_var, dep_var_test, best_variables, fields_cat, outpath,
+            save_params, use_saved_params, save_results, verbose=verbose,
+        )
+
+    # The OOF stitch works in the space of ``dep_var_test``; the test-side back-transform in
+    # SingleModelResults only fires for log_-prefixed test targets, which override_test_predictions
+    # does not re-apply. Fall back to the single split for those (rare, advanced configs).
+    if str(dep_var_test).startswith("log_"):
+        warnings.warn(
+            f"CV disabled for {model_group}/{model_name}: dep_var_test '{dep_var_test}' is "
+            f"log-transformed, which the nested-CV OOF stitch does not yet handle. Using single split."
+        )
+        return run_one_model(
+            df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
+            settings, dep_var, dep_var_test, best_variables, fields_cat, outpath,
+            save_params, use_saved_params, save_results, verbose=verbose,
+        )
+
+    train_all = [str(k) for k in fold_data["train_all"]]
+    post_val = [str(k) for k in fold_data["post_val"]]
+    cv_prod_mode = settings.get("modeling", {}).get("instructions", {}).get(
+        "cv_production_params", "aggregate"
+    )
+
+    # ---- Phase 1: per-fold out-of-fold predictions ----
+    # Folds are independent and each is internally deterministic, so running them in parallel is
+    # bit-identical to sequential. To avoid CPU oversubscription (each fold's tuner already runs a
+    # trial-level thread pool), each worker caps its tuner threads to a fair share of the cores.
+    tasks = [
+        (k, [str(x) for x in hk], [str(x) for x in tk])
+        for k, (hk, tk) in enumerate(fold_data["folds"])
+        if len(hk) > 0 and len(tk) > 0
+    ]
+    cpu = os.cpu_count() or 2
+    cv_max_workers = int(settings.get("modeling", {}).get("instructions", {}).get(
+        "cv_max_workers", min(len(tasks), max(1, cpu - 2))
+    ))
+    cv_max_workers = max(1, min(cv_max_workers, len(tasks)))
+    fold_args = (
+        df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
+        settings, dep_var, dep_var_test, best_variables, fields_cat, outpath,
+        use_saved_params, verbose,
+    )
+
+    # Parallelism comes from the fold axis, and each fold tunes its trials SERIALLY (1 thread).
+    # This is deliberate: XGBoost/LightGBM threaded trial-concurrency is not numerically identical
+    # across concurrency levels (tiny MAPE differences flip which trial wins), so varying the
+    # trial-thread count would make results depend on cv_max_workers. Fixing trials to serial makes
+    # every CV run bit-identical regardless of worker count, and fold_workers x 1 thread never
+    # oversubscribes. (The single-split path is untouched — it keeps full trial parallelism.)
+    if cv_max_workers > 1 and len(tasks) > 1:
+        if verbose:
+            print(f"Running {len(tasks)} CV folds for {model_group}/{model_name} across "
+                  f"{cv_max_workers} workers (serial tuning per fold)...")
+        # Pin the math libraries to a single thread in the worker processes (inherited at spawn).
+        # XGBoost/LightGBM `hist` otherwise use OpenMP threads whose count varies with system load,
+        # and parallel float reductions are non-associative -> non-reproducible results run-to-run.
+        # Single-threaded per worker makes each fold deterministic; parallelism comes from folds.
+        # PYTHONHASHSEED must be fixed too: loky workers otherwise get a randomized hash seed,
+        # so hash-ordered constructs in the fit path (e.g. list(set(ind_vars))) order features
+        # differently per worker/run, and XGBoost column subsampling then picks different features
+        # -> non-reproducible models. Pinning it makes every worker (and re-run) deterministic.
+        _thread_env = {
+            "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
+            "NUMEXPR_NUM_THREADS": "1", "VECLIB_MAXIMUM_THREADS": "1", "PYTHONHASHSEED": "0",
+        }
+        _saved_env = {k: os.environ.get(k) for k in _thread_env}
+        for k, v in _thread_env.items():
+            os.environ[k] = v
+        try:
+            from joblib import Parallel, delayed
+            fold_results = Parallel(n_jobs=cv_max_workers, backend="loky")(
+                delayed(_run_cv_fold)(k, hk, tk, 1, *fold_args) for (k, hk, tk) in tasks
+            )
+        finally:
+            for k, v in _saved_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    else:
+        # cv_max_workers=1 is the explicit "no fold parallelism" escape hatch (e.g. low memory);
+        # let each fold keep full trial-level parallelism (tune_workers=None) so it isn't crippled.
+        fold_results = [_run_cv_fold(k, hk, tk, None, *fold_args) for (k, hk, tk) in tasks]
+
+    oof_map: dict[str, float] = {}
+    n_fold_ok = 0
+    fold_param_files: list[tuple[float, str]] = []  # (holdout utility, params.json path)
+    for res in fold_results:
+        if res is None:
+            warnings.warn(
+                f"A CV fold for {model_group}/{model_name} produced no result; its holdout "
+                f"sales fall back to the study prediction."
+            )
+            continue
+        oof_pairs, util, fpath = res
+        for ks, pred in oof_pairs:
+            oof_map[ks] = pred
+        n_fold_ok += 1
+        if fpath:
+            fold_param_files.append((util, fpath))
+
+    # ---- Production hyperparameters (skip the Phase-2 tune when possible) ----
+    # For tunable engines, reuse the fold HPs instead of a fresh production study:
+    #   aggregate (default) = median/mode across folds; best_fold = the best-holdout fold's HPs.
+    # We write them to the prod params.json with the CV-aggregate sentinel so _get_params trusts
+    # them regardless of fingerprint. refit (or non-tunable / no fold params) tunes as normal.
+    prod_outpath = f"{outpath}/cv_prod"
+    prod_use_saved = use_saved_params
+    if fold_param_files and cv_prod_mode in ("aggregate", "best_fold"):
+        dicts = []
+        for _util, fpath in fold_param_files:
+            d = json.load(open(fpath))
+            d.pop("__fingerprint", None)
+            dicts.append(d)
+        if cv_prod_mode == "best_fold":
+            best_i = min(
+                range(len(fold_param_files)),
+                key=lambda i: fold_param_files[i][0] if fold_param_files[i][0] == fold_param_files[i][0] else float("inf"),
+            )
+            chosen = dicts[best_i]
+        else:
+            chosen = _aggregate_fold_params(dicts)
+        os.makedirs(prod_outpath, exist_ok=True)
+        with open(f"{prod_outpath}/{model_name}_params.json", "w") as fh:
+            json.dump({**chosen, "__fingerprint": _CV_AGGREGATE_FINGERPRINT}, fh)
+        prod_use_saved = True
+        if verbose:
+            print(f"--> CV production HPs for {model_group}/{model_name}: {cv_prod_mode}")
+
+    # ---- Phase 2: refit on all trainable; study + universe + post-val holdout ----
+    # test_keys = post-val (leakage-free full-model holdout). If there are no post-val sales,
+    # any small non-empty slice satisfies DataSplit.split(); its stats are overwritten below.
+    prod_test_keys = post_val if len(post_val) > 0 else train_all[: max(1, len(train_all) // 5)]
+    prod_train_keys = [k for k in train_all if k not in set(prod_test_keys)] if len(post_val) == 0 else train_all
+    phase2 = run_one_model(
+        df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
+        settings, dep_var, dep_var_test, best_variables, fields_cat, prod_outpath,
+        save_params, prod_use_saved, save_results=False, verbose=verbose,
+        test_keys=prod_test_keys, train_keys=prod_train_keys,
+    )
+    if phase2 is None:
+        return None
+
+    # ---- Stitch: replace the test side with the full-coverage OOF frame ----
+    if n_fold_ok == 0:
+        warnings.warn(
+            f"No CV folds succeeded for {model_group}/{model_name}; holdout stats fall back to "
+            f"the single Phase-2 holdout."
+        )
+    else:
+        field = phase2.field_prediction
+        raw_sales = phase2.ds.df_sales.copy()
+        ks = raw_sales["key_sale"].astype(str)
+        post_val_map = dict(
+            zip(phase2.df_test["key_sale"].astype(str).values, phase2.df_test[field].values)
+        )
+        pred = ks.map(oof_map)
+        pred = pred.where(pred.notna(), ks.map(post_val_map))
+        raw_sales[field] = pred.values
+        df_test_full = raw_sales[raw_sales[field].notna()].reset_index(drop=True)
+        phase2.override_test_predictions(df_test_full)
+
+    if save_results:
+        main_vacant = "vacant" if vacant_only else "main"
+        location = get_model_location(settings, main_vacant, model_name, model_group)
+        _write_model_results(phase2, outpath, settings, location, verbose=verbose)
+
+    return phase2
 
 
 def run_ensemble(
@@ -4507,7 +4805,12 @@ def _run_models(
         else:
             model_variables = None
         
-        results = run_one_model(
+        # Nested cross-validation (cv_folds > 1) routes through run_one_model_cv, which reruns
+        # the model per fold for a full-coverage holdout and refits on all data for study/ship.
+        # cv_folds <= 1 keeps the legacy single-split path.
+        _cv_folds = int(settings.get("modeling", {}).get("instructions", {}).get("cv_folds", 5))
+        _run_model_fn = run_one_model_cv if _cv_folds > 1 else run_one_model
+        results = _run_model_fn(
             df_sales=df_sales,
             df_universe=df_univ,
             vacant_only=vacant_only,

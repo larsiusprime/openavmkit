@@ -1158,6 +1158,64 @@ The canonical train/test split lives in `_perform_canonical_split` in [openavmki
 2. **Sufficient lookback representation in test, without overrepresentation.** The lookback period (sales within `analysis.ratio_study.look_back_years` of the valuation date) gets a hard floor in the test set so the resulting ratio study has a defensible IAAO-aligned sample size, and a cap that prevents the lookback period from dominating the test set when other years are available.
 3. **Stratified random sampling** within each tier. Vacant sales are stratified by `sale_year` only; improved sales are stratified by age, finished area, and `sale_year` (user-configurable). Stratification uses `sklearn.model_selection.train_test_split` with graceful fallback when strata are too thin.
 
+This single-split path is used when `modeling.instructions.cv_folds <= 1` (and always for the user-provided `test_keys_file` assessor case). By default the models run under **nested cross-validation** instead — see below.
+
+### Cross-validation (nested holdout)
+
+When `modeling.instructions.cv_folds > 1` (default **5**), each model group is evaluated with **nested cross-validation** instead of a single 20% holdout. This produces two prediction streams from the same model:
+
+- **Holdout / test scores** (`benchmark_holdout`): the model is run once per fold — each fold trains on the other folds and predicts its own held-out slice. Stitched together, this gives an out-of-fold (OOF) prediction for **every** sale (100% coverage), so the reported COD/PRD/PRB/ratio study have the same *n* as the study set instead of a noisy ~20% slice. Because each fold **re-tunes hyperparameters from scratch on its own training data**, the held-out slice is leakage-free with respect to both training *and* hyperparameter selection (genuine nested CV).
+- **Study scores + shipped values** (`benchmark_study`, `universe`): the model is refit on **all** trainable sales; its predictions on all sales (study, optimistic) and on the universe (the values that ship) come from this refit. Leakage is irrelevant here — this model is shipped, not evaluated.
+
+**Folds are grouped by parcel (`key`), not by sale.** All sales of one parcel land in the same fold (`StratifiedGroupKFold`, degrading to `GroupKFold` when strata are thin — grouping is never dropped). This prevents a repeat-sale parcel from appearing in both a fold's training set and its holdout, an entity-level leak that would otherwise be worst exactly in small localities with wide sale windows.
+
+**Interpretation contract:**
+
+- Holdout scores are an **interpolation** estimate (predict a randomly-missing sale from neighbors on both sides in time), not a forecast. Random folds are defensible here because sale prices are time-adjusted to the valuation date upstream, which removes the dominant temporal leak (the price level).
+- **Post-valuation sales** remain the pristine **forecast** number — they never train under any scenario, so their holdout predictions come from the full-refit model and are broken out separately.
+- The study−holdout gap is a **direction** sanity check for overfitting, not a calibrated optimism measure.
+- *Known caveats (out of scope):* the time-adjustment index is fit per-group on all sales including held-out ones (small, low-dimensional preprocessing leak); and random folds leak mildly via spatial autocorrelation.
+
+#### `modeling.instructions.cv_folds`
+
+Number of cross-validation folds *N*. Each fold holds out ~`1/N` of sales.
+
+- **Default** — `5` (20% held out per fold; the conventional COD-stable choice)
+- **`1` or less** — disables CV; reverts to the single stratified split documented above.
+- **Source** — `_perform_canonical_folds` / `_read_fold_keys` in [openavmkit/data.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/data.py), orchestrated by `run_one_model_cv` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py).
+
+#### `modeling.instructions.cv_inner`
+
+Controls the **inner** hyperparameter-tuning validation used inside each fold (and in the production refit). Only active when `cv_folds > 1`; in single-split mode the tuners keep their historical shuffled 5-fold inner CV unchanged.
+
+- **Default** — `"auto"`: a single grouped holdout split when the training set is large (≥ 2500 rows), else **3** grouped folds. This spends more inner folds exactly where fits are cheap (small localities) and single-split HP noise bites hardest.
+- **An integer** — use that many grouped inner folds (`1` = single grouped holdout split).
+- The inner split is parcel-grouped for XGBoost / LightGBM / NGBoost. CatBoost uses its built-in `cv()` (ungrouped inner) — a small HP-selection optimism only; the outer holdout stays parcel-grouped.
+- **Source** — `_resolve_cv_inner` / `_cv_index_splits` in [openavmkit/tuning.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/tuning.py).
+
+#### `modeling.instructions.cv_production_params`
+
+How the **production** model (Phase 2, refit on all trainable sales) gets its hyperparameters. Only relevant for tunable engines under `cv_folds > 1`; non-tunable models are unaffected.
+
+- **`aggregate`** (default) — reuse the per-fold tuned HPs instead of running a separate production study: **median** for continuous HPs, **mode** for categorical and discrete/multimodal HPs (tree depth, leaf/round counts). This skips the extra production tune (≈ today's tuning budget rather than one study more) and is a robust, variance-reduced estimate of what tuning on all data would pick. Because the reported metrics come entirely from the OOF holdout, the production HPs affect only the shipped values' quality, never a statistic — so a slightly-suboptimal aggregate can't corrupt anything.
+- **`refit`** — run a fresh Optuna study on all trainable sales (maximally tuned production model, one extra study's worth of compute).
+- **`best_fold`** — use the hyperparameters of the fold with the best holdout score. *Discouraged*: selecting on the best of N noisy per-fold scores courts winner's-curse; `aggregate` pools all folds and is more robust.
+- The chosen HPs are written to `cv_prod/{model}_params.json` with a `__CV_AGGREGATE__` sentinel fingerprint so `_get_params` reuses them without a fingerprint match.
+- **Source** — `_aggregate_fold_params` / `run_one_model_cv` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py).
+
+#### `modeling.instructions.cv_max_workers`
+
+How many folds run in parallel (each fold is an independent tune + fit, so they parallelize cleanly). Only relevant under `cv_folds > 1`.
+
+- **Default** — `min(cv_folds, cores − 2)`, i.e. parallel by default.
+- Each parallel worker is pinned to **single-threaded math** (`OMP_NUM_THREADS=1`, etc.) and a **fixed `PYTHONHASHSEED`**. The thread pin prevents CPU oversubscription (parallelism comes from the fold axis, not from stacking each fold's internal threads); the hash-seed pin is essential for **reproducibility** — without it, loky workers would order features via a randomized hash and XGBoost/LightGBM column subsampling would then pick different features per run. With both pinned, parallel runs are bit-reproducible run-to-run.
+- **Biggest speedups** are for the serial-tuning engines (CatBoost, NGBoost), which otherwise leave most cores idle, and scale with core count. XGBoost/LightGBM already parallelize across trials, so the fold-parallel gain there is more modest.
+- **Memory** scales with the worker count (each worker holds a copy of the model group's data) — lower this on very large localities (e.g. metros with >1M parcels) if memory-constrained.
+- **`1`** disables fold parallelism (each fold keeps full trial-level parallelism instead). Results at `cv_max_workers=1` may differ slightly from the parallel path (different thread/hash environment); each setting is internally reproducible.
+- **Source** — `run_one_model_cv` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py).
+
+> **Current limitation (planned follow-up):** a `dep_var_test` that is `log_`-prefixed falls back to the single split (the OOF stitch assumes price-space test targets).
+
 #### `modeling.instructions.test_train_frac`
 
 Fraction of total sales that go to **training** (the test set is the complement).

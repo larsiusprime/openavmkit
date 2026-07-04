@@ -22,7 +22,7 @@ from catboost import Pool, CatBoostRegressor, cv
 from ngboost import NGBRegressor
 from ngboost.distns import Normal
 
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, GroupKFold, GroupShuffleSplit, ShuffleSplit
 from sklearn.metrics import mean_absolute_percentage_error
 from sklearn.tree import DecisionTreeRegressor
 from optuna.integration import CatBoostPruningCallback
@@ -44,6 +44,58 @@ _TUNING_BATCH_SIZE = 8
 # silently reusing params/trials scored against the old one. v2 = LightGBM/XGBoost lr-floor
 # raised to 0.01 + iteration/leaf caps tightened (2026-06-18).
 _SEARCH_SPACE_VERSION = 2
+
+
+def _resolve_cv_inner(cv_inner, n_rows):
+    """Resolve the ``cv_inner`` setting (inner-CV fold count) to an int, or None (legacy).
+
+    ``None`` → legacy shuffled 5-fold inner CV (unchanged behavior). ``"auto"`` → a single
+    grouped holdout split when the training set is large enough that one split is a stable
+    HP signal, else 3 grouped folds (small localities — where fits are cheap and single-split
+    HP noise bites hardest). An explicit int is used as-is.
+    """
+    if cv_inner is None:
+        return None
+    if isinstance(cv_inner, str):
+        if cv_inner.strip().lower() == "auto":
+            return 1 if n_rows >= 2500 else 3
+        cv_inner = int(cv_inner)
+    return int(cv_inner)
+
+
+def _cv_index_splits(X, groups, n_splits, cv_inner, random_state):
+    """Yield ``(train_idx, val_idx)`` positional index pairs for inner hyperparameter CV.
+
+    Legacy behavior (``cv_inner is None``) is preserved exactly: shuffled ``KFold`` with
+    ``n_splits`` folds. When ``cv_inner`` is an int (nested-CV mode), the inner validation is
+    cheaper and parcel-grouped:
+      - ``cv_inner <= 1``: a single grouped holdout split (~20% val) — keeps nested-CV
+        compute near the single-tune budget.
+      - ``cv_inner >= 2``: ``cv_inner`` grouped folds.
+    Grouping (on ``groups`` = parcel key) keeps a parcel out of both inner-train and
+    inner-val. Falls back to ungrouped splitters when ``groups`` is None.
+    """
+    n = len(X)
+    if cv_inner is None:
+        return list(
+            KFold(n_splits=n_splits, shuffle=True, random_state=random_state).split(X)
+        )
+
+    n_groups = len(np.unique(groups)) if groups is not None else n
+    if cv_inner <= 1:
+        if groups is not None and n_groups >= 2:
+            gss = GroupShuffleSplit(
+                n_splits=1, test_size=0.2, random_state=random_state
+            )
+            return list(gss.split(X, groups=groups))
+        ss = ShuffleSplit(n_splits=1, test_size=0.2, random_state=random_state)
+        return list(ss.split(X))
+
+    k = min(cv_inner, n_groups if groups is not None else n)
+    k = max(2, k)
+    if groups is not None and n_groups >= k:
+        return list(GroupKFold(n_splits=k).split(X, groups=groups))
+    return list(KFold(n_splits=k, shuffle=True, random_state=random_state).split(X))
 
 
 def _resumable_study(
@@ -167,7 +219,15 @@ def _run_batched(study, suggest, evaluate, n_trials, storage_path, verbose, labe
 
     if batch_size is None:
         batch_size = _TUNING_BATCH_SIZE
-    workers = max(1, min(batch_size, (os.cpu_count() or 2) - 2))
+    # When folds run in parallel (run_one_model_cv), OPENAVMKIT_TUNE_WORKERS caps each fold's
+    # trial-level thread pool to its fair share of cores so W parallel folds x this cap ~= cores
+    # (no oversubscription). batch_size is untouched, so the ask/tell cadence — and the result —
+    # is identical regardless of how many run concurrently.
+    _env_workers = os.environ.get("OPENAVMKIT_TUNE_WORKERS")
+    if _env_workers:
+        workers = max(1, min(batch_size, int(_env_workers)))
+    else:
+        workers = max(1, min(batch_size, (os.cpu_count() or 2) - 2))
 
     n_done = len([t for t in study.trials if t.state == TrialState.COMPLETE])
     while n_done < n_trials:
@@ -205,7 +265,7 @@ def _remaining_trials(study, n_trials, storage_path):
     return max(0, n_trials - len(study.trials))
 
 
-def _study_fingerprint(columns, n_rows, n_trials, seed=None):
+def _study_fingerprint(columns, n_rows, n_trials, seed=None, extra=None):
     """Short stable hash identifying a tuning study's search context.
 
     A resumed study (or reused ``params.json``) is only valid if it is searching the *same*
@@ -220,6 +280,9 @@ def _study_fingerprint(columns, n_rows, n_trials, seed=None):
         "|".join(sorted(str(c) for c in columns))
         + f"||rows={n_rows}||trials={n_trials}||seed={seed}||space=v{_SEARCH_SPACE_VERSION}"
     )
+    # Appended only when set, so legacy fingerprints (extra=None) are byte-identical.
+    if extra:
+        key += f"||{extra}"
     return hashlib.md5(key.encode("utf-8")).hexdigest()[:10]
 
 
@@ -264,6 +327,8 @@ def _tune_xgboost(
     verbose=False,
     storage_path=None,
     study_name=None,
+    groups=None,
+    cv_inner=None,
 ):
     """Tunes XGBoost hyperparameters using Optuna and shuffled k-fold cross-validation.
     Uses the xgboost.train API for training. Includes logging for progress monitoring.
@@ -327,6 +392,8 @@ def _tune_xgboost(
             sizes=sizes,
             he_ids=he_ids,
             custom_alpha=0.1,
+            groups=groups,
+            cv_inner=cv_inner,
         )
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -357,6 +424,8 @@ def _tune_lightgbm(
     verbose=False,
     storage_path=None,
     study_name=None,
+    groups=None,
+    cv_inner=None,
 ):
     """Tunes LightGBM hyperparameters using Optuna and shuffled k-fold cross-validation.
 
@@ -425,7 +494,8 @@ def _tune_lightgbm(
 
     def evaluate(params):
         return _lightgbm_kfold_cv(
-            X, y, params, n_splits=n_splits, random_state=random_state, cat_vars=cat_vars
+            X, y, params, n_splits=n_splits, random_state=random_state, cat_vars=cat_vars,
+            groups=groups, cv_inner=cv_inner,
         )
 
     # Run Bayesian Optimization with Optuna
@@ -460,7 +530,21 @@ def _tune_catboost(
     use_gpu=True,
     storage_path=None,
     study_name=None,
+    groups=None,
+    cv_inner=None,
 ):
+
+    # CatBoost uses its built-in cv(), which does not support grouped folds, so the inner
+    # split here is NOT parcel-grouped (a small HP-selection optimism only; the OUTER holdout
+    # is still parcel-grouped and leakage-free — see run_one_model_cv). cv_inner just controls
+    # how many (min 2) inner folds cv() runs, to keep nested-CV compute down.
+    inner_folds = max(2, cv_inner) if cv_inner is not None else n_splits
+
+    # Cap CatBoost's internal threads to a fold's fair share when folds run in parallel
+    # (run_one_model_cv sets OPENAVMKIT_TUNE_WORKERS), so parallel CatBoost folds don't
+    # each grab every core.
+    _cb_env = os.environ.get("OPENAVMKIT_TUNE_WORKERS")
+    _cb_thread_count = int(_cb_env) if _cb_env else None
 
     # Pre-build a single Pool for CV
     cat_feats = [c for c in (cat_vars or []) if c in X.columns]
@@ -497,11 +581,14 @@ def _tune_catboost(
         if params["grow_policy"] == "Lossguide":
             params["max_leaves"] = trial.suggest_int("max_leaves", 31, 128)
 
+        if _cb_thread_count is not None:
+            params["thread_count"] = _cb_thread_count
+
         # Use CatBoost's built-in CV (MUCH faster)
         cv_results = cv(
             full_pool,
             params,
-            fold_count=n_splits,
+            fold_count=inner_folds,
             partition_random_seed=random_state,
             early_stopping_rounds=100,
             verbose=False,
@@ -560,6 +647,8 @@ def _tune_ngboost(
     verbose=False,
     storage_path=None,
     study_name=None,
+    groups=None,
+    cv_inner=None,
 ):
     """Tunes NGBoost hyperparameters using Optuna and k-fold cross-validation.
 
@@ -590,9 +679,10 @@ def _tune_ngboost(
         minibatch_frac = trial.suggest_float("minibatch_frac", 0.5, 1.0)
         max_depth = trial.suggest_int("max_depth", 3, 8)
 
-        kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
         mape_scores = []
-        for train_idx, val_idx in kf.split(X):
+        for train_idx, val_idx in _cv_index_splits(
+            X, groups, n_splits, cv_inner, random_state
+        ):
             X_tr, X_val = X.iloc[train_idx], X.iloc[val_idx]
             y_tr, y_val = y[train_idx], y[val_idx]
 
@@ -739,6 +829,8 @@ def _xgb_kfold_cv(
     sizes=None,
     he_ids=None,
     custom_alpha=0.1,
+    groups=None,
+    cv_inner=None,
 ):
     """Shuffled (random) K-fold CV for XGBoost hyperparameter selection.
 
@@ -753,10 +845,9 @@ def _xgb_kfold_cv(
     Returns:
         float: Mean MAPE score across all folds.
     """
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     mape_scores = []
 
-    for train_idx, val_idx in kf.split(X):
+    for train_idx, val_idx in _cv_index_splits(X, groups, n_splits, cv_inner, random_state):
         if hasattr(X, 'iloc'):
             X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
             y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
@@ -871,23 +962,23 @@ def _catboost_kfold_cv(
     return np.mean(mape_scores)
 
 
-def _lightgbm_kfold_cv(X, y, params, n_splits=5, random_state=42, cat_vars=None):
+def _lightgbm_kfold_cv(X, y, params, n_splits=5, random_state=42, cat_vars=None,
+                       groups=None, cv_inner=None):
     """Shuffled (random) K-fold CV for LightGBM hyperparameter selection.
     """
     n_samples = len(X)
     n_splits = min(n_splits, n_samples)
-    if n_splits < 2:
+    if n_samples < 2:
         import warnings
         warnings.warn(
-            f"Not enough samples ({n_samples}) for cross-validation with n_splits={n_splits}. "
+            f"Not enough samples ({n_samples}) for cross-validation. "
             "Returning penalty MAPE of 1.0.",
             UserWarning,
         )
         return 1.0
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     mape_scores = []
 
-    for train_idx, val_idx in kf.split(X):
+    for train_idx, val_idx in _cv_index_splits(X, groups, n_splits, cv_inner, random_state):
         if hasattr(X, "iloc"):
             X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
             y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]

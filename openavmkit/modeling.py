@@ -145,10 +145,17 @@ from openavmkit.tuning import (
     _study_fingerprint,
     _discard_stale_studies,
     _cleanup_study_files,
+    _resolve_cv_inner,
 )
 from openavmkit.utilities.timing import TimingData
 
 pd.set_option("future.no_silent_downcasting", True)
+
+# Sentinel fingerprint for CV production params that were derived by aggregating the per-fold
+# tuned hyperparameters (median/mode) rather than by a fresh Optuna study. A params.json carrying
+# this fingerprint is trusted by ``_get_params`` regardless of the search-context fingerprint,
+# because it deliberately reuses the fold HPs to skip the production tune (see run_one_model_cv).
+_CV_AGGREGATE_FINGERPRINT = "__CV_AGGREGATE__"
 
 TreeBasedModel = Union[
     XGBoostModel,
@@ -1541,6 +1548,29 @@ class SingleModelResults:
                 self.pred_univ = self.pred_univ * self.ds.df_universe[suffix]
             if self.dep_var_test.startswith("log_"):
                 self.pred_test.y_pred = self.pred_test.y_pred * self.ds.df_test[suffix]
+
+    def override_test_predictions(self, df_test_full: pd.DataFrame):
+        """Replace the holdout/test set with a full-coverage frame and recompute test-side stats.
+
+        Used by nested cross-validation (:func:`openavmkit.model_runner.run_one_model_cv`): the
+        fold models produce an out-of-fold prediction for every trainable sale (leakage-free w.r.t.
+        both training and hyperparameter selection), and post-valuation sales get the full-refit
+        model's prediction (also leakage-free — they never train). Stitched together, ``df_test_full``
+        covers 100% of sales, so the reported holdout statistics carry the same n as the study set.
+
+        ``df_test_full`` must already carry the prediction in ``self.field_prediction`` in the SAME
+        space as ``dep_var_test`` (price space in the common case). The caller guards against
+        log/area-transformed test targets, so no back-transform is re-applied here.
+        """
+        field = self.field_prediction
+        max_trim = _get_max_ratio_study_trim(self.ds.settings, self.ds.model_group)
+        self.pred_test = PredictionResults(
+            self.dep_var_test, self.ind_vars, field, df_test_full, max_trim,
+            self.is_land_predictions,
+        )
+        self.df_test = self.pred_test.df.copy()
+        self.ve_test = get_vertical_equity_scores(self.df_test, self.dep_var_test, field)
+        self.utility_test = self.pred_test.mape * 100
 
     def summary(self) -> str:
         """
@@ -5294,11 +5324,32 @@ def _get_params(
     # ind_vars list, sales window, trial budget, or tuner search space yields a different fingerprint,
     # so stale params are re-tuned instead of silently reused. (params.json embeds this under the
     # reserved "__fingerprint" key; files without it — saved before this guard — are treated as stale.)
+    # Nested-CV mode (cv_folds > 1) makes the inner hyperparameter CV cheaper and
+    # parcel-grouped. In legacy single-split mode cv_inner stays None → the tuners keep their
+    # historical shuffled 5-fold inner CV, and the fingerprint below is byte-identical to before.
+    _settings = getattr(ds, "settings", None) or {}
+    _instr = _settings.get("modeling", {}).get("instructions", {})
+    cv_inner = None
+    if int(_instr.get("cv_folds", 5)) > 1:
+        cv_inner = _resolve_cv_inner(_instr.get("cv_inner", "auto"), len(ds.X_train))
+
+    # Per-row parcel keys (aligned to X_train) for grouped inner splits; None if unavailable
+    # (safe — grouping only affects inner HP-selection quality, not the outer holdout).
+    groups = None
+    if cv_inner is not None:
+        try:
+            df_train = getattr(ds, "df_train", None)
+            if df_train is not None and "key" in df_train.columns and len(df_train) == len(ds.X_train):
+                groups = df_train.loc[ds.X_train.index, "key"].astype(str).values
+        except Exception:
+            groups = None
+
     fp = _study_fingerprint(
         ds.X_train.columns,
         len(ds.X_train),
         kwargs.get("n_trials", 50),
         seed=kwargs.get("random_state"),
+        extra=(f"cvi={cv_inner}" if cv_inner is not None else None),
     )
     params_path = f"{outpath}/{slug}_params.json"
 
@@ -5306,10 +5357,11 @@ def _get_params(
     if use_saved_params and os.path.exists(params_path):
         saved = json.load(open(params_path, "r"))
         saved_fp = saved.pop("__fingerprint", None) if isinstance(saved, dict) else None
-        if saved_fp == fp:
+        if saved_fp == fp or saved_fp == _CV_AGGREGATE_FINGERPRINT:
             params = saved  # "__fingerprint" already popped, so the model never sees it
             if verbose:
-                print(f"--> using saved parameters")
+                which = "CV-aggregated" if saved_fp == _CV_AGGREGATE_FINGERPRINT else "saved"
+                print(f"--> using {which} parameters")
         else:
             print(
                 f"--> {name}: saved params at {params_path} are stale "
@@ -5336,6 +5388,8 @@ def _get_params(
             cat_vars=cat_vars,
             storage_path=storage_path,
             study_name=study_name,
+            groups=groups,
+            cv_inner=cv_inner,
             **kwargs,
         )
         if save_params:

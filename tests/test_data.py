@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import pandas as pd
 from IPython.display import display
@@ -5,7 +6,8 @@ from IPython.display import display
 from openavmkit.data import _perform_canonical_split, _handle_duplicated_rows, _perform_ref_tables, _merge_dict_of_dfs, \
 	_do_enrich_year_built, enrich_time, SalesUniversePair, get_hydrated_sales_from_sup, _enrich_permits, \
 	compute_lookback_test_size, _resolve_strat_fields_improved, _build_strat_label, _stratified_test_sample, \
-	_three_tier_split
+	_three_tier_split, _assign_grouped_folds, _perform_canonical_folds, _read_fold_keys, \
+	_do_write_canonical_split
 from openavmkit.modeling import DataSplit
 from openavmkit.utilities.assertions import dfs_are_equal, series_are_equal
 from openavmkit.utilities.data import div_df_z_safe, merge_and_stomp_dfs, combine_dfs
@@ -1277,3 +1279,164 @@ def test_canonical_split_explicit_none_disables_default_rule():
 	# sales remain for training.
 	assert test_2025 == 53
 	assert train_2025 == 22
+
+# ---------------------------------------------------------------------------
+# Parcel-grouped CV fold assignment (_assign_grouped_folds). The core guarantee
+# these pin down: all sales of one parcel land in the SAME fold, so a repeat-sale
+# parcel never appears in both a fold's train and its holdout (entity-level leak).
+# ---------------------------------------------------------------------------
+
+def test_assign_grouped_folds_keeps_parcel_in_one_fold():
+	# 50 parcels, each sold twice (same key) → repeat-sale parcels everywhere.
+	rows = []
+	for p in range(50):
+		for s in range(2):
+			rows.append({"key": f"p{p}", "key_sale": f"p{p}-s{s}",
+				"sale_year": 2024 + (p % 2)})
+	df = pd.DataFrame(rows)
+	folds = _assign_grouped_folds(df, n_folds=5, random_seed=1337,
+		strat_fields=["sale_year"])
+	df["fold"] = folds.values
+	# The anti-leakage guarantee: every parcel's sales share exactly one fold.
+	per_parcel_folds = df.groupby("key")["fold"].nunique()
+	assert (per_parcel_folds == 1).all()
+	# Full coverage: every fold used, no unassigned rows.
+	assert set(df["fold"].unique()) == set(range(5))
+	assert (df["fold"] >= 0).all()
+
+
+def test_assign_grouped_folds_singletons_full_coverage():
+	# All-singleton parcels → behaves like stratified k-fold: balanced, full coverage.
+	df = pd.DataFrame({
+		"key": [f"p{i}" for i in range(200)],
+		"key_sale": [f"p{i}-s0" for i in range(200)],
+		"sale_year": [2023] * 100 + [2024] * 100,
+	})
+	folds = _assign_grouped_folds(df, n_folds=5, random_seed=1337,
+		strat_fields=["sale_year"])
+	counts = pd.Series(folds.values).value_counts()
+	assert set(counts.index) == set(range(5))
+	assert counts.min() >= 30 and counts.max() <= 50  # ~40 each
+
+
+def test_assign_grouped_folds_degrades_on_thin_strata():
+	# Each (year, cat) combo is unique → StratifiedGroupKFold raises; must degrade
+	# to a coarser label / GroupKFold rather than crash, and still cover everything.
+	rows = [{"key": f"p{p}", "key_sale": f"p{p}-s0",
+		"sale_year": 2020 + p, "cat": f"c{p}"} for p in range(20)]
+	df = pd.DataFrame(rows)
+	folds = _assign_grouped_folds(df, n_folds=5, random_seed=1337,
+		strat_fields=["sale_year", "cat"])
+	assert (folds >= 0).all()
+	assert set(folds.unique()) == set(range(5))
+
+
+def test_assign_grouped_folds_deterministic():
+	df = pd.DataFrame({
+		"key": [f"p{i % 40}" for i in range(120)],
+		"key_sale": [f"s{i}" for i in range(120)],
+		"sale_year": [2023 + (i % 3) for i in range(120)],
+	})
+	f1 = _assign_grouped_folds(df, 5, 1337, ["sale_year"])
+	f2 = _assign_grouped_folds(df, 5, 1337, ["sale_year"])
+	assert (f1.values == f2.values).all()
+
+
+def _synth_cv_sales():
+	"""Synthetic model-group sales: repeat-sale parcels + post-val sales."""
+	rows = []
+	# 80 single-sale parcels (trainable)
+	for i in range(80):
+		rows.append({"key": f"p{i}", "key_sale": f"p{i}-a",
+			"sale_age_days": 100 + (i % 300), "sale_year": 2024 + (i % 2)})
+	# 20 repeat-sale parcels, 2 trainable sales each (same key)
+	for i in range(80, 100):
+		for s in ("a", "b"):
+			rows.append({"key": f"p{i}", "key_sale": f"p{i}-{s}",
+				"sale_age_days": 120 + (i % 200), "sale_year": 2024 + (i % 2)})
+	# 15 post-valuation sales (sale_age_days < 0) — never train
+	for i in range(100, 115):
+		rows.append({"key": f"p{i}", "key_sale": f"p{i}-a",
+			"sale_age_days": -30, "sale_year": 2026})
+	df = pd.DataFrame(rows)
+	df["model_group"] = "res_sf"
+	df["vacant_sale"] = False
+	df["bldg_age_years"] = 20
+	df["bldg_area_finished_sqft"] = 1800.0
+	return df
+
+
+def test_perform_canonical_folds_coverage_grouping_postval():
+	df = _synth_cv_sales()
+	out = _perform_canonical_folds("res_sf", df, {}, n_folds=5, random_seed=1337)
+	# Every input sale is represented exactly once.
+	assert len(out) == len(df)
+	assert set(out["key_sale"]) == set(df["key_sale"].astype(str))
+	# Post-val sales: never train, no fold.
+	post = out[out["train_eligible"] != True]
+	assert len(post) == 15
+	assert (post["fold"] == -1).all()
+	# Trainable sales: assigned to folds 0..4, full coverage.
+	train = out[out["train_eligible"] == True]
+	assert set(train["fold"].unique()) == set(range(5))
+	# Grouping guarantee: no parcel key spans more than one fold.
+	assert (train.groupby("key")["fold"].nunique() == 1).all()
+
+
+def test_read_fold_keys_roundtrip(tmp_path, monkeypatch):
+	monkeypatch.chdir(tmp_path)
+	df = _synth_cv_sales()
+	out = _perform_canonical_folds("res_sf", df, {}, n_folds=5, random_seed=1337)
+	os.makedirs("out/models/res_sf/_data", exist_ok=True)
+	out.to_csv("out/models/res_sf/_data/folds.csv", index=False)
+
+	fd = _read_fold_keys("res_sf")
+	assert fd is not None
+	assert fd["n_folds"] == 5
+	# train_all excludes post-val; post_val has the 15.
+	assert len(fd["post_val"]) == 15
+	trainable_keys = set(df[df["sale_age_days"] >= 0]["key_sale"].astype(str))
+	assert set(fd["train_all"]) == trainable_keys
+	# Per fold: holdout + train partition the trainable set, disjoint, and no parcel leaks.
+	train_df = out[out["train_eligible"] == True].copy()
+	key_of = dict(zip(train_df["key_sale"].astype(str), train_df["key"].astype(str)))
+	for holdout_keys, train_keys in fd["folds"]:
+		hset, tset = set(holdout_keys), set(train_keys)
+		assert hset.isdisjoint(tset)
+		assert hset | tset == trainable_keys
+		# parcel of any held-out sale must not appear in the training keys
+		holdout_parcels = {key_of[k] for k in hset}
+		train_parcels = {key_of[k] for k in tset}
+		assert holdout_parcels.isdisjoint(train_parcels)
+
+
+def test_do_write_canonical_split_cv_mode_writes_folds(tmp_path, monkeypatch):
+	# n_folds > 1 (CV mode) writes folds.csv and NOT the legacy single-split keys.
+	monkeypatch.chdir(tmp_path)
+	df = _synth_cv_sales()
+	_do_write_canonical_split("res_sf", df, {}, random_seed=1337, n_folds=5)
+	base = "out/models/res_sf/_data"
+	assert os.path.exists(f"{base}/folds.csv")
+	assert not os.path.exists(f"{base}/train_keys.csv")
+	fd = _read_fold_keys("res_sf")
+	assert fd is not None and fd["n_folds"] == 5
+	assert len(fd["post_val"]) == 15
+
+
+def test_aggregate_fold_params_median_continuous_mode_discrete():
+	# Median for continuous HPs; mode for discrete/multimodal + categorical HPs.
+	from openavmkit.model_runner import _aggregate_fold_params
+	folds = [
+		{"learning_rate": 0.02, "max_depth": 15, "subsample": 0.76, "grow_policy": "lossguide"},
+		{"learning_rate": 0.03, "max_depth": 15, "subsample": 0.80, "grow_policy": "lossguide"},
+		{"learning_rate": 0.05, "max_depth": 5,  "subsample": 0.70, "grow_policy": "depthwise"},
+		{"learning_rate": 0.04, "max_depth": 15, "subsample": 0.90, "grow_policy": "lossguide"},
+		{"learning_rate": 0.02, "max_depth": 5,  "subsample": 0.60, "grow_policy": "depthwise"},
+	]
+	agg = _aggregate_fold_params(folds)
+	assert agg["max_depth"] == 15 and isinstance(agg["max_depth"], int)   # mode, int-preserved
+	assert agg["grow_policy"] == "lossguide"                              # categorical mode
+	assert abs(agg["learning_rate"] - 0.03) < 1e-9                        # continuous median
+	# keys present in only some folds are aggregated over those folds
+	agg2 = _aggregate_fold_params(folds + [{"max_leaves": 64, "max_depth": 5}])
+	assert agg2["max_leaves"] == 64
