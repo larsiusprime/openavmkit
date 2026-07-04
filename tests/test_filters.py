@@ -643,3 +643,23 @@ def test_filter_debug():
   assert lists_are_equal(results_sf_select_improved, ['165177'])
   assert lists_are_equal(results_sf_select_vacant, [])
 
+
+
+def test_string_ordered_comparisons():
+  import pandas as pd
+  from openavmkit.filters import resolve_filter
+
+  df = pd.DataFrame({"sale_date": ["2019-06-01", "2020-01-01", "2021-03-15"]})
+
+  ge = resolve_filter(df, [">=", "sale_date", "str:2020-01-01"])
+  assert list(df[ge]["sale_date"]) == ["2020-01-01", "2021-03-15"]
+
+  le = resolve_filter(df, ["<=", "sale_date", "str:2020-01-01"])
+  assert list(df[le]["sale_date"]) == ["2019-06-01", "2020-01-01"]
+
+  # > and < were already correct; control cases
+  gt = resolve_filter(df, [">", "sale_date", "str:2020-01-01"])
+  assert list(df[gt]["sale_date"]) == ["2021-03-15"]
+
+  lt = resolve_filter(df, ["<", "sale_date", "str:2020-01-01"])
+  assert list(df[lt]["sale_date"]) == ["2019-06-01"]
