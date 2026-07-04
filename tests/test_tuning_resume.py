@@ -295,3 +295,44 @@ def test_get_params_resumes_to_target_then_cleans(tmp_path):
     assert params == {"x": 0.5}
     assert os.path.exists(os.path.join(out, "mdl_params.json"))
     assert glob.glob(os.path.join(out, "mdl_study_*.journal*")) == []
+
+
+# ---------------------------------------------------------------------------
+# Nested-CV inner-split helpers (_resolve_cv_inner, _cv_index_splits). The key
+# guarantee: inner hyperparameter CV is parcel-grouped so a parcel never spans
+# inner-train and inner-val, and legacy (cv_inner=None) is unchanged 5-fold.
+# ---------------------------------------------------------------------------
+
+from openavmkit.tuning import _cv_index_splits, _resolve_cv_inner
+
+
+def test_resolve_cv_inner_auto_and_explicit():
+    assert _resolve_cv_inner(None, 10000) is None          # legacy
+    assert _resolve_cv_inner("auto", 10000) == 1           # large -> single split
+    assert _resolve_cv_inner("auto", 500) == 3             # small -> 3 folds
+    assert _resolve_cv_inner(2, 500) == 2                  # explicit int
+
+
+def test_cv_index_splits_legacy_is_five_fold():
+    X = pd.DataFrame({"a": range(100)})
+    splits = _cv_index_splits(X, None, 5, None, 42)
+    assert len(splits) == 5
+
+
+def test_cv_index_splits_single_grouped_split_no_parcel_leak():
+    keys = np.repeat([f"p{i}" for i in range(50)], 2)  # 50 parcels, 2 sales each
+    X = pd.DataFrame({"a": range(100)})
+    splits = _cv_index_splits(X, keys, 5, 1, 42)  # cv_inner=1 -> single grouped split
+    assert len(splits) == 1
+    tr, va = splits[0]
+    assert set(keys[tr]).isdisjoint(set(keys[va]))
+    assert 0 < len(va) < 100
+
+
+def test_cv_index_splits_grouped_kfold_no_parcel_leak():
+    keys = np.repeat([f"p{i}" for i in range(50)], 2)
+    X = pd.DataFrame({"a": range(100)})
+    splits = _cv_index_splits(X, keys, 5, 3, 42)  # cv_inner=3 -> 3 grouped folds
+    assert len(splits) == 3
+    for tr, va in splits:
+        assert set(keys[tr]).isdisjoint(set(keys[va]))

@@ -60,7 +60,7 @@ import traceback
 import importlib.util
 
 from shapely.strtree import STRtree
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedGroupKFold, GroupKFold
 
 from openavmkit.calculations import (
     _crawl_calc_dict_for_fields,
@@ -4561,9 +4561,11 @@ def _write_canonical_splits(sup: SalesUniversePair, settings: dict, verbose: boo
     instructions = settings.get("modeling", {}).get("instructions", {})
     test_train_frac = instructions.get("test_train_frac", 0.8)
     random_seed = instructions.get("random_seed", 1337)
+    n_folds = int(instructions.get("cv_folds", 5))
     for model_group in model_groups:
         _do_write_canonical_split(
-            model_group, df_sales, settings, test_train_frac, random_seed, verbose
+            model_group, df_sales, settings, test_train_frac, random_seed, verbose,
+            n_folds=n_folds,
         )
 
 
@@ -4963,6 +4965,150 @@ def _perform_canonical_split(
     return df_test, df_train
 
 
+def _assign_grouped_folds(
+    df: pd.DataFrame,
+    n_folds: int,
+    random_seed: int,
+    strat_fields: list[str] | None,
+) -> pd.Series:
+    """Assign each row of ``df`` to one of ``n_folds`` folds, grouped by parcel ``key``.
+
+    All sales of a given parcel (``key``) land in the same fold — folding by ``key_sale``
+    would let a repeat-sale parcel appear in both a fold's train and its holdout, an
+    entity-level training leak (and the AVM's generalization target is the parcel, not the
+    transaction). Folds are also stratified on ``strat_fields`` (via a combined label) for
+    metric stability, but stratification is the negotiable part: when strata are too thin
+    for ``StratifiedGroupKFold`` the most-granular field is dropped and it retries,
+    ultimately degrading to plain ``GroupKFold``. Grouping is never dropped.
+
+    Returns an integer fold-index Series aligned to ``df.index`` (values 0..n_splits-1).
+    """
+    folds = pd.Series(-1, index=df.index, dtype=int)
+    if len(df) == 0:
+        return folds
+
+    groups = df["key"].astype(str).values
+    n_groups = len(np.unique(groups))
+    # Can't make more folds than we have parcels.
+    n_splits = min(n_folds, n_groups)
+    if n_splits < 2:
+        folds[:] = 0
+        return folds
+
+    def _group_kfold():
+        splitter = GroupKFold(n_splits=n_splits)
+        for fold_idx, (_, holdout_pos) in enumerate(splitter.split(df, None, groups)):
+            folds.iloc[holdout_pos] = fold_idx
+        return folds
+
+    fields = list(strat_fields) if strat_fields else []
+    while True:
+        label = _build_strat_label(df, fields) if fields else None
+        if label is None:
+            return _group_kfold()
+        try:
+            splitter = StratifiedGroupKFold(
+                n_splits=n_splits, shuffle=True, random_state=random_seed
+            )
+            for fold_idx, (_, holdout_pos) in enumerate(
+                splitter.split(df, label, groups)
+            ):
+                folds.iloc[holdout_pos] = fold_idx
+            return folds
+        except ValueError:
+            # A stratum was too thin for this many splits — drop the most granular field
+            # and retry. Grouping (the leakage guarantee) is preserved throughout.
+            if not fields:
+                return _group_kfold()
+            fields = fields[:-1]
+
+
+def _perform_canonical_folds(
+    model_group: str,
+    df_sales_in: pd.DataFrame,
+    settings: dict,
+    n_folds: int = 5,
+    random_seed: int = 1337,
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """Assign parcel-grouped, stratified CV folds for one model group.
+
+    Returns a DataFrame with columns ``key_sale``, ``key``, ``fold``, ``train_eligible``.
+    Post-valuation sales (``sale_age_days < 0``) never train under any scenario, so they get
+    ``train_eligible=False`` and ``fold=-1`` — they are covered in the holdout report via the
+    full-refit (Phase 2) model, not via the fold models. The three-tier temporal balancing
+    the single-split path uses is unnecessary here: every trainable sale lands in the holdout
+    exactly once (100% coverage), so the "enough recent sales in test" floor is automatic.
+    """
+    if verbose:
+        print(f"\nMaking canonical {n_folds}-fold CV split for model group {model_group}...")
+
+    from openavmkit.utilities.settings import resolve_use_sales_from
+    use_sales_from_impr, use_sales_from_vacant = resolve_use_sales_from(
+        settings, model_group=model_group
+    )
+
+    df = df_sales_in[df_sales_in["model_group"].eq(model_group)].copy()
+    df = _boolify_column_in_df(df, "vacant_sale", "na_false")
+
+    # Apply per-type use_sales_from thresholds (mirrors _perform_canonical_split).
+    if use_sales_from_impr is not None or use_sales_from_vacant is not None:
+        is_vac = df["vacant_sale"].fillna(False)
+        keep = pd.Series(True, index=df.index)
+        if use_sales_from_impr is not None:
+            keep &= is_vac | df["sale_year"].ge(use_sales_from_impr)
+        if use_sales_from_vacant is not None:
+            keep &= ~is_vac | df["sale_year"].ge(use_sales_from_vacant)
+        df = df[keep]
+
+    # Post-valuation sales never train.
+    is_post_val = df["sale_age_days"].lt(0)
+    df_trainable = df[~is_post_val].copy()
+    df_post = df[is_post_val].copy()
+
+    # Combined stratification label: vacancy flag + the improved strat fields (which append
+    # sale_year). Folding V/I into one label (rather than splitting into separate V/I streams)
+    # keeps a parcel that sold both vacant and improved from splitting across streams. Vacant
+    # rows have null age/area — _build_strat_label bins those to -1.
+    instr = settings.get("modeling", {}).get("instructions", {})
+    strat_fields = ["vacant_sale"] + _resolve_strat_fields_improved(
+        df_trainable, settings, instr.get("test_strat_fields_improved", None)
+    )
+    strat_fields = [f for f in strat_fields if f in df_trainable.columns]
+
+    fold_idx = _assign_grouped_folds(df_trainable, n_folds, random_seed, strat_fields)
+
+    # Diagnostic: repeat-sale parcels are exactly where parcel-grouping matters.
+    if len(df_trainable) > 0 and verbose:
+        per_parcel = df_trainable.groupby("key")["key_sale"].nunique()
+        n_repeat = int((per_parcel > 1).sum())
+        print(
+            f"--> {len(df_trainable)} trainable sales across {len(per_parcel)} parcels; "
+            f"{n_repeat} parcel(s) have >1 trainable sale "
+            f"({'grouping is active' if n_repeat else 'grouping is a no-op'})."
+        )
+
+    out_trainable = pd.DataFrame({
+        "key_sale": df_trainable["key_sale"].astype(str).values,
+        "key": df_trainable["key"].astype(str).values,
+        "fold": fold_idx.values,
+        "train_eligible": True,
+    })
+    out_post = pd.DataFrame({
+        "key_sale": df_post["key_sale"].astype(str).values,
+        "key": df_post["key"].astype(str).values,
+        "fold": -1,
+        "train_eligible": False,
+    })
+    result = pd.concat([out_trainable, out_post], ignore_index=True)
+
+    if verbose and len(out_trainable) > 0:
+        counts = out_trainable["fold"].value_counts().sort_index()
+        print(f"--> fold sizes (trainable): {counts.to_dict()}; post-val: {len(out_post)}")
+
+    return result
+
+
 def _read_provided_test_keys(filename: str) -> set:
     """Read a user-supplied set of test (holdout) sale keys from ``in/<filename>``.
 
@@ -4985,13 +5131,29 @@ def _do_write_canonical_split(
     settings: dict,
     test_train_fraction: float = 0.8,
     random_seed: int = 1337,
-    verbose: bool = False
+    verbose: bool = False,
+    n_folds: int = 1,
 ):
     """Write the canonical split keys (train and test) for a given model group to disk.
     Also performs outlier detection on training data if enabled in settings.
+
+    When ``n_folds > 1`` (and no user-provided ``test_keys_file``), writes parcel-grouped
+    CV fold assignments to ``folds.csv`` instead of the single train/test split. The
+    ``test_keys_file`` assessor path always uses the single split (it pins a specific
+    holdout that CV would violate).
     """
     instr = settings.get("modeling", {}).get("instructions", {})
     test_keys_file = instr.get("test_keys_file")
+
+    outpath = f"out/models/{model_group}/_data"
+    os.makedirs(outpath, exist_ok=True)
+
+    if n_folds and n_folds > 1 and not test_keys_file:
+        folds_df = _perform_canonical_folds(
+            model_group, df_sales_in, settings, n_folds, random_seed, verbose
+        )
+        folds_df.to_csv(f"{outpath}/folds.csv", index=False)
+        return
 
     if test_keys_file:
         # The user supplied their own holdout. This is the "I am the assessor and I know
@@ -5050,6 +5212,44 @@ def _read_split_keys(model_group: str):
     train_keys = pd.read_csv(train_path)["key_sale"].astype(str).values
     test_keys = pd.read_csv(test_path)["key_sale"].astype(str).values
     return test_keys, train_keys
+
+
+def _read_fold_keys(model_group: str):
+    """Read parcel-grouped CV fold assignments for a model group from disk.
+
+    Returns ``None`` when no ``folds.csv`` exists (e.g. legacy single-split mode, or a model
+    group skipped for lack of valid sales). Otherwise returns a dict:
+
+      - ``n_folds``: number of folds actually assigned
+      - ``folds``: list of ``(holdout_keys, train_keys)`` per fold, where ``train_keys`` are
+        all trainable sales NOT in this fold's holdout (post-val already excluded)
+      - ``train_all``: all trainable sale keys (post-val excluded) — Phase-2 training set
+      - ``post_val``: post-valuation sale keys (never train; scored by the Phase-2 model)
+    """
+    path = f"out/models/{model_group}/_data/folds.csv"
+    if not os.path.exists(path):
+        return None
+    df = pd.read_csv(path)
+    df["key_sale"] = df["key_sale"].astype(str)
+    # train_eligible may round-trip through CSV as bool or "True"/"False" string.
+    te = df["train_eligible"]
+    if te.dtype != bool:
+        te = te.astype(str).str.strip().str.lower().isin(["true", "1"])
+    trainable = df[te]
+    post_val = df.loc[~te, "key_sale"].values
+    train_all = trainable["key_sale"].values
+    fold_ids = sorted(int(f) for f in trainable["fold"].unique())
+    folds = []
+    for f in fold_ids:
+        holdout_keys = trainable.loc[trainable["fold"] == f, "key_sale"].values
+        train_keys = trainable.loc[trainable["fold"] != f, "key_sale"].values
+        folds.append((holdout_keys, train_keys))
+    return {
+        "n_folds": len(fold_ids),
+        "folds": folds,
+        "train_all": train_all,
+        "post_val": post_val,
+    }
 
 
 def _tag_model_groups_sup(
