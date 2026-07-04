@@ -745,8 +745,7 @@ def _fill_unknown_values(df, settings: dict):
     if cat_fields is not None:
         for field in cat_fields:
             if field in df:
-                df[field] = df[field].astype("str")
-                df[field] = df[field].fillna("UNKNOWN")
+                df[field] = df[field].astype("object").fillna("UNKNOWN").astype("str")
 
     if bool_fields is not None:
         for field in bool_fields:
