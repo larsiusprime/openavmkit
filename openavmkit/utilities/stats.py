@@ -583,12 +583,12 @@ def calc_prb(
         model = sm.OLS(left, right).fit()
 
     # Guard against degenerate fit (rare but better to be explicit)
-    if model.df_resid <= 0 or not np.isfinite(model.params[0]):
+    if model.df_resid <= 0 or not np.isfinite(model.params[1]):
         return np.nan, np.nan, np.nan
 
-    prb = float(model.params[0])
+    prb = float(model.params[1])
     prb_lower, prb_upper = (
-        model.conf_int(alpha=1.0 - confidence_interval)[0].tolist()
+        model.conf_int(alpha=1.0 - confidence_interval)[1].tolist()
     )
 
     return prb, prb_lower, prb_upper
