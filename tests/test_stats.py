@@ -38,3 +38,30 @@ def test_cod_bootstrap():
   print("***")
 
   assert objects_are_equal(results, expected)
+
+def test_calc_prb_returns_slope():
+  import numpy as np
+  import statsmodels.api as sm
+  from openavmkit.utilities.stats import calc_prb
+
+  n = 500
+  truth = np.linspace(100_000, 1_000_000, n)
+  rank = np.linspace(0.0, 1.0, n)
+  preds = truth * (0.9 + 0.2 * rank)  # ratios rise with parcel value
+
+  prb, lo, hi = calc_prb(preds, truth)
+
+  # fit the identically transformed regression by hand
+  ratios = preds / truth
+  med = np.median(ratios)
+  left = (ratios - med) / med
+  right = sm.add_constant(np.log2(preds / med + truth), has_constant="add")
+  slope = sm.OLS(left, right).fit().params[1]
+
+  assert abs(prb - slope) < 1e-9
+  assert prb > 0
+  assert lo <= prb <= hi
+
+  # unbiased control: a flat multiplier of ground truth gives PRB near zero
+  prb0, _, _ = calc_prb(truth * 0.95, truth)
+  assert abs(prb0) < 1e-6
