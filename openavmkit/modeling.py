@@ -1578,6 +1578,18 @@ class SingleModelResults:
         if self.dep_var_test.startswith("log_"):
             self.pred_test.y_pred = np.exp(self.pred_test.y_pred)
 
+        # Keep the DataSplit's test frames consistent with this full-coverage holdout. The Phase-2
+        # ds still carries its (small, throwaway) production holdout underneath; artifact writers
+        # that align df_test with ds.X_test *by position* (multi_mra / mra contributions, SHAP)
+        # would otherwise mismatch. Rebuild ds.{df_test,X_test,y_test} from the sales frames, which
+        # are already mutually aligned and carry the right post-split feature columns.
+        pos_by_key = {k: i for i, k in enumerate(self.ds.df_sales["key_sale"].astype(str))}
+        pos = [pos_by_key[k] for k in self.df_test["key_sale"].astype(str) if k in pos_by_key]
+        if len(pos) == len(self.df_test):
+            self.ds.df_test = self.ds.df_sales.iloc[pos].reset_index(drop=True)
+            self.ds.X_test = self.ds.X_sales.iloc[pos].reset_index(drop=True)
+            self.ds.y_test = self.ds.y_sales.iloc[pos].reset_index(drop=True)
+
     def summary(self) -> str:
         """
         Generate a summary string of model performance.
