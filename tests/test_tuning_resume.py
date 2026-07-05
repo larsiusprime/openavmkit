@@ -268,8 +268,8 @@ def test_seeded_tuning_is_reproducible():
     X = pd.DataFrame({"a": rng.rand(120), "b": rng.rand(120)})
     y = pd.Series(3 * X["a"] - 2 * X["b"] + rng.rand(120) * 0.1)
 
-    p1 = _tune_lightgbm(X, y, sizes=None, he_ids=None, n_trials=6, random_state=42)
-    p2 = _tune_lightgbm(X, y, sizes=None, he_ids=None, n_trials=6, random_state=42)
+    p1 = _tune_lightgbm(X, y, n_trials=6, random_state=42)
+    p2 = _tune_lightgbm(X, y, n_trials=6, random_state=42)
     assert p1 == p2
 
 

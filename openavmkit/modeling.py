@@ -4140,13 +4140,18 @@ def run_layeredcomp(
     import layeredcompmodel as _lcm
     model_cache_path = f"{outpath}/lcomp_model.json"
     fingerprint = _lcomp_fingerprint(ds.X_train, random_state)
-    lib_ok = getattr(_lcm, "__version__", None) == _LCOMP_VERIFIED_VERSION
+    # Capability guard (not an exact version string): the serialization API's presence + the JSON
+    # `format_version` gate compatibility, so the cache works across the pre-release version ambiguity
+    # (the dev fork may still self-report 0.2.1) AND whatever number John assigns at release, while
+    # staying safely OFF on stock PyPI builds that lack serialization. Tighten to a
+    # `>= _LCOMP_VERIFIED_VERSION` pin once layeredcompmodel cuts an official release.
+    lib_ok = hasattr(LCompModel, "to_dict") and hasattr(LCompModel, "from_dict")
 
-    # Fast path: reuse a cached fitted ensemble (portable JSON, no refit) when the library version and
-    # the data+hyperparameter fingerprint both match — this skips the ENTIRE fit (tree build AND the
-    # per-tree weight_falloff search), so re-prediction on unchanged training data is ~instant. Any
-    # problem (version / fingerprint / read error) falls back to a full fit, so we never serve a wrong
-    # model.
+    # Fast path: reuse a cached fitted ensemble (portable JSON, no refit) when the library supports
+    # serialization and the data+hyperparameter fingerprint matches — this skips the ENTIRE fit (tree
+    # build AND the per-tree weight_falloff search), so re-prediction on unchanged training data is
+    # ~instant. Any problem (capability / fingerprint / read error) falls back to a full fit, so we
+    # never serve a wrong model.
     lcomp_model = None
     if use_saved_params and lib_ok and os.path.exists(model_cache_path):
         try:
@@ -4171,7 +4176,7 @@ def run_layeredcomp(
             json.dump(
                 {
                     "fingerprint": fingerprint,
-                    "lcompmodel_version": _LCOMP_VERIFIED_VERSION,
+                    "lcompmodel_version": getattr(_lcm, "__version__", None),
                     "model": lcomp_model.to_dict(),
                 },
                 open(model_cache_path, "w"),
@@ -5370,8 +5375,6 @@ def _get_params(
         params = tune_func(
             ds.X_train,
             ds.y_train,
-            sizes=ds.train_sizes,
-            he_ids=ds.train_he_ids,
             verbose=verbose,
             cat_vars=cat_vars,
             storage_path=storage_path,
