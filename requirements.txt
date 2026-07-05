@@ -21,7 +21,9 @@ statsmodels==0.14.6
 xgboost==3.2.0
 xlsxwriter==3.2.9
 census==0.8.26
-layeredcompmodel==0.2.1
+# layeredcompmodel >= 0.3.0 required for the JSON model cache (to_dict/from_dict) + vectorized predict.
+# Points at the fork branch until upstream cuts a 0.3.0 release on PyPI, then pin `==0.3.0`.
+layeredcompmodel @ git+https://github.com/larsiusprime/LayeredCompModel.git@feature/perf-vectorize-and-parallel
 shap==0.50.0
 numba==0.65.1
 mpld3==0.5.12

@@ -1152,13 +1152,13 @@ None of this affects the model's predictions, the benchmark metrics, the ratio s
 
 ### Train / test split rules
 
-The canonical train/test split lives in `_perform_canonical_split` in [openavmkit/data.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/data.py). It splits each model group's valid sales into a test set (default 20%) and a training set (default 80%), maintaining vacant/improved balance and respecting three constraints:
+> **Note:** By default (`modeling.instructions.cv_folds = 5`) models are evaluated with **nested cross-validation** — see the [Cross-validation](#cross-validation-nested-holdout) section below. This single-split path applies only when `cv_folds <= 1` (and always for the user-provided `test_keys_file` assessor case). The stratification rules described here are still used to build the CV folds, so they remain relevant either way.
+
+The single train/test split lives in `_perform_canonical_split` in [openavmkit/data.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/data.py). It splits each model group's valid sales into a test set (default 20%) and a training set (default 80%), maintaining vacant/improved balance and respecting three constraints:
 
 1. **No leakage.** Post-valuation-date sales never appear in the training set.
 2. **Sufficient lookback representation in test, without overrepresentation.** The lookback period (sales within `analysis.ratio_study.look_back_years` of the valuation date) gets a hard floor in the test set so the resulting ratio study has a defensible IAAO-aligned sample size, and a cap that prevents the lookback period from dominating the test set when other years are available.
 3. **Stratified random sampling** within each tier. Vacant sales are stratified by `sale_year` only; improved sales are stratified by age, finished area, and `sale_year` (user-configurable). Stratification uses `sklearn.model_selection.train_test_split` with graceful fallback when strata are too thin.
-
-This single-split path is used when `modeling.instructions.cv_folds <= 1` (and always for the user-provided `test_keys_file` assessor case). By default the models run under **nested cross-validation** instead — see below.
 
 ### Cross-validation (nested holdout)
 

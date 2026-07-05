@@ -462,15 +462,14 @@ def test_multi_mra_log_param_price_space(tmp_path):
     assert res.pred_test.y_pred.mean() > 1000
 
 
-def test_lcomp_reconstruct_with_falloffs_matches_full_fit():
-    # Safety proof for the lcomp weight_falloff cache: rebuilding the ensemble with the saved
-    # per-tree falloffs (skipping the minimize_scalar search) must reproduce a normal fit's
-    # predictions bit-for-bit. If this ever diverges (e.g. layeredcompmodel changes its fit),
-    # the version guard in run_layeredcomp should fall back to a full fit instead.
+def test_lcomp_serialization_roundtrip_matches_full_fit():
+    # Safety proof for the lcomp model cache: serializing a fitted ensemble to JSON and reloading it
+    # (no refit) must reproduce the original predictions bit-for-bit. If this ever diverges (e.g.
+    # layeredcompmodel changes its serialization), the version guard in run_layeredcomp falls back to
+    # a full fit instead. Requires layeredcompmodel >= 0.3.0 (to_dict/from_dict).
     from layeredcompmodel import LayeredCompBaggingModel
     from openavmkit.modeling import (
-        _reconstruct_lcomp_with_falloffs, _LCOMP_TREE_COUNT, _LCOMP_SAMPLE_PCT,
-        _LCOMP_SPLIT_METRIC, _LCOMP_N_JOBS,
+        _LCOMP_TREE_COUNT, _LCOMP_SAMPLE_PCT, _LCOMP_SPLIT_METRIC, _LCOMP_N_JOBS,
     )
     rng = np.random.default_rng(0)
     nn = 300
@@ -481,24 +480,21 @@ def test_lcomp_reconstruct_with_falloffs_matches_full_fit():
         "neighborhood": rng.integers(0, 8, nn).astype(str).astype(object),
     })
     y = 50000 + 40 * X["bldg_area_finished_sqft"] + rng.normal(0, 15000, nn)
-    seed = 42
 
     full = LayeredCompBaggingModel(
         tree_count=_LCOMP_TREE_COUNT, sample_pct=_LCOMP_SAMPLE_PCT,
-        random_state=seed, split_metric=_LCOMP_SPLIT_METRIC, n_jobs=_LCOMP_N_JOBS,
+        random_state=42, split_metric=_LCOMP_SPLIT_METRIC, n_jobs=_LCOMP_N_JOBS,
     )
     full.fit(X, y)
-    falloffs = [float(est.weight_falloff) for est in full.estimators_]
-
-    recon = _reconstruct_lcomp_with_falloffs(X, y, falloffs, seed)
+    restored = LayeredCompBaggingModel.from_dict(full.to_dict())
 
     Xq = X.head(100)
-    np.testing.assert_allclose(full.predict(Xq), recon.predict(Xq), rtol=1e-9, atol=1e-6)
+    np.testing.assert_array_equal(full.predict(Xq), restored.predict(Xq))
 
 
-def test_lcomp_save_and_reuse_falloffs_roundtrip(tmp_path):
-    # End-to-end: first run saves lcomp_falloffs.json; second run (use_saved_params) reloads it,
-    # skips the search, and produces identical universe predictions.
+def test_lcomp_save_and_reuse_model_cache_roundtrip(tmp_path):
+    # End-to-end: first run saves lcomp_model.json; second run (use_saved_params) reloads the fitted
+    # ensemble, skips the fit entirely, and produces identical universe predictions.
     import os
     from openavmkit.modeling import run_layeredcomp
 
@@ -526,7 +522,7 @@ def test_lcomp_save_and_reuse_falloffs_roundtrip(tmp_path):
                          ind_vars, ["neighborhood"], {}, test_keys, train_keys)
 
     r1 = run_layeredcomp(fresh_ds(), str(tmp_path), save_params=True, use_saved_params=False)
-    assert os.path.exists(tmp_path / "lcomp_falloffs.json")
+    assert os.path.exists(tmp_path / "lcomp_model.json")
 
     r2 = run_layeredcomp(fresh_ds(), str(tmp_path), save_params=False, use_saved_params=True)
     np.testing.assert_allclose(

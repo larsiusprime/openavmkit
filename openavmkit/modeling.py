@@ -58,7 +58,6 @@ from ngboost import NGBRegressor
 from ngboost.distns import Normal
 from sklearn.tree import DecisionTreeRegressor
 from layeredcompmodel import LayeredCompBaggingModel as LCompModel
-from layeredcompmodel import LayeredCompModel as _LCompTree
 from catboost import CatBoostRegressor, Pool
 from lightgbm import Booster
 from matplotlib import pyplot as plt
@@ -3506,6 +3505,14 @@ def run_xgboost(
     if seed is not None:
         parameters.setdefault("random_state", seed)
 
+    # Honor the tuned round count. The sklearn API uses n_estimators, so the native-API
+    # num_boost_round the tuner selected must be mapped onto it — otherwise XGBRegressor silently
+    # falls back to its default (100 trees), leaving the final model undertrained relative to the
+    # learning_rate the tuner chose. This mirrors LightGBM/CatBoost, whose finals also train their
+    # tuned round count on all data.
+    if "num_boost_round" in parameters:
+        parameters["n_estimators"] = int(parameters.pop("num_boost_round"))
+
     # parameters["eval_metric"] = "rmse"
     regressor = xgb.XGBRegressor(**parameters)
 
@@ -4050,15 +4057,14 @@ def run_ngboost(
     return predict_ngboost(ds, ngboost_model, timing, verbose)
 
 
-# LayeredComp hyperparameters are fixed (no search), so the only thing fit "learns" is one
-# weight_falloff per bagging tree — the per-tree minimize_scalar search, which is ~60% of fit time
-# (the rest builds the comp-tree structure, which is unavoidable on reload). We persist just those
-# floats and, on reload, rebuild the ensemble injecting them so the search is skipped. Reconstruction
-# replicates LayeredCompBaggingModel.fit() exactly MINUS the search, so it is only safe against the
-# verified package version; any mismatch (version / fingerprint / error) falls back to a normal fit,
-# and a test asserts reconstruction reproduces a normal fit bit-for-bit. The clean long-term fix is an
-# upstream LayeredCompBaggingModel.fit(weight_falloffs=...) hook, after which this can be deleted.
-_LCOMP_VERIFIED_VERSION = "0.2.1"
+# LayeredComp fit is expensive (tree build + per-tree weight_falloff search) and fully determined by
+# (X_train, hyperparameters, random_state). So we persist the whole fitted ensemble as portable JSON
+# (layeredcompmodel >= 0.3.0 `to_dict`/`from_dict`) keyed by a data+hyperparameter fingerprint, and on
+# reload deserialize + predict instead of refitting. This skips the ENTIRE fit when training data is
+# unchanged (re-prediction, new/updated universe, notebook iteration). Guarded by verified package
+# version + fingerprint; any mismatch (version / fingerprint / error) falls back to a normal fit, so we
+# never serve a wrong model. JSON (not pickle): portable, inspectable/auditable, and safe to load.
+_LCOMP_VERIFIED_VERSION = "0.3.0"
 _LCOMP_TREE_COUNT = 10
 _LCOMP_SAMPLE_PCT = 0.95
 _LCOMP_SPLIT_METRIC = "mae"
@@ -4074,32 +4080,6 @@ def _lcomp_fingerprint(X: pd.DataFrame, random_state: int) -> str:
         str(random_state),
     ])
     return hashlib.md5(payload.encode()).hexdigest()[:12]
-
-
-def _reconstruct_lcomp_with_falloffs(X, y, falloffs: list[float], random_state: int) -> LCompModel:
-    """Rebuild a fitted LayeredCompBaggingModel injecting saved per-tree weight_falloffs, skipping the
-    minimize_scalar search. Mirrors LayeredCompBaggingModel.fit() (v0.2.1) minus the search."""
-    from sklearn.utils.validation import check_random_state
-    from sklearn.model_selection import train_test_split
-
-    model = LCompModel(
-        tree_count=_LCOMP_TREE_COUNT, sample_pct=_LCOMP_SAMPLE_PCT,
-        random_state=random_state, split_metric=_LCOMP_SPLIT_METRIC, n_jobs=_LCOMP_N_JOBS,
-    )
-    model.n_features_in_ = X.shape[1]
-    model.feature_names_in_ = list(X.columns)
-    model.estimators_ = []
-    rs = check_random_state(random_state)
-    for i in range(_LCOMP_TREE_COUNT):
-        seed_i = rs.randint(np.iinfo(np.int32).max)
-        X_tr, _, y_tr, _ = train_test_split(
-            X, y, test_size=(1 - _LCOMP_SAMPLE_PCT), random_state=seed_i
-        )
-        tree = _LCompTree(split_metric=_LCOMP_SPLIT_METRIC, n_jobs=_LCOMP_N_JOBS)
-        tree.fit(X_tr, y_tr)               # structure (unavoidable)
-        tree.weight_falloff = falloffs[i]  # injected — skips the per-tree minimize_scalar search
-        model.estimators_.append(tree)
-    return model
 
 
 def run_layeredcomp(
@@ -4158,42 +4138,43 @@ def run_layeredcomp(
 
     random_state = 42 if seed is None else seed
     import layeredcompmodel as _lcm
-    falloffs_path = f"{outpath}/lcomp_falloffs.json"
+    model_cache_path = f"{outpath}/lcomp_model.json"
     fingerprint = _lcomp_fingerprint(ds.X_train, random_state)
+    lib_ok = getattr(_lcm, "__version__", None) == _LCOMP_VERIFIED_VERSION
 
-    # Try the saved-falloff fast path: rebuild the ensemble injecting the learned per-tree
-    # weight_falloffs, skipping the ~60% minimize_scalar search. Guarded by package version +
-    # fingerprint; ANY problem falls back to a normal (search) fit so we never produce a wrong model.
+    # Fast path: reuse a cached fitted ensemble (portable JSON, no refit) when the library version and
+    # the data+hyperparameter fingerprint both match — this skips the ENTIRE fit (tree build AND the
+    # per-tree weight_falloff search), so re-prediction on unchanged training data is ~instant. Any
+    # problem (version / fingerprint / read error) falls back to a full fit, so we never serve a wrong
+    # model.
     lcomp_model = None
-    if use_saved_params and getattr(_lcm, "__version__", None) == _LCOMP_VERIFIED_VERSION and os.path.exists(falloffs_path):
+    if use_saved_params and lib_ok and os.path.exists(model_cache_path):
         try:
-            saved = json.load(open(falloffs_path))
-            if saved.get("fingerprint") == fingerprint and len(saved.get("weight_falloffs", [])) == _LCOMP_TREE_COUNT:
+            cached = json.load(open(model_cache_path))
+            if cached.get("fingerprint") == fingerprint:
                 if verbose:
-                    print(f"--> lcomp: reusing saved weight_falloffs (skipping search) from {falloffs_path}")
-                lcomp_model = _reconstruct_lcomp_with_falloffs(
-                    ds.X_train, ds.y_train, saved["weight_falloffs"], random_state
-                )
+                    print(f"--> lcomp: reusing cached fitted model (skipping fit) from {model_cache_path}")
+                lcomp_model = LCompModel.from_dict(cached["model"])
         except Exception as e:
-            warnings.warn(f"lcomp: could not reuse saved falloffs ({e}); refitting from scratch.")
+            warnings.warn(f"lcomp: could not reuse cached model ({e}); refitting from scratch.")
             lcomp_model = None
 
     if lcomp_model is None:
-        # Full fit (runs the per-tree weight_falloff search).
+        # Full fit (tree build + per-tree weight_falloff search).
         lcomp_model = LCompModel(
             tree_count=_LCOMP_TREE_COUNT, sample_pct=_LCOMP_SAMPLE_PCT,
             random_state=random_state, split_metric=_LCOMP_SPLIT_METRIC, n_jobs=_LCOMP_N_JOBS,
         )
         lcomp_model.fit(ds.X_train, ds.y_train)
-        if save_params and getattr(_lcm, "__version__", None) == _LCOMP_VERIFIED_VERSION:
+        if save_params and lib_ok:
             os.makedirs(outpath, exist_ok=True)
             json.dump(
                 {
-                    "weight_falloffs": [float(est.weight_falloff) for est in lcomp_model.estimators_],
                     "fingerprint": fingerprint,
                     "lcompmodel_version": _LCOMP_VERIFIED_VERSION,
+                    "model": lcomp_model.to_dict(),
                 },
-                open(falloffs_path, "w"),
+                open(model_cache_path, "w"),
             )
 
     # Wrap it in our wrapper class
