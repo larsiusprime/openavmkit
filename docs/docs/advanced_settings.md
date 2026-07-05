@@ -1214,9 +1214,9 @@ How many folds run in parallel (each fold is an independent tune + fit, so they 
 - **`1`** disables fold parallelism (each fold keeps full trial-level parallelism instead). Results at `cv_max_workers=1` may differ slightly from the parallel path (different thread/hash environment); each setting is internally reproducible.
 - **Source** — `run_one_model_cv` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py).
 
-The **ensemble** is CV-aware: under `cv_folds > 1` it combines the base models' full-coverage OOF predictions, so the ensemble's holdout also covers 100% of sales (not a base model's fold slice). The `median`/`mean` ensemble types support this; the `local` (per-location allocation) ensemble type still uses a base-model split and is not yet full-coverage under CV.
+The **ensemble** is CV-aware for all types (`median`, `mean`, and `local`): under `cv_folds > 1` it combines the base models' full-coverage OOF predictions, so the ensemble's holdout covers the same sales the base models do rather than a base model's fold slice. (The `local` per-location ensemble still selects its per-location winner on the in-sample training predictions — as it does in single-split mode — but now reports on the full out-of-fold holdout.)
 
-> **Current limitations (planned follow-ups):** (1) a `dep_var_test` that is `log_`-prefixed falls back to the single split (the OOF stitch assumes price-space test targets); (2) the `local` ensemble type is not yet CV-aware.
+A `log_`-prefixed `dep_var_test` is handled uniformly under CV as well: the out-of-fold stitch re-applies the same log back-transform the single-split path does, so no special fallback is needed.
 
 #### `modeling.instructions.test_train_frac`
 

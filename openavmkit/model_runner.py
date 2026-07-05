@@ -1665,26 +1665,13 @@ def run_one_model_cv(
     honest full-coverage holdout, while ``pred_sales`` / ``pred_univ`` are the study / shipped
     values.
 
-    Falls back to a single split when no ``folds.csv`` exists (legacy mode / skipped group) or
-    when ``dep_var_test`` is log-transformed (the OOF stitch assumes price-space test targets;
-    see the guard below).
+    Falls back to a single split only when no ``folds.csv`` exists (legacy mode / skipped group).
+    Log-target (``log_``-prefixed ``dep_var_test``) is handled uniformly:
+    :meth:`SingleModelResults.override_test_predictions` re-applies the same log back-transform
+    the ordinary path does.
     """
     fold_data = _read_fold_keys(model_group)
     if fold_data is None or fold_data["n_folds"] < 2:
-        return run_one_model(
-            df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
-            settings, dep_var, dep_var_test, best_variables, fields_cat, outpath,
-            save_params, use_saved_params, save_results, verbose=verbose,
-        )
-
-    # The OOF stitch works in the space of ``dep_var_test``; the test-side back-transform in
-    # SingleModelResults only fires for log_-prefixed test targets, which override_test_predictions
-    # does not re-apply. Fall back to the single split for those (rare, advanced configs).
-    if str(dep_var_test).startswith("log_"):
-        warnings.warn(
-            f"CV disabled for {model_group}/{model_name}: dep_var_test '{dep_var_test}' is "
-            f"log-transformed, which the nested-CV OOF stitch does not yet handle. Using single split."
-        )
         return run_one_model(
             df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
             settings, dep_var, dep_var_test, best_variables, fields_cat, outpath,
@@ -2926,12 +2913,10 @@ def _run_local_ensemble(
     timing.start("setup")
 
     first_key = list(all_results.model_results.keys())[0]
-    test_keys = all_results.model_results[first_key].ds.test_keys
-    train_keys = all_results.model_results[first_key].ds.train_keys
-
     if df_sales is None:
         df_universe = all_results.df_univ_orig
         df_sales = all_results.df_sales_orig
+    test_keys, train_keys = _ensemble_holdout_keys(all_results, first_key, settings, df_sales)
 
     ds = DataSplit(
         "ensemble",
@@ -2951,10 +2936,15 @@ def _run_local_ensemble(
 
     vacant_status = "vacant" if vacant_only else "main"
     df_test = ds.df_test
-    df_train = ds.df_train
+    # Per-location model SELECTION runs on the training set (in-sample) to avoid selecting on the
+    # holdout. Under CV the ensemble ds's train side is just the split remainder, so use the base
+    # models' in-sample training predictions instead (full trainable coverage). In single-split
+    # mode this equals ds.df_train.
+    cv_folds = int(settings.get("modeling", {}).get("instructions", {}).get("cv_folds", 5))
+    df_train = all_results.model_results[first_key].df_train if cv_folds > 1 else ds.df_train
     df_sales = ds.df_sales
     df_univ = ds.df_universe
-    
+
     if locations is None:
         locations = []
         warnings.warn("You didn't provide any locations! Local ensemble won't be very effective.")
