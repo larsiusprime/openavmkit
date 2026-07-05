@@ -1558,9 +1558,11 @@ class SingleModelResults:
         model's prediction (also leakage-free — they never train). Stitched together, ``df_test_full``
         covers 100% of sales, so the reported holdout statistics carry the same n as the study set.
 
-        ``df_test_full`` must already carry the prediction in ``self.field_prediction`` in the SAME
-        space as ``dep_var_test`` (price space in the common case). The caller guards against
-        log/area-transformed test targets, so no back-transform is re-applied here.
+        ``df_test_full`` must carry the prediction in ``self.field_prediction`` in the SAME raw
+        space the model emits (i.e. before any log back-transform), exactly as the ordinary
+        ``__init__`` path stores it — the log back-transform is re-applied below, mirroring
+        :meth:`_deal_with_log_and_area`, so CV holdout stats are on the same scale as the
+        single-split pipeline for every ``dep_var_test`` (price-space is the no-op common case).
         """
         field = self.field_prediction
         max_trim = _get_max_ratio_study_trim(self.ds.settings, self.ds.model_group)
@@ -1571,6 +1573,11 @@ class SingleModelResults:
         self.df_test = self.pred_test.df.copy()
         self.ve_test = get_vertical_equity_scores(self.df_test, self.dep_var_test, field)
         self.utility_test = self.pred_test.mape * 100
+        # Match __init__ + _deal_with_log_and_area: ratio_study / mape / ve are computed on the raw
+        # (pre-transform) predictions above; a log-target test var then exponentiates y_pred to
+        # price space. (No-op for the usual price-space dep_var_test.)
+        if self.dep_var_test.startswith("log_"):
+            self.pred_test.y_pred = np.exp(self.pred_test.y_pred)
 
     def summary(self) -> str:
         """
