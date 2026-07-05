@@ -318,8 +318,6 @@ def _cleanup_study_files(storage_path):
 def _tune_xgboost(
     X,
     y,
-    sizes,
-    he_ids,
     n_trials=50,
     n_splits=5,
     random_state=42,
@@ -389,9 +387,6 @@ def _tune_xgboost(
             n_splits,
             random_state,
             verbose_eval=False,
-            sizes=sizes,
-            he_ids=he_ids,
-            custom_alpha=0.1,
             groups=groups,
             cv_inner=cv_inner,
         )
@@ -415,8 +410,6 @@ def _tune_xgboost(
 def _tune_lightgbm(
     X,
     y,
-    sizes,
-    he_ids,
     n_trials=50,
     n_splits=5,
     random_state=42,
@@ -432,8 +425,6 @@ def _tune_lightgbm(
     Args:
         X (array-like): Feature matrix.
         y (array-like): Target vector.
-        sizes (array-like): Array of size values (land or building size)
-        he_ids (array-like): Array of horizontal equity cluster ID's
         n_trials (int): Number of optimization trials for Optuna. Default is 100.
         n_splits (int): Number of folds for cross-validation. Default is 5.
         random_state (int): Random seed for reproducibility. Default is 42.
@@ -522,8 +513,6 @@ def _tune_lightgbm(
 def _tune_catboost(
     X,
     y,
-    sizes,
-    he_ids,
     verbose=False,
     cat_vars=None,
     n_trials=50,
@@ -640,8 +629,6 @@ def _tune_catboost(
 def _tune_ngboost(
     X,
     y,
-    sizes,
-    he_ids,
     n_trials=50,
     n_splits=5,
     random_state=42,
@@ -662,8 +649,6 @@ def _tune_ngboost(
     Args:
         X (pd.DataFrame): Feature matrix (categoricals as 'category' dtype).
         y (array-like): Target vector.
-        sizes (array-like): Array of size values (land or building size).
-        he_ids (array-like): Array of horizontal equity cluster ID's.
         n_trials (int): Number of optimization trials for Optuna. Default is 50.
         n_splits (int): Number of folds for cross-validation. Default is 5.
         random_state (int): Random seed for reproducibility. Default is 42.
@@ -770,56 +755,6 @@ def _plateau_callback(study, trial):
         study.stop()
 
 
-def _xgb_custom_obj_variance_factory(size, cluster, alpha=0.1):
-    """Returns a custom objective function for XGBoost that adds a variance-based reward
-    term on the normalized predictions (prediction/size) within each cluster.
-
-    Parameters:
-      size   : numpy array of "size" values (one per training instance)
-      cluster: numpy array of "cluster_id" (one per instance)
-      alpha  : weighting factor for the custom reward term relative to MSE.
-    """
-
-    def custom_obj(preds, dtrain):
-        labels = dtrain.get_label()
-
-        # Standard MSE gradient and hessian
-        grad_mse = preds - labels
-        hess_mse = np.ones_like(preds)
-
-        # Prepare arrays for custom variance gradient and hessian
-        grad_custom = np.zeros_like(preds)
-        hess_custom = np.zeros_like(preds)
-
-        # Process each cluster separately
-        unique_clusters = np.unique(cluster)
-        for cl in unique_clusters:
-            idx = np.where(cluster == cl)[0]
-            if len(idx) == 0:
-                continue
-
-            n = len(idx)
-            # Compute A = prediction/size for each row in this cluster
-            A = preds[idx] / size[idx]
-            m = np.mean(A)
-
-            # Compute gradient for the variance term:
-            # dV/dA_i = (2/n)*(A_i - m)
-            # Then by chain rule: dV/dp_i = dV/dA_i * (1/size)
-            grad_custom[idx] = (2.0 / n) * (A - m) * (1.0 / size[idx])
-
-            # Approximate Hessian: 2/n * (1/size^2)
-            hess_custom[idx] = (2.0 / n) * (1.0 / (size[idx] ** 2))
-
-        # Combine the standard MSE with the custom variance reward term
-        grad = grad_mse + alpha * grad_custom
-        hess = hess_mse + alpha * hess_custom
-
-        return grad, hess
-
-    return custom_obj
-
-
 def _xgb_kfold_cv(
     X,
     y,
@@ -828,9 +763,6 @@ def _xgb_kfold_cv(
     n_splits=5,
     random_state=42,
     verbose_eval=50,
-    sizes=None,
-    he_ids=None,
-    custom_alpha=0.1,
     groups=None,
     cv_inner=None,
 ):
