@@ -3271,6 +3271,29 @@ def _run_local_ensemble_test_and_paint(
     return results
 
 
+def _ensemble_holdout_keys(all_results, first_key, settings, df_sales):
+    """Test/train keys for the ensemble's DataSplit.
+
+    Under nested CV the base models' ``df_test`` is the full-coverage out-of-fold frame, so the
+    ensemble must cover the same 100% of sales rather than inherit a base model's Phase-2 dummy
+    holdout. We take the base ``df_test`` keys as the ensemble holdout and put every other sale in
+    train (the ensemble only aggregates base predictions, it never fits, so the train side is just
+    there to satisfy DataSplit's test/train partition). In single-split mode this reduces exactly
+    to the base model's original test/train split.
+    """
+    first = all_results.model_results[first_key]
+    cv_folds = int(settings.get("modeling", {}).get("instructions", {}).get("cv_folds", 5))
+    if cv_folds <= 1:
+        return first.ds.test_keys, first.ds.train_keys
+    if df_sales is None:
+        df_sales = all_results.df_sales_orig
+    test_keys = first.df_test["key_sale"].astype(str).tolist()
+    test_set = set(test_keys)
+    all_keys = df_sales["key_sale"].astype(str)
+    train_keys = all_keys[~all_keys.isin(test_set)].tolist()
+    return test_keys, train_keys
+
+
 def _optimize_ensemble(
     df_sales: pd.DataFrame | None,
     df_universe: pd.DataFrame | None,
@@ -3292,12 +3315,10 @@ def _optimize_ensemble(
     timing.start("setup")
 
     first_key = list(all_results.model_results.keys())[0]
-    test_keys = all_results.model_results[first_key].ds.test_keys
-    train_keys = all_results.model_results[first_key].ds.train_keys
-
     if df_sales is None:
         df_universe = all_results.df_univ_orig
         df_sales = all_results.df_sales_orig
+    test_keys, train_keys = _ensemble_holdout_keys(all_results, first_key, settings, df_sales)
 
     ds = DataSplit(
         "ensemble",
@@ -3490,8 +3511,7 @@ def _run_ensemble(
     timing.start("setup")
 
     first_key = list(all_results.model_results.keys())[0]
-    test_keys = all_results.model_results[first_key].ds.test_keys
-    train_keys = all_results.model_results[first_key].ds.train_keys
+    test_keys, train_keys = _ensemble_holdout_keys(all_results, first_key, settings, df_sales)
 
     ds = DataSplit(
         "ensemble",
