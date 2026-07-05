@@ -498,13 +498,15 @@ def _tune_lightgbm(
             groups=groups, cv_inner=cv_inner,
         )
 
-    # Run Bayesian Optimization with Optuna
+    # Run Bayesian Optimization with Optuna. No pruner: the batched ask/tell runner
+    # (_run_batched) never calls trial.report(), so a pruner would be inert here — trial-level
+    # early stopping only works for the serial study.optimize() path (CatBoost). Study-level
+    # early termination is handled by the plateau check inside _run_batched.
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = _resumable_study(
         "minimize",
         study_name=study_name,
         storage_path=storage_path,
-        pruner=optuna.pruners.MedianPruner(),
         sampler=_seeded_sampler(random_state, constant_liar=True),
         verbose=verbose,
     )
@@ -860,104 +862,20 @@ def _xgb_kfold_cv(
 
         evals = [(val_data, "validation")]
 
-        # If custom arrays are provided, subset them for training data and build custom objective
-        custom_obj = None
-        # TODO: enable this later
-        # if sizes is not None and he_ids is not None:
-        #     custom_obj = _xgb_custom_obj_variance_factory(size=sizes, cluster=he_ids, alpha=custom_alpha)
-
-        # Train XGBoost
+        # Train XGBoost; early_stopping_rounds picks best_iteration (used in predict below).
         model = xgb.train(
             params=params,
             dtrain=train_data,
             num_boost_round=num_boost_round,
             evals=evals,
             early_stopping_rounds=50,
-            verbose_eval=verbose_eval,  # Ensure verbose_eval is enabled
-            obj=custom_obj,
+            verbose_eval=verbose_eval,
         )
 
         # Predict and evaluate
         y_pred = model.predict(val_data, iteration_range=(0, model.best_iteration))
         mape = mean_absolute_percentage_error(y_val, y_pred)
         mape_scores.append(mape)
-
-    return np.mean(mape_scores)
-
-
-def _catboost_kfold_cv(
-    X, y, params, n_splits=5, random_state=42, cat_vars=None, verbose=False
-):
-    """Shuffled (random) K-fold CV for CatBoost. CURRENTLY UNUSED.
-
-    The live CatBoost tuner (`_tune_catboost`) uses CatBoost's built-in `cv()`; this
-    helper is kept for reference/parity with the XGBoost/LightGBM paths.
-
-    Args:
-        X (array-like): Feature matrix.
-        y (array-like): Target vector.
-        params (dict): CatBoost hyperparameters.
-        n_splits (int): Number of folds for cross-validation. Default is 5.
-        random_state (int): Random seed for reproducibility. Default is 42.
-        cat_vars (list): List of categorical variables. Default is None.
-        verbose (bool): Whether to print CatBoost training logs.
-
-    Returns:
-        float: Mean MAPE score across all folds.
-    """
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-    mape_scores = []
-
-    for train_idx, val_idx in kf.split(X):
-        # Use .iloc for DataFrame-like objects
-        if hasattr(X, 'iloc'):
-            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-            y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
-        else:
-            X_train, X_val = X[train_idx], X[val_idx]
-            y_train, y_val = y[train_idx], y[val_idx]
-
-        _cat_vars_train = [var for var in cat_vars if var in X_train.columns.values]
-        _cat_vars_val = [var for var in cat_vars if var in X_val.columns.values]
-
-        # scan categorical variables, look for any that contain NaN or floating-point values:
-        for var in _cat_vars_train:
-            dtype = X_train[var].dtype
-            if dtype == "float64" or dtype == "float32":
-                raise ValueError(
-                    f"Categorical variable '{var}' contains floating-point values. Please convert to integer or string."
-                )
-            if X_train[var].isnull().any():
-                raise ValueError(
-                    f"Categorical variable '{var}' contains NaN values. Please handle them before training."
-                )
-            if X_val[var].isnull().any():
-                raise ValueError(
-                    f"Categorical variable '{var}' contains NaN values in validation set. Please handle them before training."
-                )
-            if dtype == "object":
-                # check if any values in this field are non-integer (real) numbers:
-                if not X_train[var].apply(lambda x: isinstance(x, (int, str))).all():
-                    raise ValueError(
-                        f"Categorical variable '{var}' contains non-integer values. Please convert to integer or string."
-                    )
-                if not X_val[var].apply(lambda x: isinstance(x, (int, str))).all():
-                    raise ValueError(
-                        f"Categorical variable '{var}' contains non-integer values in validation set. Please convert to integer or string."
-                    )
-
-        train_pool = Pool(X_train, y_train, cat_features=_cat_vars_train)
-        val_pool = Pool(X_val, y_val, cat_features=_cat_vars_val)
-
-        # Train CatBoost
-        model = CatBoostRegressor(**params)
-        model.fit(
-            train_pool, eval_set=val_pool, verbose=verbose, early_stopping_rounds=50
-        )
-
-        # Predict and evaluate
-        y_pred = model.predict(val_pool)
-        mape_scores.append(mean_absolute_percentage_error(y_val, y_pred))
 
     return np.mean(mape_scores)
 
