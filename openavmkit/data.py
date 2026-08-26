@@ -785,6 +785,64 @@ def enrich_sup_spatial_lag(
     return sup
 
 
+def _spatial_lag_kernel(
+    source_coords: np.ndarray,
+    source_values: np.ndarray,
+    target_coords: np.ndarray,
+    k: int,
+    d_scale: float,
+):
+    """Gaussian-kernel spatial lag of ``source_values`` evaluated at ``target_coords``.
+
+    For each target point: the weighted average of the ``k`` nearest source points, where
+    the weight is ``exp(-d^2 / 2*sigma^2)`` and ``sigma`` is the mean distance to those k
+    neighbors (so the kernel adapts to local sale density), normalized to sum to 1. Also
+    returns a fixed-bandwidth confidence in [0, 1], comparing the neighbors' inverse-square
+    "information mass" against what k neighbors at ``d_scale`` would supply.
+
+    Returns ``(lag, confidence)``, both 1-D arrays of length ``len(target_coords)``. Targets
+    with no usable geometry come back as NaN lag / 0 confidence, for the caller to fill.
+    Asking for more neighbors than there are sources is fine: ``k`` is clamped to what is
+    available.
+    """
+    target_coords = np.asarray(target_coords, dtype=float)
+    lag = np.full(len(target_coords), np.nan)
+    conf = np.zeros(len(target_coords))
+
+    # cKDTree.query rejects non-finite query points outright. A parcel with no geometry
+    # simply has no spatial lag, so hold those rows out and let the caller fill them.
+    ok = np.isfinite(target_coords).all(axis=1)
+    if not ok.any():
+        return lag, conf
+
+    k_eff = int(min(len(source_coords), k))
+    tree = cKDTree(source_coords)
+    distances, indices = tree.query(target_coords[ok], k=k_eff)
+
+    # Ensure that distances and indices are 2D arrays (if k==1, reshape them)
+    if k_eff == 1:
+        distances = np.asarray(distances)[:, None]
+        indices = np.asarray(indices)[:, None]
+
+    # For each target, sigma is the mean distance to its k neighbors.
+    sigma = distances.mean(axis=1, keepdims=True)
+    sigma[sigma == 0] = np.finfo(float).eps  # Avoid division by zero
+
+    weights = np.exp(-(distances**2) / (2 * sigma**2))
+    weights_norm = weights / weights.sum(axis=1, keepdims=True)
+
+    neighbor_values = np.asarray(source_values)[indices]
+    lag[ok] = (np.asarray(weights_norm) * np.asarray(neighbor_values)).sum(axis=1)
+
+    # Confidence: raw inverse-square information mass against a fixed bandwidth.
+    distances_safe = distances.copy()
+    distances_safe[distances_safe == 0] = np.finfo(float).eps  # protect division by 0
+    info_mass = (1.0 / distances_safe**2).sum(axis=1)  # sum of 1/d^2
+    conf[ok] = np.clip(1.0 - (k_eff / d_scale**2) / info_mass, 0.0, 1.0)
+
+    return lag, conf
+
+
 def _enrich_sup_spatial_lag_for_model_group(
     sup: SalesUniversePair, 
     settings: dict, 
@@ -851,6 +909,31 @@ def _enrich_sup_spatial_lag_for_model_group(
 
     value_fields = [sale_field, sale_field_vacant, per_land_field, per_impr_field]
 
+    # Fold assignments, when this model group runs under cross-validation. The sales-side
+    # spatial lag is built out-of-fold from these; see the loop below.
+    fold_data = _read_fold_keys(model_group)
+    key_to_fold = None
+    univ_fold = None
+    fold_ids = []
+    if fold_data is not None and fold_data["n_folds"] > 1:
+        key_to_fold = fold_data["key_to_fold"]
+        univ_fold = df_universe["key"].astype(str).map(key_to_fold)
+        fold_ids = sorted(set(key_to_fold.values()))
+
+    # Projected universe centroids are the query targets for every value field. Compute
+    # them once, lazily -- some value fields bail out before they are needed.
+    _univ_coords = {}
+
+    def _get_universe_coords():
+        if not _univ_coords:
+            crs = get_crs(df_universe, "equal_distance")
+            proj = df_universe.to_crs(crs)
+            _univ_coords["crs"] = crs
+            _univ_coords["coords"] = np.vstack(
+                [proj.geometry.centroid.x.values, proj.geometry.centroid.y.values]
+            ).T
+        return _univ_coords["coords"], _univ_coords["crs"]
+
     for value_field in value_fields:
 
         if value_field == sale_field:
@@ -880,103 +963,99 @@ def _enrich_sup_spatial_lag_for_model_group(
         k = s_sl.get("sale_price", 5)  # adjust this number as needed
 
         df_sub_train = df_sub.loc[df_sub["key_sale"].isin(train_keys)].copy()
-        
-        if len(df_sub_train) <= (k+1):
-            continue
-        
-        # Get the coordinates for the universe parcels
-        crs_equal_distance = get_crs(df_universe, "equal_distance")
-        df_proj = df_universe.to_crs(crs_equal_distance)
 
-        # Use the projected coordinates for the universe parcels
-        universe_coords = np.vstack(
-            [df_proj.geometry.centroid.x.values, df_proj.geometry.centroid.y.values]
-        ).T
+        if len(df_sub_train) <= (k + 1):
+            # Not enough training sales to build a surface. Write zeros rather than leaving
+            # the column off entirely: a missing column is a KeyError deep inside the model
+            # runner, which takes down every other model group with it.
+            warnings.warn(
+                f"Spatial lag for '{value_field}' in model group '{model_group}': only "
+                f"{len(df_sub_train)} training sales (need > {k + 1}); writing zeros."
+            )
+            df_universe[f"spatial_lag_{value_field}"] = 0
+            df_sales[f"spatial_lag_{value_field}"] = 0
+            continue
+
+        universe_coords, crs_equal_distance = _get_universe_coords()
 
         # Get the coordinates for the sales training parcels
         df_sub_train_proj = df_sub_train.to_crs(crs_equal_distance)
-
         sales_coords_train = np.vstack(
             [
                 df_sub_train_proj.centroid.geometry.x.values,
                 df_sub_train_proj.centroid.geometry.y.values,
             ]
         ).T
-
-        # Build a cKDTree from df_sales coordinates -- but ONLY from the training set
-        sales_tree = cKDTree(sales_coords_train)
-
-        # count any NA coordinates in the universe
-        n_na_coords = universe_coords.shape[0] - np.count_nonzero(
-            pd.isna(universe_coords).any(axis=1)
-        )
-
-        # Query the tree: for each parcel in df_universe, find the k nearest sales
-        # distances: shape (n_universe, k); indices: corresponding indices in df_sales
-        distances, indices = sales_tree.query(universe_coords, k=min(len(sales_coords_train), k))
-
-        # Ensure that distances and indices are 2D arrays (if k==1, reshape them)
-        if k == 1:
-            distances = distances[:, None]
-            indices = indices[:, None]
-
-        # For each universe parcel, compute sigma as the mean distance to its k neighbors.
-        sigma = distances.mean(axis=1, keepdims=True)
-
-        # Handle zeros in sigma
-        sigma[sigma == 0] = np.finfo(float).eps  # Avoid division by zero
-
-        # Compute Gaussian kernel weights for all neighbors
-        weights = np.exp(-(distances**2) / (2 * sigma**2))
-
-        # Normalize the weights so that they sum to 1 for each parcel
-        weights_norm = weights / weights.sum(axis=1, keepdims=True)
-
-        # Get the sales prices corresponding to the neighbor indices
-        sales_prices = df_sub_train[value_field].values
-        neighbor_prices = sales_prices[indices]  # shape (n_universe, k)
-
-        # Compute the weighted average (spatial lag) for each parcel in the universe
-        spatial_lag = (np.asarray(weights_norm) * np.asarray(neighbor_prices)).sum(
-            axis=1
-        )
-
-        # Add the spatial lag as a new column
-        df_universe[f"spatial_lag_{value_field}"] = spatial_lag
-
-        # Fill NaN values in the spatial lag with the median value of the original field
+        sales_values_train = df_sub_train[value_field].values
         median_value = df_sub_train[value_field].median()
-        df_universe[f"spatial_lag_{value_field}"] = df_universe[
-            f"spatial_lag_{value_field}"
-        ].fillna(median_value)
 
-        # Add the new field to sales:
-        df_sales = df_sales.merge(
-            df_universe[["key", f"spatial_lag_{value_field}"]], on="key", how="left"
+        # Baseline surface, built from every training sale. This is what the UNIVERSE
+        # (shipped values) sees, and what the post-valuation sales see -- neither is ever a
+        # CV holdout, so there is nothing to leak.
+        lag_univ, conf_univ = _spatial_lag_kernel(
+            sales_coords_train, sales_values_train, universe_coords, k, D_SCALE
         )
 
-        # ------------------------------------------------
-        # Calculate confidence:
+        # Surface the SALES rows see. Under cross-validation every trainable sale is a
+        # holdout in exactly one fold, and the baseline surface above would hand its parcel
+        # a neighbor at distance zero -- its own sale price, which then dominates the
+        # Gaussian kernel. So each fold's parcels get their own surface, rebuilt from the
+        # sales OUTSIDE that fold. Folds are parcel-grouped, so dropping a fold's parcels
+        # drops every sale of theirs at once. With no folds.csv (legacy single-split mode)
+        # this is a no-op and the sales rows keep the baseline surface, as before.
+        lag_sales, conf_sales = lag_univ, conf_univ
+        if univ_fold is not None:
+            lag_sales, conf_sales = lag_univ.copy(), conf_univ.copy()
+            src_fold = df_sub_train["key"].astype(str).map(key_to_fold)
+            for f in fold_ids:
+                target_mask = (univ_fold == f).values
+                if not target_mask.any():
+                    continue
+                src_mask = src_fold.ne(f).values
+                if src_mask.sum() <= (k + 1):
+                    # Too little left outside this fold to build an honest surface. Leave
+                    # these NaN so they fall through to the median fill below, rather than
+                    # silently keeping the leaky baseline value.
+                    lag_sales[target_mask] = np.nan
+                    conf_sales[target_mask] = 0.0
+                    continue
+                lag_f, conf_f = _spatial_lag_kernel(
+                    sales_coords_train[src_mask],
+                    sales_values_train[src_mask],
+                    universe_coords[target_mask],
+                    k,
+                    D_SCALE,
+                )
+                lag_sales[target_mask] = lag_f
+                conf_sales[target_mask] = conf_f
 
-        # Raw inverse-square information mass
-        distances_safe = distances.copy()
-        distances_safe[distances_safe == 0] = np.finfo(float).eps  # protect ÷ 0
+        col = f"spatial_lag_{value_field}"
+        col_conf = f"{col}_confidence"
 
-        inv_sq = 1.0 / distances_safe**2  # shape (n_parcel, 5)
-        info_mass = inv_sq.sum(axis=1)  # Σ 1/d²
-
-        # Fixed-bandwidth confidence
-        conf = 1.0 - (k / D_SCALE**2) / info_mass
-        spatial_lag_confidence = np.clip(conf, 0.0, 1.0)  # keep in [0, 1]
-
-        # store
-        df_universe[f"spatial_lag_{value_field}_confidence"] = spatial_lag_confidence
-        df_sales = df_sales.merge(
-            df_universe[["key", f"spatial_lag_{value_field}_confidence"]],
-            on="key",
-            how="left",
+        # Add the spatial lag as a new column, filling NaNs with the median of the
+        # original field
+        df_universe[col] = pd.Series(lag_univ, index=df_universe.index).fillna(
+            median_value
         )
-        # ------------------------------------------------
+        df_universe[col_conf] = conf_univ
+
+        # Add the new fields to sales, from the out-of-fold surface. Mapped by parcel key
+        # rather than merged, so that re-running on an already-enriched frame overwrites
+        # the columns instead of spawning _x/_y duplicates -- and so a duplicated universe
+        # key can't silently fan a sale out into several rows.
+        univ_keys = pd.Index(df_universe["key"].astype(str))
+        first = ~univ_keys.duplicated()
+        sales_keys = df_sales["key"].astype(str)
+        df_sales[col] = (
+            sales_keys.map(pd.Series(lag_sales[first], index=univ_keys[first]))
+            .fillna(median_value)
+            .values
+        )
+        df_sales[col_conf] = (
+            sales_keys.map(pd.Series(conf_sales[first], index=univ_keys[first]))
+            .fillna(0.0)
+            .values
+        )
 
     df_test = df_sales.loc[df_sales["key_sale"].isin(test_keys)].copy()
     
@@ -5197,7 +5276,15 @@ def _do_write_canonical_split(
 def _read_split_keys(model_group: str):
     """Read the train and test split keys for a model group from disk.
 
-    Returns empty arrays (with a warning) when keys are missing — happens for
+    In CV mode (`cv_folds > 1`) `_do_write_canonical_split` writes `folds.csv` instead of
+    `train_keys.csv` / `test_keys.csv`, so we fall back to the fold file and collapse it to
+    the same single split Phase 2 of `run_one_model_cv` uses: train = all trainable sales,
+    test = post-valuation sales (which never train). Callers that need genuine per-fold
+    membership must use `_read_fold_keys` directly — see `_enrich_sup_spatial_lag_for_model_group`,
+    which builds its neighbor surface out-of-fold precisely because this collapsed split
+    would otherwise let a fold's holdout sale feed its own spatial lag.
+
+    Returns empty arrays (with a warning) when neither file exists — happens for
     model groups that have sales records but no `valid_sale=True` rows, so
     `_write_canonical_splits` skips them. Callers either union keys across
     model groups (where empty contributes nothing) or feed into the existing
@@ -5207,6 +5294,11 @@ def _read_split_keys(model_group: str):
     train_path = f"{path}/train_keys.csv"
     test_path = f"{path}/test_keys.csv"
     if not os.path.exists(train_path) or not os.path.exists(test_path):
+        fold_data = _read_fold_keys(model_group)
+        if fold_data is not None:
+            train_keys = np.asarray(fold_data["train_all"], dtype=str)
+            test_keys = np.asarray(fold_data["post_val"], dtype=str)
+            return test_keys, train_keys
         warnings.warn(f"No split keys found for model group: {model_group} (returning empty)")
         return np.array([], dtype=str), np.array([], dtype=str)
     train_keys = pd.read_csv(train_path)["key_sale"].astype(str).values
@@ -5225,6 +5317,9 @@ def _read_fold_keys(model_group: str):
         all trainable sales NOT in this fold's holdout (post-val already excluded)
       - ``train_all``: all trainable sale keys (post-val excluded) — Phase-2 training set
       - ``post_val``: post-valuation sale keys (never train; scored by the Phase-2 model)
+      - ``key_to_fold``: parcel ``key`` -> fold index, for trainable parcels only. Folds are
+        parcel-grouped, so this is well-defined. Used by out-of-fold feature engineering
+        (see ``_enrich_sup_spatial_lag_for_model_group``).
     """
     path = f"out/models/{model_group}/_data/folds.csv"
     if not os.path.exists(path):
@@ -5244,11 +5339,15 @@ def _read_fold_keys(model_group: str):
         holdout_keys = trainable.loc[trainable["fold"] == f, "key_sale"].values
         train_keys = trainable.loc[trainable["fold"] != f, "key_sale"].values
         folds.append((holdout_keys, train_keys))
+    key_to_fold = dict(
+        zip(trainable["key"].astype(str).values, trainable["fold"].astype(int).values)
+    )
     return {
         "n_folds": len(fold_ids),
         "folds": folds,
         "train_all": train_all,
         "post_val": post_val,
+        "key_to_fold": key_to_fold,
     }
 
 
