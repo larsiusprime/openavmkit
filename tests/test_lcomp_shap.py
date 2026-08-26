@@ -11,6 +11,7 @@ must agree, and both must satisfy additivity:
 
 import os
 import tempfile
+import warnings
 from itertools import combinations
 from math import factorial
 
@@ -29,6 +30,10 @@ from openavmkit.shap_analysis import (
     _expected_value,
     get_full_layeredcomp_shaps,
     plot_full_beeswarm,
+)
+from openavmkit.modeling import (
+    _prepare_shap_dfs,
+    _warn_if_contributions_dont_reconstruct,
 )
 
 
@@ -236,3 +241,164 @@ def test_get_full_layeredcomp_shaps_all_subsets():
         assert expl is not None
         assert expl.values.shape[1] == len(bag.feature_names_in_)
         assert list(expl.feature_names) == list(bag.feature_names_in_)
+
+
+# --- P1: subsets whitelist -------------------------------------------------
+
+def test_get_full_layeredcomp_shaps_honors_subsets():
+    # Only the requested subsets are explained; the rest come back as None, which
+    # _prepare_shap_dfs already treats as "nothing to write".
+    X, y = _mixed_frame()
+    bag = _fit_bag(X, y, tree_count=2, seed=3)
+    model = LayeredCompModel(bag)
+
+    shaps = get_full_layeredcomp_shaps(
+        model, X.head(20), X.head(8), X.head(10), X.head(30), subsets={"test"}
+    )
+    assert shaps["test"] is not None
+    assert shaps["test"].values.shape[0] == 8
+    for subset in ("train", "sales", "universe"):
+        assert shaps[subset] is None, subset
+
+
+def test_subset_filtering_does_not_change_shap_values():
+    # The guarantee that makes the whitelist safe: restricting the subsets must not alter
+    # the values for the subsets that ARE computed. (Per-row tree SHAP is independent of
+    # which other rows are in the batch.)
+    X, y = _mixed_frame()
+    bag = _fit_bag(X, y, tree_count=2, seed=3)
+    model = LayeredCompModel(bag)
+
+    full = get_full_layeredcomp_shaps(
+        model, X.head(20), X.head(8), X.head(10), X.head(30)
+    )
+    only_test = get_full_layeredcomp_shaps(
+        model, X.head(20), X.head(8), X.head(10), X.head(30), subsets={"test"}
+    )
+    np.testing.assert_allclose(only_test["test"].values, full["test"].values)
+    np.testing.assert_allclose(
+        np.asarray(only_test["test"].base_values), np.asarray(full["test"].base_values)
+    )
+
+
+def test_subsets_none_still_explains_everything():
+    # Default behavior is unchanged -- the single-split pipeline never passes `subsets`.
+    X, y = _mixed_frame()
+    bag = _fit_bag(X, y, tree_count=2, seed=3)
+    model = LayeredCompModel(bag)
+
+    shaps = get_full_layeredcomp_shaps(
+        model, X.head(20), X.head(8), X.head(10), X.head(30), subsets=None
+    )
+    assert all(shaps[s] is not None for s in ("train", "test", "sales", "universe"))
+
+
+# --- P0: contributions must reconstruct their prediction column ------------
+
+def _contrib_frame(prediction, contribution_sum):
+    df = pd.DataFrame({
+        "key": [f"p{i}" for i in range(len(prediction))],
+        "prediction": prediction,
+        "contribution_sum": contribution_sum,
+    })
+    df["check_delta"] = df["prediction"] - df["contribution_sum"]
+    return df
+
+
+def test_reconstruction_warning_silent_when_coherent():
+    df = _contrib_frame([100.0, 200.0, 300.0], [100.0, 200.0, 300.001])
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _warn_if_contributions_dont_reconstruct(df, "test", "FakeModel")
+    assert not caught
+
+
+def test_reconstruction_warning_fires_when_incoherent():
+    # ~20% miss: the scale seen when a CV holdout frame (fold-model predictions) is
+    # explained by the production model.
+    df = _contrib_frame([100.0, 200.0, 300.0], [120.0, 240.0, 360.0])
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _warn_if_contributions_dont_reconstruct(df, "test", "FakeModel")
+    assert len(caught) == 1
+    msg = str(caught[0].message)
+    assert "'test'" in msg and "FakeModel" in msg
+
+
+def test_reconstruction_warning_tolerates_catboost_baseline_drift():
+    # CatBoost's approximate SHAP sits around 3%; that must not cry wolf.
+    df = _contrib_frame([100.0, 200.0, 300.0], [103.0, 206.0, 309.0])
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _warn_if_contributions_dont_reconstruct(df, "sales", "CatBoostModel")
+    assert not caught
+
+
+def test_reconstruction_warning_handles_log_prediction_column():
+    df = pd.DataFrame({
+        "key": ["a", "b"],
+        "log_prediction": [10.0, 12.0],
+        "contribution_sum": [4.0, 5.0],
+    })
+    df["check_delta"] = df["log_prediction"] - df["contribution_sum"]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _warn_if_contributions_dont_reconstruct(
+            df, "test", "MRAModel", pred_col="log_prediction"
+        )
+    assert len(caught) == 1
+    assert "log_prediction" in str(caught[0].message)
+
+
+def test_reconstruction_warning_is_safe_on_degenerate_input():
+    # Empty, all-NaN, and missing-column frames must not raise.
+    for df in (
+        pd.DataFrame(),
+        _contrib_frame([], []),
+        _contrib_frame([np.nan, np.nan], [np.nan, np.nan]),
+        pd.DataFrame({"key": ["a"], "prediction": [1.0]}),  # no check_delta
+        _contrib_frame([0.0, 0.0], [5.0, 5.0]),             # zero denominator
+    ):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _warn_if_contributions_dont_reconstruct(df, "test", "FakeModel")
+        assert not caught
+
+
+def test_prepare_shap_dfs_warns_on_mismatched_predictions():
+    # End-to-end through the real writer: same SHAP values, but the frame's `prediction`
+    # column comes from somewhere else. This is precisely the CV-holdout failure shape.
+    X, y = _mixed_frame()
+    bag = _fit_bag(X, y, tree_count=2, seed=3)
+    model = LayeredCompModel(bag)
+    feats = list(bag.feature_names_in_)
+
+    Xs = X.head(25).reset_index(drop=True)
+    expl = get_full_layeredcomp_shaps(model, X.head(20), Xs, Xs, Xs, subsets={"test"})["test"]
+
+    def _predict(Xdf):
+        return bag.predict(Xdf[feats])
+
+    df = Xs.copy()
+    df["key"] = [f"p{i}" for i in range(len(df))]
+    df["prediction"] = _predict(Xs)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _prepare_shap_dfs(
+            model, expl, df, feats, "test", outpath=None,
+            do_write=False, predict_fn=_predict,
+        )
+    assert not [w for w in caught if "do not reconstruct" in str(w.message)]
+
+    df_bad = df.copy()
+    df_bad["prediction"] = df_bad["prediction"] * 1.25  # a different model's answers
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _prepare_shap_dfs(
+            model, expl, df_bad, feats, "test", outpath=None,
+            do_write=False, predict_fn=_predict,
+        )
+    hits = [w for w in caught if "do not reconstruct" in str(w.message)]
+    assert len(hits) == 1, [str(w.message) for w in caught]
+    assert "LayeredCompModel" in str(hits[0].message)

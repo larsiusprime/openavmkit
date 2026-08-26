@@ -5979,7 +5979,8 @@ def write_mra_params(
     outpath: str,
     xs: dict,
     dfs: dict,
-    do_plot: bool = False
+    do_plot: bool = False,
+    subsets: frozenset | set | None = None,
 ):
 
     # Log models fit on log(price): the coefficients are log-space (semi-elasticities) and the
@@ -6010,7 +6011,11 @@ def write_mra_params(
     # Keep only non-intercept coefficients for column-wise multiplication
     feature_coefs = params.drop(labels=["intercept"], errors="ignore")
 
+    want = _wanted_contrib_subsets(subsets)
+
     for subset in xs:
+        if subset not in want:
+            continue
         X = xs[subset]
         df = dfs[subset]
         
@@ -6046,6 +6051,11 @@ def write_mra_params(
             df_final = df_final.rename(columns={"prediction": "log_prediction"})
             df_final["check_delta"] = df_final["log_prediction"] - df_final["contribution_sum"]
 
+        _warn_if_contributions_dont_reconstruct(
+            df_final, subset, "MRAModel",
+            pred_col="log_prediction" if prefix else "prediction",
+        )
+
         contrib_path = f"{outpath}/{prefix}contributions_{subset}.csv"
         df_final.to_csv(contrib_path, index=False)
 
@@ -6055,6 +6065,7 @@ def write_multi_mra_params(
     outpath: str,
     smr: SingleModelResults,
     do_plot: bool = False,
+    subsets: frozenset | set | None = None,
 ):
     """
     Write parameters and per-parcel contributions for a Multi-MRA model.
@@ -6287,7 +6298,10 @@ def write_multi_mra_params(
         return df_final
 
     # Write contributions for each subset
+    want = _wanted_contrib_subsets(subsets)
     for subset in ["test", "sales", "universe"]:
+        if subset not in want:
+            continue
         X_full = xs_full.get(subset)
         df_smr = dfs_smr.get(subset)
         df_ds = dfs_ds.get(subset)
@@ -6309,13 +6323,27 @@ def write_multi_mra_params(
             df_final = df_final.rename(columns={"prediction": "log_prediction"})
             df_final["check_delta"] = df_final["log_prediction"] - df_final["contribution_sum"]
 
+        _warn_if_contributions_dont_reconstruct(
+            df_final, subset, "MultiMRAModel",
+            pred_col="log_prediction" if prefix else "prediction",
+        )
+
         contrib_path = f"{outpath}/{prefix}contributions_{subset}.csv"
         df_final.to_csv(contrib_path, index=False)
 
 
 
-def write_gwr_params(model: GWRModel, outpath: str, dfs: dict, do_plot: bool = False):
+def write_gwr_params(
+    model: GWRModel,
+    outpath: str,
+    dfs: dict,
+    do_plot: bool = False,
+    subsets: frozenset | set | None = None,
+):
+    want = _wanted_contrib_subsets(subsets)
     for subset in ["test", "sales", "universe"]:
+        if subset not in want:
+            continue
         
         # Write coefficients
         csv_path = f"{outpath}/params_{subset}.csv"
@@ -6374,6 +6402,7 @@ def write_gwr_params(model: GWRModel, outpath: str, dfs: dict, do_plot: bool = F
         
         ## Add on predictions and check deltas
         df_final = _add_prediction_to_contribution(df, df_contrib, split_name=subset)
+        _warn_if_contributions_dont_reconstruct(df_final, subset, "GWRModel")
         
         ## Write out the final contributions
         contrib_path = f"{outpath}/contributions_{subset}.csv"
@@ -6466,7 +6495,8 @@ def write_shaps(
     smr: SingleModelResults,
     location: str,
     do_plot: bool = False,
-    verbose: bool = False
+    verbose: bool = False,
+    subsets: frozenset | set | None = None,
 ):
     ind_vars = smr.ds.ind_vars
     
@@ -6524,7 +6554,7 @@ def write_shaps(
         for param_index, prefix, predict_fn in dimensions:
             shaps = get_full_ngboost_shaps(
                 model, X_train, X_test, X_sales, X_univ,
-                param_index=param_index, verbose=verbose
+                param_index=param_index, verbose=verbose, subsets=subsets
             )
             for subset in shaps:
                 _prepare_shap_dfs(
@@ -6547,7 +6577,7 @@ def write_shaps(
     # explicit predictor (which also skips its cat_data/predictor branch).
     if isinstance(model, LayeredCompModel):
         shaps = get_full_layeredcomp_shaps(
-            model, X_train, X_test, X_sales, X_univ, verbose=verbose
+            model, X_train, X_test, X_sales, X_univ, verbose=verbose, subsets=subsets
         )
         bag = model.model
         feat_order = list(bag.feature_names_in_)
@@ -6576,7 +6606,8 @@ def write_shaps(
         X_test,
         X_sales,
         X_univ,
-        verbose=verbose
+        verbose=verbose,
+        subsets=subsets,
     )
 
     for subset in shaps:
@@ -6691,6 +6722,14 @@ def _prepare_shap_dfs(
     
     # Add on predictions and check deltas
     df_contrib_w_pred = _add_prediction_to_contribution(df, df_contrib, split_name=subset)
+
+    # Only the un-prefixed (mean, price-space) artifacts are expected to reconstruct. The
+    # NGBoost "std_" dimension explains log(scale) while the frame's `prediction` column is
+    # the mean prediction, so its check_delta is apples-to-oranges by design.
+    if not prefix:
+        _warn_if_contributions_dont_reconstruct(
+            df_contrib_w_pred, subset, type(model).__name__
+        )
     
     if do_write:
         # Write params to disk
@@ -6765,6 +6804,59 @@ def _contrib_to_unit_values(df_contrib: pd.DataFrame, df_base: pd.DataFrame, spl
     return df_out_renamed
 
 
+# A contributions file is only meaningful if `contribution_sum` reconstructs the
+# `prediction` column it sits next to. CatBoost's approximate SHAP leaves a small constant
+# baseline drift (a few percent is normal and harmless); anything well above that means the
+# attributions and the prediction came from DIFFERENT models. That is exactly what happens
+# when a cross-validated holdout frame -- whose predictions come from the per-fold models --
+# is explained by the production model, so this is the tripwire for that class of bug.
+_CONTRIB_RECON_TOL = 0.05
+
+# Per-subset artifact names a writer can emit. ``subsets=None`` means "all of them" and is
+# what the single-split pipeline always passes; a narrower set restricts which
+# ``contributions_<subset>.csv`` / ``params_<subset>.csv`` files get written (and, for SHAP,
+# which passes get computed at all). Artifacts that describe the MODEL rather than a subset
+# -- MRA coefficient tables, Multi-MRA global params, LocalArea rate tables -- are always
+# written, since they have no subset to filter on.
+_ALL_CONTRIB_SUBSETS = frozenset({"train", "test", "sales", "universe"})
+
+
+def _wanted_contrib_subsets(subsets) -> frozenset:
+    """Normalize a subset whitelist; ``None`` means every subset."""
+    return _ALL_CONTRIB_SUBSETS if subsets is None else frozenset(subsets)
+
+
+def _warn_if_contributions_dont_reconstruct(
+    df_final: pd.DataFrame,
+    subset: str,
+    label: str,
+    pred_col: str = "prediction",
+    tol: float = _CONTRIB_RECON_TOL,
+):
+    """Warn when contribution_sum fails to reconstruct the prediction it should explain."""
+    if df_final is None or len(df_final) == 0:
+        return
+    if "check_delta" not in df_final.columns or pred_col not in df_final.columns:
+        return
+    delta = pd.to_numeric(df_final["check_delta"], errors="coerce").abs().to_numpy()
+    pred = pd.to_numeric(df_final[pred_col], errors="coerce").abs().to_numpy()
+    # Bail before nanmean on an all-NaN or empty slice -- numpy emits its own RuntimeWarning
+    # for those, and a diagnostic has no business adding noise of its own.
+    if not (np.isfinite(delta).any() and np.isfinite(pred).any()):
+        return
+    denom = float(np.nanmean(pred))
+    numer = float(np.nanmean(delta))
+    if not np.isfinite(denom) or not np.isfinite(numer) or denom == 0:
+        return
+    rel = numer / denom
+    if rel > tol:
+        warnings.warn(
+            f"{label}: '{subset}' contributions do not reconstruct {pred_col} "
+            f"(mean |check_delta| = {rel:.1%} of mean {pred_col}, tolerance {tol:.0%}). "
+            f"The attributions and the {pred_col} column may come from different models."
+        )
+
+
 def _add_prediction_to_contribution(
     df: pd.DataFrame,
     df_contrib: pd.DataFrame,
@@ -6824,9 +6916,19 @@ def write_model_parameters(
     location: str,
     outpath: str,
     do_plot: bool = False,
-    verbose: bool = False
+    verbose: bool = False,
+    subsets: frozenset | set | None = None,
 ):
-    
+    """Write a model's parameter / contribution artifacts for the requested subsets.
+
+    ``subsets`` defaults to ``None``, meaning every subset the engine supports -- the
+    single-split behavior, unchanged. Pass a narrower set (e.g. ``{"test"}``) to emit only
+    those ``contributions_<subset>.csv`` / ``params_<subset>.csv`` files; for SHAP-based
+    engines the skipped subsets are never explained at all, not merely dropped on write.
+    Model-level artifacts with no subset to filter on (MRA coefficients, Multi-MRA global
+    params, LocalArea rate tables) are written regardless.
+    """
+
     print(f"write model parameters to {outpath}")
     xs = {
         "test": smr.ds.X_test,
@@ -6855,17 +6957,18 @@ def write_model_parameters(
         # TODO
         pass
     elif isinstance(model, MRAModel):
-        write_mra_params(model, outpath, xs, dfs, do_plot)
+        write_mra_params(model, outpath, xs, dfs, do_plot, subsets=subsets)
     elif isinstance(model, MultiMRAModel):
-        write_multi_mra_params(model, outpath, smr, do_plot)
+        write_multi_mra_params(model, outpath, smr, do_plot, subsets=subsets)
     elif isinstance(model, GWRModel):
-        write_gwr_params(model, outpath, dfs, do_plot)
+        write_gwr_params(model, outpath, dfs, do_plot, subsets=subsets)
     elif isinstance(model, TreeBasedModel):
-        write_shaps(model, outpath, smr, location, do_plot, verbose=verbose)
+        write_shaps(model, outpath, smr, location, do_plot, verbose=verbose, subsets=subsets)
     elif isinstance(model, LocalAreaModel):
+        # No per-subset artifacts -- one model-level rate table, so `subsets` doesn't apply.
         write_local_area_params(model, smr, outpath, do_plot)
     elif isinstance(model, LayeredCompModel):
-        write_shaps(model, outpath, smr, location, do_plot, verbose=verbose)
+        write_shaps(model, outpath, smr, location, do_plot, verbose=verbose, subsets=subsets)
     # ...and so on
     else:
         raise TypeError(f"Unexpected model type: {type(model).__name__}")
