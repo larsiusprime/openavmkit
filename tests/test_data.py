@@ -9,7 +9,7 @@ from openavmkit.data import _perform_canonical_split, _handle_duplicated_rows, _
 	compute_lookback_test_size, _resolve_strat_fields_improved, _build_strat_label, _stratified_test_sample, \
 	_three_tier_split, _assign_grouped_folds, _perform_canonical_folds, _read_fold_keys, \
 	_do_write_canonical_split, _read_split_keys, _spatial_lag_kernel, \
-	_enrich_sup_spatial_lag_for_model_group
+	_enrich_sup_spatial_lag_for_model_group, _drop_fields, load_dataframe
 from openavmkit.modeling import DataSplit
 from openavmkit.utilities.assertions import dfs_are_equal, series_are_equal
 from openavmkit.utilities.data import div_df_z_safe, merge_and_stomp_dfs, combine_dfs
@@ -1735,3 +1735,80 @@ def test_spatial_lag_matches_legacy_single_split_when_no_folds(tmp_path, monkeyp
 	sales_lag = out.sales.set_index("key")[col]
 	univ_lag = out.universe.set_index("key")[col]
 	assert np.allclose(sales_lag.values, univ_lag.loc[sales_lag.index].values)
+
+
+def test_drop_fields_unit():
+	# Scratch columns are removed; unknown names are ignored so the op is idempotent.
+	df = pd.DataFrame({"a": [1], "b": [2], "scratch": [3], "SRC": [4]})
+
+	assert list(_drop_fields(df, ["scratch"]).columns) == ["a", "b", "SRC"]
+	assert list(_drop_fields(df, ["not_a_column"]).columns) == ["a", "b", "scratch", "SRC"]
+	assert list(_drop_fields(df, []).columns) == ["a", "b", "scratch", "SRC"]
+
+	# dropping twice is a no-op the second time
+	once = _drop_fields(df, ["scratch"])
+	assert list(_drop_fields(once, ["scratch"]).columns) == ["a", "b", "SRC"]
+
+	# a name that only exists pre-rename is resolved through rename_map
+	assert list(_drop_fields(df, ["canon"], {"canon": "SRC"}).columns) == ["a", "b", "scratch"]
+
+	# the input frame is never mutated in place
+	assert list(df.columns) == ["a", "b", "scratch", "SRC"]
+
+
+def test_drop_fields_rejects_non_list():
+	# A malformed block warns and changes nothing, rather than raising mid-load.
+	df = pd.DataFrame({"a": [1], "scratch": [2]})
+	with warnings.catch_warnings(record=True) as caught:
+		warnings.simplefilter("always")
+		out = _drop_fields(df, "scratch")
+	assert len(caught) == 1
+	assert "must be a list" in str(caught[0].message)
+	assert list(out.columns) == ["a", "scratch"]
+
+
+def test_drop_fields_runs_after_calc_in_load(tmp_path, monkeypatch):
+	# A scratch column can be produced by calc, consumed by a later calc entry, and
+	# still be dropped before the frame reaches the rest of the pipeline.
+	monkeypatch.chdir(tmp_path)
+	os.makedirs("in", exist_ok=True)
+	with open("in/test.csv", "w") as f:
+		f.write("REID,VCS\nR1,13RA17T\nR2,GOLF002\nR3,ANCRA01\n")
+
+	entry = {
+		"filename": "test.csv",
+		"load": {"key": ["REID", "string"], "neighborhood": "VCS"},
+		"calc": {
+			"vcs_pre4": ["substr", "neighborhood", {"left": 0, "right": 4}],
+			"vcs_area": [
+				"where",
+				["isin", "vcs_pre4", ["str:GOLF"]],
+				"vcs_pre4",
+				["substr", "neighborhood", {"left": 0, "right": 2}]
+			]
+		},
+		"drop_fields": ["vcs_pre4"]
+	}
+
+	df = load_dataframe(entry, {}, verbose=False)
+
+	assert "vcs_pre4" not in df.columns
+	assert df["vcs_area"].tolist() == ["13", "GOLF", "AN"]
+	assert df["neighborhood"].tolist() == ["13RA17T", "GOLF002", "ANCRA01"]
+
+
+def test_drop_fields_absent_leaves_frame_untouched(tmp_path, monkeypatch):
+	# Entries with no drop_fields key behave exactly as before.
+	monkeypatch.chdir(tmp_path)
+	os.makedirs("in", exist_ok=True)
+	with open("in/test.csv", "w") as f:
+		f.write("REID,VCS\nR1,13RA17T\n")
+
+	entry = {
+		"filename": "test.csv",
+		"load": {"key": ["REID", "string"], "neighborhood": "VCS"},
+		"calc": {"vcs_pre4": ["substr", "neighborhood", {"left": 0, "right": 4}]}
+	}
+
+	df = load_dataframe(entry, {}, verbose=False)
+	assert "vcs_pre4" in df.columns
