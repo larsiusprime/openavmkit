@@ -332,3 +332,179 @@ def test_cv_phase2_write_subsets_rule():
     # write test or the file would simply be missing.
     assert _cv_phase2_write_subsets(True, 0) is None
     assert _cv_phase2_write_subsets(False, 0) is None
+
+
+# --- P5: train artifacts derived from the sales pass -----------------------
+
+def _write_all_subsets(tmp_path, model, df, feats, name):
+    d = _model_artifact_dir(str(tmp_path), name)
+    os.makedirs(d, exist_ok=True)
+    write_model_parameters(model, _smr(model, df, feats), None, d)
+    return d
+
+
+def test_train_artifacts_are_identical_to_explaining_train_directly(tmp_path):
+    """The equivalence P5 relies on: train rows are a row-subset of sales, same model, and
+    tree SHAP is per-row -- so deriving must reproduce the direct pass exactly."""
+    import openavmkit.modeling as om
+
+    X, y = _frame()
+    feats = list(X.columns)
+    model = _fit(X, y, seed=1)
+
+    df = X.copy()
+    df["key"] = [f"p{i}" for i in range(len(df))]
+    df["key_sale"] = df["key"] + "-a"
+    df["prediction"] = model.model.predict(X[feats])
+    df_train = df.iloc[: int(len(df) * 0.8)].reset_index(drop=True)
+
+    smr = _smr(model, df, feats)
+    smr.df_train = df_train
+
+    derived_dir = _model_artifact_dir(str(tmp_path), "derived")
+    os.makedirs(derived_dir, exist_ok=True)
+    write_model_parameters(model, smr, None, derived_dir)
+
+    # Now force the old behavior: explain train directly, by asking only for that subset
+    # (which makes derivation impossible since sales isn't written).
+    direct_dir = _model_artifact_dir(str(tmp_path), "direct")
+    os.makedirs(direct_dir, exist_ok=True)
+    write_model_parameters(model, smr, None, direct_dir, subsets={"train"})
+
+    a = pd.read_csv(f"{derived_dir}/contributions_train.csv")
+    b = pd.read_csv(f"{direct_dir}/contributions_train.csv")
+    assert len(a) == len(df_train)
+    a = a.sort_values("key_sale").reset_index(drop=True)
+    b = b.sort_values("key_sale").reset_index(drop=True)
+    pd.testing.assert_frame_equal(a[sorted(a.columns)], b[sorted(b.columns)],
+                                  check_exact=False, rtol=1e-9)
+
+    ua = pd.read_csv(f"{derived_dir}/params_train.csv").sort_values("key_sale").reset_index(drop=True)
+    ub = pd.read_csv(f"{direct_dir}/params_train.csv").sort_values("key_sale").reset_index(drop=True)
+    pd.testing.assert_frame_equal(ua[sorted(ua.columns)], ub[sorted(ub.columns)],
+                                  check_exact=False, rtol=1e-9)
+
+
+def test_train_is_not_explained_a_second_time(tmp_path, monkeypatch):
+    # The point of P5 is saved work: with sales in play, SHAP must never be asked to explain
+    # the train rows.
+    import openavmkit.shap_analysis as sa
+
+    X, y = _frame()
+    feats = list(X.columns)
+    model = _fit(X, y, seed=1)
+    df = X.copy()
+    df["key"] = [f"p{i}" for i in range(len(df))]
+    df["key_sale"] = df["key"] + "-a"
+    df["prediction"] = model.model.predict(X[feats])
+    smr = _smr(model, df, feats)
+    smr.df_train = df.iloc[:70].reset_index(drop=True)
+
+    labels = []
+    real = sa._shap_explain
+
+    def spy(model_type, te, X_to_explain, **kw):
+        labels.append(kw.get("label"))
+        return real(model_type, te, X_to_explain, **kw)
+
+    monkeypatch.setattr(sa, "_shap_explain", spy)
+
+    d = _model_artifact_dir(str(tmp_path), "m")
+    os.makedirs(d, exist_ok=True)
+    write_model_parameters(model, smr, None, d)
+
+    assert "train" not in labels, labels
+    assert {"test", "sales", "universe"} <= set(labels)
+    # ...and the artifact still exists.
+    assert os.path.exists(f"{d}/contributions_train.csv")
+
+
+def test_train_is_explained_directly_when_sales_is_not_written(tmp_path):
+    # Nothing to derive from -> fall back rather than silently skipping the artifact.
+    X, y = _frame()
+    feats = list(X.columns)
+    model = _fit(X, y, seed=1)
+    df = X.copy()
+    df["key"] = [f"p{i}" for i in range(len(df))]
+    df["key_sale"] = df["key"] + "-a"
+    df["prediction"] = model.model.predict(X[feats])
+    smr = _smr(model, df, feats)
+    smr.df_train = df.iloc[:70].reset_index(drop=True)
+
+    d = _model_artifact_dir(str(tmp_path), "m")
+    os.makedirs(d, exist_ok=True)
+    write_model_parameters(model, smr, None, d, subsets={"train"})
+    assert os.path.exists(f"{d}/contributions_train.csv")
+    assert not os.path.exists(f"{d}/contributions_sales.csv")
+
+
+# --- P6: the ensemble's residual base must not absorb a mismatch -----------
+
+def test_ensemble_base_check_is_quiet_when_members_are_coherent():
+    from openavmkit.model_runner import _warn_if_ensemble_base_absorbs_mismatch
+
+    idx = pd.Index([f"k{i}" for i in range(5)], name="key_sale")
+    expected = pd.Series([100.0, 110.0, 120.0, 130.0, 140.0], index=idx)
+    residual = expected * 1.001  # float noise only
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _warn_if_ensemble_base_absorbs_mismatch(
+            "test", "ensemble", residual, expected, pd.Series(1.0, index=idx)
+        )
+    assert not caught
+
+
+def test_ensemble_base_check_fires_on_absorbed_mismatch():
+    # The us-nc-wake shape: contributions identical to the sales subset, base ~20% adrift to
+    # make prediction - feat_sum come out right, and check_delta a reassuring 0.00%.
+    from openavmkit.model_runner import _warn_if_ensemble_base_absorbs_mismatch
+
+    idx = pd.Index([f"k{i}" for i in range(5)], name="key_sale")
+    expected = pd.Series(582_715.0, index=idx)
+    residual = expected + 114_655.0
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _warn_if_ensemble_base_absorbs_mismatch(
+            "test", "ensemble", residual, expected, pd.Series(1.0, index=idx)
+        )
+    assert len(caught) == 1
+    msg = str(caught[0].message)
+    assert "'test'" in msg and "19.7%" in msg
+
+
+def test_ensemble_base_check_ignores_partially_covered_rows():
+    # A row whose contributing members don't account for the whole prediction has a
+    # legitimately shifted residual; it must not be judged.
+    from openavmkit.model_runner import _warn_if_ensemble_base_absorbs_mismatch
+
+    idx = pd.Index([f"k{i}" for i in range(4)], name="key_sale")
+    expected = pd.Series([100.0, 100.0, 100.0, 100.0], index=idx)
+    residual = pd.Series([100.0, 100.0, 900.0, 900.0], index=idx)
+    covered = pd.Series([1.0, 1.0, 0.4, 0.4], index=idx)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _warn_if_ensemble_base_absorbs_mismatch(
+            "test", "ensemble", residual, expected, covered
+        )
+    assert not caught
+
+
+def test_ensemble_base_check_is_safe_on_degenerate_input():
+    from openavmkit.model_runner import _warn_if_ensemble_base_absorbs_mismatch
+
+    idx = pd.Index(["a", "b"], name="key_sale")
+    cases = [
+        (pd.Series([1.0, 2.0], index=idx), pd.Series([1.0, 2.0], index=idx),
+         pd.Series(0.0, index=idx)),                                    # nothing covered
+        (pd.Series([np.nan, np.nan], index=idx), pd.Series([np.nan, np.nan], index=idx),
+         pd.Series(1.0, index=idx)),                                    # all NaN
+        (pd.Series([5.0, 5.0], index=idx), pd.Series([0.0, 0.0], index=idx),
+         pd.Series(1.0, index=idx)),                                    # zero denominator
+    ]
+    for residual, expected, covered in cases:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _warn_if_ensemble_base_absorbs_mismatch(
+                "test", "ensemble", residual, expected, covered
+            )
+        assert not caught

@@ -6489,6 +6489,55 @@ def write_local_area_params(
     df_params.to_csv(params_path, index=False)
 
 
+def _write_train_artifacts_from_sales(
+    sales_artifacts,
+    smr: SingleModelResults,
+    outpath: str,
+    prefix: str = "",
+    verbose: bool = False,
+) -> bool:
+    """Write the ``train`` artifacts by filtering the ``sales`` ones, not by re-explaining.
+
+    The training rows are a strict subset of the sales rows explained by the same model, and
+    tree SHAP is per-row: the explainer's background is fixed when it is BUILT (from X_train),
+    never drawn from the batch under explanation, so a row's values do not depend on what else
+    is in the batch. The train artifacts were therefore always a byte-identical row-subset of
+    the sales ones -- a second full SHAP pass for nothing, and on a large model group that is
+    ~5.6% of all SHAP row-work.
+
+    Returns True if the artifacts were written.
+
+    NOTE: the equivalence is a property of the explainers in use (path-dependent tree SHAP, or
+    interventional with a background fixed at construction). An explainer that drew its
+    baseline from the batch being explained would break it, and `write_shaps` would have to go
+    back to explaining train directly.
+    """
+    if sales_artifacts is None:
+        return False
+    df_unit, df_contrib = sales_artifacts
+    if df_unit is None or df_contrib is None:
+        return False
+
+    df_train = getattr(smr, "df_train", None)
+    if df_train is None or len(df_train) == 0 or "key_sale" not in df_train.columns:
+        return False
+    if "key_sale" not in df_contrib.columns or "key_sale" not in df_unit.columns:
+        return False
+
+    train_keys = set(df_train["key_sale"].astype(str))
+    sel_contrib = df_contrib[df_contrib["key_sale"].astype(str).isin(train_keys)]
+    sel_unit = df_unit[df_unit["key_sale"].astype(str).isin(train_keys)]
+
+    sel_unit.to_csv(f"{outpath}/params_{prefix}train.csv", index=False)
+    sel_contrib.to_csv(f"{outpath}/contributions_{prefix}train.csv", index=False)
+    if verbose:
+        print(
+            f"derived {len(sel_contrib)} train rows from the sales pass -> "
+            f"{outpath}/contributions_{prefix}train.csv"
+        )
+    return True
+
+
 def write_shaps(
     model: TreeBasedModel,
     outpath: str,
@@ -6524,6 +6573,14 @@ def write_shaps(
         "sales": smr.df_sales
     }
 
+    # Train is a strict row-subset of sales explained by the same model, so derive it from the
+    # sales pass rather than running SHAP over those rows a second time (see
+    # `_write_train_artifacts_from_sales`). Only possible when sales is being written too;
+    # otherwise fall back to explaining train directly.
+    want = _wanted_contrib_subsets(subsets)
+    derive_train = "train" in want and "sales" in want
+    explain_subsets = (want - {"train"}) if derive_train else want
+
     do_plot = False
 
     # NGBoost: exact additive tree-SHAP. Emit the standard mean (loc) params/contribs
@@ -6554,10 +6611,11 @@ def write_shaps(
         for param_index, prefix, predict_fn in dimensions:
             shaps = get_full_ngboost_shaps(
                 model, X_train, X_test, X_sales, X_univ,
-                param_index=param_index, verbose=verbose, subsets=subsets
+                param_index=param_index, verbose=verbose, subsets=explain_subsets
             )
+            written = {}
             for subset in shaps:
-                _prepare_shap_dfs(
+                written[subset] = _prepare_shap_dfs(
                     model,
                     shaps[subset],
                     dfs[subset],
@@ -6570,6 +6628,10 @@ def write_shaps(
                     prefix=prefix,
                     predict_fn=predict_fn,
                 )
+            if derive_train:
+                _write_train_artifacts_from_sales(
+                    written.get("sales"), smr, outpath, prefix=prefix, verbose=verbose
+                )
         return
 
     # LayeredComp: exact path-dependent SHAP on the folded ensemble. It carries
@@ -6577,7 +6639,7 @@ def write_shaps(
     # explicit predictor (which also skips its cat_data/predictor branch).
     if isinstance(model, LayeredCompModel):
         shaps = get_full_layeredcomp_shaps(
-            model, X_train, X_test, X_sales, X_univ, verbose=verbose, subsets=subsets
+            model, X_train, X_test, X_sales, X_univ, verbose=verbose, subsets=explain_subsets
         )
         bag = model.model
         feat_order = list(bag.feature_names_in_)
@@ -6585,8 +6647,9 @@ def write_shaps(
         def _lc_predict(Xdf):
             return bag.predict(Xdf[feat_order])
 
+        written = {}
         for subset in shaps:
-            _prepare_shap_dfs(
+            written[subset] = _prepare_shap_dfs(
                 model,
                 shaps[subset],
                 dfs[subset],
@@ -6598,6 +6661,10 @@ def write_shaps(
                 do_write=True,
                 predict_fn=_lc_predict,
             )
+        if derive_train:
+            _write_train_artifacts_from_sales(
+                written.get("sales"), smr, outpath, verbose=verbose
+            )
         return
 
     shaps = get_full_model_shaps(
@@ -6607,13 +6674,14 @@ def write_shaps(
         X_sales,
         X_univ,
         verbose=verbose,
-        subsets=subsets,
+        subsets=explain_subsets,
     )
 
+    written = {}
     for subset in shaps:
         shap_entry = shaps[subset]
         df = dfs[subset]
-        _prepare_shap_dfs(
+        written[subset] = _prepare_shap_dfs(
             model,
             shap_entry,
             df,
@@ -6623,6 +6691,11 @@ def write_shaps(
             do_plot=do_plot,
             verbose=verbose,
             do_write=True
+        )
+
+    if derive_train:
+        _write_train_artifacts_from_sales(
+            written.get("sales"), smr, outpath, verbose=verbose
         )
 
 
@@ -6929,7 +7002,9 @@ def write_model_parameters(
     params, LocalArea rate tables) are written regardless.
     """
 
-    print(f"write model parameters to {outpath}")
+    if verbose:
+        # Gated: cross-validation calls this once per fold per model, which drowns the log.
+        print(f"write model parameters to {outpath}")
     xs = {
         "test": smr.ds.X_test,
         "sales": smr.ds.X_sales,
