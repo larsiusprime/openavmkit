@@ -151,6 +151,7 @@ from openavmkit.shap_analysis import (
     _calc_shap,
     plot_full_beeswarm,
     explanation_from_contributions,
+    _CONTRIB_NON_FEATURE_COLS,
 )
 
 #######################################
@@ -1617,11 +1618,23 @@ def _aggregate_fold_params(param_dicts: list[dict]) -> dict:
     return agg
 
 
+def _model_artifact_dir(base: str, model_name: str) -> str:
+    """Directory holding one model's artifacts under ``base``.
+
+    Centralizes the "*" sanitization `_write_model_results` has always done -- some model
+    names (ensemble variants) contain "*", which is not a legal path character on Windows.
+    The per-fold and stitched OOF writers must agree with it exactly or they write to
+    different directories.
+    """
+    path = f"{base}/{model_name}"
+    return path.replace("*", "_star") if "*" in path else path
+
+
 def _run_cv_fold(
     k, holdout_keys, train_keys_k, tune_workers,
     df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
     settings, dep_var, dep_var_test, best_variables, fields_cat, outpath,
-    use_saved_params, verbose,
+    use_saved_params, verbose, emit_oof_contribs=False,
 ):
     """Run one CV fold and return only the lightweight bits the orchestrator needs.
 
@@ -1630,6 +1643,12 @@ def _run_cv_fold(
     it survives loky worker reuse) caps this fold's trial-level thread pool when folds run in
     parallel; ``None`` leaves the tuner at its default (full cores) for the sequential path. Fold
     params are persisted (save_params=True) for aggregation into the production config and reuse.
+
+    When ``emit_oof_contribs`` is set, the fold also writes its own ``*_test.csv`` artifacts --
+    this fold's model explaining this fold's holdout. That has to happen HERE, in the worker:
+    the fold model is discarded on return (only predictions and a params path travel back), so
+    it is the last moment the model and its holdout exist together. ``run_one_model_cv``
+    stitches the per-fold files into the final contributions_test.csv.
     """
     if tune_workers is not None:
         os.environ["OPENAVMKIT_TUNE_WORKERS"] = str(tune_workers)
@@ -1646,6 +1665,26 @@ def _run_cv_fold(
         fr.df_test["key_sale"].astype(str).tolist(),
         [float(v) for v in fr.df_test[field].values],
     ))
+    if emit_oof_contribs:
+        # Non-fatal by design: a missing explanation must never take down the fold's
+        # predictions, which are what the holdout statistics are built from. The stitcher
+        # warns about whichever folds came up empty.
+        try:
+            fold_art_dir = _model_artifact_dir(f"{outpath}/cv_fold{k}", model_name)
+            os.makedirs(fold_art_dir, exist_ok=True)
+            location = get_model_location(
+                settings, "vacant" if vacant_only else "main", model_name, model_group
+            )
+            write_model_parameters(
+                fr.model, fr, location, fold_art_dir, verbose=verbose, subsets={"test"},
+            )
+        except Exception as e:
+            warnings.warn(
+                f"CV fold {k} for {model_group}/{model_name}: could not write out-of-fold "
+                f"contributions ({type(e).__name__}: {e}). This fold's holdout rows will be "
+                f"missing from contributions_test.csv."
+            )
+
     fpath = f"{outpath}/cv_fold{k}/{model_name}_params.json"
     return (oof, float(fr.utility_test), fpath if os.path.exists(fpath) else None)
 
@@ -1706,6 +1745,12 @@ def run_one_model_cv(
     cv_prod_mode = settings.get("modeling", {}).get("instructions", {}).get(
         "cv_production_params", "aggregate"
     )
+    # Out-of-fold contributions. Off => the legacy behavior, where the Phase-2 model explains
+    # the OOF holdout frame (attributions and predictions from different models; see
+    # `_stitch_oof_contributions`).
+    emit_oof_contribs = bool(
+        settings.get("modeling", {}).get("instructions", {}).get("cv_oof_contributions", True)
+    )
 
     # ---- Phase 1: per-fold out-of-fold predictions ----
     # Folds are independent and each is internally deterministic, so running them in parallel is
@@ -1724,7 +1769,7 @@ def run_one_model_cv(
     fold_args = (
         df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
         settings, dep_var, dep_var_test, best_variables, fields_cat, outpath,
-        use_saved_params, verbose,
+        use_saved_params, verbose, emit_oof_contribs and save_results,
     )
 
     # Parallelism comes from the fold axis, and each fold tunes its trials SERIALLY (1 thread).
@@ -1827,6 +1872,31 @@ def run_one_model_cv(
     if phase2 is None:
         return None
 
+    main_vacant = "vacant" if vacant_only else "main"
+    location = get_model_location(settings, main_vacant, model_name, model_group)
+
+    # ---- Post-valuation slice, explained while the frames still line up ----
+    # Right now `phase2.df_test` IS the post-valuation holdout (it was built from
+    # prod_test_keys) and ds.X_test matches it row for row. Phase 2 never trained on post-val,
+    # so its explanation of those rows is exactly as leakage-free as each fold's is of its own
+    # holdout -- they belong in the same OOF file. This is the only moment we can isolate them:
+    # `override_test_predictions` below swaps df_test for the full-coverage frame.
+    wrote_post_val_contribs = False
+    if save_results and emit_oof_contribs and n_fold_ok > 0 and len(post_val) > 0:
+        try:
+            pv_dir = _model_artifact_dir(prod_outpath, model_name)
+            os.makedirs(pv_dir, exist_ok=True)
+            write_model_parameters(
+                phase2.model, phase2, location, pv_dir, verbose=verbose, subsets={"test"},
+            )
+            wrote_post_val_contribs = True
+        except Exception as e:
+            warnings.warn(
+                f"{model_group}/{model_name}: could not write post-valuation contributions "
+                f"({type(e).__name__}: {e}); those rows will be missing from "
+                f"contributions_test.csv."
+            )
+
     # ---- Stitch: replace the test side with the full-coverage OOF frame ----
     if n_fold_ok == 0:
         warnings.warn(
@@ -1847,11 +1917,113 @@ def run_one_model_cv(
         phase2.override_test_predictions(df_test_full)
 
     if save_results:
-        main_vacant = "vacant" if vacant_only else "main"
-        location = get_model_location(settings, main_vacant, model_name, model_group)
-        _write_model_results(phase2, outpath, settings, location, verbose=verbose)
+        # The Phase-2 model must NOT explain the OOF holdout frame: its attributions would
+        # describe a different model than the predictions sitting in that frame. Hold back the
+        # "test" subset and let the stitcher assemble it from the per-fold writes instead.
+        write_subsets = _cv_phase2_write_subsets(emit_oof_contribs, n_fold_ok)
+        _write_model_results(
+            phase2, outpath, settings, location, verbose=verbose, subsets=write_subsets
+        )
+        if write_subsets is not None:
+            _stitch_oof_contributions(
+                outpath,
+                model_name,
+                [k for (k, _hk, _tk) in tasks],
+                prod_outpath,
+                include_post_val=wrote_post_val_contribs,
+                verbose=verbose,
+            )
 
     return phase2
+
+
+def _cv_phase2_write_subsets(emit_oof_contribs: bool, n_fold_ok: int):
+    """Which subsets the Phase-2 refit is allowed to write under cross-validation.
+
+    ``None`` means "all of them" -- the legacy single-split behavior, used when out-of-fold
+    contributions are switched off or when no fold survived (in which case there is no OOF
+    frame and Phase 2's own holdout stands). Otherwise "test" is withheld: the holdout frame
+    carries per-fold predictions, so letting the Phase-2 model explain it would pair one
+    model's attributions with another model's predictions. `_stitch_oof_contributions`
+    supplies that file instead.
+    """
+    if emit_oof_contribs and n_fold_ok > 0:
+        return {"train", "sales", "universe"}
+    return None
+
+
+def _stitch_oof_contributions(
+    outpath: str,
+    model_name: str,
+    fold_ids: list,
+    prod_outpath: str,
+    include_post_val: bool,
+    verbose: bool = False,
+):
+    """Assemble the out-of-fold ``*_test.csv`` artifacts from the per-fold writes.
+
+    Under cross-validation no single model explains the holdout frame. Each trainable sale was
+    held out by exactly one fold, so its explanation has to come from that fold's model;
+    post-valuation sales train nowhere, so the Phase-2 refit explains those. This concatenates
+    those pieces into the files the rest of the pipeline reads, giving `contributions_test.csv`
+    the same property `pred_test` already has: every row explained by a model that never saw it.
+
+    An ``oof_fold`` column records which model produced each row (-1 = Phase 2 / post-val). That
+    is load-bearing, not decoration: ``base_value`` is NOT comparable across rows, because each
+    fold model has its own expected value over its own training set. Per-row attributions are
+    honest; the file as a whole is a mixture, and ``oof_fold`` is what makes that legible. The
+    column name is registered in ``shap_analysis._CONTRIB_NON_FEATURE_COLS`` so downstream
+    readers don't mistake it for a feature.
+    """
+    sources = [(k, _model_artifact_dir(f"{outpath}/cv_fold{k}", model_name)) for k in fold_ids]
+    if include_post_val:
+        sources.append((-1, _model_artifact_dir(prod_outpath, model_name)))
+
+    # Discover what the engine actually emitted, so the "log_" and "std_" prefixed variants
+    # (MRA log-space, NGBoost uncertainty) come along without being enumerated here.
+    names = set()
+    for _fold, d in sources:
+        if os.path.isdir(d):
+            names.update(fn for fn in os.listdir(d) if fn.endswith("_test.csv"))
+
+    if not names:
+        # Engines with no per-subset artifacts (e.g. LocalAreaModel) legitimately produce
+        # nothing to stitch.
+        return
+
+    dest_dir = _model_artifact_dir(outpath, model_name)
+    os.makedirs(dest_dir, exist_ok=True)
+
+    for name in sorted(names):
+        pieces, missing = [], []
+        for fold, d in sources:
+            fpath = f"{d}/{name}"
+            if not os.path.exists(fpath):
+                missing.append(fold)
+                continue
+            piece = pd.read_csv(fpath)
+            piece["oof_fold"] = fold
+            pieces.append(piece)
+
+        if not pieces:
+            continue
+        if missing:
+            warnings.warn(
+                f"OOF contributions for {model_name}/{name}: nothing written by "
+                f"fold(s) {sorted(missing)}; those holdout rows are absent from the "
+                f"stitched file."
+            )
+        base_cols = list(pieces[0].columns)
+        if any(list(pc.columns) != base_cols for pc in pieces[1:]):
+            warnings.warn(
+                f"OOF contributions for {model_name}/{name}: per-fold artifacts have "
+                f"differing columns; the stitched file is their union and will contain NaNs."
+            )
+
+        df = pd.concat(pieces, ignore_index=True, sort=False)
+        df.to_csv(f"{dest_dir}/{name}", index=False)
+        if verbose:
+            print(f"--> stitched {len(df)} out-of-fold rows into {dest_dir}/{name}")
 
 
 def run_ensemble(
@@ -2466,17 +2638,27 @@ def _write_open_ratio_study(results: SingleModelResults, path: str, settings: di
         df.to_csv(f"{path}/{fname}", index=False)
 
 
-def _write_model_results(results: SingleModelResults, outpath: str, settings: dict, location: str = None, verbose:bool = False):
+def _write_model_results(
+    results: SingleModelResults,
+    outpath: str,
+    settings: dict,
+    location: str = None,
+    verbose: bool = False,
+    subsets: frozenset | set | None = None,
+):
     """
     Write model results to disk in parquet and CSV formats.
+
+    ``subsets`` restricts which per-subset parameter/contribution artifacts are written; it is
+    passed straight through to `write_model_parameters`. ``None`` (the default) writes them
+    all. Cross-validation passes a set without "test" so the Phase-2 model does not explain the
+    out-of-fold holdout frame -- see `_stitch_oof_contributions`.
     """
-    
+
     print(f"Write model results to {outpath}")
 
     dfs = _assemble_model_results(results, settings)
-    path = f"{outpath}/{results.model_name}"
-    if "*" in path:
-        path = path.replace("*", "_star")
+    path = _model_artifact_dir(outpath, results.model_name)
     os.makedirs(path, exist_ok=True)
     for key in dfs:
         df = dfs[key]
@@ -2506,7 +2688,9 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
 
     params_path = f"{path}"
 
-    write_model_parameters(results.model, results, location, params_path, verbose=verbose)
+    write_model_parameters(
+        results.model, results, location, params_path, verbose=verbose, subsets=subsets
+    )
 
     try:
         universe_parquet = gpd.read_parquet(f"{path}/pred_universe.parquet")
@@ -2834,7 +3018,9 @@ def _write_ensemble_contributions(
                 if "base_value" in dfc.columns
                 else ("intercept" if "intercept" in dfc.columns else None)
             )
-            drop = {merge_key, "key", "key_sale", "contribution_sum", "prediction", "check_delta"}
+            # Single source of truth for "not a feature contribution" (includes base_value /
+            # intercept and the CV `oof_fold` tag).
+            drop = set(_CONTRIB_NON_FEATURE_COLS) | {merge_key}
             if base_col is not None:
                 drop.add(base_col)
             feat_cols = [c for c in dfc.columns if c not in drop]
