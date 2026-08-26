@@ -1445,6 +1445,76 @@ def _cb_fold_params(grow_policy, max_leaves=None, depth=6):
 		d["max_leaves"] = max_leaves
 	return d
 
+
+def _assert_catboost_accepts(params):
+	"""Ask CatBoost itself whether the config is legal, rather than trusting our own rule.
+
+	Mirrors the three steps `CatBoost._prepare_train_params` runs before training, which is
+	where the real failure surfaced: synonym normalization (reg_lambda -> l2_leaf_reg), type
+	cast, then the native validator.
+	"""
+	from catboost.core import _process_synonyms, _params_type_cast
+	from catboost._catboost import _check_train_params
+	p = dict(params)
+	_process_synonyms(p)
+	_check_train_params(_params_type_cast(p))
+
+
+def test_aggregate_fold_params_drops_orphaned_max_leaves():
+	from openavmkit.model_runner import _aggregate_fold_params
+	# The us-nc-wake mobile_manufactured case: four Depthwise folds and one Lossguide fold.
+	# Voting each key independently elected grow_policy=Depthwise but kept the lone
+	# Lossguide fold's max_leaves, and CatBoost refuses to fit that combination at all.
+	folds = [
+		_cb_fold_params("Depthwise"),
+		_cb_fold_params("Depthwise"),
+		_cb_fold_params("Depthwise"),
+		_cb_fold_params("Lossguide", max_leaves=69, depth=10),
+		_cb_fold_params("Depthwise"),
+	]
+	agg = _aggregate_fold_params(folds)
+	assert agg["grow_policy"] == "Depthwise"
+	assert "max_leaves" not in agg
+	_assert_catboost_accepts(agg)
+
+
+def test_aggregate_fold_params_keeps_max_leaves_when_lossguide_wins():
+	from openavmkit.model_runner import _aggregate_fold_params
+	# The child is only dropped when its parent forbids it -- a Lossguide majority keeps it,
+	# aggregated over just the folds that carried it.
+	folds = [
+		_cb_fold_params("Lossguide", max_leaves=64),
+		_cb_fold_params("Lossguide", max_leaves=64),
+		_cb_fold_params("Lossguide", max_leaves=80),
+		_cb_fold_params("Depthwise"),
+		_cb_fold_params("SymmetricTree"),
+	]
+	agg = _aggregate_fold_params(folds)
+	assert agg["grow_policy"] == "Lossguide"
+	# max_leaves is a discrete HP, so it takes the mode over the folds that carried it.
+	assert agg["max_leaves"] == 64
+	_assert_catboost_accepts(agg)
+
+
+def test_aggregate_fold_params_is_always_a_valid_catboost_config():
+	from openavmkit.model_runner import _aggregate_fold_params
+	# Exhaustive over every way 5 folds can split across the three grow policies, checked
+	# against CatBoost's own parameter validator. This is the guarantee that matters: the
+	# aggregate must never be a config the engine rejects, whatever the folds voted.
+	import itertools
+
+	policies = ("SymmetricTree", "Depthwise", "Lossguide")
+	for combo in itertools.product(policies, repeat=5):
+		folds = [
+			_cb_fold_params(gp, max_leaves=(31 + 10 * i) if gp == "Lossguide" else None)
+			for i, gp in enumerate(combo)
+		]
+		agg = _aggregate_fold_params(folds)
+		_assert_catboost_accepts(agg)
+		# And the invariant behind it: max_leaves survives only alongside Lossguide.
+		assert ("max_leaves" in agg) == (agg["grow_policy"] == "Lossguide"), combo
+
+
 def test_aggregate_fold_params_median_continuous_mode_discrete():
 	# Median for continuous HPs; mode for discrete/multimodal + categorical HPs.
 	from openavmkit.model_runner import _aggregate_fold_params
