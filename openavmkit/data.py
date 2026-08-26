@@ -2820,7 +2820,7 @@ def _enrich_df_basic(
 
     supkey = "sales" if is_sales else "universe"
     
-    for word in ["ref_tables", "calc", "tweak"]:
+    for word in ["ref_tables", "calc", "tweak", "drop_fields"]:
         val = s_enrich_this.get(word)
         if val is None:
             continue
@@ -2834,6 +2834,7 @@ def _enrich_df_basic(
     s_ref = s_enrich_this.get("ref_tables", {}).get(supkey, [])
     s_calc = s_enrich_this.get("calc", {}).get(supkey, {})
     s_tweak = s_enrich_this.get("tweak", {}).get(supkey, {})
+    s_drop = s_enrich_this.get("drop_fields", {}).get(supkey, [])
 
     # reference tables:
     df = _perform_ref_tables(df, s_ref, dataframes, verbose=verbose)
@@ -2843,6 +2844,9 @@ def _enrich_df_basic(
 
     # tweaks:
     df = perform_tweaks(df, s_tweak)
+
+    # drop scratch fields:
+    df = _drop_fields(df, s_drop)
 
     # enrich year built:
     df = _enrich_year_built(df, settings, is_sales)
@@ -3937,6 +3941,46 @@ def _do_get_calc_cols(df_entry: dict) -> list[str]:
     return fields_in_calc
 
 
+def _drop_fields(
+    df_in: pd.DataFrame, fields: list, rename_map: dict = None
+) -> pd.DataFrame:
+    """Drop the columns named in a ``drop_fields`` block.
+
+    Intended for scratch/intermediate columns that a ``calc`` block needs in order to
+    compute something else, but which shouldn't survive into the modeling data. Missing
+    fields are ignored, so the operation is idempotent and safe to re-run.
+
+    Parameters
+    ----------
+    df_in : pandas.DataFrame
+        Input DataFrame.
+    fields : list
+        List of column names to drop. Canonical (renamed) names are matched first; if a
+        name isn't found, it is retried through ``rename_map`` as a source-column name.
+    rename_map : dict, optional
+        Optional mapping of original to renamed columns.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame with the named columns removed.
+    """
+    if not isinstance(fields, list):
+        warnings.warn(
+            f"`drop_fields` must be a list of column names, found {type(fields)}. Nothing will be dropped."
+        )
+        return df_in
+    to_drop = []
+    for field in fields:
+        if field in df_in.columns:
+            to_drop.append(field)
+        elif rename_map and rename_map.get(field) in df_in.columns:
+            to_drop.append(rename_map[field])
+    if not to_drop:
+        return df_in
+    return df_in.drop(columns=to_drop)
+
+
 def load_dataframe(
     entry: dict,
     settings: dict,
@@ -3959,12 +4003,19 @@ def load_dataframe(
 
     e_load = entry.get("load", {})
 
-    # Get all calc and tweak operations in order they appear
+    # Get all calc, tweak, and drop_fields operations in order they appear
     operation_order = []
     for key in entry:
-        if "calc" in key or "tweak" in key:  # Match any key containing calc or tweak
-            op_type = "calc" if "calc" in key else "tweak"
-            operation_order.append({"type": op_type, "operations": entry[key]})
+        # Match any key containing calc, tweak, or drop_fields
+        if "calc" in key:
+            op_type = "calc"
+        elif "tweak" in key:
+            op_type = "tweak"
+        elif "drop_fields" in key:
+            op_type = "drop_fields"
+        else:
+            continue
+        operation_order.append({"type": op_type, "operations": entry[key]})
     
     # Get all fields used in aggregation operations
     dupes = get_dupes(entry, None, "geometry" in column_names)
@@ -4103,6 +4154,8 @@ def load_dataframe(
             df = perform_calculations(df, operation["operations"], rename_map)
         elif op_type == "tweak":
             df = perform_tweaks(df, operation["operations"], rename_map)
+        elif op_type == "drop_fields":
+            df = _drop_fields(df, operation["operations"], rename_map)
 
     if fields_cat is None:
         fields_cat = get_fields_categorical(settings, include_boolean=False)

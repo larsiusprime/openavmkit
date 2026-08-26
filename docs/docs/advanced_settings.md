@@ -235,6 +235,51 @@ If a sales dataframe ever lacks `key_sale` in its dedupe `subset`, OpenAVMKit em
 
 `data.process.dupes.universe` and `data.process.dupes.sales` apply the same schema **after** all per-source tables are merged. This is the right place for cross-table rules — for example, deduping the joined universe by `key` once parcels and a separate building file have been combined. The Guilford locality file uses this pattern via `$$ref.dupes_universe` and `$$ref.dupes_sales`.
 
+### 2.6 Discarding scratch columns — `drop_fields`
+
+Some `calc` expressions need an intermediate column that has no business surviving into the modeling data. A common case is decomposing a coded field where the segment boundaries aren't at fixed offsets: you slice off a candidate prefix, test it, and use the result to decide how to slice the rest. The prefix itself is scaffolding.
+
+`drop_fields` is a list of column names to delete, and it goes alongside `filename`, `load`, and `calc`:
+
+```json
+"parcels": {
+  "filename": "parcels.csv",
+  "load": { "key": ["REID", "string"], "neighborhood": "VCS" },
+  "calc": {
+    "vcs_pre4": ["substr", "neighborhood", {"left": 0, "right": 4}],
+    "vcs_area": ["where", ["isin", "vcs_pre4", ["str:GOLF", "str:MHPK"]],
+                 "vcs_pre4",
+                 ["substr", "neighborhood", {"left": 0, "right": 2}]]
+  },
+  "drop_fields": ["vcs_pre4"]
+}
+```
+
+`vcs_pre4` is computed, consumed by `vcs_area`, and then discarded. `vcs_area` survives.
+
+**Ordering.** `drop_fields` participates in the same ordered operation queue as `calc` and `tweak`: operations run in the order their keys appear in the JSON object. Put `drop_fields` after the `calc` block that needs the scratch column. If you need to drop something mid-sequence, you can interleave — `calc`, `drop_fields`, `calc_2` — using the same suffixed-key convention that `calc` and `tweak` already support.
+
+**Missing names are ignored.** Dropping a column that isn't there is a no-op, not an error, so the block is idempotent and safe to leave in place while you iterate on the `calc` above it. The trade-off is that a typo fails silently — if a column you expected to disappear is still present, check the spelling against the *renamed* (canonical) name, not the source column name. Names that don't match a current column are retried once through the rename map, so either spelling usually works.
+
+**It also works at enrich time.** `data.process.enrich.drop_fields.universe` and `.sales` take the same list form and run after that stage's `calc` and `tweak`:
+
+```json
+"data": {
+  "process": {
+    "enrich": {
+      "calc":        { "universe": { "_ratio_tmp": ["/", "a", "b"] } },
+      "drop_fields": { "universe": ["_ratio_tmp"] }
+    }
+  }
+}
+```
+
+**What it is not.** `drop_fields` is not a feature-selection mechanism. It deletes the column outright at load time, so anything downstream that expects it — `dupes.agg` fields, model variable lists, `field_classification` entries — will no longer find it. Use it for scaffolding you created yourself, and leave real columns to the modeling-side controls.
+
+> **Why not just prefix scratch columns with `__`?** `calc` already auto-drops columns named `__temp_*`, but that hook is unreachable from settings: the preprocessor strips every `__`-prefixed key as a comment (§ 1.1) before `calc` ever runs. `drop_fields` is the settings-visible equivalent.
+
+- **Source** — `_drop_fields` and `load_dataframe` in [openavmkit/data.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/data.py).
+
 ---
 
 ## 3. Time adjustment
