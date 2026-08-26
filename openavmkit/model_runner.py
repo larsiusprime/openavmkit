@@ -30,6 +30,7 @@ import os
 import json
 import pickle
 import warnings
+import difflib
 import math
 
 from matplotlib import pyplot as plt
@@ -1157,6 +1158,87 @@ def write_out_all_results(sup: SalesUniversePair, all_results: dict, settings: d
         t.stop("open_ratio_study")
 
 
+def _validate_ind_vars_across_frames(
+    ind_vars: list[str],
+    df_sales: pd.DataFrame,
+    df_universe: pd.DataFrame,
+    fields_cat: list[str],
+    model_name: str,
+    model_group: str,
+):
+    """Check that every independent variable is usable on both frames.
+
+    Two failure modes are caught here because both otherwise surface far downstream
+    as errors that name no column:
+
+    1. A variable missing from the universe. Training succeeds and prediction fails,
+       because there is nothing to predict *with* on unsold parcels. Usually a field
+       loaded from a sales-only source.
+    2. A variable that is ``category`` dtype in one frame but not the other. Tree
+       models compare only the *count* of categorical columns, so LightGBM reports
+       "train and valid dataset categorical_feature do not match" with no field name.
+
+    Raises
+    ------
+    ValueError
+        If either condition is found, naming the offending fields.
+    """
+    where = f'Model "{model_name}" (model_group "{model_group}")'
+
+    missing_univ = [v for v in ind_vars if v not in df_universe.columns]
+    if missing_univ:
+        lines = []
+        for v in missing_univ:
+            note = (
+                "present in sales, absent from universe"
+                if v in df_sales.columns
+                else "absent from BOTH sales and universe"
+            )
+            line = f"  - {v}   ({note})"
+            close = difflib.get_close_matches(v, list(df_universe.columns), n=2, cutoff=0.7)
+            if close:
+                pretty = " or ".join(f'\"{s}\"' for s in close)
+                line += f"\n      did you mean {pretty}?"
+            lines.append(line)
+        raise ValueError(
+            f"{where} lists independent variables that are missing from the universe:\n\n"
+            + "\n".join(lines)
+            + "\n\nEvery independent variable must exist in BOTH the sales frame (to train on)\n"
+            "and the universe frame (to predict on). A field that exists only in sales\n"
+            "cannot be used to value unsold parcels.\n\n"
+            "This usually means the field is loaded from a sales-only source. Check\n"
+            "`data.load.<source>.load` in settings.json: if the field is mapped under a\n"
+            "sales file, either remove it from\n"
+            f"`modeling.models.<group>.{model_name}.ind_vars`, or switch to the equivalent\n"
+            "field loaded from the parcel/universe source."
+        )
+
+    mismatched = []
+    for v in ind_vars:
+        if v not in df_sales.columns:
+            continue
+        sales_cat = isinstance(df_sales[v].dtype, pd.CategoricalDtype)
+        univ_cat = isinstance(df_universe[v].dtype, pd.CategoricalDtype)
+        if sales_cat != univ_cat and v not in fields_cat:
+            cat_side = "sales" if sales_cat else "universe"
+            other_side = "universe" if sales_cat else "sales"
+            other_dtype = df_universe[v].dtype if sales_cat else df_sales[v].dtype
+            mismatched.append(
+                f"  - {v}   (category in {cat_side}, {other_dtype} in {other_side})"
+            )
+    if mismatched:
+        raise ValueError(
+            f"{where} has independent variables whose categorical status differs\n"
+            "between the sales and universe frames:\n\n"
+            + "\n".join(mismatched)
+            + "\n\nThis breaks tree-based models: LightGBM compares only the NUMBER of\n"
+            "categorical columns, and reports \"train and valid dataset\n"
+            "categorical_feature do not match\" without naming the field.\n\n"
+            "Fix: classify the field in `field_classification` (for example under\n"
+            "`other.categorical`) so OpenAVMKit encodes it consistently across both frames."
+        )
+
+
 def get_data_split_for(
     model_name: str,
     model_engine: str,
@@ -1260,6 +1342,10 @@ def get_data_split_for(
         if model_engine == "gwr" or model_engine == "kernel":
             exclude_vars = ["latitude", "longitude", "latitude_norm", "longitude_norm"]
             _ind_vars = [var for var in _ind_vars if var not in exclude_vars]
+
+    _validate_ind_vars_across_frames(
+        _ind_vars, df_sales, df_universe, fields_cat, model_name, model_group
+    )
 
     return DataSplit(
         model_name,
