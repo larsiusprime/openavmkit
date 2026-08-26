@@ -2415,6 +2415,10 @@ def _set_locality(nbs, locality: str):
 
     os.chdir(f"data/{locality}")
 
+    # The rest of the pipeline assumes these exist; a brand new locality has neither.
+    os.makedirs("in", exist_ok=True)
+    os.makedirs("out", exist_ok=True)
+
     print(f"locality = {locality}")
     print(f"base path = {nbs.base_path}")
     print(f"current path = {os.getcwd()}")
