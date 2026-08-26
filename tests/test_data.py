@@ -1,4 +1,5 @@
 import os
+import warnings
 import numpy as np
 import pandas as pd
 from IPython.display import display
@@ -7,7 +8,8 @@ from openavmkit.data import _perform_canonical_split, _handle_duplicated_rows, _
 	_do_enrich_year_built, enrich_time, SalesUniversePair, get_hydrated_sales_from_sup, _enrich_permits, \
 	compute_lookback_test_size, _resolve_strat_fields_improved, _build_strat_label, _stratified_test_sample, \
 	_three_tier_split, _assign_grouped_folds, _perform_canonical_folds, _read_fold_keys, \
-	_do_write_canonical_split
+	_do_write_canonical_split, _read_split_keys, _spatial_lag_kernel, \
+	_enrich_sup_spatial_lag_for_model_group
 from openavmkit.modeling import DataSplit
 from openavmkit.utilities.assertions import dfs_are_equal, series_are_equal
 from openavmkit.utilities.data import div_df_z_safe, merge_and_stomp_dfs, combine_dfs
@@ -1423,6 +1425,26 @@ def test_do_write_canonical_split_cv_mode_writes_folds(tmp_path, monkeypatch):
 	assert len(fd["post_val"]) == 15
 
 
+def _cb_fold_params(grow_policy, max_leaves=None, depth=6):
+	"""A fold params.json in the shape `_tune_catboost` actually saves (optuna best_params).
+
+	Mirrors out/models/<mg>/main/cv_fold<k>/catboost_params.json: only the keys the trial
+	suggested, so `max_leaves` is present exactly when the trial picked Lossguide.
+	"""
+	d = {
+		"iterations": 979,
+		"learning_rate": 0.1396,
+		"depth": depth,
+		"border_count": 61,
+		"random_strength": 5.979,
+		"reg_lambda": 4.068,
+		"bagging_temperature": 0.885,
+		"grow_policy": grow_policy,
+	}
+	if max_leaves is not None:
+		d["max_leaves"] = max_leaves
+	return d
+
 def test_aggregate_fold_params_median_continuous_mode_discrete():
 	# Median for continuous HPs; mode for discrete/multimodal + categorical HPs.
 	from openavmkit.model_runner import _aggregate_fold_params
@@ -1440,3 +1462,206 @@ def test_aggregate_fold_params_median_continuous_mode_discrete():
 	# keys present in only some folds are aggregated over those folds
 	agg2 = _aggregate_fold_params(folds + [{"max_leaves": 64, "max_depth": 5}])
 	assert agg2["max_leaves"] == 64
+
+
+# --------------------------------------------------------------------------------------
+# Spatial lag: kernel, CV split fallback, and the out-of-fold guarantee
+# --------------------------------------------------------------------------------------
+
+
+def test_spatial_lag_kernel_matches_hand_computed_gaussian():
+	# One target sitting exactly on source A, a second source 100m away.
+	coords = np.array([[0.0, 0.0], [100.0, 0.0]])
+	values = np.array([100_000.0, 300_000.0])
+	lag, conf = _spatial_lag_kernel(coords, values, np.array([[0.0, 0.0]]), k=2, d_scale=800.0)
+	# sigma = mean(0, 100) = 50 -> weights = [exp(0), exp(-100^2 / (2*50^2))] = [1, exp(-2)]
+	w = np.array([1.0, np.exp(-2.0)])
+	w = w / w.sum()
+	assert abs(lag[0] - float((w * values).sum())) < 1e-9
+	# Distance-zero neighbor means near-total confidence.
+	assert conf[0] > 0.99
+
+
+def test_spatial_lag_kernel_clamps_k_to_available_sources():
+	# k=5 requested but only one source exists: clamp rather than crash.
+	lag, conf = _spatial_lag_kernel(
+		np.array([[0.0, 0.0]]),
+		np.array([250_000.0]),
+		np.array([[10.0, 0.0], [20.0, 0.0]]),
+		k=5,
+		d_scale=800.0,
+	)
+	assert lag.shape == (2,)
+	assert np.allclose(lag, 250_000.0)
+
+
+def test_spatial_lag_kernel_returns_nan_for_targets_without_geometry():
+	# cKDTree rejects non-finite query points; those rows must come back NaN, not raise.
+	coords = np.array([[0.0, 0.0], [10.0, 0.0]])
+	values = np.array([100.0, 200.0])
+	targets = np.array([[5.0, 0.0], [np.nan, np.nan]])
+	lag, conf = _spatial_lag_kernel(coords, values, targets, k=2, d_scale=800.0)
+	assert np.isfinite(lag[0])
+	assert np.isnan(lag[1])
+	assert conf[1] == 0.0
+
+
+def test_read_split_keys_falls_back_to_cv_folds(tmp_path, monkeypatch):
+	# CV mode writes only folds.csv. _read_split_keys must collapse it to the same single
+	# split Phase 2 uses instead of returning empty arrays (which silently blanked out
+	# every sale-derived enrichment upstream of the model runner).
+	monkeypatch.chdir(tmp_path)
+	df = _synth_cv_sales()
+	_do_write_canonical_split("res_sf", df, {}, random_seed=1337, n_folds=5)
+	assert not os.path.exists("out/models/res_sf/_data/train_keys.csv")
+
+	with warnings.catch_warnings(record=True) as caught:
+		warnings.simplefilter("always")
+		test_keys, train_keys = _read_split_keys("res_sf")
+	assert not [w for w in caught if "No split keys found" in str(w.message)]
+
+	assert set(train_keys) == set(df[df["sale_age_days"] >= 0]["key_sale"].astype(str))
+	assert set(test_keys) == set(df[df["sale_age_days"] < 0]["key_sale"].astype(str))
+
+
+def test_read_split_keys_still_warns_when_nothing_on_disk(tmp_path, monkeypatch):
+	monkeypatch.chdir(tmp_path)
+	with warnings.catch_warnings(record=True) as caught:
+		warnings.simplefilter("always")
+		test_keys, train_keys = _read_split_keys("res_sf")
+	assert [w for w in caught if "No split keys found" in str(w.message)]
+	assert len(test_keys) == 0 and len(train_keys) == 0
+
+
+def _synth_spatial_sup():
+	"""A 10x10 grid of parcels, one valid sale each, all in one model group.
+
+	Sale prices are deliberately scattered (not spatially smooth) so that a parcel's own
+	price is far from any neighborhood average -- which is what makes self-leak visible.
+	"""
+	import geopandas as gpd
+	from shapely.geometry import Point
+
+	n = 10
+	rows = []
+	for i in range(n):
+		for j in range(n):
+			idx = i * n + j
+			rows.append({
+				"key": f"p{idx}",
+				"latitude": 35.0 + i * 0.005,
+				"longitude": -78.0 + j * 0.005,
+				"sale_price_time_adj": float(100_000 + (idx * 7919) % 900_000),
+			})
+	df = pd.DataFrame(rows)
+	df["model_group"] = "res_sf"
+	df["land_area_sqft"] = 8000.0
+	df["bldg_area_finished_sqft"] = 1800.0
+	df["bldg_age_years"] = 20.0
+
+	univ = gpd.GeoDataFrame(
+		df.drop(columns=["sale_price_time_adj"]).copy(),
+		geometry=[Point(lon, lat) for lon, lat in zip(df["longitude"], df["latitude"])],
+		crs="EPSG:4326",
+	)
+	sales = df[["key", "sale_price_time_adj"]].copy()
+	sales["key_sale"] = sales["key"] + "-a"
+	sales["sale_price"] = sales["sale_price_time_adj"]
+	sales["valid_sale"] = True
+	sales["vacant_sale"] = False
+	sales["sale_age_days"] = 100
+	sales["sale_year"] = 2024
+	return SalesUniversePair(sales, univ)
+
+
+_SPATIAL_SETTINGS = {
+	"modeling": {
+		"model_groups": {"res_sf": {}},
+		"instructions": {"cv_folds": 5, "random_seed": 1337},
+	},
+	"data": {"process": {"enrich": {"spatial_lag": {"model_groups": {
+		"res_sf": {"sample_from": ["res_sf"]}
+	}}}}},
+}
+
+
+def test_spatial_lag_is_out_of_fold_for_sales_under_cv(tmp_path, monkeypatch):
+	# Under CV the sales rows and the universe rows must see DIFFERENT surfaces: the
+	# universe keeps the full-information one (it is never a holdout), the sales rows get
+	# a per-fold one.
+	monkeypatch.chdir(tmp_path)
+	sup = _synth_spatial_sup()
+	hydrated = get_hydrated_sales_from_sup(sup)
+	_do_write_canonical_split("res_sf", hydrated, _SPATIAL_SETTINGS, random_seed=1337, n_folds=5)
+	assert os.path.exists("out/models/res_sf/_data/folds.csv")
+
+	out = _enrich_sup_spatial_lag_for_model_group(sup, _SPATIAL_SETTINGS, "res_sf")
+	col = "spatial_lag_sale_price_time_adj"
+	assert col in out.sales.columns
+	assert col in out.universe.columns
+	assert out.sales[col].notna().all()
+
+	sales_lag = out.sales.set_index("key")[col]
+	univ_lag = out.universe.set_index("key")[col]
+	# Genuinely two distinct surfaces, not an accidental copy of one.
+	assert (sales_lag != univ_lag.loc[sales_lag.index]).all()
+
+
+def test_spatial_lag_sales_side_is_immune_to_own_sale_price(tmp_path, monkeypatch):
+	# The leak this guards: the surface is queried at EVERY universe centroid, so a parcel
+	# holding a training sale finds its own sale at distance 0 and the Gaussian kernel
+	# hands back a large slice of its own price. Under CV that parcel is some fold's
+	# holdout, so its own price must not reach its own feature. Perturbing one sale price
+	# and re-running is the direct test of that.
+	monkeypatch.chdir(tmp_path)
+	sup = _synth_spatial_sup()
+	hydrated = get_hydrated_sales_from_sup(sup)
+	# Written once, so both runs below share an identical fold assignment.
+	_do_write_canonical_split("res_sf", hydrated, _SPATIAL_SETTINGS, random_seed=1337, n_folds=5)
+
+	col = "spatial_lag_sale_price_time_adj"
+	base = _enrich_sup_spatial_lag_for_model_group(sup, _SPATIAL_SETTINGS, "res_sf")
+
+	target = "p42"
+	bumped = SalesUniversePair(sup.sales.copy(), sup.universe.copy())
+	bumped.sales.loc[bumped.sales["key"].eq(target), "sale_price_time_adj"] *= 10.0
+	after = _enrich_sup_spatial_lag_for_model_group(bumped, _SPATIAL_SETTINGS, "res_sf")
+
+	b_sales = base.sales.set_index("key")[col]
+	a_sales = after.sales.set_index("key")[col]
+	b_univ = base.universe.set_index("key")[col]
+	a_univ = after.universe.set_index("key")[col]
+
+	fold_of = _read_fold_keys("res_sf")["key_to_fold"]
+	same_fold = [k for k, f in fold_of.items() if f == fold_of[target]]
+	other_fold = [k for k, f in fold_of.items() if f != fold_of[target]]
+	assert len(same_fold) > 1 and len(other_fold) > 1
+
+	# The target IS in the shipped surface -- so this perturbation would be visible if the
+	# sales side shared it.
+	assert a_univ[target] != b_univ[target]
+	# ...but it never reaches its own feature.
+	assert a_sales[target] == b_sales[target]
+	# Nor any other parcel in its fold: folds are dropped whole, parcels intact.
+	assert (a_sales.loc[same_fold] == b_sales.loc[same_fold]).all()
+	# Other folds still learn from it -- cross-fold information is not thrown away.
+	assert (a_sales.loc[other_fold] != b_sales.loc[other_fold]).any()
+
+
+def test_spatial_lag_matches_legacy_single_split_when_no_folds(tmp_path, monkeypatch):
+	# Without folds.csv the out-of-fold branch is a no-op: sales and universe share the
+	# one baseline surface, exactly as the pre-CV code did.
+	monkeypatch.chdir(tmp_path)
+	sup = _synth_spatial_sup()
+	hydrated = get_hydrated_sales_from_sup(sup)
+	settings = {**_SPATIAL_SETTINGS}
+	settings["modeling"] = {**settings["modeling"], "instructions": {"random_seed": 1337}}
+	_do_write_canonical_split("res_sf", hydrated, settings, random_seed=1337, n_folds=1)
+	assert os.path.exists("out/models/res_sf/_data/train_keys.csv")
+	assert not os.path.exists("out/models/res_sf/_data/folds.csv")
+
+	out = _enrich_sup_spatial_lag_for_model_group(sup, settings, "res_sf")
+	col = "spatial_lag_sale_price_time_adj"
+	sales_lag = out.sales.set_index("key")[col]
+	univ_lag = out.universe.set_index("key")[col]
+	assert np.allclose(sales_lag.values, univ_lag.loc[sales_lag.index].values)
