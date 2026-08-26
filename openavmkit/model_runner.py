@@ -2865,6 +2865,54 @@ def _median_weights(P: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(W, index=P.index, columns=members)
 
 
+def _warn_if_ensemble_base_absorbs_mismatch(
+    subset: str,
+    model_name: str,
+    base_residual: pd.Series,
+    base_expected: pd.Series,
+    weight_covered: pd.Series,
+    tol: float = 0.05,
+):
+    """Warn when the ensemble's residual base has quietly swallowed a prediction mismatch.
+
+    The ensemble's ``base_value`` is defined as ``prediction - sum(feature contributions)``, so
+    these files reconstruct perfectly no matter how wrong their inputs are -- the ordinary
+    check_delta tripwire is blind here BY CONSTRUCTION. The invariant that does bite is a
+    different one: if every member's contributions are coherent with its own predictions then,
+    because the per-row weights sum to 1, the residual base must equal the weighted sum of the
+    members' own base values. A gap means the difference between two sets of predictions is
+    being parked in the intercept instead.
+
+    That is exactly what happened before out-of-fold contributions landed: member holdout files
+    carried per-fold predictions but production-model attributions, so the ensemble's
+    per-feature contributions came out byte-identical to its sales subset and the base ran ~20%
+    adrift to make the arithmetic close -- with check_delta sitting at a reassuring 0.00%.
+
+    Only rows whose contributing members' weights fully account for the prediction are checked;
+    partial coverage legitimately shifts the residual, and the caller skips the check entirely
+    when any member was excluded (log-space or non-decomposable).
+    """
+    covered = weight_covered > 0.999
+    if not covered.any():
+        return
+    resid = pd.to_numeric(base_residual[covered], errors="coerce").to_numpy()
+    expect = pd.to_numeric(base_expected[covered], errors="coerce").to_numpy()
+    if not (np.isfinite(resid).any() and np.isfinite(expect).any()):
+        return
+    denom = float(np.nanmean(np.abs(expect)))
+    numer = float(np.nanmean(np.abs(resid - expect)))
+    if not np.isfinite(denom) or not np.isfinite(numer) or denom == 0:
+        return
+    rel = numer / denom
+    if rel > tol:
+        warnings.warn(
+            f"{model_name}: '{subset}' ensemble base_value sits {rel:.1%} away from the "
+            f"weighted sum of its members' base values. The residual base is absorbing a "
+            f"mismatch between member predictions and member contributions; these files "
+            f"reconstruct by construction, so check_delta will not show it."
+        )
+
+
 def _write_ensemble_contributions(
     results: SingleModelResults,
     outpath: str,
@@ -2979,8 +3027,14 @@ def _write_ensemble_contributions(
         else:
             raise ValueError(f"Unrecognized ensemble contribution mode \"{mode}\"!")
 
-        # Accumulate per-row weighted feature contributions across members.
+        # Accumulate per-row weighted feature contributions across members. Alongside them
+        # we track what the base SHOULD be (the same weighted sum over the members' own base
+        # values) and how much weight actually contributed, so the residual base can be
+        # sanity-checked below.
         feat_total = pd.DataFrame(index=ref_index)
+        base_expected = pd.Series(0.0, index=ref_index)
+        weight_covered = pd.Series(0.0, index=ref_index)
+        excluded_member = False
         for m_key in members:
             w = weights[m_key].reindex(ref_index).fillna(0.0)
             # Log-transformed members (mra/multi_mra with log=True) have contributions that are
@@ -2998,6 +3052,7 @@ def _write_ensemble_contributions(
                         f"features."
                     )
                     warned_missing.add(m_key)
+                excluded_member = True
                 continue
             cfile = _find_member_contrib_file(outpath, m_key, candidate_files)
             if cfile is None:
@@ -3009,9 +3064,11 @@ def _write_ensemble_contributions(
                         f"folding its prediction into the ensemble base."
                     )
                     warned_missing.add(m_key)
+                excluded_member = True
                 continue
             dfc = pd.read_csv(cfile)
             if merge_key not in dfc.columns:
+                excluded_member = True
                 continue
             base_col = (
                 "base_value"
@@ -3026,6 +3083,12 @@ def _write_ensemble_contributions(
             feat_cols = [c for c in dfc.columns if c not in drop]
             dfc[merge_key] = dfc[merge_key].astype(str)
             dfc = dfc[~dfc[merge_key].duplicated()].set_index(merge_key)
+            if base_col is not None:
+                base_c = pd.to_numeric(dfc[base_col].reindex(ref_index), errors="coerce")
+                base_expected = base_expected + base_c.fillna(0.0) * w
+                weight_covered = weight_covered + w.where(base_c.notna(), 0.0)
+            else:
+                excluded_member = True
             for c in feat_cols:
                 contrib_c = pd.to_numeric(
                     dfc[c].reindex(ref_index), errors="coerce"
@@ -3046,6 +3109,15 @@ def _write_ensemble_contributions(
         # Residual base: guarantees contribution_sum == prediction (check_delta ~ 0)
         # and cleanly absorbs non-decomposable members and any missing-row slack.
         base_value = ens_pred - feat_sum
+
+        # ...but "guaranteed to reconstruct" is not the same as "correct". Cross-check the
+        # residual against what the members' own bases imply. Skipped when any member was
+        # excluded from the attribution, since then the residual legitimately carries that
+        # member's prediction.
+        if not excluded_member:
+            _warn_if_ensemble_base_absorbs_mismatch(
+                name, results.model_name, base_value, base_expected, weight_covered
+            )
 
         out = pd.DataFrame(index=ref_index)
         out["base_value"] = base_value
