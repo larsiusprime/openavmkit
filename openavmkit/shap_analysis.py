@@ -117,6 +117,22 @@ class _NGBoostShapExplainer:
         return out
 
 
+# The subsets every `get_full_*_shaps` can produce. A ``subsets`` argument of ``None``
+# means "all of them" (the default, and what the single-split pipeline always wants);
+# passing a subset of these skips the SHAP pass for the rest and returns ``None`` in their
+# slot, which `_prepare_shap_dfs` already treats as "nothing to write".
+#
+# NOTE: X_train is required to BUILD the explainer regardless of what is being explained --
+# LightGBM without categoricals uses an interventional explainer backed by a sample of
+# X_train (see `_lightgbm_shap`). Never drop X_train just because "train" isn't wanted.
+_ALL_SHAP_SUBSETS = frozenset({"train", "test", "sales", "universe"})
+
+
+def _wanted_subsets(subsets) -> frozenset:
+    """Normalize a subset whitelist; ``None`` means every subset."""
+    return _ALL_SHAP_SUBSETS if subsets is None else frozenset(subsets)
+
+
 def _ngboost_shap(model: NGBoostModel, param_index: int = 0) -> _NGBoostShapExplainer:
     """Build an exact additive SHAP explainer for one NGBoost distribution parameter."""
     return _NGBoostShapExplainer(model, param_index=param_index)
@@ -130,6 +146,7 @@ def get_full_ngboost_shaps(
     X_univ: pd.DataFrame,
     param_index: int = 0,
     verbose: bool = False,
+    subsets: frozenset | set | None = None,
 ):
     """Compute exact SHAP Explanations for all subsets for one NGBoost distribution parameter.
 
@@ -149,11 +166,12 @@ def get_full_ngboost_shaps(
         which = "loc (mean)" if param_index == 0 else "logscale (uncertainty)"
         print(f"Generating NGBoost SHAPs for {which}...")
 
+    want = _wanted_subsets(subsets)
     return {
-        "train": explain(X_train, "train"),
-        "test": explain(X_test, "test"),
-        "sales": explain(X_sales, "sales"),
-        "universe": explain(X_univ, "universe"),
+        "train": explain(X_train, "train") if "train" in want else None,
+        "test": explain(X_test, "test") if "test" in want else None,
+        "sales": explain(X_sales, "sales") if "sales" in want else None,
+        "universe": explain(X_univ, "universe") if "universe" in want else None,
     }
 
 
@@ -776,6 +794,7 @@ def get_full_layeredcomp_shaps(
     X_sales: pd.DataFrame,
     X_univ: pd.DataFrame,
     verbose: bool = False,
+    subsets: frozenset | set | None = None,
 ):
     """Compute exact SHAP Explanations for all subsets of a LayeredComp model.
 
@@ -790,11 +809,12 @@ def get_full_layeredcomp_shaps(
     if verbose:
         print("Generating LayeredComp SHAPs...")
 
+    want = _wanted_subsets(subsets)
     return {
-        "train": explain(X_train, "train"),
-        "test": explain(X_test, "test"),
-        "sales": explain(X_sales, "sales"),
-        "universe": explain(X_univ, "universe"),
+        "train": explain(X_train, "train") if "train" in want else None,
+        "test": explain(X_test, "test") if "test" in want else None,
+        "sales": explain(X_sales, "sales") if "sales" in want else None,
+        "universe": explain(X_univ, "universe") if "universe" in want else None,
     }
 
 
@@ -804,7 +824,8 @@ def get_full_model_shaps(
     X_test: pd.DataFrame,
     X_sales: pd.DataFrame,
     X_univ: pd.DataFrame,
-    verbose: bool = False
+    verbose: bool = False,
+    subsets: frozenset | set | None = None,
 ):
     """
     Calculates shaps for all subsets (test, train, sales, universe) of one model run
@@ -823,11 +844,16 @@ def get_full_model_shaps(
         2D array of independent variables' values from the universe set
     verbose: bool
         Whether to print verbose information. Defaults to False.
-    
+    subsets: frozenset | set | None
+        Which subsets to actually explain. ``None`` (default) explains all four. Any subset
+        left out gets ``None`` in its slot instead of an Explanation, and its SHAP pass is
+        skipped entirely. X_train is still required either way: it backs the explainer.
+
     Returns
     -------
     dict
-        A dict containing shap.Explanation objects keyed to "train", "test", "sales", and "universe"
+        A dict containing shap.Explanation objects (or None) keyed to "train", "test",
+        "sales", and "universe"
 
     """
 
@@ -835,14 +861,15 @@ def get_full_model_shaps(
     # TreeExplainer; delegate to its dedicated path (param_index=0 -> mean).
     if isinstance(model, NGBoostModel):
         return get_full_ngboost_shaps(
-            model, X_train, X_test, X_sales, X_univ, param_index=0, verbose=verbose
+            model, X_train, X_test, X_sales, X_univ, param_index=0, verbose=verbose,
+            subsets=subsets,
         )
 
     # LayeredComp folds its path-weighted prediction into per-leaf values and
     # gets exact path-dependent tree-SHAP via its own hand-rolled explainer.
     if isinstance(model, LayeredCompModel):
         return get_full_layeredcomp_shaps(
-            model, X_train, X_test, X_sales, X_univ, verbose=verbose
+            model, X_train, X_test, X_sales, X_univ, verbose=verbose, subsets=subsets
         )
 
     tree_explainer: shap.TreeExplainer
@@ -867,10 +894,20 @@ def get_full_model_shaps(
     if verbose:
         print(f"Generating SHAPs...")
     
-    shap_sales = _shap_explain(model_type, tree_explainer, X_sales, cat_data=cat_data, approximate=approximate, verbose=verbose, label="sales")
-    shap_train = _shap_explain(model_type, tree_explainer, X_train, cat_data=cat_data, approximate=approximate, verbose=verbose, label="train")
-    shap_test  = _shap_explain(model_type, tree_explainer, X_test,  cat_data=cat_data, approximate=approximate, verbose=verbose, label="test")
-    shap_univ  = _shap_explain(model_type, tree_explainer, X_univ,  cat_data=cat_data, approximate=approximate, verbose=verbose, label="universe")
+    want = _wanted_subsets(subsets)
+
+    def _maybe(name, X):
+        if name not in want:
+            return None
+        return _shap_explain(
+            model_type, tree_explainer, X, cat_data=cat_data,
+            approximate=approximate, verbose=verbose, label=name,
+        )
+
+    shap_sales = _maybe("sales", X_sales)
+    shap_train = _maybe("train", X_train)
+    shap_test  = _maybe("test", X_test)
+    shap_univ  = _maybe("universe", X_univ)
 
     return {
         "train": shap_train,
