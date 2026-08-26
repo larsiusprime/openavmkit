@@ -1561,13 +1561,25 @@ _CV_DISCRETE_HP_KEYS = {
 }
 
 
+# Hyperparameters that are only legal when ANOTHER hyperparameter takes a particular value.
+# Optuna only suggests these inside the matching branch (see `_tune_catboost`), so every
+# fold's own params are internally coherent -- but aggregating coordinate-wise votes each key
+# independently and can pair a child with a parent that forbids it. CatBoost then refuses to
+# fit at all: "max_leaves option works only with lossguide tree growing".
+# Format: child -> (parent, parent values that permit the child).
+_CV_CONDITIONAL_HP_KEYS = {
+    "max_leaves": ("grow_policy", {"Lossguide", "lossguide"}),
+}
+
+
 def _aggregate_fold_params(param_dicts: list[dict]) -> dict:
     """Aggregate per-fold tuned hyperparameters into one production config.
 
     Median for continuous HPs (robust, variance-reducing across folds); mode for categorical
     and discrete/multimodal HPs (see ``_CV_DISCRETE_HP_KEYS``) so we never synthesize a
     between-basin value no fold validated. Keys present in only some folds are aggregated over
-    the folds that carry them. This is a cheap, defensible estimate of what tuning on all data
+    the folds that carry them, then any conditional HP whose parent no longer permits it is
+    dropped (see ``_CV_CONDITIONAL_HP_KEYS``). This is a cheap, defensible estimate of what tuning on all data
     would pick; because the honest metrics come from the OOF holdout, the exact production HPs
     affect only the shipped values' quality, never a reported statistic.
     """
@@ -1591,6 +1603,17 @@ def _aggregate_fold_params(param_dicts: list[dict]) -> dict:
             if all(isinstance(v, (int, float)) and float(v).is_integer() for v in vals):
                 med = int(round(med))
             agg[k] = med
+
+    # Drop conditional HPs the vote left stranded. With four Depthwise folds and one
+    # Lossguide fold, the mode elects grow_policy=Depthwise while max_leaves is aggregated
+    # over the lone fold that carried it -- a combination the engine rejects outright. The
+    # parent won the vote, so the orphaned child goes (the engine then uses its default).
+    # A missing parent is also treated as "not permitted": the child only ever comes from
+    # inside the parent's branch, so without it there is nothing to justify keeping it.
+    for child, (parent, allowed) in _CV_CONDITIONAL_HP_KEYS.items():
+        if child in agg and agg.get(parent) not in allowed:
+            del agg[child]
+
     return agg
 
 
