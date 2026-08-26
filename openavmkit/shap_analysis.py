@@ -1078,9 +1078,13 @@ def make_shap_table(
 
 
 # Bookkeeping columns that are never SHAP feature contributions.
+# "oof_fold" tags which cross-validation fold's model produced a row in a stitched
+# out-of-fold contributions file (-1 = the Phase-2 refit); see
+# `model_runner._stitch_oof_contributions`. It MUST be listed here, or readers will treat
+# the fold index as a feature contribution and weight it into their sums.
 _CONTRIB_NON_FEATURE_COLS = frozenset(
     {"key", "key_sale", "base_value", "intercept", "contribution_sum",
-     "prediction", "check_delta"}
+     "prediction", "log_prediction", "check_delta", "oof_fold"}
 )
 
 
