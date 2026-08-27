@@ -1438,12 +1438,16 @@ def run_one_model(
     
     entry: dict | None = model_entries.get(model_name, None)
     default_entry: dict | None = model_entries.get("default", {})
+    entry_is_default = entry is None
     if entry is None:
         entry = default_entry
         if entry is None:
             raise ValueError(
                 f"Model entry for {model_name} not found, and there is no default entry!"
             )
+    # No "model" key means the name IS the engine (e.g. "mra", "lightgbm"). That fallback is
+    # load-bearing for plain entries, but it silently turns an *alias* with no entry in this
+    # model group's block (e.g. "lgbm_x") into a bogus engine name -- see the dispatch else.
     model_engine = entry.get("model", model_name)
     if model_engine == "default":
         # this isn't a real model, just a settings object to fill in for others
@@ -1618,7 +1622,21 @@ def run_one_model(
             ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, seed=seed
         )
     else:
-        raise ValueError(f"Model {model_engine} not found!")
+        if entry_is_default:
+            raise ValueError(
+                f'Model "{model_name}" (model_group "{model_group}") has no entry in '
+                f'modeling.models.{"vacant" if vacant_only else "main"}, so it fell back to the '
+                f'"default" entry, which does not name an engine -- leaving "{model_engine}" '
+                f"(the model's own name) as the engine, and that is not a known engine. If "
+                f'"{model_name}" is an alias, it needs its own entry with a "model" key. Note '
+                f"that a per-model-group override block REPLACES the top-level block wholesale, "
+                f"so every name in instructions.run must be defined in whichever block applies "
+                f"to this group."
+            )
+        raise ValueError(
+            f'Model engine "{model_engine}" (from model "{model_name}", model_group '
+            f'"{model_group}") not found!'
+        )
     t.stop("run")
     
     if results is None:
