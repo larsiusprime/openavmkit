@@ -1634,6 +1634,45 @@ def calc_cross_validation_score(
     float
         The mean cross-validated mean squared error.
     """
+    # Impute NaN with column medians before fitting.
+    # LinearRegression (sklearn) does not accept NaN natively; median imputation is a
+    # neutral choice for this variable-selection pre-pass -- LightGBM training still sees
+    # real NaN. Without this, cross_val_score raises inside individual folds, and the
+    # `nan` this function would otherwise return silently disables the caller's
+    # cross-validation refinement (`nan < best_score` is always False).
+    if isinstance(X, pd.DataFrame):
+        if X.isnull().values.any():
+            import warnings
+            warnings.warn(
+                f"calc_cross_validation_score: NaN detected in "
+                f"{list(X.columns[X.isnull().any()])}. "
+                "Imputing with column medians for the cross-validation step only.",
+                UserWarning,
+            )
+            X = X.fillna(X.median(numeric_only=True))
+    else:
+        X = np.asarray(X, dtype=float)
+        if np.isnan(X).any():
+            import warnings
+            warnings.warn(
+                "calc_cross_validation_score: NaN detected in input array. "
+                "Imputing with column medians for the cross-validation step only.",
+                UserWarning,
+            )
+            X = np.where(np.isnan(X), np.nanmedian(X, axis=0), X)
+
+    # Any column that was entirely NaN has no median to impute from; drop it rather than
+    # letting a residual NaN fail the fit.
+    if isinstance(X, pd.DataFrame):
+        all_nan = X.columns[X.isnull().all()]
+        if len(all_nan) > 0:
+            X = X.drop(columns=list(all_nan))
+    else:
+        X = np.nan_to_num(X, nan=0.0)
+
+    if isinstance(X, pd.DataFrame) and X.shape[1] == 0:
+        return float("nan")
+
     model = LinearRegression()
     # Use negative MSE and negate it to return positive MSE
     try:

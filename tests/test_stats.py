@@ -38,3 +38,44 @@ def test_cod_bootstrap():
   print("***")
 
   assert objects_are_equal(results, expected)
+
+def test_cross_validation_score_with_nan():
+  """A feature column with genuine missing values must still yield a finite score.
+
+  Without imputation, sklearn raises inside individual CV folds and the mean of the
+  surviving scores is nan -- which silently disables the caller's `cv_score <
+  best_score` refinement, since `nan < x` is always False.
+  """
+
+  import pandas as pd
+  from openavmkit.utilities.stats import calc_cross_validation_score
+
+  rng = np.random.default_rng(0)
+  n = 2000
+  X = pd.DataFrame({
+    "bldg_area_finished_sqft": rng.normal(1500, 400, n),
+    "bldg_rooms_bed": rng.integers(1, 6, n).astype(float),
+    "latitude": rng.normal(39.95, 0.05, n),
+  })
+  y = pd.Series(
+    2.0 * X["bldg_area_finished_sqft"]
+    + 5000 * X["bldg_rooms_bed"]
+    + rng.normal(0, 1000, n)
+  )
+
+  score_clean = calc_cross_validation_score(X, y)
+  assert np.isfinite(score_clean)
+
+  # Genuine missing building attributes, spread across folds.
+  X_nan = X.copy()
+  X_nan.loc[rng.choice(n, 200, replace=False), "bldg_rooms_bed"] = np.nan
+  score_nan = calc_cross_validation_score(X_nan, y)
+  assert np.isfinite(score_nan), "NaN in a feature column must not produce a nan score"
+
+  # An all-NaN column has no median to impute from; it must be dropped, not propagated.
+  X_dead = X.copy()
+  X_dead["never_recorded"] = np.nan
+  assert np.isfinite(calc_cross_validation_score(X_dead, y))
+
+  # The numpy path is supported by the signature too.
+  assert np.isfinite(calc_cross_validation_score(X_nan.to_numpy(), y.to_numpy()))
