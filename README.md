@@ -11,7 +11,7 @@ See the [Changelog](changelog.md)
 # Table of Contents
 
 ## 1. Getting started
-  - [Install from PyPI](docs/docs/getting_started.md#option-1---install-from-pypi)
+  - [Install from PyPI](docs/docs/getting_started.md#option-1-install-from-pypi)
   - [Install from Git](docs/docs/getting_started.md#option-2---install-from-git)
   - [Running Tests](docs/docs/getting_started.md#running-tests)
   - [Smoke test with sample data](docs/docs/getting_started.md#smoke-test-with-sample-data)

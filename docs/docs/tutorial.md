@@ -22,7 +22,7 @@ The Center for Land Economics publishes a small public dataset for **Guilford Co
 Before anything else, make sure your install is complete and your virtual environment is **active**. The pipeline notebooks won't run otherwise. If you're new to OpenAVMKit, work through these sections of [Getting Started](getting_started.md) in order:
 
 1. **[Install Python 3.11](getting_started.md#2-install-python)** — OpenAVMKit is tested on 3.11 specifically. Older or newer versions may produce import errors or subtle bugs.
-2. **[Clone the repo](getting_started.md#1-clone-the-repository)** (if installing from Git) or `pip install openavmkit` (if installing from [PyPI](getting_started.md#option-1---install-from-pypi)).
+2. **[Clone the repo](getting_started.md#1-clone-the-repository)** (if installing from Git) or `pip install openavmkit` (if installing from [PyPI](getting_started.md#option-1-install-from-pypi)).
 3. **[Set up a virtual environment](getting_started.md#3-set-up-a-virtual-environment)** with `python -m venv venv` and activate it (`source venv/bin/activate` on macOS/Linux, `venv\Scripts\activate` on Windows). **You must activate the venv every time you open a new terminal** — your prompt should show `(venv)` when it's active.
 4. **[Install dependencies](getting_started.md#4-install-dependencies)** with `pip install -r requirements.txt` and **[install openavmkit itself](getting_started.md#5-install-openavmkit)** with `pip install -e .`.
 5. **[Install Jupyter](getting_started.md#running-jupyter-notebooks)** with `pip install jupyter` if you haven't already — the pipeline runs as Jupyter notebooks.
