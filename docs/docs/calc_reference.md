@@ -19,7 +19,7 @@ This page is the authoritative reference for the operator set. For where `calc` 
 
 A sibling system, **`tweak`**, handles targeted per-row overrides — see [§ 5 Tweaks](#5-tweaks) below.
 
-If a `calc` block needs a scratch column purely as an intermediate — a candidate prefix you slice off in order to decide how to slice the rest, say — you can delete it afterwards with a **`drop_fields`** list alongside the `calc` block. It runs in the same ordered queue, so placing it after the `calc` that uses the column is all that's required. See [Advanced settings § 2.6](advanced_settings.md#26-discarding-scratch-columns--drop_fields).
+If a `calc` block needs a scratch column purely as an intermediate — a candidate prefix you slice off in order to decide how to slice the rest, say — you can delete it afterwards with a **`drop_fields`** list alongside the `calc` block. It runs in the same ordered queue, so placing it after the `calc` that uses the column is all that's required. See [Advanced settings § 2.6](advanced_settings.md#26-discarding-scratch-columns-drop_fields).
 
 ---
 

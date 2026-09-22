@@ -19,6 +19,27 @@ from openavmkit.modeling import (
 
 import warnings
 
+import pytest
+
+# The lcomp JSON model cache needs layeredcompmodel >= 0.3.0. `run_layeredcomp` gates on the
+# capability rather than a version string (the dev fork may still self-report 0.2.1), so the tests
+# that exercise the cache gate the same way: they skip on the stock PyPI build and start running by
+# themselves once a build with serialization is installed. See the note in requirements.txt.
+_LCOMP_HAS_SERIALIZATION = True
+try:
+    from layeredcompmodel import LayeredCompBaggingModel as _LCompProbe
+
+    _LCOMP_HAS_SERIALIZATION = hasattr(_LCompProbe, "to_dict") and hasattr(
+        _LCompProbe, "from_dict"
+    )
+except Exception:  # pragma: no cover - layeredcompmodel missing entirely
+    _LCOMP_HAS_SERIALIZATION = False
+
+requires_lcomp_serialization = pytest.mark.skipif(
+    not _LCOMP_HAS_SERIALIZATION,
+    reason="layeredcompmodel build lacks to_dict/from_dict (needs >= 0.3.0)",
+)
+
 def test_vif():
 	
 	data = {
@@ -462,6 +483,7 @@ def test_multi_mra_log_param_price_space(tmp_path):
     assert res.pred_test.y_pred.mean() > 1000
 
 
+@requires_lcomp_serialization
 def test_lcomp_serialization_roundtrip_matches_full_fit():
     # Safety proof for the lcomp model cache: serializing a fitted ensemble to JSON and reloading it
     # (no refit) must reproduce the original predictions bit-for-bit. If this ever diverges (e.g.
@@ -492,6 +514,7 @@ def test_lcomp_serialization_roundtrip_matches_full_fit():
     np.testing.assert_array_equal(full.predict(Xq), restored.predict(Xq))
 
 
+@requires_lcomp_serialization
 def test_lcomp_save_and_reuse_model_cache_roundtrip(tmp_path):
     # End-to-end: first run saves lcomp_model.json; second run (use_saved_params) reloads the fitted
     # ensemble, skips the fit entirely, and produces identical universe predictions.
