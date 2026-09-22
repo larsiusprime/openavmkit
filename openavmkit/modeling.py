@@ -514,6 +514,38 @@ class PredictionResults:
         self.ratio_study = RatioStudy(y_pred, y, max_trim)
 
 
+# Sales-only fields that DataSplit SYNTHESIZES onto the universe, so that a model trained on sales
+# can predict on parcels that never sold. The universe is scored as "every parcel sold on the
+# valuation date": sale_date is set to that date and the time fields are derived from it, sale age
+# collapses to the valuation date, and the validity/price flags take neutral values.
+#
+# These are legitimate independent variables even though the raw universe frame has no such columns,
+# so anything validating ind_vars against the raw frame must consult this set — see
+# `_validate_ind_vars_across_frames` in model_runner.py, which runs BEFORE DataSplit builds them.
+_UNIV_SET_TO_ZERO = ["sale_age_days"]
+_UNIV_SET_TO_FALSE = [
+    "valid_sale",
+    "vacant_sale",
+    "valid_for_ratio_study",
+    "valid_for_land_ratio_study",
+]
+_UNIV_SET_TO_NONE = ["ss_id", "sale_price", "sale_price_time_adj"]
+# Set directly (sale_date) or derived from it by _enrich_time_field / _enrich_sale_age_days.
+_UNIV_TIME_DERIVED = [
+    "sale_date",
+    "sale_year",
+    "sale_month",
+    "sale_day",
+    "sale_quarter",
+    "sale_year_month",
+    "sale_year_quarter",
+]
+
+UNIVERSE_SYNTHESIZED_FIELDS = frozenset(
+    _UNIV_SET_TO_ZERO + _UNIV_SET_TO_FALSE + _UNIV_SET_TO_NONE + _UNIV_TIME_DERIVED
+)
+
+
 class DataSplit:
     """
     Encapsulates the splitting of data into training, test, and other subsets.
@@ -660,14 +692,9 @@ class DataSplit:
         self.df_universe = df_universe.copy().reset_index(drop=True)
 
         # Set "sales" fields in the universe so that columns match
-        set_to_zero = ["sale_age_days"]
-        set_to_false = [
-            "valid_sale",
-            "vacant_sale",
-            "valid_for_ratio_study",
-            "valid_for_land_ratio_study",
-        ]
-        set_to_none = ["ss_id", "sale_price", "sale_price_time_adj"]
+        set_to_zero = _UNIV_SET_TO_ZERO
+        set_to_false = _UNIV_SET_TO_FALSE
+        set_to_none = _UNIV_SET_TO_NONE
 
         for col in set_to_zero:
             self.df_universe[col] = 0

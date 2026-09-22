@@ -59,6 +59,7 @@ from openavmkit.data import (
     filter_df_by_date_range
 )
 from openavmkit.modeling import (
+    UNIVERSE_SYNTHESIZED_FIELDS,
     run_mra,
     run_multi_mra,
     run_gwr,
@@ -1185,7 +1186,15 @@ def _validate_ind_vars_across_frames(
     """
     where = f'Model "{model_name}" (model_group "{model_group}")'
 
-    missing_univ = [v for v in ind_vars if v not in df_universe.columns]
+    # A sales-only field is NOT missing if DataSplit will synthesize it onto the universe (sale_date
+    # and its derivatives, sale age, the validity/price flags — the universe is scored as "sold on
+    # the valuation date"). This validation deliberately runs on the RAW frames, before DataSplit
+    # exists, so it has to consult that contract rather than the frame in front of it.
+    missing_univ = [
+        v
+        for v in ind_vars
+        if v not in df_universe.columns and v not in UNIVERSE_SYNTHESIZED_FIELDS
+    ]
     if missing_univ:
         lines = []
         for v in missing_univ:
@@ -1215,7 +1224,9 @@ def _validate_ind_vars_across_frames(
 
     mismatched = []
     for v in ind_vars:
-        if v not in df_sales.columns:
+        if v not in df_sales.columns or v not in df_universe.columns:
+            # Skip synthesized fields too: DataSplit builds them on the universe with a dtype we
+            # cannot read here, so there is nothing to compare yet.
             continue
         sales_cat = isinstance(df_sales[v].dtype, pd.CategoricalDtype)
         univ_cat = isinstance(df_universe[v].dtype, pd.CategoricalDtype)
