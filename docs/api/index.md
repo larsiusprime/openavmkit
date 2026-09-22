@@ -23,7 +23,6 @@ The main pipeline and analysis modules.
 | [`model_runner`](Core/model_runner.md) | Running and comparing model groups |
 | [`projection`](Core/projection.md) | Projections |
 | [`time_adjustment`](Core/time_adjustment.md) | Sale-date time adjustment and market indices |
-| [`kolbe_et_al`](Core/kolbe_et_al.md) | Land value modeling (Kolbe et al.) |
 | [`income`](Core/income.md) | Income approach |
 | [`ratio_study`](Core/ratio_study.md) | IAAO ratio studies |
 | [`horizontal_equity_study`](Core/horizontal_equity_study.md) | Horizontal equity |

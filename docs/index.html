@@ -57,10 +57,14 @@
       "audienceType": "Tax assessors, mass appraisal practitioners, property tax researchers"
     },
     "featureList": [
-      "Automated valuation models (MRA, GWR, LightGBM, XGBoost, CatBoost, ensembles)",
+      "Automated valuation models (MRA, GWR, LightGBM, XGBoost, CatBoost, layered comparable sales)",
+      "Ensemble modeling",
       "IAAO-standard ratio studies (COD, PRD, PRB)",
-      "Horizontal and vertical equity studies",
-      "Anomalous sales detection and sales-chasing detection",
+      "Horizontal equity analysis (coefficient of horizontal dispersion)",
+      "Vertical equity analysis (PRD, PRB, Vertical Equity Index)",
+      "Sales validation (deed-based multi-parcel detection and statistical outlier flagging)",
+      "Time adjustment and market indices",
+      "Explainable predictions (SHAP contributions and per-feature parameters)",
       "Spatial data enrichment from OpenStreetMap, Overture, US Census, and USGS",
       "Reproducible, settings-driven pipelines",
       "GIS and CAMA-friendly exports"
@@ -349,9 +353,9 @@
     </picture>
     <div class='section-content'>
       <h2>Clean Data</h2>
-      <p>Detect anomalous sales that undermine your predictive models.</p>
+      <p>Detect anomalous sales that undermine your predictive models—price outliers within clusters of similar properties, and suspicious price clusters.</p>
+      <p>Flag multi-parcel deals and misclassified vacant sales from deed IDs, sale dates, and prices.</p>
       <p>Exclude invalid sales with legible and defensible rules you write down once, rather than one-off judgment calls.</p>
-      <p>Test your own roll for sales chasing—whether values were selectively moved toward sale prices—before an oversight body does it for you.</p>
     </div>
   </section>
 

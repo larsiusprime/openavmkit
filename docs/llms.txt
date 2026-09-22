@@ -24,12 +24,11 @@ What distinguishes it from commercial CAMA software: the algorithms are open and
 - [Data enrichment](https://www.openavmkit.com/docs/advanced_settings/): tag parcels from public sources — OpenStreetMap streets and coastlines, Overture building footprints, US Census statistics, USGS 3DEP elevation — and compute distance and proximity to landmarks you define.
 - [Modeling](https://www.openavmkit.com/api/Core/modeling/): multiple regression, geographically weighted regression, LightGBM, XGBoost, CatBoost, layered comparable sales, and ensembles, through one interface.
 - [Ratio studies](https://www.openavmkit.com/api/Core/ratio_study/): IAAO-standard ratio studies with COD, PRD, and PRB, broken down by location, property type, or price decile.
-- [Equity studies](https://www.openavmkit.com/api/Core/vertical_equity_study/): horizontal and vertical equity analysis, including the Vertical Equity Index.
-- [Sales validation](https://www.openavmkit.com/api/Core/sales_scrutiny_study/): detect anomalous sales that corrupt a model, and exclude invalid sales by legible, defensible rules.
-- [Sales chasing detection](https://www.openavmkit.com/api/Core/sales_chasing/): test whether values were selectively adjusted toward sale prices.
-- [Land valuation](https://www.openavmkit.com/api/Core/kolbe_et_al/): land value modeling, including the Kolbe et al. method.
+- [Horizontal equity](https://www.openavmkit.com/api/Core/horizontal_equity_study/): cluster comparable parcels in similar locations and measure the dispersion of ratios within each cluster (coefficient of horizontal dispersion).
+- [Vertical equity](https://www.openavmkit.com/api/Core/vertical_equity_study/): whether low-value and high-value properties are valued with the same accuracy — PRD and PRB with bootstrap confidence intervals, per-quantile median ratios, and the Vertical Equity Index.
+- [Sales validation](https://www.openavmkit.com/api/Core/sales_scrutiny_study/): flag sales that are not arms-length — multi-parcel deals detected from repeated deed IDs or repeated date-and-price pairs, parcels marked vacant that carry a building older than the sale, and price outliers within clusters of similar properties.
+- [Ensemble modeling](https://www.openavmkit.com/api/Core/model_runner/): combine multiple models into a single prediction, with reassembled parameters and contributions for the ensemble itself.
 - [Time adjustment](https://www.openavmkit.com/api/Core/time_adjustment/): build market indices and adjust sale prices to a valuation date.
-- [Condo modeling](https://www.openavmkit.com/api/Core/condos/): handle condo units that have no parcel geometry of their own.
 - [Model explanation](https://www.openavmkit.com/api/Core/shap_analysis/): SHAP contributions and per-feature parameters for every model, including ensembles.
 
 ## Project
