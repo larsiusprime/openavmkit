@@ -218,7 +218,10 @@ If you have a persistent memory system:
 
 Time-boxed cleanups that must happen before a named release. Delete the entry when done.
 
-- **Remove the `openavmkit.benchmark` compatibility shim before 0.7.0.** The module was renamed to
+- **Remove the `openavmkit.benchmark` compatibility shim in 0.8.0.** (Was "before 0.7.0", which was
+  unachievable: the rename itself ships *in* 0.7.0 — at `v0.6.0` `openavmkit/benchmark.py` was still
+  the real 4560-line module and `model_runner` did not exist. Removing the shim before 0.7.0 would
+  have given 0.6.0 users no deprecation window at all. 0.7.0 is that window.) The module was renamed to
   [openavmkit/model_runner.py](openavmkit/model_runner.py); [openavmkit/benchmark.py](openavmkit/benchmark.py)
   is now a thin re-export that emits a `DeprecationWarning`. Once downstream imports are updated, delete
   the shim and this note.

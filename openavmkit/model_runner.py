@@ -18,7 +18,7 @@ Formerly named ``openavmkit.benchmark``; renamed to ``openavmkit.model_runner``
 because the module orchestrates the whole model run, not only the benchmark
 comparison (and to avoid confusion with the research ``benchmark/`` harness). A
 deprecating compatibility shim remains at ``openavmkit.benchmark`` and is slated
-for removal before the 0.7.0 release.
+for removal in the 0.8.0 release.
 
 Notes
 -----
