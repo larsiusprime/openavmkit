@@ -1,0 +1,6 @@
+# https://www.openavmkit.com/robots.txt
+# Everything here is public documentation — crawl it all.
+User-agent: *
+Allow: /
+
+Sitemap: https://www.openavmkit.com/sitemap.xml

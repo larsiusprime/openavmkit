@@ -225,7 +225,19 @@ Time-boxed cleanups that must happen before a named release. Delete the entry wh
 
 ---
 
-## 10. Living document footer
+## 10. Release checklist
+
+The package version itself needs no manual bump — `setuptools-scm` derives it from the git tag
+(see `[tool.setuptools_scm]` in [pyproject.toml](pyproject.toml)). These files are **hand-maintained**
+and will silently go stale if you don't touch them:
+
+- **[CITATION.cff](CITATION.cff) — bump `version` and `date-released` on every release.** Nothing
+  validates or generates them, so a stale entry means academics cite the wrong version. They must
+  match the tag being cut and its release date.
+
+---
+
+## 11. Living document footer
 
 Sections worth growing over time:
 

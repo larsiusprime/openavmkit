@@ -1,0 +1,42 @@
+# OpenAVMKit
+
+> OpenAVMKit is a free and open source Python library for real estate mass appraisal — valuing many properties at once, the way tax assessors, appraisal districts, and property-tax researchers must. It covers the whole pipeline: loading and cleaning parcel and sales data, enriching it from public spatial sources, building automated valuation models (AVMs), and evaluating them with IAAO-standard ratio and equity studies.
+
+Install with `pip install openavmkit`. Requires Python 3.11 or newer. Dual-licensed under AGPLv3 and a commercial license.
+
+Most users run the bundled Jupyter pipeline notebooks against one jurisdiction's parcel and sales data, driven by a single `settings.json`; the modules can also be imported directly into your own code. Because a run is defined by that settings file plus its inputs, results are reproducible by anyone who has both.
+
+What distinguishes it from commercial CAMA software: the algorithms are open and auditable, a run can be independently re-executed by an oversight body or an opposing party in an appeal, and there are no licensing costs. It is a modeling and analysis toolkit, not a tax-roll, billing, or appeals-workflow system.
+
+## Docs
+
+- [Getting Started](https://www.openavmkit.com/docs/getting_started/): installing from PyPI or Git, running the tests, and a smoke test against sample data.
+- [Tutorial](https://www.openavmkit.com/docs/tutorial/): end-to-end walkthrough — a smoke test on Guilford County, NC sample data, then onboarding your own jurisdiction.
+- [The Basics](https://www.openavmkit.com/docs/the_basics/): how a locality is structured, what each code module does, how the notebooks fit together, and the terminology.
+- [Configuration](https://www.openavmkit.com/docs/config/): cloud storage, PDF report generation, US Census API access, and OpenStreetMap enrichment.
+- [Advanced Settings Reference](https://www.openavmkit.com/docs/advanced_settings/): the full `settings.json` reference — the preprocessor, data loading and deduplication, time adjustment, every enrichment toggle, fill methods, modeling control, analysis, and caching.
+- [Models Reference](https://www.openavmkit.com/docs/models_reference/): every model engine, how name-vs-engine dispatch works, and multi-variant runs.
+- [Calc Reference](https://www.openavmkit.com/docs/calc_reference/): the `calc` expression language for derived columns and filters.
+- [API Reference](https://www.openavmkit.com/api/): auto-generated from docstrings, grouped into Core, Cloud, Synthetic, and Utilities.
+
+## Capabilities
+
+- [Data enrichment](https://www.openavmkit.com/docs/advanced_settings/): tag parcels from public sources — OpenStreetMap streets and coastlines, Overture building footprints, US Census statistics, USGS 3DEP elevation — and compute distance and proximity to landmarks you define.
+- [Modeling](https://www.openavmkit.com/api/Core/modeling/): multiple regression, geographically weighted regression, LightGBM, XGBoost, CatBoost, layered comparable sales, and ensembles, through one interface.
+- [Ratio studies](https://www.openavmkit.com/api/Core/ratio_study/): IAAO-standard ratio studies with COD, PRD, and PRB, broken down by location, property type, or price decile.
+- [Equity studies](https://www.openavmkit.com/api/Core/vertical_equity_study/): horizontal and vertical equity analysis, including the Vertical Equity Index.
+- [Sales validation](https://www.openavmkit.com/api/Core/sales_scrutiny_study/): detect anomalous sales that corrupt a model, and exclude invalid sales by legible, defensible rules.
+- [Sales chasing detection](https://www.openavmkit.com/api/Core/sales_chasing/): test whether values were selectively adjusted toward sale prices.
+- [Land valuation](https://www.openavmkit.com/api/Core/kolbe_et_al/): land value modeling, including the Kolbe et al. method.
+- [Time adjustment](https://www.openavmkit.com/api/Core/time_adjustment/): build market indices and adjust sale prices to a valuation date.
+- [Condo modeling](https://www.openavmkit.com/api/Core/condos/): handle condo units that have no parcel geometry of their own.
+- [Model explanation](https://www.openavmkit.com/api/Core/shap_analysis/): SHAP contributions and per-feature parameters for every model, including ensembles.
+
+## Project
+
+- [Source code](https://github.com/larsiusprime/openavmkit): GitHub repository.
+- [PyPI package](https://pypi.org/project/openavmkit/): `pip install openavmkit`.
+- [Changelog](https://github.com/larsiusprime/openavmkit/blob/master/changelog.md): release history.
+- [Contributing](https://github.com/larsiusprime/openavmkit/blob/master/CONTRIBUTING.md): PR workflow and style guide.
+- [AGENTS.md](https://github.com/larsiusprime/openavmkit/blob/master/AGENTS.md): repository conventions, gotchas, and extension patterns — written for coding agents and contributors.
+- [License philosophy](https://github.com/larsiusprime/openavmkit/blob/master/LICENSE-PHILOSOPHY.md): why the project is dual-licensed under AGPLv3 and a commercial license.
