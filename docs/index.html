@@ -127,8 +127,14 @@
                                  url('images/banner-texture.jpg') type('image/jpeg'));
     }
     .hero::after{content:"";position:absolute;inset:0;background:rgba(32,28,38,0.65);z-index:-1;} /* readability overlay */
-    .hero h1{font-size:3rem;font-weight:700;margin-bottom:1rem;}
-    .hero p{font-size:1.25rem;margin:0 auto 2.5rem;max-width:640px;}
+    /* Hero lockup mirrors the social card: mark, wordmark, amber category line.
+       Name and tagline live inside one <h1> so the page's single top-level
+       heading carries both the brand and the category keywords. */
+    .hero-logo{display:block;margin:0 auto 1.5rem;}
+    .hero h1{margin-bottom:1.25rem;}
+    .hero-title__name{display:block;font-size:4rem;font-weight:700;line-height:1.05;letter-spacing:-0.02em;}
+    .hero-title__tag{display:block;font-size:1.75rem;font-weight:600;line-height:1.25;color:var(--color-button);margin-top:.5rem;}
+    .hero p{font-size:1.2rem;margin:0 auto 2.5rem;max-width:720px;color:#E4E6F0;}
     .btn-primary{display:inline-block;background:var(--color-button);color:var(--color-text-invert);padding:0.75rem 1.75rem;border-radius:var(--radius-lg);font-weight:600;transition:background .2s ease;}
     .btn-primary:hover{background:var(--color-button-hover);}
 
@@ -176,7 +182,11 @@
 
     /* --- Responsive Tweaks --- */
     @media (max-width:768px){
-      .hero h1{font-size:2.25rem;}
+      .hero{padding:4rem 1rem;}
+      .hero-logo{width:76px;height:76px;margin-bottom:1rem;}
+      .hero-title__name{font-size:2.6rem;}
+      .hero-title__tag{font-size:1.25rem;}
+      .hero p{font-size:1.05rem;}
       .section{flex-direction:column;}
       header .nav-container{flex-direction:column;gap:1rem;}
       nav ul{flex-wrap:wrap;justify-content:center;}
@@ -269,8 +279,12 @@
   </header>
 
   <section class='hero'>
-    <h1>Mass Appraisal for the Masses</h1>
-    <p>Modern, cutting-edge, free and open source mass appraisal toolkit for researchers, analysts, governments, and everybody else.</p>
+    <img class='hero-logo' src='images/logo_white.svg' alt='' width='104' height='104' fetchpriority='high'>
+    <h1>
+      <span class='hero-title__name'>OpenAVMKit</span>
+      <span class='hero-title__tag'>Open Source Mass Appraisal &amp; AVM Toolkit</span>
+    </h1>
+    <p>A free and open source Python library for computer-assisted mass appraisal (CAMA) — built for county assessors, appraisal districts, and property tax researchers who need valuations they can defend and reproduce.</p>
     <div class='hero-actions'>
       <a href="docs/getting_started/" class="btn-primary">Get Started</a>
       <a href="https://github.com/larsiusprime/openavmkit" class="btn-ghost">View on GitHub</a>
@@ -306,8 +320,9 @@
     </picture>
     <div class='section-content'>
       <h2>Deploy AVM Algorithms</h2>
-      <p>Build automated valuation models using MRA, GWR, LightGBM, XGBoost, CatBoost, and more—all through one unified interface.</p>
+      <p>Build automated valuation models using MRA, GWR, LightGBM, XGBoost, CatBoost, layered comparable sales, and more—all through one unified interface.</p>
       <p>Ensemble multiple model results together for maximum performance.</p>
+      <p>See what drove every prediction: SHAP contributions and per-feature parameters are written out for each model, ensembles included, so no value is a black box.</p>
     </div>
   </section>
 
@@ -320,6 +335,7 @@
     <div class='section-content'>
       <h2>Automate Reporting</h2>
       <p>Generate <a href='https://www.iaao.org'>IAAO</a>-compatible ratio studies and other statistical reports in PDF and HTML formats.</p>
+      <p>Measure horizontal and vertical equity, including the Vertical Equity Index, and report COD, PRD, and PRB alongside them.</p>
       <p>Break down reporting by location, property type, price decile, or any other criteria you define.</p>
       <p>Identify variables and characteristics that have the greatest impact on price.</p>
     </div>
@@ -334,7 +350,8 @@
     <div class='section-content'>
       <h2>Clean Data</h2>
       <p>Detect anomalous sales that undermine your predictive models.</p>
-      <p>Exclude invalid sales with legible and defensible rules.</p>
+      <p>Exclude invalid sales with legible and defensible rules you write down once, rather than one-off judgment calls.</p>
+      <p>Test your own roll for sales chasing—whether values were selectively moved toward sale prices—before an oversight body does it for you.</p>
     </div>
   </section>
 
@@ -364,22 +381,56 @@
     </div>
   </section>
 
-  <!-- ======== Feature Grid ======== -->
-  <section class='section'>
+  <!-- ======== Capability Grid ======== -->
+  <section id='capabilities' class='section'>
     <div class='section-content' style='flex:1 1 100%;'>
-      <h2 style='text-align:center;'>Why Open Source?</h2>
+      <h2 style='text-align:center;'>Built for Real Assessment Work</h2>
+      <p style='text-align:center;max-width:720px;margin:0 auto;'>The parts of the job that generic modeling tools skip, and that you get asked about at hearings.</p>
       <div class='features-grid'>
         <div class='feature-card'>
-          <h3>Fully Transparent</h3>
-          <p>All the code is out in the open. No hidden algorithms or procedures.</p>
+          <h3>Sales validation</h3>
+          <p>Catch non-arms-length sales before they poison the model: spot potential multi-parcel deals by deed ID or same-date-and-price, parcels "sold vacant" with a building older than the sale, and price outliers within homogenous clusters.</p>
         </div>
         <div class='feature-card'>
-          <h3>Reproducible Builds</h3>
-          <p>Anyone else can re-run your results with just your settings file and inputs.</p>
+          <h3>Horizontal equity</h3>
+          <p>Are similar properties in similar locations valued alike? Cluster comparable parcels and measure the horizontal dispersion of valuations within each cluster (CHD).</p>
         </div>
         <div class='feature-card'>
-          <h3>Free forever</h3>
-          <p>Full-featured professional GIS capabilities with no software licensing costs.</p>
+          <h3>Vertical equity</h3>
+          <p>Are low-value and high-value properties valued with the same accuracy? PRD and PRB with bootstrap confidence intervals, per-quantile median ratios, and the new VEI stat.</p>
+        </div>
+        <div class='feature-card'>
+          <h3>Ensemble modeling</h3>
+          <p>Combine models into a prediction that beats any one of them alone, and get reassembled per-feature value contributions for the ensemble itself.</p>
+        </div>
+        <div class='feature-card'>
+          <h3>Time adjustment</h3>
+          <p>Build a market index from your own sales and adjust prices to your valuation date, or load in an index you already trust.</p>
+        </div>
+        <div class='feature-card'>
+          <h3>Explainable predictions</h3>
+          <p>Per-feature value contributions for every model, which you can use as adjustments in a comp grid or to answer "why is my value this number?"</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======== Why Open Source ======== -->
+  <section class='section'>
+    <div class='section-content' style='flex:1 1 100%;'>
+      <h2 style='text-align:center;'>Why Open Source Matters in Assessment</h2>
+      <div class='features-grid'>
+        <div class='feature-card'>
+          <h3>No vendor lock-in</h3>
+          <p>Your models, settings, and data stay yours. When a contract ends or staff turns over, the pipeline doesn't walk out the door with them.</p>
+        </div>
+        <div class='feature-card'>
+          <h3>Independently reproducible</h3>
+          <p>Your state oversight body, an outside reviewer, or opposing counsel can re-run the whole roll from your settings file and inputs and get the same answer.</p>
+        </div>
+        <div class='feature-card'>
+          <h3>No licensing costs</h3>
+          <p>Full modeling, analysis, and GIS capability with no per-seat, per-parcel, or annual fees. Free under the AGPLv3, with a commercial license available if you need one.</p>
         </div>
       </div>
     </div>
