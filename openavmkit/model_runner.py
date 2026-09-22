@@ -1169,22 +1169,64 @@ def _validate_ind_vars_across_frames(
 ):
     """Check that every independent variable is usable on both frames.
 
-    Two failure modes are caught here because both otherwise surface far downstream
+    Two failure modes are fatal here because both otherwise surface far downstream
     as errors that name no column:
 
-    1. A variable missing from the universe. Training succeeds and prediction fails,
-       because there is nothing to predict *with* on unsold parcels. Usually a field
-       loaded from a sales-only source.
+    1. A variable present in sales but missing from the universe. Training succeeds and
+       prediction fails, because there is nothing to predict *with* on unsold parcels.
+       Usually a field loaded from a sales-only source.
     2. A variable that is ``category`` dtype in one frame but not the other. Tree
        models compare only the *count* of categorical columns, so LightGBM reports
        "train and valid dataset categorical_feature do not match" with no field name.
 
+    A variable absent from *both* frames only warns. That case is symmetric — DataSplit
+    drops it from train, test, sales and universe alike, so the model stays coherent and
+    merely loses a feature. It is a configuration smell (a typo, or an optional enrichment
+    that did not run — census fields are absent without a ``CENSUS_API_KEY``), not a
+    correctness hazard, and failing hard on it would turn any unavailable optional
+    enrichment into a dead pipeline.
+
     Raises
     ------
     ValueError
-        If either condition is found, naming the offending fields.
+        If either fatal condition is found, naming the offending fields.
+
+    Warns
+    -----
+    UserWarning
+        If any independent variable is absent from both frames and will be ignored.
     """
     where = f'Model "{model_name}" (model_group "{model_group}")'
+
+    def _suggest(v: str) -> str:
+        close = difflib.get_close_matches(v, list(df_universe.columns), n=2, cutoff=0.7)
+        if not close:
+            return ""
+        pretty = " or ".join(f'"{s}"' for s in close)
+        return f"\n      did you mean {pretty}?"
+
+    # Absent from both frames: warn, don't raise. DataSplit filters ind_vars down to the columns
+    # each frame actually has, so these are silently ignored — the warning is what makes that
+    # visible. Typo suggestions still apply, since a typo is the other common cause.
+    absent_everywhere = [
+        v
+        for v in ind_vars
+        if v not in df_universe.columns
+        and v not in df_sales.columns
+        and v not in UNIVERSE_SYNTHESIZED_FIELDS
+    ]
+    if absent_everywhere:
+        warnings.warn(
+            f"{where} lists {len(absent_everywhere)} independent variable(s) that exist in\n"
+            "NEITHER the sales nor the universe frame. They will be silently ignored, and the\n"
+            "model will train without them:\n\n"
+            + "\n".join(f"  - {v}{_suggest(v)}" for v in absent_everywhere)
+            + "\n\nCommon causes: a typo in `ind_vars`, or an optional enrichment that did not\n"
+            "run (for example census fields are absent without a CENSUS_API_KEY). If you meant\n"
+            "to model with these, fix the source; otherwise remove them from\n"
+            f"`modeling.models.<group>.{model_name}.ind_vars` to silence this.",
+            stacklevel=2,
+        )
 
     # A sales-only field is NOT missing if DataSplit will synthesize it onto the universe (sale_date
     # and its derivatives, sale age, the validity/price flags — the universe is scored as "sold on
@@ -1193,22 +1235,14 @@ def _validate_ind_vars_across_frames(
     missing_univ = [
         v
         for v in ind_vars
-        if v not in df_universe.columns and v not in UNIVERSE_SYNTHESIZED_FIELDS
+        if v not in df_universe.columns
+        and v in df_sales.columns
+        and v not in UNIVERSE_SYNTHESIZED_FIELDS
     ]
     if missing_univ:
         lines = []
         for v in missing_univ:
-            note = (
-                "present in sales, absent from universe"
-                if v in df_sales.columns
-                else "absent from BOTH sales and universe"
-            )
-            line = f"  - {v}   ({note})"
-            close = difflib.get_close_matches(v, list(df_universe.columns), n=2, cutoff=0.7)
-            if close:
-                pretty = " or ".join(f'\"{s}\"' for s in close)
-                line += f"\n      did you mean {pretty}?"
-            lines.append(line)
+            lines.append(f"  - {v}   (present in sales, absent from universe){_suggest(v)}")
         raise ValueError(
             f"{where} lists independent variables that are missing from the universe:\n\n"
             + "\n".join(lines)

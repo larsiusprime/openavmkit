@@ -34,11 +34,42 @@ def test_sales_only_field_is_rejected_and_named():
 	assert "bldg_style_code" in msg
 
 
-def test_field_absent_from_both_frames_is_reported_differently():
+def test_field_absent_from_both_frames_warns_instead_of_raising():
+	# Symmetric absence is NOT a correctness hazard: DataSplit filters ind_vars down to the columns
+	# each frame actually has, so the field is dropped from train, test, sales and universe alike and
+	# the model stays coherent. Raising here would turn any unavailable optional enrichment into a
+	# dead pipeline (census fields are absent whenever CENSUS_API_KEY is unset). Warn, and still
+	# offer the typo suggestion, since a typo is the other common cause.
 	sales, universe = _frames()
-	with pytest.raises(ValueError) as exc:
+	with pytest.warns(UserWarning) as rec:
 		validate(["bldg_aera_sqft"], sales, universe, [], "m", "g")
-	assert "absent from BOTH sales and universe" in str(exc.value)
+	msg = str(rec[0].message)
+	assert "bldg_aera_sqft" in msg
+	assert "NEITHER" in msg
+	assert "bldg_area_finished_sqft" in msg  # the "did you mean" suggestion survives
+
+
+def test_unavailable_optional_enrichment_does_not_break_the_run():
+	# The Petersburg CI case: catboost lists census-derived ind_vars, census enrichment does not run
+	# without a CENSUS_API_KEY, so the columns never exist. This must degrade, not crash.
+	census = ["median_income", "total_population", "median_g_rent", "median_c_rent"]
+	sales = pd.DataFrame({"bldg_area_finished_sqft": [1.0]})
+	universe = pd.DataFrame({"bldg_area_finished_sqft": [1.0]})
+	with pytest.warns(UserWarning, match="NEITHER"):
+		validate(["bldg_area_finished_sqft"] + census, sales, universe, [], "catboost", "sfu")
+
+
+def test_sales_only_field_still_raises_even_alongside_absent_ones():
+	# Downgrading the symmetric case must not soften the asymmetric one: training on a feature you
+	# cannot predict with is still fatal, and is still named.
+	sales = pd.DataFrame({"x": [1.0], "seller_attorney": ["smith"]})
+	universe = pd.DataFrame({"x": [1.0]})
+	with pytest.warns(UserWarning):
+		with pytest.raises(ValueError) as exc:
+			validate(["x", "seller_attorney", "median_income"], sales, universe, [], "m", "g")
+	msg = str(exc.value)
+	assert "seller_attorney" in msg
+	assert "median_income" not in msg  # that one warned, it is not part of the fatal list
 
 
 def test_unclassified_categorical_dtype_mismatch_is_rejected():

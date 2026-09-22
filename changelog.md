@@ -26,7 +26,9 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- Independent variables are now validated against **both** the sales and universe frames before modeling, naming the offending fields instead of failing far downstream inside LightGBM with no column named. Fields that `DataSplit` synthesizes onto the universe (`sale_date` and its derivatives, `sale_age_days`, the validity/price flags — the universe is scored as "every parcel sold on the valuation date") are correctly treated as available.
+- Independent variables are now validated against **both** the sales and universe frames before modeling, naming the offending fields instead of failing far downstream inside LightGBM with no column named. Two cases are distinguished:
+  - **Fatal** — a variable present in sales but missing from the universe. The model would train on a feature it cannot predict with. Fields that `DataSplit` synthesizes onto the universe (`sale_date` and its derivatives, `sale_age_days`, the validity/price flags — the universe is scored as "every parcel sold on the valuation date") are correctly treated as available and are not flagged.
+  - **Warning** — a variable absent from *both* frames. `DataSplit` drops these symmetrically, so the model stays coherent and simply loses a feature; the run continues. This keeps an unavailable optional enrichment from killing the pipeline (census-derived variables do not exist without a `CENSUS_API_KEY`), while making the previously silent omission visible. Both paths suggest near-miss column names for typos.
 - Spatial lag now respects CV fold boundaries instead of leaking across them.
 - Crash guards on the Vertical Equity Index and MRA models.
 - Substantially faster data enrichment, and a more efficient COD calculation.
