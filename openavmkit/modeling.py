@@ -4073,10 +4073,10 @@ def run_ngboost(
 # (X_train, hyperparameters, random_state). So we persist the whole fitted ensemble as portable JSON
 # (layeredcompmodel >= 0.3.0 `to_dict`/`from_dict`) keyed by a data+hyperparameter fingerprint, and on
 # reload deserialize + predict instead of refitting. This skips the ENTIRE fit when training data is
-# unchanged (re-prediction, new/updated universe, notebook iteration). Guarded by verified package
-# version + fingerprint; any mismatch (version / fingerprint / error) falls back to a normal fit, so we
-# never serve a wrong model. JSON (not pickle): portable, inspectable/auditable, and safe to load.
-_LCOMP_VERIFIED_VERSION = "0.3.0"
+# unchanged (re-prediction, new/updated universe, notebook iteration). Guarded by the writing
+# library's version + the fingerprint; any mismatch (version / fingerprint / error) falls back to a
+# normal fit, so we never serve a wrong model. JSON (not pickle): portable, inspectable/auditable,
+# and safe to load.
 _LCOMP_TREE_COUNT = 10
 _LCOMP_SAMPLE_PCT = 0.95
 _LCOMP_SPLIT_METRIC = "mae"
@@ -4152,23 +4152,41 @@ def run_layeredcomp(
     import layeredcompmodel as _lcm
     model_cache_path = f"{outpath}/lcomp_model.json"
     fingerprint = _lcomp_fingerprint(ds.X_train, random_state)
-    # Capability guard (not an exact version string): the serialization API's presence + the JSON
-    # `format_version` gate compatibility, so the cache works across the pre-release version ambiguity
-    # (the dev fork may still self-report 0.2.1) AND whatever number John assigns at release, while
-    # staying safely OFF on stock PyPI builds that lack serialization. Tighten to a
-    # `>= _LCOMP_VERIFIED_VERSION` pin once layeredcompmodel cuts an official release.
+    # Capability guard: serialization exists from layeredcompmodel 0.3.0 on, and stays safely OFF on
+    # older builds that lack it (they just do a full fit). Checked by capability rather than version
+    # string because a source install can misreport its version; the API's presence is the fact we
+    # actually depend on.
     lib_ok = hasattr(LCompModel, "to_dict") and hasattr(LCompModel, "from_dict")
+    lcm_version = getattr(_lcm, "__version__", None)
 
     # Fast path: reuse a cached fitted ensemble (portable JSON, no refit) when the library supports
     # serialization and the data+hyperparameter fingerprint matches — this skips the ENTIRE fit (tree
     # build AND the per-tree weight_falloff search), so re-prediction on unchanged training data is
-    # ~instant. Any problem (capability / fingerprint / read error) falls back to a full fit, so we
-    # never serve a wrong model.
+    # ~instant. Any problem (capability / version / fingerprint / read error) falls back to a full fit,
+    # so we never serve a wrong model.
+    #
+    # The version must match as well as the fingerprint. The blob is layeredcompmodel's OWN
+    # serialization format, so a library upgrade can change what it means while our fingerprint —
+    # which covers the training data and OUR hyperparameters, not the library — stays identical. We
+    # have always recorded the writer's version; without comparing it, a cache written by one version
+    # was silently deserialized by the next. Exact match, not `>=`: a newer library is just as free to
+    # change the format as an older one is.
     lcomp_model = None
     if use_saved_params and lib_ok and os.path.exists(model_cache_path):
         try:
             cached = json.load(open(model_cache_path))
-            if cached.get("fingerprint") == fingerprint:
+            cached_version = cached.get("lcompmodel_version")
+            if cached.get("fingerprint") != fingerprint:
+                pass  # stale data/hyperparams — refit (the common, unremarkable case)
+            elif cached_version != lcm_version or lcm_version is None:
+                # Worth saying out loud: the fit is unchanged, so the refit is pure upgrade cost and
+                # would otherwise look like an unexplained slowdown after a dependency bump.
+                if verbose:
+                    print(
+                        f"--> lcomp: cached model was written by layeredcompmodel "
+                        f"{cached_version!r} but {lcm_version!r} is running; refitting."
+                    )
+            else:
                 if verbose:
                     print(f"--> lcomp: reusing cached fitted model (skipping fit) from {model_cache_path}")
                 lcomp_model = LCompModel.from_dict(cached["model"])
@@ -4188,7 +4206,7 @@ def run_layeredcomp(
             json.dump(
                 {
                     "fingerprint": fingerprint,
-                    "lcompmodel_version": getattr(_lcm, "__version__", None),
+                    "lcompmodel_version": lcm_version,
                     "model": lcomp_model.to_dict(),
                 },
                 open(model_cache_path, "w"),

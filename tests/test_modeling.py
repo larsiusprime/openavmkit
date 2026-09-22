@@ -514,13 +514,8 @@ def test_lcomp_serialization_roundtrip_matches_full_fit():
     np.testing.assert_array_equal(full.predict(Xq), restored.predict(Xq))
 
 
-@requires_lcomp_serialization
-def test_lcomp_save_and_reuse_model_cache_roundtrip(tmp_path):
-    # End-to-end: first run saves lcomp_model.json; second run (use_saved_params) reloads the fitted
-    # ensemble, skips the fit entirely, and produces identical universe predictions.
-    import os
-    from openavmkit.modeling import run_layeredcomp
-
+def _lcomp_cache_ds_factory():
+    """Return a callable producing a fresh DataSplit over one fixed lcomp-cacheable dataset."""
     rng = np.random.default_rng(1)
     nn = 200
     keys = [str(i) for i in range(nn)]
@@ -544,6 +539,18 @@ def test_lcomp_save_and_reuse_model_cache_roundtrip(tmp_path):
         return DataSplit("", df.copy(), df_universe.copy(), "a", {}, "sale_price", "sale_price",
                          ind_vars, ["neighborhood"], {}, test_keys, train_keys)
 
+    return fresh_ds
+
+
+@requires_lcomp_serialization
+def test_lcomp_save_and_reuse_model_cache_roundtrip(tmp_path):
+    # End-to-end: first run saves lcomp_model.json; second run (use_saved_params) reloads the fitted
+    # ensemble, skips the fit entirely, and produces identical universe predictions.
+    import os
+    from openavmkit.modeling import run_layeredcomp
+
+    fresh_ds = _lcomp_cache_ds_factory()
+
     r1 = run_layeredcomp(fresh_ds(), str(tmp_path), save_params=True, use_saved_params=False)
     assert os.path.exists(tmp_path / "lcomp_model.json")
 
@@ -553,6 +560,45 @@ def test_lcomp_save_and_reuse_model_cache_roundtrip(tmp_path):
         np.asarray(r2.pred_univ, dtype="float64"),
         rtol=1e-9, atol=1e-6,
     )
+
+
+@requires_lcomp_serialization
+def test_lcomp_cache_is_invalidated_by_a_library_version_change(tmp_path, monkeypatch):
+    # The cache blob is layeredcompmodel's own serialization format, so upgrading the library can
+    # change what it means while our fingerprint (training data + OUR hyperparameters) is unchanged.
+    # The writer's version is recorded in the file and must be compared on read, or a cache written
+    # by one version gets silently deserialized by the next.
+    import json
+    import openavmkit.modeling as M
+
+    fresh_ds = _lcomp_cache_ds_factory()
+
+    fits = []
+    real_fit = M.LCompModel.fit
+
+    def counting_fit(self, X, y, *args, **kwargs):
+        fits.append(1)
+        return real_fit(self, X, y, *args, **kwargs)
+
+    monkeypatch.setattr(M.LCompModel, "fit", counting_fit)
+
+    M.run_layeredcomp(fresh_ds(), str(tmp_path), save_params=True, use_saved_params=False)
+    assert fits == [1], "first run must fit"
+
+    # Same version -> the cache is reused and no fit happens.
+    M.run_layeredcomp(fresh_ds(), str(tmp_path), save_params=False, use_saved_params=True)
+    assert fits == [1], "cache written by the running version should have been reused"
+
+    # Rewrite only the recorded version, leaving the fingerprint and the model blob untouched, so
+    # the version is the single variable under test.
+    cache_path = tmp_path / "lcomp_model.json"
+    cached = json.loads(cache_path.read_text())
+    assert cached["lcompmodel_version"] is not None, "writer version must be recorded"
+    cached["lcompmodel_version"] = "9.9.9-not-the-running-version"
+    cache_path.write_text(json.dumps(cached))
+
+    M.run_layeredcomp(fresh_ds(), str(tmp_path), save_params=False, use_saved_params=True)
+    assert fits == [1, 1], "a cache from a different library version must force a refit"
 
 
 def test_mra_log_param_off_is_unchanged():

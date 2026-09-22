@@ -21,16 +21,7 @@ statsmodels==0.14.6
 xgboost==3.2.0
 xlsxwriter==3.2.9
 census==0.8.26
-# layeredcompmodel 0.3.0 adds the JSON model cache (to_dict/from_dict) + vectorized predict, which
-# `run_layeredcomp` uses to skip the entire lcomp fit on unchanged training data. We stay on the PyPI
-# 0.2.1 pin until 0.3.0 is released: pyproject.toml feeds this file straight into the package
-# metadata, and PyPI rejects direct-URL (git+https) dependencies, so a fork pin here would block
-# `twine upload`. The code guards on capability (`hasattr(to_dict/from_dict)`), not version, so 0.2.1
-# simply falls back to a full fit — correct, just slower.
-# To opt into the fork locally (enables the cache + the two lcomp serialization tests):
-#   pip install "layeredcompmodel @ git+https://github.com/larsiusprime/LayeredCompModel.git@feature/perf-vectorize-and-parallel"
-# When 0.3.0 lands on PyPI, bump this pin to `==0.3.0` and delete this comment block.
-layeredcompmodel==0.2.1
+layeredcompmodel==0.3.0
 shap==0.50.0
 numba==0.65.1
 mpld3==0.5.12
