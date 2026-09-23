@@ -575,20 +575,26 @@ def calc_prb(
     median_ratio = np.median(ratios)
 
     left = (ratios - median_ratio) / median_ratio
-    right = np.log2(preds / median_ratio + truth)
+    # IAAO value proxy: the average of the median-ratio-adjusted prediction and the
+    # sale price. The 0.5 factor is a constant shift under log2, so it moves the
+    # intercept only and leaves PRB (the slope) unchanged.
+    right = np.log2((preds / median_ratio + truth) * 0.5)
     right = sm.add_constant(right, has_constant='add')   # adds intercept term
 
     # 4. Fit model + CI -------------------------------------------------------
     with np.errstate(all="ignore"):  # silence harmless internal numpy warnings
         model = sm.OLS(left, right).fit()
 
+    # add_constant prepends the intercept, so params[0] is the constant and
+    # params[1] is the slope. PRB is the SLOPE: the rate at which the percentage
+    # deviation from the median ratio changes with value.
     # Guard against degenerate fit (rare but better to be explicit)
-    if model.df_resid <= 0 or not np.isfinite(model.params[0]):
+    if model.df_resid <= 0 or len(model.params) < 2 or not np.isfinite(model.params[1]):
         return np.nan, np.nan, np.nan
 
-    prb = float(model.params[0])
+    prb = float(model.params[1])
     prb_lower, prb_upper = (
-        model.conf_int(alpha=1.0 - confidence_interval)[0].tolist()
+        model.conf_int(alpha=1.0 - confidence_interval)[1].tolist()
     )
 
     return prb, prb_lower, prb_upper

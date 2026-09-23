@@ -745,8 +745,12 @@ def _fill_unknown_values(df, settings: dict):
     if cat_fields is not None:
         for field in cat_fields:
             if field in df:
-                df[field] = df[field].astype("str")
-                df[field] = df[field].fillna("UNKNOWN")
+                # Cast to object, not str: astype("str") turns NaN/None into the
+                # literal strings "nan"/"None", which makes the fillna below a no-op
+                # and feeds models a junk category. Going through object preserves
+                # real NaN so the fill lands, and sidesteps the categorical-dtype
+                # restriction on filling with an unseen category.
+                df[field] = df[field].astype("object").fillna("UNKNOWN").astype("str")
 
     if bool_fields is not None:
         for field in bool_fields:

@@ -18,7 +18,7 @@ Formerly named ``openavmkit.benchmark``; renamed to ``openavmkit.model_runner``
 because the module orchestrates the whole model run, not only the benchmark
 comparison (and to avoid confusion with the research ``benchmark/`` harness). A
 deprecating compatibility shim remains at ``openavmkit.benchmark`` and is slated
-for removal before the 0.7.0 release.
+for removal in the 0.8.0 release.
 
 Notes
 -----
@@ -30,6 +30,7 @@ import os
 import json
 import pickle
 import warnings
+import difflib
 import math
 
 from matplotlib import pyplot as plt
@@ -51,13 +52,14 @@ from sklearn.linear_model import LinearRegression
 from openavmkit.data import (
     get_important_field,
     _read_split_keys,
+    _read_fold_keys,
     SalesUniversePair,
     get_hydrated_sales_from_sup,
-    get_report_locations,
     get_sale_field,
     filter_df_by_date_range
 )
 from openavmkit.modeling import (
+    UNIVERSE_SYNTHESIZED_FIELDS,
     run_mra,
     run_multi_mra,
     run_gwr,
@@ -93,7 +95,8 @@ from openavmkit.modeling import (
     AverageModel,
     DataSplit,
     write_model_parameters, get_shap_contributions_map,
-    _add_prediction_to_contribution, _contrib_to_unit_values
+    _add_prediction_to_contribution, _contrib_to_unit_values,
+    _CV_AGGREGATE_FINGERPRINT,
 )
 from openavmkit.reports import MarkdownReport, _markdown_to_pdf
 from openavmkit.time_adjustment import enrich_time_adjustment
@@ -150,6 +153,7 @@ from openavmkit.shap_analysis import (
     _calc_shap,
     plot_full_beeswarm,
     explanation_from_contributions,
+    _CONTRIB_NON_FEATURE_COLS,
 )
 
 #######################################
@@ -1031,7 +1035,7 @@ def run_models(
 
     if save_results:
         t.start("write")
-        write_out_all_results(sup, dict_all_results)
+        write_out_all_results(sup, dict_all_results, settings)
         t.stop("write")
 
     print("**********TIMING FOR RUN ALL MODELS***********")
@@ -1041,12 +1045,16 @@ def run_models(
     return dict_all_results
 
 
-def write_out_all_results(sup: SalesUniversePair, all_results: dict):
+def write_out_all_results(sup: SalesUniversePair, all_results: dict, settings: dict):
     """Write out all model results to CSV and Parquet files.
 
     This function collects predictions from all model groups and writes them to a single
     DataFrame, which is then saved to both CSV and Parquet formats. It also merges the
     predictions with the universe DataFrame to include all keys.
+
+    It additionally writes the openratiostudy.com export (``open_ratio_study_sales.csv``
+    and ``open_ratio_study_test.csv``) — the slim per-sale frames that website consumes —
+    by concatenating the ensemble (production) results across all model groups.
 
     Parameters
     ----------
@@ -1055,9 +1063,13 @@ def write_out_all_results(sup: SalesUniversePair, all_results: dict):
     all_results : dict
         A dictionary where keys are model group identifiers and values are MultiModelResults
         containing the results for each model group.
+    settings : dict
+        The settings dictionary, used to resolve the report-location fields for the
+        open-ratio-study export.
     """
     t = TimingData()
     df_all = None
+    ors_frames = {"sales": [], "test": []}
 
     for model_group in all_results:
         t.start(f"model group: {model_group}")
@@ -1078,6 +1090,12 @@ def write_out_all_results(sup: SalesUniversePair, all_results: dict):
             t.stop("read")
             t.stop(f"model group: {model_group}")
             continue
+
+        # Accumulate the openratiostudy.com export from the ensemble (production) model.
+        ors = _assemble_open_ratio_study(mm_results.model_results["ensemble"], settings)
+        for subset, df_ors in ors.items():
+            df_ors["model_group"] = model_group
+            ors_frames[subset].append(df_ors)
 
         # For each output model, extract predictions and add to df_univ_local
         df_univ_local = None
@@ -1125,6 +1143,145 @@ def write_out_all_results(sup: SalesUniversePair, all_results: dict):
         t.start("parquet")
         df_univ.to_parquet(f"{outpath}/universe.parquet", engine="pyarrow")
         t.stop("parquet")
+
+    # Write the openratiostudy.com export (study + test subsets, all model groups).
+    if ors_frames["sales"] or ors_frames["test"]:
+        outpath = "out/models/all_model_groups"
+        if not os.path.exists(outpath):
+            os.makedirs(outpath)
+        t.start("open_ratio_study")
+        for subset, fname in (("sales", "open_ratio_study_sales.csv"),
+                              ("test", "open_ratio_study_test.csv")):
+            frames = ors_frames[subset]
+            if not frames:
+                continue
+            pd.concat(frames, ignore_index=True).to_csv(f"{outpath}/{fname}", index=False)
+        t.stop("open_ratio_study")
+
+
+def _validate_ind_vars_across_frames(
+    ind_vars: list[str],
+    df_sales: pd.DataFrame,
+    df_universe: pd.DataFrame,
+    fields_cat: list[str],
+    model_name: str,
+    model_group: str,
+):
+    """Check that every independent variable is usable on both frames.
+
+    Two failure modes are fatal here because both otherwise surface far downstream
+    as errors that name no column:
+
+    1. A variable present in sales but missing from the universe. Training succeeds and
+       prediction fails, because there is nothing to predict *with* on unsold parcels.
+       Usually a field loaded from a sales-only source.
+    2. A variable that is ``category`` dtype in one frame but not the other. Tree
+       models compare only the *count* of categorical columns, so LightGBM reports
+       "train and valid dataset categorical_feature do not match" with no field name.
+
+    A variable absent from *both* frames only warns. That case is symmetric — DataSplit
+    drops it from train, test, sales and universe alike, so the model stays coherent and
+    merely loses a feature. It is a configuration smell (a typo, or an optional enrichment
+    that did not run — census fields are absent without a ``CENSUS_API_KEY``), not a
+    correctness hazard, and failing hard on it would turn any unavailable optional
+    enrichment into a dead pipeline.
+
+    Raises
+    ------
+    ValueError
+        If either fatal condition is found, naming the offending fields.
+
+    Warns
+    -----
+    UserWarning
+        If any independent variable is absent from both frames and will be ignored.
+    """
+    where = f'Model "{model_name}" (model_group "{model_group}")'
+
+    def _suggest(v: str) -> str:
+        close = difflib.get_close_matches(v, list(df_universe.columns), n=2, cutoff=0.7)
+        if not close:
+            return ""
+        pretty = " or ".join(f'"{s}"' for s in close)
+        return f"\n      did you mean {pretty}?"
+
+    # Absent from both frames: warn, don't raise. DataSplit filters ind_vars down to the columns
+    # each frame actually has, so these are silently ignored — the warning is what makes that
+    # visible. Typo suggestions still apply, since a typo is the other common cause.
+    absent_everywhere = [
+        v
+        for v in ind_vars
+        if v not in df_universe.columns
+        and v not in df_sales.columns
+        and v not in UNIVERSE_SYNTHESIZED_FIELDS
+    ]
+    if absent_everywhere:
+        warnings.warn(
+            f"{where} lists {len(absent_everywhere)} independent variable(s) that exist in\n"
+            "NEITHER the sales nor the universe frame. They will be silently ignored, and the\n"
+            "model will train without them:\n\n"
+            + "\n".join(f"  - {v}{_suggest(v)}" for v in absent_everywhere)
+            + "\n\nCommon causes: a typo in `ind_vars`, or an optional enrichment that did not\n"
+            "run (for example census fields are absent without a CENSUS_API_KEY). If you meant\n"
+            "to model with these, fix the source; otherwise remove them from\n"
+            f"`modeling.models.<group>.{model_name}.ind_vars` to silence this.",
+            stacklevel=2,
+        )
+
+    # A sales-only field is NOT missing if DataSplit will synthesize it onto the universe (sale_date
+    # and its derivatives, sale age, the validity/price flags — the universe is scored as "sold on
+    # the valuation date"). This validation deliberately runs on the RAW frames, before DataSplit
+    # exists, so it has to consult that contract rather than the frame in front of it.
+    missing_univ = [
+        v
+        for v in ind_vars
+        if v not in df_universe.columns
+        and v in df_sales.columns
+        and v not in UNIVERSE_SYNTHESIZED_FIELDS
+    ]
+    if missing_univ:
+        lines = []
+        for v in missing_univ:
+            lines.append(f"  - {v}   (present in sales, absent from universe){_suggest(v)}")
+        raise ValueError(
+            f"{where} lists independent variables that are missing from the universe:\n\n"
+            + "\n".join(lines)
+            + "\n\nEvery independent variable must exist in BOTH the sales frame (to train on)\n"
+            "and the universe frame (to predict on). A field that exists only in sales\n"
+            "cannot be used to value unsold parcels.\n\n"
+            "This usually means the field is loaded from a sales-only source. Check\n"
+            "`data.load.<source>.load` in settings.json: if the field is mapped under a\n"
+            "sales file, either remove it from\n"
+            f"`modeling.models.<group>.{model_name}.ind_vars`, or switch to the equivalent\n"
+            "field loaded from the parcel/universe source."
+        )
+
+    mismatched = []
+    for v in ind_vars:
+        if v not in df_sales.columns or v not in df_universe.columns:
+            # Skip synthesized fields too: DataSplit builds them on the universe with a dtype we
+            # cannot read here, so there is nothing to compare yet.
+            continue
+        sales_cat = isinstance(df_sales[v].dtype, pd.CategoricalDtype)
+        univ_cat = isinstance(df_universe[v].dtype, pd.CategoricalDtype)
+        if sales_cat != univ_cat and v not in fields_cat:
+            cat_side = "sales" if sales_cat else "universe"
+            other_side = "universe" if sales_cat else "sales"
+            other_dtype = df_universe[v].dtype if sales_cat else df_sales[v].dtype
+            mismatched.append(
+                f"  - {v}   (category in {cat_side}, {other_dtype} in {other_side})"
+            )
+    if mismatched:
+        raise ValueError(
+            f"{where} has independent variables whose categorical status differs\n"
+            "between the sales and universe frames:\n\n"
+            + "\n".join(mismatched)
+            + "\n\nThis breaks tree-based models: LightGBM compares only the NUMBER of\n"
+            "categorical columns, and reports \"train and valid dataset\n"
+            "categorical_feature do not match\" without naming the field.\n\n"
+            "Fix: classify the field in `field_classification` (for example under\n"
+            "`other.categorical`) so OpenAVMKit encodes it consistently across both frames."
+        )
 
 
 def get_data_split_for(
@@ -1231,6 +1388,10 @@ def get_data_split_for(
             exclude_vars = ["latitude", "longitude", "latitude_norm", "longitude_norm"]
             _ind_vars = [var for var in _ind_vars if var not in exclude_vars]
 
+    _validate_ind_vars_across_frames(
+        _ind_vars, df_sales, df_universe, fields_cat, model_name, model_group
+    )
+
     return DataSplit(
         model_name,
         df_sales,
@@ -1322,12 +1483,16 @@ def run_one_model(
     
     entry: dict | None = model_entries.get(model_name, None)
     default_entry: dict | None = model_entries.get("default", {})
+    entry_is_default = entry is None
     if entry is None:
         entry = default_entry
         if entry is None:
             raise ValueError(
                 f"Model entry for {model_name} not found, and there is no default entry!"
             )
+    # No "model" key means the name IS the engine (e.g. "mra", "lightgbm"). That fallback is
+    # load-bearing for plain entries, but it silently turns an *alias* with no entry in this
+    # model group's block (e.g. "lgbm_x") into a bogus engine name -- see the dispatch else.
     model_engine = entry.get("model", model_name)
     if model_engine == "default":
         # this isn't a real model, just a settings object to fill in for others
@@ -1345,11 +1510,14 @@ def run_one_model(
 
     are_ind_vars_default = entry.get("ind_vars", None) is None
     ind_vars: list | None = entry.get("ind_vars", default_entry.get("ind_vars", None))
- 
-    # no duplicates!
-    ind_vars = list(set(ind_vars))
+
     if ind_vars is None:
         raise ValueError(f"ind_vars not found for model {model_name}")
+    # De-duplicate with a DETERMINISTIC order: sorted() is independent of PYTHONHASHSEED, so the
+    # feature column order (and thus XGBoost/LightGBM column-subsampling selections) is reproducible
+    # across processes and separate invocations. Plain list(set(...)) is hash-ordered and was a
+    # latent source of run-to-run nondeterminism (see run_one_model_cv worker pinning).
+    ind_vars = sorted(set(ind_vars))
 
     if are_ind_vars_default:
         if (best_variables is not None) and (set(ind_vars) != set(best_variables)):
@@ -1499,7 +1667,21 @@ def run_one_model(
             ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, seed=seed
         )
     else:
-        raise ValueError(f"Model {model_engine} not found!")
+        if entry_is_default:
+            raise ValueError(
+                f'Model "{model_name}" (model_group "{model_group}") has no entry in '
+                f'modeling.models.{"vacant" if vacant_only else "main"}, so it fell back to the '
+                f'"default" entry, which does not name an engine -- leaving "{model_engine}" '
+                f"(the model's own name) as the engine, and that is not a known engine. If "
+                f'"{model_name}" is an alias, it needs its own entry with a "model" key. Note '
+                f"that a per-model-group override block REPLACES the top-level block wholesale, "
+                f"so every name in instructions.run must be defined in whichever block applies "
+                f"to this group."
+            )
+        raise ValueError(
+            f'Model engine "{model_engine}" (from model "{model_name}", model_group '
+            f'"{model_group}") not found!'
+        )
     t.stop("run")
     
     if results is None:
@@ -1517,6 +1699,480 @@ def run_one_model(
         t.stop("write")
 
     return results
+
+
+# Hyperparameters aggregated by MODE (most-common) rather than median across CV folds:
+# categorical/choice HPs and the discrete/multimodal ones (tree depth, leaf/round counts) where
+# a coordinate-wise median could manufacture a between-basin value no fold actually validated.
+_CV_DISCRETE_HP_KEYS = {
+    "max_depth", "num_leaves", "max_leaves", "depth",
+    "grow_policy", "boosting_type", "bootstrap_type",
+    "num_boost_round", "num_iterations", "iterations", "n_estimators",
+}
+
+
+# Hyperparameters that are only legal when ANOTHER hyperparameter takes a particular value.
+# Optuna only suggests these inside the matching branch (see `_tune_catboost`), so every
+# fold's own params are internally coherent -- but aggregating coordinate-wise votes each key
+# independently and can pair a child with a parent that forbids it. CatBoost then refuses to
+# fit at all: "max_leaves option works only with lossguide tree growing".
+# Format: child -> (parent, parent values that permit the child).
+_CV_CONDITIONAL_HP_KEYS = {
+    "max_leaves": ("grow_policy", {"Lossguide", "lossguide"}),
+}
+
+
+def _aggregate_fold_params(param_dicts: list[dict]) -> dict:
+    """Aggregate per-fold tuned hyperparameters into one production config.
+
+    Median for continuous HPs (robust, variance-reducing across folds); mode for categorical
+    and discrete/multimodal HPs (see ``_CV_DISCRETE_HP_KEYS``) so we never synthesize a
+    between-basin value no fold validated. Keys present in only some folds are aggregated over
+    the folds that carry them, then any conditional HP whose parent no longer permits it is
+    dropped (see ``_CV_CONDITIONAL_HP_KEYS``). This is a cheap, defensible estimate of what tuning on all data
+    would pick; because the honest metrics come from the OOF holdout, the exact production HPs
+    affect only the shipped values' quality, never a reported statistic.
+    """
+    from collections import Counter
+    import statistics
+
+    keys = set()
+    for d in param_dicts:
+        keys.update(k for k in d.keys() if k != "__fingerprint")
+
+    agg: dict = {}
+    for k in sorted(keys):
+        vals = [d[k] for d in param_dicts if k in d]
+        if not vals:
+            continue
+        if k in _CV_DISCRETE_HP_KEYS or all(isinstance(v, str) for v in vals) \
+                or all(isinstance(v, bool) for v in vals):
+            agg[k] = Counter(vals).most_common(1)[0][0]  # mode; ties -> first-most-common
+        else:
+            med = statistics.median(vals)
+            if all(isinstance(v, (int, float)) and float(v).is_integer() for v in vals):
+                med = int(round(med))
+            agg[k] = med
+
+    # Drop conditional HPs the vote left stranded. With four Depthwise folds and one
+    # Lossguide fold, the mode elects grow_policy=Depthwise while max_leaves is aggregated
+    # over the lone fold that carried it -- a combination the engine rejects outright. The
+    # parent won the vote, so the orphaned child goes (the engine then uses its default).
+    # A missing parent is also treated as "not permitted": the child only ever comes from
+    # inside the parent's branch, so without it there is nothing to justify keeping it.
+    for child, (parent, allowed) in _CV_CONDITIONAL_HP_KEYS.items():
+        if child in agg and agg.get(parent) not in allowed:
+            del agg[child]
+
+    return agg
+
+
+def _model_artifact_dir(base: str, model_name: str) -> str:
+    """Directory holding one model's artifacts under ``base``.
+
+    Centralizes the "*" sanitization `_write_model_results` has always done -- some model
+    names (ensemble variants) contain "*", which is not a legal path character on Windows.
+    The per-fold and stitched OOF writers must agree with it exactly or they write to
+    different directories.
+    """
+    path = f"{base}/{model_name}"
+    return path.replace("*", "_star") if "*" in path else path
+
+
+def _run_cv_fold(
+    k, holdout_keys, train_keys_k, tune_workers,
+    df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
+    settings, dep_var, dep_var_test, best_variables, fields_cat, outpath,
+    use_saved_params, verbose, emit_oof_contribs=False,
+):
+    """Run one CV fold and return only the lightweight bits the orchestrator needs.
+
+    Module-level (so it is picklable for loky) and returns small tuples rather than the whole
+    SingleModelResults, to keep inter-process transfer cheap. ``tune_workers`` (set per task, so
+    it survives loky worker reuse) caps this fold's trial-level thread pool when folds run in
+    parallel; ``None`` leaves the tuner at its default (full cores) for the sequential path. Fold
+    params are persisted (save_params=True) for aggregation into the production config and reuse.
+
+    When ``emit_oof_contribs`` is set, the fold also writes its own ``*_test.csv`` artifacts --
+    this fold's model explaining this fold's holdout. That has to happen HERE, in the worker:
+    the fold model is discarded on return (only predictions and a params path travel back), so
+    it is the last moment the model and its holdout exist together. ``run_one_model_cv``
+    stitches the per-fold files into the final contributions_test.csv.
+    """
+    if tune_workers is not None:
+        os.environ["OPENAVMKIT_TUNE_WORKERS"] = str(tune_workers)
+    fr = run_one_model(
+        df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
+        settings, dep_var, dep_var_test, best_variables, fields_cat, f"{outpath}/cv_fold{k}",
+        save_params=True, use_saved_params=use_saved_params, save_results=False,
+        verbose=verbose, test_keys=holdout_keys, train_keys=train_keys_k,
+    )
+    if fr is None:
+        return None
+    field = fr.field_prediction
+    oof = list(zip(
+        fr.df_test["key_sale"].astype(str).tolist(),
+        [float(v) for v in fr.df_test[field].values],
+    ))
+    if emit_oof_contribs:
+        # Non-fatal by design: a missing explanation must never take down the fold's
+        # predictions, which are what the holdout statistics are built from. The stitcher
+        # warns about whichever folds came up empty.
+        try:
+            fold_art_dir = _model_artifact_dir(f"{outpath}/cv_fold{k}", model_name)
+            os.makedirs(fold_art_dir, exist_ok=True)
+            location = get_model_location(
+                settings, "vacant" if vacant_only else "main", model_name, model_group
+            )
+            write_model_parameters(
+                fr.model, fr, location, fold_art_dir, verbose=verbose, subsets={"test"},
+            )
+        except Exception as e:
+            warnings.warn(
+                f"CV fold {k} for {model_group}/{model_name}: could not write out-of-fold "
+                f"contributions ({type(e).__name__}: {e}). This fold's holdout rows will be "
+                f"missing from contributions_test.csv."
+            )
+
+    fpath = f"{outpath}/cv_fold{k}/{model_name}_params.json"
+    return (oof, float(fr.utility_test), fpath if os.path.exists(fpath) else None)
+
+
+def run_one_model_cv(
+    df_sales: pd.DataFrame,
+    df_universe: pd.DataFrame,
+    vacant_only: bool,
+    model_group: str,
+    model_name: str,
+    model_entries: dict,
+    settings: dict,
+    dep_var: str,
+    dep_var_test: str,
+    best_variables: list[str],
+    fields_cat: list[str],
+    outpath: str,
+    save_params: bool,
+    use_saved_params: bool,
+    save_results: bool,
+    verbose: bool = False,
+) -> SingleModelResults | None:
+    """Nested cross-validation wrapper around :func:`run_one_model`.
+
+    Two phases, both driven through the ordinary single-model path so every engine, ratio
+    study, and back-transform is reused unchanged:
+
+    - **Phase 1 (holdout):** run the model once per fold — each fold trains on the other folds
+      (parcels intact, post-val excluded) and predicts its own held-out slice. Because each
+      fold re-tunes from scratch on its own training data (distinct ``outpath`` → distinct
+      ``params.json``), the held-out slice is leakage-free w.r.t. training *and* HP selection.
+      The slices stitch into an out-of-fold (OOF) prediction for every trainable sale.
+    - **Phase 2 (study/ship):** refit once on ALL trainable sales; its predictions on all sales
+      (study) and the universe (shipped values) are kept as-is, and its held-out post-val
+      predictions cover the post-valuation sales in the report (leakage-free — post-val never
+      trains).
+
+    The returned result is the Phase-2 result with its test side replaced by the 100%-coverage
+    OOF frame (see :meth:`SingleModelResults.override_test_predictions`), so ``pred_test`` is the
+    honest full-coverage holdout, while ``pred_sales`` / ``pred_univ`` are the study / shipped
+    values.
+
+    Falls back to a single split only when no ``folds.csv`` exists (legacy mode / skipped group).
+    Log-target (``log_``-prefixed ``dep_var_test``) is handled uniformly:
+    :meth:`SingleModelResults.override_test_predictions` re-applies the same log back-transform
+    the ordinary path does.
+    """
+    fold_data = _read_fold_keys(model_group)
+    if fold_data is None or fold_data["n_folds"] < 2:
+        return run_one_model(
+            df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
+            settings, dep_var, dep_var_test, best_variables, fields_cat, outpath,
+            save_params, use_saved_params, save_results, verbose=verbose,
+        )
+
+    train_all = [str(k) for k in fold_data["train_all"]]
+    post_val = [str(k) for k in fold_data["post_val"]]
+    cv_prod_mode = settings.get("modeling", {}).get("instructions", {}).get(
+        "cv_production_params", "aggregate"
+    )
+    # Out-of-fold contributions. Off => the legacy behavior, where the Phase-2 model explains
+    # the OOF holdout frame (attributions and predictions from different models; see
+    # `_stitch_oof_contributions`).
+    emit_oof_contribs = bool(
+        settings.get("modeling", {}).get("instructions", {}).get("cv_oof_contributions", True)
+    )
+
+    # ---- Phase 1: per-fold out-of-fold predictions ----
+    # Folds are independent and each is internally deterministic, so running them in parallel is
+    # bit-identical to sequential. To avoid CPU oversubscription (each fold's tuner already runs a
+    # trial-level thread pool), each worker caps its tuner threads to a fair share of the cores.
+    tasks = [
+        (k, [str(x) for x in hk], [str(x) for x in tk])
+        for k, (hk, tk) in enumerate(fold_data["folds"])
+        if len(hk) > 0 and len(tk) > 0
+    ]
+    cpu = os.cpu_count() or 2
+    cv_max_workers = int(settings.get("modeling", {}).get("instructions", {}).get(
+        "cv_max_workers", min(len(tasks), max(1, cpu - 2))
+    ))
+    cv_max_workers = max(1, min(cv_max_workers, len(tasks)))
+    fold_args = (
+        df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
+        settings, dep_var, dep_var_test, best_variables, fields_cat, outpath,
+        use_saved_params, verbose, emit_oof_contribs and save_results,
+    )
+
+    # Parallelism comes from the fold axis, and each fold tunes its trials SERIALLY (1 thread).
+    # This is deliberate: XGBoost/LightGBM threaded trial-concurrency is not numerically identical
+    # across concurrency levels (tiny MAPE differences flip which trial wins), so varying the
+    # trial-thread count would make results depend on cv_max_workers. Fixing trials to serial makes
+    # every CV run bit-identical regardless of worker count, and fold_workers x 1 thread never
+    # oversubscribes. (The single-split path is untouched — it keeps full trial parallelism.)
+    if cv_max_workers > 1 and len(tasks) > 1:
+        if verbose:
+            print(f"Running {len(tasks)} CV folds for {model_group}/{model_name} across "
+                  f"{cv_max_workers} workers (serial tuning per fold)...")
+        # Pin the math libraries to a single thread in the worker processes (inherited at spawn).
+        # XGBoost/LightGBM `hist` otherwise use OpenMP threads whose count varies with system load,
+        # and parallel float reductions are non-associative -> non-reproducible results run-to-run.
+        # Single-threaded per worker makes each fold deterministic; parallelism comes from folds.
+        # PYTHONHASHSEED must be fixed too: loky workers otherwise get a randomized hash seed,
+        # so hash-ordered constructs in the fit path (e.g. list(set(ind_vars))) order features
+        # differently per worker/run, and XGBoost column subsampling then picks different features
+        # -> non-reproducible models. Pinning it makes every worker (and re-run) deterministic.
+        _thread_env = {
+            "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
+            "NUMEXPR_NUM_THREADS": "1", "VECLIB_MAXIMUM_THREADS": "1", "PYTHONHASHSEED": "0",
+        }
+        _saved_env = {k: os.environ.get(k) for k in _thread_env}
+        for k, v in _thread_env.items():
+            os.environ[k] = v
+        try:
+            from joblib import Parallel, delayed
+            fold_results = Parallel(n_jobs=cv_max_workers, backend="loky")(
+                delayed(_run_cv_fold)(k, hk, tk, 1, *fold_args) for (k, hk, tk) in tasks
+            )
+        finally:
+            for k, v in _saved_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    else:
+        # cv_max_workers=1 is the explicit "no fold parallelism" escape hatch (e.g. low memory);
+        # let each fold keep full trial-level parallelism (tune_workers=None) so it isn't crippled.
+        fold_results = [_run_cv_fold(k, hk, tk, None, *fold_args) for (k, hk, tk) in tasks]
+
+    oof_map: dict[str, float] = {}
+    n_fold_ok = 0
+    fold_param_files: list[tuple[float, str]] = []  # (holdout utility, params.json path)
+    for res in fold_results:
+        if res is None:
+            warnings.warn(
+                f"A CV fold for {model_group}/{model_name} produced no result; its holdout "
+                f"sales fall back to the study prediction."
+            )
+            continue
+        oof_pairs, util, fpath = res
+        for ks, pred in oof_pairs:
+            oof_map[ks] = pred
+        n_fold_ok += 1
+        if fpath:
+            fold_param_files.append((util, fpath))
+
+    # ---- Production hyperparameters (skip the Phase-2 tune when possible) ----
+    # For tunable engines, reuse the fold HPs instead of a fresh production study:
+    #   aggregate (default) = median/mode across folds; best_fold = the best-holdout fold's HPs.
+    # We write them to the prod params.json with the CV-aggregate sentinel so _get_params trusts
+    # them regardless of fingerprint. refit (or non-tunable / no fold params) tunes as normal.
+    prod_outpath = f"{outpath}/cv_prod"
+    prod_use_saved = use_saved_params
+    if fold_param_files and cv_prod_mode in ("aggregate", "best_fold"):
+        dicts = []
+        for _util, fpath in fold_param_files:
+            d = json.load(open(fpath))
+            d.pop("__fingerprint", None)
+            dicts.append(d)
+        if cv_prod_mode == "best_fold":
+            best_i = min(
+                range(len(fold_param_files)),
+                key=lambda i: fold_param_files[i][0] if fold_param_files[i][0] == fold_param_files[i][0] else float("inf"),
+            )
+            chosen = dicts[best_i]
+        else:
+            chosen = _aggregate_fold_params(dicts)
+        os.makedirs(prod_outpath, exist_ok=True)
+        with open(f"{prod_outpath}/{model_name}_params.json", "w") as fh:
+            json.dump({**chosen, "__fingerprint": _CV_AGGREGATE_FINGERPRINT}, fh)
+        prod_use_saved = True
+        if verbose:
+            print(f"--> CV production HPs for {model_group}/{model_name}: {cv_prod_mode}")
+
+    # ---- Phase 2: refit on all trainable; study + universe + post-val holdout ----
+    # test_keys = post-val (leakage-free full-model holdout). If there are no post-val sales,
+    # any small non-empty slice satisfies DataSplit.split(); its stats are overwritten below.
+    prod_test_keys = post_val if len(post_val) > 0 else train_all[: max(1, len(train_all) // 5)]
+    prod_train_keys = [k for k in train_all if k not in set(prod_test_keys)] if len(post_val) == 0 else train_all
+    phase2 = run_one_model(
+        df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
+        settings, dep_var, dep_var_test, best_variables, fields_cat, prod_outpath,
+        save_params, prod_use_saved, save_results=False, verbose=verbose,
+        test_keys=prod_test_keys, train_keys=prod_train_keys,
+    )
+    if phase2 is None:
+        return None
+
+    main_vacant = "vacant" if vacant_only else "main"
+    location = get_model_location(settings, main_vacant, model_name, model_group)
+
+    # ---- Post-valuation slice, explained while the frames still line up ----
+    # Right now `phase2.df_test` IS the post-valuation holdout (it was built from
+    # prod_test_keys) and ds.X_test matches it row for row. Phase 2 never trained on post-val,
+    # so its explanation of those rows is exactly as leakage-free as each fold's is of its own
+    # holdout -- they belong in the same OOF file. This is the only moment we can isolate them:
+    # `override_test_predictions` below swaps df_test for the full-coverage frame.
+    wrote_post_val_contribs = False
+    if save_results and emit_oof_contribs and n_fold_ok > 0 and len(post_val) > 0:
+        try:
+            pv_dir = _model_artifact_dir(prod_outpath, model_name)
+            os.makedirs(pv_dir, exist_ok=True)
+            write_model_parameters(
+                phase2.model, phase2, location, pv_dir, verbose=verbose, subsets={"test"},
+            )
+            wrote_post_val_contribs = True
+        except Exception as e:
+            warnings.warn(
+                f"{model_group}/{model_name}: could not write post-valuation contributions "
+                f"({type(e).__name__}: {e}); those rows will be missing from "
+                f"contributions_test.csv."
+            )
+
+    # ---- Stitch: replace the test side with the full-coverage OOF frame ----
+    if n_fold_ok == 0:
+        warnings.warn(
+            f"No CV folds succeeded for {model_group}/{model_name}; holdout stats fall back to "
+            f"the single Phase-2 holdout."
+        )
+    else:
+        field = phase2.field_prediction
+        raw_sales = phase2.ds.df_sales.copy()
+        ks = raw_sales["key_sale"].astype(str)
+        post_val_map = dict(
+            zip(phase2.df_test["key_sale"].astype(str).values, phase2.df_test[field].values)
+        )
+        pred = ks.map(oof_map)
+        pred = pred.where(pred.notna(), ks.map(post_val_map))
+        raw_sales[field] = pred.values
+        df_test_full = raw_sales[raw_sales[field].notna()].reset_index(drop=True)
+        phase2.override_test_predictions(df_test_full)
+
+    if save_results:
+        # The Phase-2 model must NOT explain the OOF holdout frame: its attributions would
+        # describe a different model than the predictions sitting in that frame. Hold back the
+        # "test" subset and let the stitcher assemble it from the per-fold writes instead.
+        write_subsets = _cv_phase2_write_subsets(emit_oof_contribs, n_fold_ok)
+        _write_model_results(
+            phase2, outpath, settings, location, verbose=verbose, subsets=write_subsets
+        )
+        if write_subsets is not None:
+            _stitch_oof_contributions(
+                outpath,
+                model_name,
+                [k for (k, _hk, _tk) in tasks],
+                prod_outpath,
+                include_post_val=wrote_post_val_contribs,
+                verbose=verbose,
+            )
+
+    return phase2
+
+
+def _cv_phase2_write_subsets(emit_oof_contribs: bool, n_fold_ok: int):
+    """Which subsets the Phase-2 refit is allowed to write under cross-validation.
+
+    ``None`` means "all of them" -- the legacy single-split behavior, used when out-of-fold
+    contributions are switched off or when no fold survived (in which case there is no OOF
+    frame and Phase 2's own holdout stands). Otherwise "test" is withheld: the holdout frame
+    carries per-fold predictions, so letting the Phase-2 model explain it would pair one
+    model's attributions with another model's predictions. `_stitch_oof_contributions`
+    supplies that file instead.
+    """
+    if emit_oof_contribs and n_fold_ok > 0:
+        return {"train", "sales", "universe"}
+    return None
+
+
+def _stitch_oof_contributions(
+    outpath: str,
+    model_name: str,
+    fold_ids: list,
+    prod_outpath: str,
+    include_post_val: bool,
+    verbose: bool = False,
+):
+    """Assemble the out-of-fold ``*_test.csv`` artifacts from the per-fold writes.
+
+    Under cross-validation no single model explains the holdout frame. Each trainable sale was
+    held out by exactly one fold, so its explanation has to come from that fold's model;
+    post-valuation sales train nowhere, so the Phase-2 refit explains those. This concatenates
+    those pieces into the files the rest of the pipeline reads, giving `contributions_test.csv`
+    the same property `pred_test` already has: every row explained by a model that never saw it.
+
+    An ``oof_fold`` column records which model produced each row (-1 = Phase 2 / post-val). That
+    is load-bearing, not decoration: ``base_value`` is NOT comparable across rows, because each
+    fold model has its own expected value over its own training set. Per-row attributions are
+    honest; the file as a whole is a mixture, and ``oof_fold`` is what makes that legible. The
+    column name is registered in ``shap_analysis._CONTRIB_NON_FEATURE_COLS`` so downstream
+    readers don't mistake it for a feature.
+    """
+    sources = [(k, _model_artifact_dir(f"{outpath}/cv_fold{k}", model_name)) for k in fold_ids]
+    if include_post_val:
+        sources.append((-1, _model_artifact_dir(prod_outpath, model_name)))
+
+    # Discover what the engine actually emitted, so the "log_" and "std_" prefixed variants
+    # (MRA log-space, NGBoost uncertainty) come along without being enumerated here.
+    names = set()
+    for _fold, d in sources:
+        if os.path.isdir(d):
+            names.update(fn for fn in os.listdir(d) if fn.endswith("_test.csv"))
+
+    if not names:
+        # Engines with no per-subset artifacts (e.g. LocalAreaModel) legitimately produce
+        # nothing to stitch.
+        return
+
+    dest_dir = _model_artifact_dir(outpath, model_name)
+    os.makedirs(dest_dir, exist_ok=True)
+
+    for name in sorted(names):
+        pieces, missing = [], []
+        for fold, d in sources:
+            fpath = f"{d}/{name}"
+            if not os.path.exists(fpath):
+                missing.append(fold)
+                continue
+            piece = pd.read_csv(fpath)
+            piece["oof_fold"] = fold
+            pieces.append(piece)
+
+        if not pieces:
+            continue
+        if missing:
+            warnings.warn(
+                f"OOF contributions for {model_name}/{name}: nothing written by "
+                f"fold(s) {sorted(missing)}; those holdout rows are absent from the "
+                f"stitched file."
+            )
+        base_cols = list(pieces[0].columns)
+        if any(list(pc.columns) != base_cols for pc in pieces[1:]):
+            warnings.warn(
+                f"OOF contributions for {model_name}/{name}: per-fold artifacts have "
+                f"differing columns; the stitched file is their union and will contain NaNs."
+            )
+
+        df = pd.concat(pieces, ignore_index=True, sort=False)
+        df.to_csv(f"{dest_dir}/{name}", index=False)
+        if verbose:
+            print(f"--> stitched {len(df)} out-of-fold rows into {dest_dir}/{name}")
 
 
 def run_ensemble(
@@ -1984,7 +2640,7 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
     
     unit = area_unit(settings)
     
-    locations = get_report_locations(settings)
+    locations = get_locations(settings)
     fields = [
         "key",
         "geometry",
@@ -2035,73 +2691,137 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
             )
         for location in locations:
             if location in df:
-                df[f"prediction_cod_{location}"] = None
-                df[f"assr_cod_{location}"] = None
-                location_values = df[location].unique()
-                for value in location_values:
-                    predictions = df.loc[
-                        df[location].eq(value), "prediction_ratio"
-                    ].values
-                    predictions = predictions[~pd.isna(predictions)]
-                    df.loc[df[location].eq(value), f"prediction_cod_{location}"] = (
-                        calc_cod(predictions)
+                # COD per location group, computed in a single grouped pass and mapped back to
+                # every row. The previous per-value boolean-mask loop was O(unique_values x rows)
+                # — pathological for high-cardinality fields (e.g. neighborhood_filled with
+                # thousands of codes on the full universe); groupby makes it O(rows).
+                def _cod_by(value_field):
+                    cods = df.groupby(location)[value_field].apply(
+                        lambda s: calc_cod(s.dropna().values)
                     )
+                    return df[location].map(cods)
 
-                    if "assr_market_value" in df:
-                        assr_ratios = df.loc[
-                            df[location].eq(value), "assr_ratio"
-                        ].values
-                        assr_ratios = assr_ratios[~pd.isna(assr_ratios)]
-                        df.loc[df[location].eq(value), f"assr_cod_{location}"] = (
-                            calc_cod(assr_ratios)
-                        )
-                    if "true_market_value" in df:
-                        true_vs_sales_ratios = df.loc[
-                            df[location].eq(value), "true_vs_sale_ratio"
-                        ].values
-                        true_vs_sales_ratios = true_vs_sales_ratios[
-                            ~pd.isna(true_vs_sales_ratios)
-                        ]
-                        df.loc[
-                            df[location].eq(value), f"true_vs_sale_cod_{location}"
-                        ] = calc_cod(true_vs_sales_ratios)
+                df[f"prediction_cod_{location}"] = _cod_by("prediction_ratio")
 
-                        pred_vs_true_ratios = df.loc[
-                            df[location].eq(value), "pred_vs_true_ratio"
-                        ].values
-                        pred_vs_true_ratios = pred_vs_true_ratios[
-                            ~pd.isna(pred_vs_true_ratios)
-                        ]
-                        df.loc[
-                            df[location].eq(value), f"pred_vs_true_cod_{location}"
-                        ] = calc_cod(pred_vs_true_ratios)
+                if "assr_market_value" in df:
+                    df[f"assr_cod_{location}"] = _cod_by("assr_ratio")
+                else:
+                    df[f"assr_cod_{location}"] = None
+                if "true_market_value" in df:
+                    df[f"true_vs_sale_cod_{location}"] = _cod_by("true_vs_sale_ratio")
+                    df[f"pred_vs_true_cod_{location}"] = _cod_by("pred_vs_true_ratio")
 
     return dfs
 
 
-def _write_model_results(results: SingleModelResults, outpath: str, settings: dict, location: str = None, verbose:bool = False):
+def _assemble_open_ratio_study(results: SingleModelResults, settings: dict) -> dict[str, pd.DataFrame]:
+    """Build the slim per-row frames consumed by openratiostudy.com.
+
+    Selects only the columns that website needs — identifiers, the production
+    prediction, raw and time-adjusted sale price, point coordinates, and the
+    full location fields — for the ``sales`` (study) and ``test`` subsets.
+
+    Note: this uses the complete ``locations`` list (the fine-grained location
+    fields), not the narrower ``report_locations`` used for report breakdowns,
+    so the export can carry finer location detail than the reports do.
+
+    Parameters
+    ----------
+    results : SingleModelResults
+        A fitted model's results, typically the ensemble (production) model for a
+        model group.
+    settings : dict
+        The settings dictionary, used to resolve the location fields.
+
+    Returns
+    -------
+    dict[str, pandas.DataFrame]
+        Keyed by subset name (``"sales"``, ``"test"``); each value holds only the
+        open-ratio-study columns present in the source frame.
+    """
+    cols = [
+        "key",
+        "key_sale",
+        "prediction",
+        "sale_price",
+        "sale_price_time_adj",
+        "latitude",
+        "longitude",
+    ] + get_locations(settings)
+
+    out = {}
+    for subset, df_src in (("sales", results.df_sales), ("test", results.df_test)):
+        if df_src is None:
+            continue
+        present = [c for c in cols if c in df_src.columns]
+        out[subset] = df_src[present].copy()
+    return out
+
+
+def _write_open_ratio_study(results: SingleModelResults, path: str, settings: dict):
+    """Write the openratiostudy.com export for one model into ``path``.
+
+    Emits ``open_ratio_study_sales.csv`` (study set) and
+    ``open_ratio_study_test.csv`` (held-out test set) alongside the model's
+    ``pred_*.csv`` files. A ``model_group`` column is appended so the per-model
+    files share a schema with the combined all-model-groups export.
+
+    Parameters
+    ----------
+    results : SingleModelResults
+        The model's results.
+    path : str
+        Directory to write the two CSVs into (the model's output folder).
+    settings : dict
+        The settings dictionary.
+    """
+    ors = _assemble_open_ratio_study(results, settings)
+    model_group = getattr(getattr(results, "ds", None), "model_group", None)
+    for subset, fname in (("sales", "open_ratio_study_sales.csv"),
+                          ("test", "open_ratio_study_test.csv")):
+        if subset not in ors:
+            continue
+        df = ors[subset]
+        if model_group is not None and "model_group" not in df.columns:
+            df["model_group"] = model_group
+        df.to_csv(f"{path}/{fname}", index=False)
+
+
+def _write_model_results(
+    results: SingleModelResults,
+    outpath: str,
+    settings: dict,
+    location: str = None,
+    verbose: bool = False,
+    subsets: frozenset | set | None = None,
+):
     """
     Write model results to disk in parquet and CSV formats.
+
+    ``subsets`` restricts which per-subset parameter/contribution artifacts are written; it is
+    passed straight through to `write_model_parameters`. ``None`` (the default) writes them
+    all. Cross-validation passes a set without "test" so the Phase-2 model does not explain the
+    out-of-fold holdout frame -- see `_stitch_oof_contributions`.
     """
-    
+
     print(f"Write model results to {outpath}")
-    
+
     dfs = _assemble_model_results(results, settings)
-    path = f"{outpath}/{results.model_name}"
-    if "*" in path:
-        path = path.replace("*", "_star")
+    path = _model_artifact_dir(outpath, results.model_name)
     os.makedirs(path, exist_ok=True)
     for key in dfs:
         df = dfs[key]
-        
+
         if "geometry" in df.columns:
             df = gpd.GeoDataFrame(df, geometry="geometry", crs=getattr(df, "crs", None))
             df = ensure_geometries(df)
-        
+
         df.to_parquet(f"{path}/pred_{key}.parquet")
         if "geometry" in df:
             df = df.drop(columns=["geometry"])
         df.to_csv(f"{path}/pred_{key}.csv", index=False)
+
+    _write_open_ratio_study(results, path, settings)
 
     results.df_sales.to_csv(f"{path}/sales.csv", index=False)
     results.df_universe.to_csv(f"{path}/universe.csv", index=False)
@@ -2114,10 +2834,12 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
 
     with open(f"{path}/pred_universe.pkl", "wb") as f:
         pickle.dump(results.pred_univ, f, protocol=pickle.HIGHEST_PROTOCOL)
-    
+
     params_path = f"{path}"
-    
-    write_model_parameters(results.model, results, location, params_path, verbose=verbose)
+
+    write_model_parameters(
+        results.model, results, location, params_path, verbose=verbose, subsets=subsets
+    )
 
     try:
         universe_parquet = gpd.read_parquet(f"{path}/pred_universe.parquet")
@@ -2211,6 +2933,8 @@ def _write_ensemble_model_results(
         df.to_parquet(f"{path}/pred_{key}.parquet")
         df.to_csv(f"{path}/pred_{key}.csv", index=False)
 
+    _write_open_ratio_study(results, path, settings)
+
 
 def _write_ensemble_meta(path: str, ensemble_type: str, members: list[str]):
     """Stamp the ensemble output directory with how it was produced.
@@ -2288,6 +3012,54 @@ def _median_weights(P: pd.DataFrame) -> pd.DataFrame:
     W[rows[even], cols_hi[even]] = 0.5
 
     return pd.DataFrame(W, index=P.index, columns=members)
+
+
+def _warn_if_ensemble_base_absorbs_mismatch(
+    subset: str,
+    model_name: str,
+    base_residual: pd.Series,
+    base_expected: pd.Series,
+    weight_covered: pd.Series,
+    tol: float = 0.05,
+):
+    """Warn when the ensemble's residual base has quietly swallowed a prediction mismatch.
+
+    The ensemble's ``base_value`` is defined as ``prediction - sum(feature contributions)``, so
+    these files reconstruct perfectly no matter how wrong their inputs are -- the ordinary
+    check_delta tripwire is blind here BY CONSTRUCTION. The invariant that does bite is a
+    different one: if every member's contributions are coherent with its own predictions then,
+    because the per-row weights sum to 1, the residual base must equal the weighted sum of the
+    members' own base values. A gap means the difference between two sets of predictions is
+    being parked in the intercept instead.
+
+    That is exactly what happened before out-of-fold contributions landed: member holdout files
+    carried per-fold predictions but production-model attributions, so the ensemble's
+    per-feature contributions came out byte-identical to its sales subset and the base ran ~20%
+    adrift to make the arithmetic close -- with check_delta sitting at a reassuring 0.00%.
+
+    Only rows whose contributing members' weights fully account for the prediction are checked;
+    partial coverage legitimately shifts the residual, and the caller skips the check entirely
+    when any member was excluded (log-space or non-decomposable).
+    """
+    covered = weight_covered > 0.999
+    if not covered.any():
+        return
+    resid = pd.to_numeric(base_residual[covered], errors="coerce").to_numpy()
+    expect = pd.to_numeric(base_expected[covered], errors="coerce").to_numpy()
+    if not (np.isfinite(resid).any() and np.isfinite(expect).any()):
+        return
+    denom = float(np.nanmean(np.abs(expect)))
+    numer = float(np.nanmean(np.abs(resid - expect)))
+    if not np.isfinite(denom) or not np.isfinite(numer) or denom == 0:
+        return
+    rel = numer / denom
+    if rel > tol:
+        warnings.warn(
+            f"{model_name}: '{subset}' ensemble base_value sits {rel:.1%} away from the "
+            f"weighted sum of its members' base values. The residual base is absorbing a "
+            f"mismatch between member predictions and member contributions; these files "
+            f"reconstruct by construction, so check_delta will not show it."
+        )
 
 
 def _write_ensemble_contributions(
@@ -2404,8 +3176,14 @@ def _write_ensemble_contributions(
         else:
             raise ValueError(f"Unrecognized ensemble contribution mode \"{mode}\"!")
 
-        # Accumulate per-row weighted feature contributions across members.
+        # Accumulate per-row weighted feature contributions across members. Alongside them
+        # we track what the base SHOULD be (the same weighted sum over the members' own base
+        # values) and how much weight actually contributed, so the residual base can be
+        # sanity-checked below.
         feat_total = pd.DataFrame(index=ref_index)
+        base_expected = pd.Series(0.0, index=ref_index)
+        weight_covered = pd.Series(0.0, index=ref_index)
+        excluded_member = False
         for m_key in members:
             w = weights[m_key].reindex(ref_index).fillna(0.0)
             # Log-transformed members (mra/multi_mra with log=True) have contributions that are
@@ -2423,6 +3201,7 @@ def _write_ensemble_contributions(
                         f"features."
                     )
                     warned_missing.add(m_key)
+                excluded_member = True
                 continue
             cfile = _find_member_contrib_file(outpath, m_key, candidate_files)
             if cfile is None:
@@ -2434,21 +3213,31 @@ def _write_ensemble_contributions(
                         f"folding its prediction into the ensemble base."
                     )
                     warned_missing.add(m_key)
+                excluded_member = True
                 continue
             dfc = pd.read_csv(cfile)
             if merge_key not in dfc.columns:
+                excluded_member = True
                 continue
             base_col = (
                 "base_value"
                 if "base_value" in dfc.columns
                 else ("intercept" if "intercept" in dfc.columns else None)
             )
-            drop = {merge_key, "key", "key_sale", "contribution_sum", "prediction", "check_delta"}
+            # Single source of truth for "not a feature contribution" (includes base_value /
+            # intercept and the CV `oof_fold` tag).
+            drop = set(_CONTRIB_NON_FEATURE_COLS) | {merge_key}
             if base_col is not None:
                 drop.add(base_col)
             feat_cols = [c for c in dfc.columns if c not in drop]
             dfc[merge_key] = dfc[merge_key].astype(str)
             dfc = dfc[~dfc[merge_key].duplicated()].set_index(merge_key)
+            if base_col is not None:
+                base_c = pd.to_numeric(dfc[base_col].reindex(ref_index), errors="coerce")
+                base_expected = base_expected + base_c.fillna(0.0) * w
+                weight_covered = weight_covered + w.where(base_c.notna(), 0.0)
+            else:
+                excluded_member = True
             for c in feat_cols:
                 contrib_c = pd.to_numeric(
                     dfc[c].reindex(ref_index), errors="coerce"
@@ -2469,6 +3258,15 @@ def _write_ensemble_contributions(
         # Residual base: guarantees contribution_sum == prediction (check_delta ~ 0)
         # and cleanly absorbs non-decomposable members and any missing-row slack.
         base_value = ens_pred - feat_sum
+
+        # ...but "guaranteed to reconstruct" is not the same as "correct". Cross-check the
+        # residual against what the members' own bases imply. Skipped when any member was
+        # excluded from the attribution, since then the residual legitimately carries that
+        # member's prediction.
+        if not excluded_member:
+            _warn_if_ensemble_base_absorbs_mismatch(
+                name, results.model_name, base_value, base_expected, weight_covered
+            )
 
         out = pd.DataFrame(index=ref_index)
         out["base_value"] = base_value
@@ -2545,12 +3343,10 @@ def _run_local_ensemble(
     timing.start("setup")
 
     first_key = list(all_results.model_results.keys())[0]
-    test_keys = all_results.model_results[first_key].ds.test_keys
-    train_keys = all_results.model_results[first_key].ds.train_keys
-
     if df_sales is None:
         df_universe = all_results.df_univ_orig
         df_sales = all_results.df_sales_orig
+    test_keys, train_keys = _ensemble_holdout_keys(all_results, first_key, settings, df_sales)
 
     ds = DataSplit(
         "ensemble",
@@ -2570,10 +3366,15 @@ def _run_local_ensemble(
 
     vacant_status = "vacant" if vacant_only else "main"
     df_test = ds.df_test
-    df_train = ds.df_train
+    # Per-location model SELECTION runs on the training set (in-sample) to avoid selecting on the
+    # holdout. Under CV the ensemble ds's train side is just the split remainder, so use the base
+    # models' in-sample training predictions instead (full trainable coverage). In single-split
+    # mode this equals ds.df_train.
+    cv_folds = int(settings.get("modeling", {}).get("instructions", {}).get("cv_folds", 5))
+    df_train = all_results.model_results[first_key].df_train if cv_folds > 1 else ds.df_train
     df_sales = ds.df_sales
     df_univ = ds.df_universe
-    
+
     if locations is None:
         locations = []
         warnings.warn("You didn't provide any locations! Local ensemble won't be very effective.")
@@ -2890,6 +3691,29 @@ def _run_local_ensemble_test_and_paint(
     return results
 
 
+def _ensemble_holdout_keys(all_results, first_key, settings, df_sales):
+    """Test/train keys for the ensemble's DataSplit.
+
+    Under nested CV the base models' ``df_test`` is the full-coverage out-of-fold frame, so the
+    ensemble must cover the same 100% of sales rather than inherit a base model's Phase-2 dummy
+    holdout. We take the base ``df_test`` keys as the ensemble holdout and put every other sale in
+    train (the ensemble only aggregates base predictions, it never fits, so the train side is just
+    there to satisfy DataSplit's test/train partition). In single-split mode this reduces exactly
+    to the base model's original test/train split.
+    """
+    first = all_results.model_results[first_key]
+    cv_folds = int(settings.get("modeling", {}).get("instructions", {}).get("cv_folds", 5))
+    if cv_folds <= 1:
+        return first.ds.test_keys, first.ds.train_keys
+    if df_sales is None:
+        df_sales = all_results.df_sales_orig
+    test_keys = first.df_test["key_sale"].astype(str).tolist()
+    test_set = set(test_keys)
+    all_keys = df_sales["key_sale"].astype(str)
+    train_keys = all_keys[~all_keys.isin(test_set)].tolist()
+    return test_keys, train_keys
+
+
 def _optimize_ensemble(
     df_sales: pd.DataFrame | None,
     df_universe: pd.DataFrame | None,
@@ -2911,12 +3735,10 @@ def _optimize_ensemble(
     timing.start("setup")
 
     first_key = list(all_results.model_results.keys())[0]
-    test_keys = all_results.model_results[first_key].ds.test_keys
-    train_keys = all_results.model_results[first_key].ds.train_keys
-
     if df_sales is None:
         df_universe = all_results.df_univ_orig
         df_sales = all_results.df_sales_orig
+    test_keys, train_keys = _ensemble_holdout_keys(all_results, first_key, settings, df_sales)
 
     ds = DataSplit(
         "ensemble",
@@ -3109,8 +3931,7 @@ def _run_ensemble(
     timing.start("setup")
 
     first_key = list(all_results.model_results.keys())[0]
-    test_keys = all_results.model_results[first_key].ds.test_keys
-    train_keys = all_results.model_results[first_key].ds.train_keys
+    test_keys, train_keys = _ensemble_holdout_keys(all_results, first_key, settings, df_sales)
 
     ds = DataSplit(
         "ensemble",
@@ -4365,7 +5186,10 @@ def _run_models(
             print(f"Skipping model {model_name}.")
             continue
         model_entry = model_entries.get(model_name, model_entries.get("default", {}))
-        model_engine = model_entry.get("engine", model_name)
+        # The settings schema names the engine with the "model" key (see
+        # docs/models_reference.md), which is also what run_one_model reads. Reading
+        # "engine" here made every aliased entry resolve to its own name instead.
+        model_engine = model_entry.get("model", model_name)
         # For tree-based models, and multi-mra, we don't perform variable reduction
         if model_engine not in ["pass_through", "ground_truth", "xgboost", "lightgbm", "catboost", "multi_mra"]:
             auto_reduce_vars = True
@@ -4402,7 +5226,7 @@ def _run_models(
     # Announce the determinism contract once if any tunable tree model will run.
     _tunable = {"xgboost", "lightgbm", "catboost", "ngboost", "lcomp"}
     if any(
-        model_entries.get(m, model_entries.get("default", {})).get("engine", m) in _tunable
+        model_entries.get(m, model_entries.get("default", {})).get("model", m) in _tunable
         or m in _tunable
         for m in models_to_run
         if m not in models_to_skip
@@ -4416,15 +5240,20 @@ def _run_models(
             print(f"Skipping model {model_name}.")
             continue
         model_entry = model_entries.get(model_name, model_entries.get("default", {}))
-        model_engine = model_entry.get("engine", model_name)
-        
+        model_engine = model_entry.get("model", model_name)
+
         # Tree-based models don't auto-reduce variables ever
         if model_engine not in ["xgboost", "catboost", "lightgbm"]:
             model_variables = best_variables
         else:
             model_variables = None
         
-        results = run_one_model(
+        # Nested cross-validation (cv_folds > 1) routes through run_one_model_cv, which reruns
+        # the model per fold for a full-coverage holdout and refits on all data for study/ship.
+        # cv_folds <= 1 keeps the legacy single-split path.
+        _cv_folds = int(settings.get("modeling", {}).get("instructions", {}).get("cv_folds", 5))
+        _run_model_fn = run_one_model_cv if _cv_folds > 1 else run_one_model
+        results = _run_model_fn(
             df_sales=df_sales,
             df_universe=df_univ,
             vacant_only=vacant_only,

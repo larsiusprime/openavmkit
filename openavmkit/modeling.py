@@ -58,7 +58,6 @@ from ngboost import NGBRegressor
 from ngboost.distns import Normal
 from sklearn.tree import DecisionTreeRegressor
 from layeredcompmodel import LayeredCompBaggingModel as LCompModel
-from layeredcompmodel import LayeredCompModel as _LCompTree
 from catboost import CatBoostRegressor, Pool
 from lightgbm import Booster
 from matplotlib import pyplot as plt
@@ -145,10 +144,17 @@ from openavmkit.tuning import (
     _study_fingerprint,
     _discard_stale_studies,
     _cleanup_study_files,
+    _resolve_cv_inner,
 )
 from openavmkit.utilities.timing import TimingData
 
 pd.set_option("future.no_silent_downcasting", True)
+
+# Sentinel fingerprint for CV production params that were derived by aggregating the per-fold
+# tuned hyperparameters (median/mode) rather than by a fresh Optuna study. A params.json carrying
+# this fingerprint is trusted by ``_get_params`` regardless of the search-context fingerprint,
+# because it deliberately reuses the fold HPs to skip the production tune (see run_one_model_cv).
+_CV_AGGREGATE_FINGERPRINT = "__CV_AGGREGATE__"
 
 TreeBasedModel = Union[
     XGBoostModel,
@@ -508,6 +514,38 @@ class PredictionResults:
         self.ratio_study = RatioStudy(y_pred, y, max_trim)
 
 
+# Sales-only fields that DataSplit SYNTHESIZES onto the universe, so that a model trained on sales
+# can predict on parcels that never sold. The universe is scored as "every parcel sold on the
+# valuation date": sale_date is set to that date and the time fields are derived from it, sale age
+# collapses to the valuation date, and the validity/price flags take neutral values.
+#
+# These are legitimate independent variables even though the raw universe frame has no such columns,
+# so anything validating ind_vars against the raw frame must consult this set — see
+# `_validate_ind_vars_across_frames` in model_runner.py, which runs BEFORE DataSplit builds them.
+_UNIV_SET_TO_ZERO = ["sale_age_days"]
+_UNIV_SET_TO_FALSE = [
+    "valid_sale",
+    "vacant_sale",
+    "valid_for_ratio_study",
+    "valid_for_land_ratio_study",
+]
+_UNIV_SET_TO_NONE = ["ss_id", "sale_price", "sale_price_time_adj"]
+# Set directly (sale_date) or derived from it by _enrich_time_field / _enrich_sale_age_days.
+_UNIV_TIME_DERIVED = [
+    "sale_date",
+    "sale_year",
+    "sale_month",
+    "sale_day",
+    "sale_quarter",
+    "sale_year_month",
+    "sale_year_quarter",
+]
+
+UNIVERSE_SYNTHESIZED_FIELDS = frozenset(
+    _UNIV_SET_TO_ZERO + _UNIV_SET_TO_FALSE + _UNIV_SET_TO_NONE + _UNIV_TIME_DERIVED
+)
+
+
 class DataSplit:
     """
     Encapsulates the splitting of data into training, test, and other subsets.
@@ -654,14 +692,9 @@ class DataSplit:
         self.df_universe = df_universe.copy().reset_index(drop=True)
 
         # Set "sales" fields in the universe so that columns match
-        set_to_zero = ["sale_age_days"]
-        set_to_false = [
-            "valid_sale",
-            "vacant_sale",
-            "valid_for_ratio_study",
-            "valid_for_land_ratio_study",
-        ]
-        set_to_none = ["ss_id", "sale_price", "sale_price_time_adj"]
+        set_to_zero = _UNIV_SET_TO_ZERO
+        set_to_false = _UNIV_SET_TO_FALSE
+        set_to_none = _UNIV_SET_TO_NONE
 
         for col in set_to_zero:
             self.df_universe[col] = 0
@@ -1241,6 +1274,49 @@ class DataSplit:
         self.X_sales = _sanitize_categoricals(self.X_sales)
         self.X_univ = _sanitize_categoricals(self.X_univ)
 
+    def drop_all_nan_ind_vars(self, verbose: bool = False) -> list[str]:
+        """
+        Drop independent-variable columns that have no finite values (entirely
+        NaN/inf) in the training matrix, consistently across X_train / X_test /
+        X_sales / X_univ (and from ``ind_vars``).
+
+        Such a column carries zero signal and makes linear models crash:
+        statsmodels OLS raises ``MissingDataError("exog contains inf or nans")``
+        on the first NaN/inf in the design matrix. The usual cause is a
+        model-group-scoped feature — e.g. ``spatial_lag_*``, which is enriched for
+        ``single_family`` only — being listed in a non-SF group's ind_vars, where
+        it is 100% NaN. Rather than crash the whole run, drop the dead column and
+        warn. Columns that are merely *partially* NaN are left alone (those signal
+        a missing fill rule and must be fixed in ``data.process.fill``).
+
+        Returns the list of dropped column names.
+        """
+        if self.X_train is None or self.X_train.shape[0] == 0 or self.X_train.shape[1] == 0:
+            return []
+        numeric = self.X_train.select_dtypes(include=[np.number])
+        if numeric.shape[1] == 0:
+            return []
+        finite = numeric.replace([np.inf, -np.inf], np.nan).notna()
+        dead = [col for col in numeric.columns if not bool(finite[col].any())]
+        if not dead:
+            return []
+        warnings.warn(
+            f"DataSplit '{self.name}' (model_group '{self.model_group}'): dropping "
+            f"{len(dead)} independent variable(s) with no finite values in the training "
+            f"set — they would crash linear models (exog contains nan) and carry no "
+            f"signal: {dead}. This usually means a model-group-scoped feature "
+            f"(e.g. spatial_lag, enriched for single_family only) is absent for this group.",
+            stacklevel=2,
+        )
+        for attr in ("X_train", "X_test", "X_sales", "X_univ"):
+            X = getattr(self, attr, None)
+            if X is not None and X.shape[1] > 0:
+                cols = [c for c in dead if c in X.columns]
+                if cols:
+                    setattr(self, attr, X.drop(columns=cols))
+        self.ind_vars = [v for v in self.ind_vars if v not in dead]
+        return dead
+
 
 def _as_float64_array(x) -> np.ndarray:
     """Coerce a predictions/target array or Series to a plain float64 numpy array.
@@ -1498,6 +1574,48 @@ class SingleModelResults:
                 self.pred_univ = self.pred_univ * self.ds.df_universe[suffix]
             if self.dep_var_test.startswith("log_"):
                 self.pred_test.y_pred = self.pred_test.y_pred * self.ds.df_test[suffix]
+
+    def override_test_predictions(self, df_test_full: pd.DataFrame):
+        """Replace the holdout/test set with a full-coverage frame and recompute test-side stats.
+
+        Used by nested cross-validation (:func:`openavmkit.model_runner.run_one_model_cv`): the
+        fold models produce an out-of-fold prediction for every trainable sale (leakage-free w.r.t.
+        both training and hyperparameter selection), and post-valuation sales get the full-refit
+        model's prediction (also leakage-free — they never train). Stitched together, ``df_test_full``
+        covers 100% of sales, so the reported holdout statistics carry the same n as the study set.
+
+        ``df_test_full`` must carry the prediction in ``self.field_prediction`` in the SAME raw
+        space the model emits (i.e. before any log back-transform), exactly as the ordinary
+        ``__init__`` path stores it — the log back-transform is re-applied below, mirroring
+        :meth:`_deal_with_log_and_area`, so CV holdout stats are on the same scale as the
+        single-split pipeline for every ``dep_var_test`` (price-space is the no-op common case).
+        """
+        field = self.field_prediction
+        max_trim = _get_max_ratio_study_trim(self.ds.settings, self.ds.model_group)
+        self.pred_test = PredictionResults(
+            self.dep_var_test, self.ind_vars, field, df_test_full, max_trim,
+            self.is_land_predictions,
+        )
+        self.df_test = self.pred_test.df.copy()
+        self.ve_test = get_vertical_equity_scores(self.df_test, self.dep_var_test, field)
+        self.utility_test = self.pred_test.mape * 100
+        # Match __init__ + _deal_with_log_and_area: ratio_study / mape / ve are computed on the raw
+        # (pre-transform) predictions above; a log-target test var then exponentiates y_pred to
+        # price space. (No-op for the usual price-space dep_var_test.)
+        if self.dep_var_test.startswith("log_"):
+            self.pred_test.y_pred = np.exp(self.pred_test.y_pred)
+
+        # Keep the DataSplit's test frames consistent with this full-coverage holdout. The Phase-2
+        # ds still carries its (small, throwaway) production holdout underneath; artifact writers
+        # that align df_test with ds.X_test *by position* (multi_mra / mra contributions, SHAP)
+        # would otherwise mismatch. Rebuild ds.{df_test,X_test,y_test} from the sales frames, which
+        # are already mutually aligned and carry the right post-split feature columns.
+        pos_by_key = {k: i for i, k in enumerate(self.ds.df_sales["key_sale"].astype(str))}
+        pos = [pos_by_key[k] for k in self.df_test["key_sale"].astype(str) if k in pos_by_key]
+        if len(pos) == len(self.df_test):
+            self.ds.df_test = self.ds.df_sales.iloc[pos].reset_index(drop=True)
+            self.ds.X_test = self.ds.X_sales.iloc[pos].reset_index(drop=True)
+            self.ds.y_test = self.ds.y_sales.iloc[pos].reset_index(drop=True)
 
     def summary(self) -> str:
         """
@@ -1870,6 +1988,11 @@ def run_mra(
     ds = ds.encode_categoricals_with_one_hot()
     ds.split()
 
+    # Drop any all-NaN feature columns before fitting, so an absent model-group-scoped
+    # feature (e.g. spatial_lag on a non-single_family group) degrades to a warning
+    # instead of MissingDataError("exog contains inf or nans").
+    ds.drop_all_nan_ind_vars(verbose=verbose)
+
     if intercept:
         ds.X_train = sm.add_constant(ds.X_train, has_constant='add')
         ds.X_test = sm.add_constant(ds.X_test, has_constant='add')
@@ -1984,6 +2107,10 @@ def _run_multi_mra(
     # Re-split after encoding to refresh X_* and y_*
     ds_prepped.split()
 
+    # Drop any all-NaN feature columns before fitting (see run_mra) so an absent
+    # model-group-scoped feature degrades to a warning rather than crashing OLS.
+    ds_prepped.drop_all_nan_ind_vars(verbose=verbose)
+
     # Add intercept column (constant) consistently across all X matrices
     if intercept:
         ds_prepped.X_train = sm.add_constant(ds_prepped.X_train, has_constant="add")
@@ -2038,28 +2165,28 @@ def _run_multi_mra(
     if optimize_vars:
         if verbose:
             print(f"Tuning Multi-MRA: searching for optimal variables. (Total variables = {n_features})...")
-            
-            model_name = ds.name
-            
-            if os.path.exists(f"{outpath}/{model_name}_vars.json"):
-                best_var_map = json.load(open(f"{outpath}/{model_name}_vars.json", "r"))
+
+        model_name = ds.name
+
+        if os.path.exists(f"{outpath}/{model_name}_vars.json"):
+            best_var_map = json.load(open(f"{outpath}/{model_name}_vars.json", "r"))
+            if verbose:
+                print(f"--> using saved variables")
+
+        if not best_var_map:
+            for location_field in location_fields:
+                if location_field not in df_train.columns:
+                    continue
+
+                field_map: Dict[str, list] = {}
+                unique_locs = df_train[location_field].unique()
+
                 if verbose:
-                    print(f"--> using saved variables")
-            
-            if not best_var_map:
-                for location_field in location_fields:
-                    if location_field not in df_train.columns:
-                        continue
-
-                    field_map: Dict[Any, np.ndarray] = {}
-                    unique_locs = df_train[location_field].unique()
-
-                    if verbose:
-                        print(
-                            f"[Multi-MRA] Optimizing local OLS for field '{location_field}' "
-                            f"with {len(unique_locs)} distinct values."
+                    print(
+                        f"[Multi-MRA] Optimizing local OLS for field '{location_field}' "
+                        f"with {len(unique_locs)} distinct values."
                     )
-                
+
                 i = 0
                 for loc in unique_locs:
                     # Build mask for this specific location value
@@ -2073,21 +2200,24 @@ def _run_multi_mra(
                     min_n_loc = X_loc.shape[1] + 1
                     if n_loc < min_n_loc:
                         continue
-                    print(f"--> {i/len(unique_locs):5.2%} -- {i:>6}/{len(unique_locs)} -- value = {loc}...")
+                    if verbose:
+                        print(f"--> {i/len(unique_locs):5.2%} -- {i:>6}/{len(unique_locs)} -- value = {loc}...")
 
                     try:
                         best_vars = greedy_forward_loocv(X_loc, y_loc).variables
                     except np.linalg.LinAlgError:
                         best_vars = []
                     field_map[str(loc)] = best_vars
-                    
-                    i += 1
-                    best_var_map[location_field] = field_map
 
-                os.makedirs(outpath, exist_ok=True)
-                if verbose:
-                    print(f"--> saving variables to \"{outpath}/{model_name}_vars.json\"")
-                json.dump(best_var_map, open(f"{outpath}/{model_name}_vars.json", "w"))
+                    i += 1
+
+                # One entry per location field, recorded after its per-location search
+                best_var_map[location_field] = field_map
+
+            os.makedirs(outpath, exist_ok=True)
+            if verbose:
+                print(f"--> saving variables to \"{outpath}/{model_name}_vars.json\"")
+            json.dump(best_var_map, open(f"{outpath}/{model_name}_vars.json", "w"))
 
     timing.stop("parameter_search")
 
@@ -3272,7 +3402,7 @@ def run_gwr(
 
 
 
-def _fix_bool_objs(ds:DataSplit):
+def _fix_bool_objs(ds:DataSplit, verbose: bool = False):
     # Fix for object-typed boolean columns (especially 'within_*' fields)
     for col in ds.X_train.columns:
         if col.startswith("within_") or (
@@ -3392,7 +3522,7 @@ def run_xgboost(
     ds.split()
 
     # Fix for object-typed boolean columns (especially 'within_*' fields)
-    ds = _fix_bool_objs(ds)
+    ds = _fix_bool_objs(ds, verbose)
 
     parameters = _get_params(
         "XGBoost",
@@ -3416,6 +3546,14 @@ def run_xgboost(
     parameters.setdefault("max_cat_to_onehot", 1)
     if seed is not None:
         parameters.setdefault("random_state", seed)
+
+    # Honor the tuned round count. The sklearn API uses n_estimators, so the native-API
+    # num_boost_round the tuner selected must be mapped onto it — otherwise XGBRegressor silently
+    # falls back to its default (100 trees), leaving the final model undertrained relative to the
+    # learning_rate the tuner chose. This mirrors LightGBM/CatBoost, whose finals also train their
+    # tuned round count on all data.
+    if "num_boost_round" in parameters:
+        parameters["n_estimators"] = int(parameters.pop("num_boost_round"))
 
     # parameters["eval_metric"] = "rmse"
     regressor = xgb.XGBRegressor(**parameters)
@@ -3539,7 +3677,7 @@ def run_lightgbm(
     ds.split()
     
     # Fix for object-typed boolean columns (especially 'within_*' fields)
-    ds = _fix_bool_objs(ds)
+    ds = _fix_bool_objs(ds, verbose)
     timing.stop("setup")
 
     timing.start("parameter_search")
@@ -3732,7 +3870,7 @@ def run_catboost(
     ds = ds.encode_categoricals_as_categories()
     ds.split()
     # Fix for object-typed boolean columns (especially 'within_*' fields)
-    ds = _fix_bool_objs(ds)
+    ds = _fix_bool_objs(ds, verbose)
     timing.stop("setup")
 
     timing.start("parameter_search")
@@ -3911,7 +4049,7 @@ def run_ngboost(
     ds = ds.encode_categoricals_as_categories()
     ds.split()
     # Fix for object-typed boolean columns (especially 'within_*' fields)
-    ds = _fix_bool_objs(ds)
+    ds = _fix_bool_objs(ds, verbose)
     timing.stop("setup")
 
     timing.start("parameter_search")
@@ -3961,15 +4099,14 @@ def run_ngboost(
     return predict_ngboost(ds, ngboost_model, timing, verbose)
 
 
-# LayeredComp hyperparameters are fixed (no search), so the only thing fit "learns" is one
-# weight_falloff per bagging tree — the per-tree minimize_scalar search, which is ~60% of fit time
-# (the rest builds the comp-tree structure, which is unavoidable on reload). We persist just those
-# floats and, on reload, rebuild the ensemble injecting them so the search is skipped. Reconstruction
-# replicates LayeredCompBaggingModel.fit() exactly MINUS the search, so it is only safe against the
-# verified package version; any mismatch (version / fingerprint / error) falls back to a normal fit,
-# and a test asserts reconstruction reproduces a normal fit bit-for-bit. The clean long-term fix is an
-# upstream LayeredCompBaggingModel.fit(weight_falloffs=...) hook, after which this can be deleted.
-_LCOMP_VERIFIED_VERSION = "0.2.1"
+# LayeredComp fit is expensive (tree build + per-tree weight_falloff search) and fully determined by
+# (X_train, hyperparameters, random_state). So we persist the whole fitted ensemble as portable JSON
+# (layeredcompmodel >= 0.3.0 `to_dict`/`from_dict`) keyed by a data+hyperparameter fingerprint, and on
+# reload deserialize + predict instead of refitting. This skips the ENTIRE fit when training data is
+# unchanged (re-prediction, new/updated universe, notebook iteration). Guarded by the writing
+# library's version + the fingerprint; any mismatch (version / fingerprint / error) falls back to a
+# normal fit, so we never serve a wrong model. JSON (not pickle): portable, inspectable/auditable,
+# and safe to load.
 _LCOMP_TREE_COUNT = 10
 _LCOMP_SAMPLE_PCT = 0.95
 _LCOMP_SPLIT_METRIC = "mae"
@@ -3985,32 +4122,6 @@ def _lcomp_fingerprint(X: pd.DataFrame, random_state: int) -> str:
         str(random_state),
     ])
     return hashlib.md5(payload.encode()).hexdigest()[:12]
-
-
-def _reconstruct_lcomp_with_falloffs(X, y, falloffs: list[float], random_state: int) -> LCompModel:
-    """Rebuild a fitted LayeredCompBaggingModel injecting saved per-tree weight_falloffs, skipping the
-    minimize_scalar search. Mirrors LayeredCompBaggingModel.fit() (v0.2.1) minus the search."""
-    from sklearn.utils.validation import check_random_state
-    from sklearn.model_selection import train_test_split
-
-    model = LCompModel(
-        tree_count=_LCOMP_TREE_COUNT, sample_pct=_LCOMP_SAMPLE_PCT,
-        random_state=random_state, split_metric=_LCOMP_SPLIT_METRIC, n_jobs=_LCOMP_N_JOBS,
-    )
-    model.n_features_in_ = X.shape[1]
-    model.feature_names_in_ = list(X.columns)
-    model.estimators_ = []
-    rs = check_random_state(random_state)
-    for i in range(_LCOMP_TREE_COUNT):
-        seed_i = rs.randint(np.iinfo(np.int32).max)
-        X_tr, _, y_tr, _ = train_test_split(
-            X, y, test_size=(1 - _LCOMP_SAMPLE_PCT), random_state=seed_i
-        )
-        tree = _LCompTree(split_metric=_LCOMP_SPLIT_METRIC, n_jobs=_LCOMP_N_JOBS)
-        tree.fit(X_tr, y_tr)               # structure (unavoidable)
-        tree.weight_falloff = falloffs[i]  # injected — skips the per-tree minimize_scalar search
-        model.estimators_.append(tree)
-    return model
 
 
 def run_layeredcomp(
@@ -4069,42 +4180,66 @@ def run_layeredcomp(
 
     random_state = 42 if seed is None else seed
     import layeredcompmodel as _lcm
-    falloffs_path = f"{outpath}/lcomp_falloffs.json"
+    model_cache_path = f"{outpath}/lcomp_model.json"
     fingerprint = _lcomp_fingerprint(ds.X_train, random_state)
+    # Capability guard: serialization exists from layeredcompmodel 0.3.0 on, and stays safely OFF on
+    # older builds that lack it (they just do a full fit). Checked by capability rather than version
+    # string because a source install can misreport its version; the API's presence is the fact we
+    # actually depend on.
+    lib_ok = hasattr(LCompModel, "to_dict") and hasattr(LCompModel, "from_dict")
+    lcm_version = getattr(_lcm, "__version__", None)
 
-    # Try the saved-falloff fast path: rebuild the ensemble injecting the learned per-tree
-    # weight_falloffs, skipping the ~60% minimize_scalar search. Guarded by package version +
-    # fingerprint; ANY problem falls back to a normal (search) fit so we never produce a wrong model.
+    # Fast path: reuse a cached fitted ensemble (portable JSON, no refit) when the library supports
+    # serialization and the data+hyperparameter fingerprint matches — this skips the ENTIRE fit (tree
+    # build AND the per-tree weight_falloff search), so re-prediction on unchanged training data is
+    # ~instant. Any problem (capability / version / fingerprint / read error) falls back to a full fit,
+    # so we never serve a wrong model.
+    #
+    # The version must match as well as the fingerprint. The blob is layeredcompmodel's OWN
+    # serialization format, so a library upgrade can change what it means while our fingerprint —
+    # which covers the training data and OUR hyperparameters, not the library — stays identical. We
+    # have always recorded the writer's version; without comparing it, a cache written by one version
+    # was silently deserialized by the next. Exact match, not `>=`: a newer library is just as free to
+    # change the format as an older one is.
     lcomp_model = None
-    if use_saved_params and getattr(_lcm, "__version__", None) == _LCOMP_VERIFIED_VERSION and os.path.exists(falloffs_path):
+    if use_saved_params and lib_ok and os.path.exists(model_cache_path):
         try:
-            saved = json.load(open(falloffs_path))
-            if saved.get("fingerprint") == fingerprint and len(saved.get("weight_falloffs", [])) == _LCOMP_TREE_COUNT:
+            cached = json.load(open(model_cache_path))
+            cached_version = cached.get("lcompmodel_version")
+            if cached.get("fingerprint") != fingerprint:
+                pass  # stale data/hyperparams — refit (the common, unremarkable case)
+            elif cached_version != lcm_version or lcm_version is None:
+                # Worth saying out loud: the fit is unchanged, so the refit is pure upgrade cost and
+                # would otherwise look like an unexplained slowdown after a dependency bump.
                 if verbose:
-                    print(f"--> lcomp: reusing saved weight_falloffs (skipping search) from {falloffs_path}")
-                lcomp_model = _reconstruct_lcomp_with_falloffs(
-                    ds.X_train, ds.y_train, saved["weight_falloffs"], random_state
-                )
+                    print(
+                        f"--> lcomp: cached model was written by layeredcompmodel "
+                        f"{cached_version!r} but {lcm_version!r} is running; refitting."
+                    )
+            else:
+                if verbose:
+                    print(f"--> lcomp: reusing cached fitted model (skipping fit) from {model_cache_path}")
+                lcomp_model = LCompModel.from_dict(cached["model"])
         except Exception as e:
-            warnings.warn(f"lcomp: could not reuse saved falloffs ({e}); refitting from scratch.")
+            warnings.warn(f"lcomp: could not reuse cached model ({e}); refitting from scratch.")
             lcomp_model = None
 
     if lcomp_model is None:
-        # Full fit (runs the per-tree weight_falloff search).
+        # Full fit (tree build + per-tree weight_falloff search).
         lcomp_model = LCompModel(
             tree_count=_LCOMP_TREE_COUNT, sample_pct=_LCOMP_SAMPLE_PCT,
             random_state=random_state, split_metric=_LCOMP_SPLIT_METRIC, n_jobs=_LCOMP_N_JOBS,
         )
         lcomp_model.fit(ds.X_train, ds.y_train)
-        if save_params and getattr(_lcm, "__version__", None) == _LCOMP_VERIFIED_VERSION:
+        if save_params and lib_ok:
             os.makedirs(outpath, exist_ok=True)
             json.dump(
                 {
-                    "weight_falloffs": [float(est.weight_falloff) for est in lcomp_model.estimators_],
                     "fingerprint": fingerprint,
-                    "lcompmodel_version": _LCOMP_VERIFIED_VERSION,
+                    "lcompmodel_version": lcm_version,
+                    "model": lcomp_model.to_dict(),
                 },
-                open(falloffs_path, "w"),
+                open(model_cache_path, "w"),
             )
 
     # Wrap it in our wrapper class
@@ -5242,11 +5377,32 @@ def _get_params(
     # ind_vars list, sales window, trial budget, or tuner search space yields a different fingerprint,
     # so stale params are re-tuned instead of silently reused. (params.json embeds this under the
     # reserved "__fingerprint" key; files without it — saved before this guard — are treated as stale.)
+    # Nested-CV mode (cv_folds > 1) makes the inner hyperparameter CV cheaper and
+    # parcel-grouped. In legacy single-split mode cv_inner stays None → the tuners keep their
+    # historical shuffled 5-fold inner CV, and the fingerprint below is byte-identical to before.
+    _settings = getattr(ds, "settings", None) or {}
+    _instr = _settings.get("modeling", {}).get("instructions", {})
+    cv_inner = None
+    if int(_instr.get("cv_folds", 5)) > 1:
+        cv_inner = _resolve_cv_inner(_instr.get("cv_inner", "auto"), len(ds.X_train))
+
+    # Per-row parcel keys (aligned to X_train) for grouped inner splits; None if unavailable
+    # (safe — grouping only affects inner HP-selection quality, not the outer holdout).
+    groups = None
+    if cv_inner is not None:
+        try:
+            df_train = getattr(ds, "df_train", None)
+            if df_train is not None and "key" in df_train.columns and len(df_train) == len(ds.X_train):
+                groups = df_train.loc[ds.X_train.index, "key"].astype(str).values
+        except Exception:
+            groups = None
+
     fp = _study_fingerprint(
         ds.X_train.columns,
         len(ds.X_train),
         kwargs.get("n_trials", 50),
         seed=kwargs.get("random_state"),
+        extra=(f"cvi={cv_inner}" if cv_inner is not None else None),
     )
     params_path = f"{outpath}/{slug}_params.json"
 
@@ -5254,10 +5410,11 @@ def _get_params(
     if use_saved_params and os.path.exists(params_path):
         saved = json.load(open(params_path, "r"))
         saved_fp = saved.pop("__fingerprint", None) if isinstance(saved, dict) else None
-        if saved_fp == fp:
+        if saved_fp == fp or saved_fp == _CV_AGGREGATE_FINGERPRINT:
             params = saved  # "__fingerprint" already popped, so the model never sees it
             if verbose:
-                print(f"--> using saved parameters")
+                which = "CV-aggregated" if saved_fp == _CV_AGGREGATE_FINGERPRINT else "saved"
+                print(f"--> using {which} parameters")
         else:
             print(
                 f"--> {name}: saved params at {params_path} are stale "
@@ -5278,12 +5435,12 @@ def _get_params(
         params = tune_func(
             ds.X_train,
             ds.y_train,
-            sizes=ds.train_sizes,
-            he_ids=ds.train_he_ids,
             verbose=verbose,
             cat_vars=cat_vars,
             storage_path=storage_path,
             study_name=study_name,
+            groups=groups,
+            cv_inner=cv_inner,
             **kwargs,
         )
         if save_params:
@@ -5870,7 +6027,8 @@ def write_mra_params(
     outpath: str,
     xs: dict,
     dfs: dict,
-    do_plot: bool = False
+    do_plot: bool = False,
+    subsets: frozenset | set | None = None,
 ):
 
     # Log models fit on log(price): the coefficients are log-space (semi-elasticities) and the
@@ -5901,7 +6059,11 @@ def write_mra_params(
     # Keep only non-intercept coefficients for column-wise multiplication
     feature_coefs = params.drop(labels=["intercept"], errors="ignore")
 
+    want = _wanted_contrib_subsets(subsets)
+
     for subset in xs:
+        if subset not in want:
+            continue
         X = xs[subset]
         df = dfs[subset]
         
@@ -5937,6 +6099,11 @@ def write_mra_params(
             df_final = df_final.rename(columns={"prediction": "log_prediction"})
             df_final["check_delta"] = df_final["log_prediction"] - df_final["contribution_sum"]
 
+        _warn_if_contributions_dont_reconstruct(
+            df_final, subset, "MRAModel",
+            pred_col="log_prediction" if prefix else "prediction",
+        )
+
         contrib_path = f"{outpath}/{prefix}contributions_{subset}.csv"
         df_final.to_csv(contrib_path, index=False)
 
@@ -5946,6 +6113,7 @@ def write_multi_mra_params(
     outpath: str,
     smr: SingleModelResults,
     do_plot: bool = False,
+    subsets: frozenset | set | None = None,
 ):
     """
     Write parameters and per-parcel contributions for a Multi-MRA model.
@@ -6178,7 +6346,10 @@ def write_multi_mra_params(
         return df_final
 
     # Write contributions for each subset
+    want = _wanted_contrib_subsets(subsets)
     for subset in ["test", "sales", "universe"]:
+        if subset not in want:
+            continue
         X_full = xs_full.get(subset)
         df_smr = dfs_smr.get(subset)
         df_ds = dfs_ds.get(subset)
@@ -6200,13 +6371,27 @@ def write_multi_mra_params(
             df_final = df_final.rename(columns={"prediction": "log_prediction"})
             df_final["check_delta"] = df_final["log_prediction"] - df_final["contribution_sum"]
 
+        _warn_if_contributions_dont_reconstruct(
+            df_final, subset, "MultiMRAModel",
+            pred_col="log_prediction" if prefix else "prediction",
+        )
+
         contrib_path = f"{outpath}/{prefix}contributions_{subset}.csv"
         df_final.to_csv(contrib_path, index=False)
 
 
 
-def write_gwr_params(model: GWRModel, outpath: str, dfs: dict, do_plot: bool = False):
+def write_gwr_params(
+    model: GWRModel,
+    outpath: str,
+    dfs: dict,
+    do_plot: bool = False,
+    subsets: frozenset | set | None = None,
+):
+    want = _wanted_contrib_subsets(subsets)
     for subset in ["test", "sales", "universe"]:
+        if subset not in want:
+            continue
         
         # Write coefficients
         csv_path = f"{outpath}/params_{subset}.csv"
@@ -6265,6 +6450,7 @@ def write_gwr_params(model: GWRModel, outpath: str, dfs: dict, do_plot: bool = F
         
         ## Add on predictions and check deltas
         df_final = _add_prediction_to_contribution(df, df_contrib, split_name=subset)
+        _warn_if_contributions_dont_reconstruct(df_final, subset, "GWRModel")
         
         ## Write out the final contributions
         contrib_path = f"{outpath}/contributions_{subset}.csv"
@@ -6351,13 +6537,63 @@ def write_local_area_params(
     df_params.to_csv(params_path, index=False)
 
 
+def _write_train_artifacts_from_sales(
+    sales_artifacts,
+    smr: SingleModelResults,
+    outpath: str,
+    prefix: str = "",
+    verbose: bool = False,
+) -> bool:
+    """Write the ``train`` artifacts by filtering the ``sales`` ones, not by re-explaining.
+
+    The training rows are a strict subset of the sales rows explained by the same model, and
+    tree SHAP is per-row: the explainer's background is fixed when it is BUILT (from X_train),
+    never drawn from the batch under explanation, so a row's values do not depend on what else
+    is in the batch. The train artifacts were therefore always a byte-identical row-subset of
+    the sales ones -- a second full SHAP pass for nothing, and on a large model group that is
+    ~5.6% of all SHAP row-work.
+
+    Returns True if the artifacts were written.
+
+    NOTE: the equivalence is a property of the explainers in use (path-dependent tree SHAP, or
+    interventional with a background fixed at construction). An explainer that drew its
+    baseline from the batch being explained would break it, and `write_shaps` would have to go
+    back to explaining train directly.
+    """
+    if sales_artifacts is None:
+        return False
+    df_unit, df_contrib = sales_artifacts
+    if df_unit is None or df_contrib is None:
+        return False
+
+    df_train = getattr(smr, "df_train", None)
+    if df_train is None or len(df_train) == 0 or "key_sale" not in df_train.columns:
+        return False
+    if "key_sale" not in df_contrib.columns or "key_sale" not in df_unit.columns:
+        return False
+
+    train_keys = set(df_train["key_sale"].astype(str))
+    sel_contrib = df_contrib[df_contrib["key_sale"].astype(str).isin(train_keys)]
+    sel_unit = df_unit[df_unit["key_sale"].astype(str).isin(train_keys)]
+
+    sel_unit.to_csv(f"{outpath}/params_{prefix}train.csv", index=False)
+    sel_contrib.to_csv(f"{outpath}/contributions_{prefix}train.csv", index=False)
+    if verbose:
+        print(
+            f"derived {len(sel_contrib)} train rows from the sales pass -> "
+            f"{outpath}/contributions_{prefix}train.csv"
+        )
+    return True
+
+
 def write_shaps(
     model: TreeBasedModel,
     outpath: str,
     smr: SingleModelResults,
     location: str,
     do_plot: bool = False,
-    verbose: bool = False
+    verbose: bool = False,
+    subsets: frozenset | set | None = None,
 ):
     ind_vars = smr.ds.ind_vars
     
@@ -6384,6 +6620,14 @@ def write_shaps(
         "universe": smr.df_universe,
         "sales": smr.df_sales
     }
+
+    # Train is a strict row-subset of sales explained by the same model, so derive it from the
+    # sales pass rather than running SHAP over those rows a second time (see
+    # `_write_train_artifacts_from_sales`). Only possible when sales is being written too;
+    # otherwise fall back to explaining train directly.
+    want = _wanted_contrib_subsets(subsets)
+    derive_train = "train" in want and "sales" in want
+    explain_subsets = (want - {"train"}) if derive_train else want
 
     do_plot = False
 
@@ -6415,10 +6659,11 @@ def write_shaps(
         for param_index, prefix, predict_fn in dimensions:
             shaps = get_full_ngboost_shaps(
                 model, X_train, X_test, X_sales, X_univ,
-                param_index=param_index, verbose=verbose
+                param_index=param_index, verbose=verbose, subsets=explain_subsets
             )
+            written = {}
             for subset in shaps:
-                _prepare_shap_dfs(
+                written[subset] = _prepare_shap_dfs(
                     model,
                     shaps[subset],
                     dfs[subset],
@@ -6431,6 +6676,10 @@ def write_shaps(
                     prefix=prefix,
                     predict_fn=predict_fn,
                 )
+            if derive_train:
+                _write_train_artifacts_from_sales(
+                    written.get("sales"), smr, outpath, prefix=prefix, verbose=verbose
+                )
         return
 
     # LayeredComp: exact path-dependent SHAP on the folded ensemble. It carries
@@ -6438,7 +6687,7 @@ def write_shaps(
     # explicit predictor (which also skips its cat_data/predictor branch).
     if isinstance(model, LayeredCompModel):
         shaps = get_full_layeredcomp_shaps(
-            model, X_train, X_test, X_sales, X_univ, verbose=verbose
+            model, X_train, X_test, X_sales, X_univ, verbose=verbose, subsets=explain_subsets
         )
         bag = model.model
         feat_order = list(bag.feature_names_in_)
@@ -6446,8 +6695,9 @@ def write_shaps(
         def _lc_predict(Xdf):
             return bag.predict(Xdf[feat_order])
 
+        written = {}
         for subset in shaps:
-            _prepare_shap_dfs(
+            written[subset] = _prepare_shap_dfs(
                 model,
                 shaps[subset],
                 dfs[subset],
@@ -6459,6 +6709,10 @@ def write_shaps(
                 do_write=True,
                 predict_fn=_lc_predict,
             )
+        if derive_train:
+            _write_train_artifacts_from_sales(
+                written.get("sales"), smr, outpath, verbose=verbose
+            )
         return
 
     shaps = get_full_model_shaps(
@@ -6467,13 +6721,15 @@ def write_shaps(
         X_test,
         X_sales,
         X_univ,
-        verbose=verbose
+        verbose=verbose,
+        subsets=explain_subsets,
     )
 
+    written = {}
     for subset in shaps:
         shap_entry = shaps[subset]
         df = dfs[subset]
-        _prepare_shap_dfs(
+        written[subset] = _prepare_shap_dfs(
             model,
             shap_entry,
             df,
@@ -6483,6 +6739,11 @@ def write_shaps(
             do_plot=do_plot,
             verbose=verbose,
             do_write=True
+        )
+
+    if derive_train:
+        _write_train_artifacts_from_sales(
+            written.get("sales"), smr, outpath, verbose=verbose
         )
 
 
@@ -6582,6 +6843,14 @@ def _prepare_shap_dfs(
     
     # Add on predictions and check deltas
     df_contrib_w_pred = _add_prediction_to_contribution(df, df_contrib, split_name=subset)
+
+    # Only the un-prefixed (mean, price-space) artifacts are expected to reconstruct. The
+    # NGBoost "std_" dimension explains log(scale) while the frame's `prediction` column is
+    # the mean prediction, so its check_delta is apples-to-oranges by design.
+    if not prefix:
+        _warn_if_contributions_dont_reconstruct(
+            df_contrib_w_pred, subset, type(model).__name__
+        )
     
     if do_write:
         # Write params to disk
@@ -6656,6 +6925,59 @@ def _contrib_to_unit_values(df_contrib: pd.DataFrame, df_base: pd.DataFrame, spl
     return df_out_renamed
 
 
+# A contributions file is only meaningful if `contribution_sum` reconstructs the
+# `prediction` column it sits next to. CatBoost's approximate SHAP leaves a small constant
+# baseline drift (a few percent is normal and harmless); anything well above that means the
+# attributions and the prediction came from DIFFERENT models. That is exactly what happens
+# when a cross-validated holdout frame -- whose predictions come from the per-fold models --
+# is explained by the production model, so this is the tripwire for that class of bug.
+_CONTRIB_RECON_TOL = 0.05
+
+# Per-subset artifact names a writer can emit. ``subsets=None`` means "all of them" and is
+# what the single-split pipeline always passes; a narrower set restricts which
+# ``contributions_<subset>.csv`` / ``params_<subset>.csv`` files get written (and, for SHAP,
+# which passes get computed at all). Artifacts that describe the MODEL rather than a subset
+# -- MRA coefficient tables, Multi-MRA global params, LocalArea rate tables -- are always
+# written, since they have no subset to filter on.
+_ALL_CONTRIB_SUBSETS = frozenset({"train", "test", "sales", "universe"})
+
+
+def _wanted_contrib_subsets(subsets) -> frozenset:
+    """Normalize a subset whitelist; ``None`` means every subset."""
+    return _ALL_CONTRIB_SUBSETS if subsets is None else frozenset(subsets)
+
+
+def _warn_if_contributions_dont_reconstruct(
+    df_final: pd.DataFrame,
+    subset: str,
+    label: str,
+    pred_col: str = "prediction",
+    tol: float = _CONTRIB_RECON_TOL,
+):
+    """Warn when contribution_sum fails to reconstruct the prediction it should explain."""
+    if df_final is None or len(df_final) == 0:
+        return
+    if "check_delta" not in df_final.columns or pred_col not in df_final.columns:
+        return
+    delta = pd.to_numeric(df_final["check_delta"], errors="coerce").abs().to_numpy()
+    pred = pd.to_numeric(df_final[pred_col], errors="coerce").abs().to_numpy()
+    # Bail before nanmean on an all-NaN or empty slice -- numpy emits its own RuntimeWarning
+    # for those, and a diagnostic has no business adding noise of its own.
+    if not (np.isfinite(delta).any() and np.isfinite(pred).any()):
+        return
+    denom = float(np.nanmean(pred))
+    numer = float(np.nanmean(delta))
+    if not np.isfinite(denom) or not np.isfinite(numer) or denom == 0:
+        return
+    rel = numer / denom
+    if rel > tol:
+        warnings.warn(
+            f"{label}: '{subset}' contributions do not reconstruct {pred_col} "
+            f"(mean |check_delta| = {rel:.1%} of mean {pred_col}, tolerance {tol:.0%}). "
+            f"The attributions and the {pred_col} column may come from different models."
+        )
+
+
 def _add_prediction_to_contribution(
     df: pd.DataFrame,
     df_contrib: pd.DataFrame,
@@ -6715,10 +7037,22 @@ def write_model_parameters(
     location: str,
     outpath: str,
     do_plot: bool = False,
-    verbose: bool = False
+    verbose: bool = False,
+    subsets: frozenset | set | None = None,
 ):
-    
-    print(f"write model parameters to {outpath}")
+    """Write a model's parameter / contribution artifacts for the requested subsets.
+
+    ``subsets`` defaults to ``None``, meaning every subset the engine supports -- the
+    single-split behavior, unchanged. Pass a narrower set (e.g. ``{"test"}``) to emit only
+    those ``contributions_<subset>.csv`` / ``params_<subset>.csv`` files; for SHAP-based
+    engines the skipped subsets are never explained at all, not merely dropped on write.
+    Model-level artifacts with no subset to filter on (MRA coefficients, Multi-MRA global
+    params, LocalArea rate tables) are written regardless.
+    """
+
+    if verbose:
+        # Gated: cross-validation calls this once per fold per model, which drowns the log.
+        print(f"write model parameters to {outpath}")
     xs = {
         "test": smr.ds.X_test,
         "sales": smr.ds.X_sales,
@@ -6746,17 +7080,18 @@ def write_model_parameters(
         # TODO
         pass
     elif isinstance(model, MRAModel):
-        write_mra_params(model, outpath, xs, dfs, do_plot)
+        write_mra_params(model, outpath, xs, dfs, do_plot, subsets=subsets)
     elif isinstance(model, MultiMRAModel):
-        write_multi_mra_params(model, outpath, smr, do_plot)
+        write_multi_mra_params(model, outpath, smr, do_plot, subsets=subsets)
     elif isinstance(model, GWRModel):
-        write_gwr_params(model, outpath, dfs, do_plot)
+        write_gwr_params(model, outpath, dfs, do_plot, subsets=subsets)
     elif isinstance(model, TreeBasedModel):
-        write_shaps(model, outpath, smr, location, do_plot, verbose=verbose)
+        write_shaps(model, outpath, smr, location, do_plot, verbose=verbose, subsets=subsets)
     elif isinstance(model, LocalAreaModel):
+        # No per-subset artifacts -- one model-level rate table, so `subsets` doesn't apply.
         write_local_area_params(model, smr, outpath, do_plot)
     elif isinstance(model, LayeredCompModel):
-        write_shaps(model, outpath, smr, location, do_plot, verbose=verbose)
+        write_shaps(model, outpath, smr, location, do_plot, verbose=verbose, subsets=subsets)
     # ...and so on
     else:
         raise TypeError(f"Unexpected model type: {type(model).__name__}")

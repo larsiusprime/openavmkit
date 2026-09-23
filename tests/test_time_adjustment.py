@@ -58,6 +58,37 @@ def test_interpolate_missing_periods():
   assert(lists_are_equal(expected, results))
 
 
+def _resample_to(series_df, value_col, period_col, freq):
+  """Collapse a daily period/value frame onto the given period grain."""
+  s = series_df.copy()
+  s[period_col] = pd.to_datetime(s[period_col])
+  return s.set_index(period_col)[value_col].resample(freq).mean()
+
+
+def _index_vs_truth(df_derived, df_truth, freq):
+  """Normalise a derived index and the generator's ground-truth curve to their
+  first common period and return (derived, truth) aligned on that grain."""
+  d = _resample_to(df_derived, "value", "period", freq)
+  t = _resample_to(df_truth, "value", "period", freq)
+  common = d.index.intersection(t.index)
+  d = d.loc[common]
+  t = t.loc[common]
+  return d / d.iloc[0], t / t.iloc[0]
+
+
+# Thresholds below were calibrated by running this fixture across seeds
+# 1 / 42 / 777 / 1337 / 2024. The observed correlation floor against
+# time_land_mult was +0.63 (M), +0.67 (Q), +0.86 (Y); 0.45 leaves margin.
+#
+# A tight bound on relative error is NOT achievable here: across those seeds the
+# median relative error ranged 5%-24% and the max reached 34%, because the
+# generator's per-sale noise dominates at monthly and quarterly grain. Shape
+# agreement (correlation) is the stable signal, so that is what these assert,
+# with a loose error ceiling to catch gross breakage.
+_CORR_FLOOR = 0.45
+_MEDIAN_REL_ERR_CEILING = 0.40
+
+
 def test_time_adjustment():
   print("")
   sd = generate_basic(100)
@@ -65,6 +96,7 @@ def test_time_adjustment():
   sup = SalesUniversePair(sd.df_sales, sd.df_universe)
   df = get_hydrated_sales_from_sup(sup)
 
+  # punch a hole so the interpolation path is exercised too
   df.loc[df["sale_year_quarter"].eq("2024-Q3"), "sale_price_per_impr_sqft"] = None
 
   # TODO: replace with proper sales subset function
@@ -74,33 +106,34 @@ def test_time_adjustment():
   df_time_q = calculate_time_adjustment(df, settings={}, period="Q")
   df_time_y = calculate_time_adjustment(df, settings={}, period="Y")
 
-  time_land_mult = sd.time_land_mult.copy()
+  for label, df_time, freq in (
+    ("M", df_time_m, "MS"),
+    ("Q", df_time_q, "QS"),
+    ("Y", df_time_y, "YS"),
+  ):
+    assert len(df_time) > 0, f"{label}: no index produced"
+    assert set(["period", "value"]).issubset(df_time.columns), f"{label}: bad columns"
+    assert df_time["value"].notna().all(), f"{label}: index has NaN values"
+    assert df_time["value"].gt(0).all(), f"{label}: index has non-positive values"
 
-  time_land_mult["value"] = time_land_mult["value"] / time_land_mult["value"].iloc[0]
+    derived, truth = _index_vs_truth(df_time, sd.time_land_mult, freq)
+    assert len(derived) >= 3, f"{label}: only {len(derived)} common periods"
 
-  df_norm = df.copy()
-  df_norm = df_norm[df_norm["sale_price_per_impr_sqft"].gt(0)]
-  df_norm["period"] = pd.to_datetime(df_norm["sale_year_quarter"])
-  first_period = df_norm["period"].min()
-  df_norm["sale_price_per_impr_sqft"] = df_norm["sale_price_per_impr_sqft"] / df_norm[df_norm["period"].eq(first_period)]["sale_price_per_impr_sqft"].median()
+    corr = derived.corr(truth)
+    assert corr > _CORR_FLOOR, (
+      f"{label}: derived index does not track the generator's true land curve "
+      f"(corr={corr:.4f}, floor={_CORR_FLOOR})"
+    )
 
-  # plt.plot(df_time_m["period"], df_time_m["value"])
-  # plt.plot(df_time_q["period"], df_time_q["value"])
-  # plt.plot(df_time_y["period"], df_time_y["value"])
-  # plt.plot(time_land_mult["period"], time_land_mult["value"])
-  #
-  # #scatterplot df norm:
-  # plt.scatter(df_norm["period"], df_norm["sale_price_per_impr_sqft"], color="gray", s=1)
-  #
-  # plt.show()
+    rel_err = ((derived - truth).abs() / truth).dropna()
+    assert rel_err.median() < _MEDIAN_REL_ERR_CEILING, (
+      f"{label}: median relative error {rel_err.median():.4f} exceeds "
+      f"{_MEDIAN_REL_ERR_CEILING}"
+    )
 
 
 def test_apply_time_adjustment():
   print("")
-  sd = generate_basic(100)
-
-  sup = SalesUniversePair(sd.df_sales, sd.df_universe)
-  df = get_hydrated_sales_from_sup(sup)
   settings = {
     "modeling":{
       "model_groups":{
@@ -109,20 +142,42 @@ def test_apply_time_adjustment():
     }
   }
 
-  # TODO: replace with proper sales subset function
-  df = df[df["sale_price"].gt(0) & df["valid_sale"].ge(1)]
+  # The point of the adjustment is to remove the time trend, so the per-period
+  # median of price-per-sqft should come out FLATTER than it went in. Each period
+  # grain is measured on its own fresh frame -- adjusting an already-adjusted
+  # frame in a loop would compound the corrections.
+  for period, max_ratio in (("M", 0.85), ("Q", 0.95), ("Y", 1.0)):
+    sd = generate_basic(100)
+    sup = SalesUniversePair(sd.df_sales, sd.df_universe)
+    df = get_hydrated_sales_from_sup(sup)
+    # TODO: replace with proper sales subset function
+    df = df[df["sale_price"].gt(0) & df["valid_sale"].ge(1)]
 
-  for period, color, color2 in [("M","red", "pink"), ("Q","blue", "skyblue"), ("Y","black", "lightgray")]:
-    df = apply_time_adjustment(df, settings=settings, period=period, write=False, verbose=True)
+    before = df.groupby("sale_year_month")["sale_price_per_impr_sqft"].median()
+    cv_before = before.std() / before.mean()
 
-    df_median = df.groupby("sale_year_month")["sale_price_time_adj_per_impr_sqft"].agg(["count", "median"])
-    df_median["period"] = pd.to_datetime(df_median.index)
+    out = apply_time_adjustment(df, settings=settings, period=period,
+                                write=False, verbose=True)
 
-    # plt.plot(df_median["period"], df_median["median"], color=color)
-    # plt.scatter(df["sale_date"], df["sale_price_per_impr_sqft"], s=1, color=color2)
-    # plt.scatter(df["sale_date"], df["sale_price_time_adj_per_impr_sqft"], s=1, color=color2)
+    assert "sale_price_time_adj" in out.columns, f"{period}: no adjusted price written"
+    adj = out["sale_price_time_adj"]
+    assert adj.notna().all(), f"{period}: adjusted price has NaN"
+    assert adj.gt(0).all(), f"{period}: adjusted price has non-positive values"
 
-  # plt.show()
+    after = out.groupby("sale_year_month")["sale_price_time_adj_per_impr_sqft"].median()
+    cv_after = after.std() / after.mean()
+
+    # Worst observed ratios across seeds 1/42/777/1337/2024 were
+    # M 0.706, Q 0.859, Y 0.932; the ceilings here leave margin.
+    assert cv_after < cv_before, (
+      f"{period}: adjustment did not flatten the series "
+      f"(CV {cv_before:.4f} -> {cv_after:.4f})"
+    )
+    assert cv_after < max_ratio * cv_before, (
+      f"{period}: adjustment flattened less than expected "
+      f"(CV {cv_before:.4f} -> {cv_after:.4f}, ratio {cv_after / cv_before:.3f} "
+      f"but wanted < {max_ratio})"
+    )
 
 
 # ---------------------------------------------------------------------------

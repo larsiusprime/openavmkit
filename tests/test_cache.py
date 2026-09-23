@@ -240,3 +240,45 @@ def test_cache_df3():
   assert was_cached == "cached"
   assert dfs_are_equal(gdf_enriched, gdf, "key")
   clear_cache("synthetic", "df")
+
+
+def test_cached_df_diff_skips_unchanged_columns(monkeypatch):
+  """Only genuinely modified columns should be rewritten on a save.
+
+  The column-modified test required a position to be BOTH values-equal AND
+  both-NA at once, which is unsatisfiable for any non-empty column, so every
+  common column was flagged as modified and rewritten every time.
+  """
+  import openavmkit.utilities.cache as C
+
+  base = pd.DataFrame({
+    "key": ["a", "b", "c", "d"],
+    "untouched_num": [1.0, 2.0, 3.0, 4.0],
+    "untouched_str": ["x", "y", "z", "w"],
+    "some_nans": [1.0, float("nan"), 3.0, float("nan")],
+    "all_nan": [float("nan")] * 4,
+    "changed": [10, 20, 30, 40],
+  })
+
+  written = []
+  real_to_parquet = C.to_parquet_safe
+
+  def spy(df, path, *a, **k):
+    written.extend(c for c in df.columns if c != "key")
+    return real_to_parquet(df, path, *a, **k)
+
+  monkeypatch.setattr(C, "to_parquet_safe", spy)
+
+  # seed the cache, then save again with exactly one column changed
+  write_cached_df(pd.DataFrame(columns=base.columns), base.copy(), "difftest", key="key")
+  written.clear()
+
+  df_new = base.copy()
+  df_new.loc[0, "changed"] = 999
+  write_cached_df(base.copy(), df_new, "difftest", key="key")
+
+  assert "changed" in written, "a genuinely modified column must be rewritten"
+  for col in ("untouched_num", "untouched_str", "some_nans", "all_nan"):
+    assert col not in written, f"{col} was unchanged but got rewritten"
+
+  clear_cache("difftest", "df")
