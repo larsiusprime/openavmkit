@@ -1830,9 +1830,10 @@ def identify_outliers(
                 }
                 dfm = pd.read_csv(path, dtype=dtypes, usecols=usecols)
                 dfm["sale_date"] = pd.to_datetime(dfm["sale_date"])
+                # Outliers are the sales OUTSIDE the [0.75, 1.25] ratio band.
                 dfm = dfm[
-                    dfm["prediction_ratio"].ge(0.75) |
-                    dfm["prediction_ratio"].le(1.25)
+                    dfm["prediction_ratio"].lt(0.75) |
+                    dfm["prediction_ratio"].gt(1.25)
                 ]
                 key_fields = [
                     "key_sale", 
