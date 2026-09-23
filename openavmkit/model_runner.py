@@ -4999,7 +4999,10 @@ def _model_performance_metrics(
             slope_trim, r2_trim = reg["slope"], reg["r2"]
 
             mse_trim = calc_mse(y_pred_trim, y_true_trim)
-            rmse = np.sqrt(mse_trim)
+            # Keep this in rmse_trim. Writing it to `rmse` clobbered the untrimmed value
+            # computed above, so the untrimmed table then reported the TRIMMED RMSE
+            # alongside the untrimmed MSE -- neither table's RMSE was sqrt(its own MSE).
+            rmse_trim = np.sqrt(mse_trim)
         else:
             slope_trim = np.nan
             mape_trim = np.nan
@@ -5023,12 +5026,13 @@ def _model_performance_metrics(
         trimmed_data["Model"].append(model_name)
         trimmed_data["count"].append(count_trim)
         trimmed_data["MAPE"].append(mape_trim)
-        trimmed_data["MSE"].append(mse)
-        trimmed_data["RMSE"].append(rmse)
+        trimmed_data["MSE"].append(mse_trim)
+        trimmed_data["RMSE"].append(rmse_trim)
         trimmed_data["m.ratio"].append(model_result.pred_test.ratio_study.median_ratio_trim)
         trimmed_data["avg.ratio"].append(model_result.pred_test.ratio_study.mean_ratio_trim)
-        
-        # Calculate VEI for trimmed data
+
+        # NOTE: this is the UNTRIMMED VEI. There is no trimmed vertical-equity score on
+        # the results object to use here, so the column repeats the untrimmed value.
         trimmed_data["VEI"].append(model_result.ve_test["vei"])
         trimmed_data["VEI_sig"].append(model_result.ve_test["vei_significance"])
         trimmed_data["Slope"].append(slope_trim)
