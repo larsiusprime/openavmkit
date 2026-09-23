@@ -3647,9 +3647,14 @@ def _run_local_ensemble_test_and_paint(
     )
     timing.stop("total")
     
-    print(f"Results: score = {results.utility_sales_lookback}, r2 = {results.pred_sales_lookback.r2}, mape = {results.pred_sales_lookback.mape}, rmse = {results.pred_sales_lookback.rmse}")
-    score = results.utility_sales_lookback
-    
+    # Score on the HELD-OUT set, not the sales lookback. The lookback slice is scored
+    # with a model that trained on those same rows (under cross-validation Phase 2 is
+    # refit on every trainable sale, so it is entirely in-sample), which rewards members
+    # that memorised the sales. utility_test is leakage-free: under CV it is the stitched
+    # out-of-fold frame covering 100% of sales; otherwise it is the holdout split.
+    print(f"Results: score = {results.utility_test}, r2 = {results.pred_test.r2}, mape = {results.pred_test.mape}, rmse = {results.pred_test.rmse}")
+    score = results.utility_test
+
     dfs = {
         "sales": df_sales_ensemble,
         "universe": df_univ_ensemble,
@@ -3800,6 +3805,46 @@ def _optimize_ensemble(
     return best_list
 
 
+def _worst_ensemble_member(ensemble_list: list[str], all_results) -> str | None:
+    """The member to evict next: the one with the worst HELD-OUT score.
+
+    Ranked on ``utility_test`` -- the same leakage-free metric the ensemble itself is
+    scored with. Under cross-validation that is the stitched out-of-fold frame covering
+    every sale; otherwise it is the holdout split.
+
+    It must NOT be ``utility_sales_lookback``: that is the error over the sales lookback
+    window, scored with a model that trained on those very rows (under CV, Phase 2 is
+    refit on every trainable sale, so it is wholly in-sample). Ranking members that way
+    rewards whichever model memorised the sales hardest. Measured on Petersburg, the two
+    metrics disagree about the ordering in every model group, and the assessor baseline
+    -- the one "model" that never trains on sales -- is the only one without a large
+    optimism gap.
+
+    Parameters
+    ----------
+    ensemble_list : list[str]
+        Names of the current ensemble members.
+    all_results : MultiModelResults
+        Carries ``model_results``, keyed by model name.
+
+    Returns
+    -------
+    str or None
+        The worst member, or None if none of the names have results.
+    """
+    worst_model = None
+    worst_score = float("-inf")
+    for key in ensemble_list:
+        if key in all_results.model_results:
+            model_score = all_results.model_results[key].utility_test
+            # NaN never compares greater, so an unscored member is not evicted on its
+            # account -- the first genuinely-scored member still wins the comparison.
+            if model_score > worst_score:
+                worst_score = model_score
+                worst_model = key
+    return worst_model
+
+
 def _optimize_ensemble_iteration(
     df_test: pd.DataFrame,
     df_sales: pd.DataFrame,
@@ -3873,8 +3918,11 @@ def _optimize_ensemble_iteration(
     )
     timing.stop("total")
 
-    print(f"Results: score = {results.utility_sales_lookback}, r2 = {results.pred_sales_lookback.r2}, mape = {results.pred_sales_lookback.mape}, rmse = {results.pred_sales_lookback.rmse}")
-    score = results.utility_sales_lookback
+    # Score on the HELD-OUT set -- see the note in _run_local_ensemble_test_and_paint.
+    # Selecting ensemble membership on the sales lookback rewards members that trained
+    # on those rows; utility_test is the leakage-free alternative on the same object.
+    print(f"Results: score = {results.utility_test}, r2 = {results.pred_test.r2}, mape = {results.pred_test.mape}, rmse = {results.pred_test.rmse}")
+    score = results.utility_test
 
     # Add early exit if score is nan
     if pd.isna(score):
@@ -3891,18 +3939,7 @@ def _optimize_ensemble_iteration(
         best_score = score
         best_list = ensemble_list.copy()
 
-    # identify the WORST individual model:
-    worst_model = None
-    worst_score = float("-inf")
-    for key in ensemble_list:
-        if key in all_results.model_results:
-            model_results = all_results.model_results[key]
-
-            model_score = model_results.utility_sales_lookback
-
-            if model_score > worst_score:
-                worst_score = model_score
-                worst_model = key
+    worst_model = _worst_ensemble_member(ensemble_list, all_results)
 
     if worst_model is not None and len(ensemble_list) > 1:
         ensemble_list.remove(worst_model)
