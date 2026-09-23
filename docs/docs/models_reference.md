@@ -230,6 +230,7 @@ Production-grade tree-based ensembles. Handle nonlinearities, interactions, and 
 - **Accepts**: `ind_vars`, `n_trials`. CatBoost also accepts `use_gpu`.
 - **Hyperparameter tuning**: yes, via Optuna. Tuned parameters cached at `<outpath>/<slug>_params.json` (see [advanced_settings.md § 8.4](advanced_settings.md#84-saved-model-parameters-different-semantics)).
 - **Native spatial awareness**: no — feed location via `latitude_norm`/`longitude_norm`, polar coords, or categorical region fields.
+- **Params / contributions**: tree-SHAP, but **not all three engines compute it the same way**. **XGBoost** and **CatBoost** use SHAP's *approximate* mode (Saabas-style path attribution for XGBoost, `shap_calc_type="Approximate"` for CatBoost); **LightGBM** uses the exact path-dependent algorithm, since approximate mode is not available for it. Exact TreeSHAP on a full parcel universe is dramatically more expensive — often the difference between minutes and hours — which is why approximate is the default and there is deliberately no setting to switch it. The additivity check is also off by default, so attributions are not verified to sum back to the prediction. In practice the the loss of precision is small.
 - **When to use**: most production AVM workloads. Often the strongest single-model performers.
 - **When not to use**: very small training sets; when interpretability is a hard requirement.
 
