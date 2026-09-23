@@ -23,6 +23,7 @@ openavmkit.pipeline : High-level wrappers for the loading and enrichment
 openavmkit.cleaning : Operates on the ``sup`` after data is loaded.
 """
 import gc
+import json
 import math
 import os
 from datetime import date
@@ -356,9 +357,11 @@ def get_sale_field(settings: dict, df: pd.DataFrame = None) -> str:
         sale_field = "sale_price_time_adj"
     else:
         sale_field = "sale_price"
+    # When time adjustment is on but the caller's frame does not carry the adjusted
+    # column, fall back to the raw price rather than naming a column that isn't there.
     if df is not None:
-        if sale_field == "sale_price_time_adj" and "sale_price_time_adj" in df.columns:
-            return "sale_price_time_adj"
+        if sale_field == "sale_price_time_adj" and "sale_price_time_adj" not in df.columns:
+            return "sale_price"
     return sale_field
 
 
@@ -1866,6 +1869,56 @@ def _enrich_df_distances(
         return df
 
 
+_STREETS_CACHE_PATH = "in/osm/streets.parquet"
+_STREETS_SIG_PATH = "in/osm/streets.signature.json"
+
+
+def _read_streets_signature() -> dict | None:
+    """Read the sidecar signature for the cached streets file, if there is one."""
+    if not os.path.exists(_STREETS_SIG_PATH):
+        return None
+    try:
+        with open(_STREETS_SIG_PATH, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _write_streets_signature(signature: dict) -> None:
+    """Record what parcel set the cached streets file was built from."""
+    try:
+        with open(_STREETS_SIG_PATH, "w") as f:
+            json.dump(signature, f)
+    except OSError as e:
+        warnings.warn(f"Could not write {_STREETS_SIG_PATH}: {e}")
+
+
+# Street stubs that hold text rather than numbers. The pivot in _enrich_df_streets
+# emits slots 1..4 per parcel, so any parcel fronting fewer than four roads gets
+# missing values in the higher slots.
+_STREET_TEXT_STUBS = ["road_name", "road_type", "road_face"]
+
+
+def _fill_street_text_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Give the textual street columns an explicit UNKNOWN for absent road slots.
+
+    _finish_df_streets already fills the numeric stubs (frontage / depth /
+    dist_to_road) with 0.0, but left the textual ones missing. These fields are not
+    in the settings' categorical list, so the residual fill in cleaning never reaches
+    them either, and a later blanket string cast renders them as the literal text
+    "None" -- a junk category that then flows into models and reports.
+    """
+    for stub in _STREET_TEXT_STUBS:
+        for i in range(1, 5):
+            for col in (f"{stub}_{i}", f"osm_{stub}_{i}"):
+                if col in df.columns:
+                    filled = df[col].astype("object")
+                    # catch both real nulls and any that were already stringified
+                    filled = filled.mask(filled.isin(["None", "nan", "NaN", "<NA>"]))
+                    df[col] = filled.fillna("UNKNOWN").astype("str")
+    return df
+
+
 def _enrich_df_streets(
     df_in: gpd.GeoDataFrame,
     settings: dict,
@@ -1887,16 +1940,37 @@ def _enrich_df_streets(
         },
     }
 
-    if os.path.exists("in/osm/streets.parquet"):
-        df_streets = pd.read_parquet("in/osm/streets.parquet")
-        if "key" in df_streets:
-            df_out = df_in.copy()
-            df_out = df_out.merge(df_streets, on="key", how="left")
+    # The signature above is only worth computing if we actually check it: a cached
+    # streets file built from a different parcel set (different row count or extent)
+    # must not be merged in as if it matched.
+    if os.path.exists(_STREETS_CACHE_PATH):
+        cached_sig = _read_streets_signature()
+        if cached_sig is not None and cached_sig != signature:
             if verbose:
                 print(
-                    f"--> found streets in in/osm/streets.parquet, loading from disk!"
+                    f"--> {_STREETS_CACHE_PATH} does not match the current parcel set "
+                    f"(signature mismatch); rebuilding streets."
                 )
-            return df_out
+        else:
+            df_streets = pd.read_parquet(_STREETS_CACHE_PATH)
+            if "key" in df_streets:
+                if cached_sig is None:
+                    warnings.warn(
+                        f"{_STREETS_CACHE_PATH} has no accompanying "
+                        f"{_STREETS_SIG_PATH}, so it cannot be validated against the "
+                        f"current parcel set. Using it as-is. Delete it to force a "
+                        f"rebuild with a signature."
+                    )
+                df_out = df_in.copy()
+                df_out = df_out.merge(df_streets, on="key", how="left")
+                # Also normalise here, so caches written before this fix (and parcels
+                # the cache has no row for) do not carry missing values forward.
+                df_out = _fill_street_text_columns(df_out)
+                if verbose:
+                    print(
+                        f"--> found streets in {_STREETS_CACHE_PATH}, loading from disk!"
+                    )
+                return df_out
     # ---- setup parcels ----
 
     t = TimingData()
@@ -2425,7 +2499,9 @@ def _enrich_df_streets(
 
     os.makedirs("in/osm", exist_ok=True)
 
-    df_net_streets.to_parquet("in/osm/streets.parquet")
+    df_net_streets.to_parquet(_STREETS_CACHE_PATH)
+    # Record the parcel set this was built from so the read path can validate it
+    _write_streets_signature(signature)
 
     return df_out
 
@@ -2488,6 +2564,10 @@ def _finish_df_streets(df: gpd.GeoDataFrame, settings: dict) -> gpd.GeoDataFrame
             renames[f"{stub}_{i}"] = f"osm_{stub}_{i}"
 
     df = df.rename(columns=renames)
+
+    # The numeric stubs above were filled with 0.0; give the textual ones the same
+    # treatment so absent road slots carry UNKNOWN rather than a missing value.
+    df = _fill_street_text_columns(df)
 
     return df
 
@@ -2573,7 +2653,16 @@ def _do_enrich_year_built(
     else:
         df.loc[df["sale_year"].notna(), new_col] = df["sale_year"] - df[col]
 
-        df.loc[df["sale_year"].isna() | df["sale_year"].le(0), new_col] = 0
+        # Guard the year-built side too, exactly as the non-sales branch does: a
+        # year_built of 0 (a common assessor placeholder) against a valid sale year
+        # otherwise yields a ~2000-year-old building.
+        df.loc[
+            df["sale_year"].isna()
+            | df["sale_year"].le(0)
+            | df[col].isna()
+            | df[col].le(0),
+            new_col,
+        ] = 0
     return df
 
 
