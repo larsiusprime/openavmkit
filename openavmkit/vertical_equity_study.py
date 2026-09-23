@@ -28,7 +28,7 @@ def get_vertical_equity_scores(df, sale_field: str, valuation_field: str) -> Dic
         percentile_group_count = 2
     elif 51 <= observation_count <= 500:
         percentile_group_count = 4
-    elif observation_count > 501:
+    elif observation_count > 500:
         percentile_group_count = 10
     else:
         # VEI cannot be calculated for less than 20 observations
