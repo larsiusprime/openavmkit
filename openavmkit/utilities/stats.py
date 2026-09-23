@@ -451,6 +451,93 @@ def trim_outliers(
 
     return trimmed
 
+# z for a two-tailed interval, per Appendix D.2 ("For a 90% confidence interval,
+# replace 1.96 with 1.645").
+_MEDIAN_CI_Z = {0.90: 1.645, 0.95: 1.96}
+
+
+def calc_median_confidence_interval(
+    values: np.ndarray, confidence: float = 0.90
+) -> tuple[float, float]:
+    """Confidence interval around a sample MEDIAN, per the IAAO exposure draft.
+
+    Implements Appendix D.2 of the Standard on Ratio Studies (Exposure Draft, May
+    2026): rank the values ascending, take the offset
+
+        j = z * sqrt(n) / 2        (n odd)
+        j = z * sqrt(n) / 2 + 0.5  (n even)
+
+    rounded up, then count j ranks up and down the array from the median.
+
+    This is a NONPARAMETRIC, order-statistic interval, not a t-interval around the
+    mean. D.2 opens by saying why: "Unlike the mean, the median confidence interval
+    does not depend on the assumption of a normal distribution, and it is not nearly
+    as affected by outlier ratios." Ratio distributions are routinely skewed, so the
+    distinction changes answers rather than decorating them.
+
+    Appendix D.4 gives an alternative binomial (Clapp, 1989) table for n <= 30, but
+    the VEI does not use it: E.1 Step 4 points at D.2 specifically, and the worked
+    example in E.4 confirms it -- with quartiles of 13 and 14 sales, the published
+    bounds are the bare order statistics D.2 selects, not D.4's interpolated ones.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        Sample values (e.g. assessment ratios). NaNs are dropped.
+    confidence : float, optional
+        Confidence level; 0.90 (the VEI's) or 0.95.
+
+    Returns
+    -------
+    tuple[float, float]
+        (lower, upper), both NaN for an empty sample. The bounds saturate at the
+        smallest and largest observations when j reaches past the ends of the array,
+        which is what a small sample can honestly support.
+
+    Raises
+    ------
+    ValueError
+        If `confidence` is neither 0.90 nor 0.95.
+    """
+    z = None
+    for level, zz in _MEDIAN_CI_Z.items():
+        if np.isclose(confidence, level):
+            z = zz
+            break
+    if z is None:
+        raise ValueError(
+            f"calc_median_confidence_interval supports confidence levels "
+            f"{sorted(_MEDIAN_CI_Z)}; got {confidence!r}"
+        )
+
+    v = np.asarray(values, dtype=float)
+    v = v[~np.isnan(v)]
+    n = v.size
+    if n == 0:
+        return float("nan"), float("nan")
+
+    r = np.sort(v)  # r[0] is rank 1
+
+    j = z * math.sqrt(n) / 2.0
+    if n % 2 == 0:
+        j += 0.5
+    j = math.ceil(j)
+
+    if n % 2 == 1:
+        # Median is the single central rank; step j either side of it.
+        median_rank = (n + 1) // 2
+        lo_rank, hi_rank = median_rank - j, median_rank + j
+    else:
+        # Median falls between ranks n/2 and n/2 + 1. Counting j ranks outward from
+        # each of those two central observations (inclusive) is what reproduces the
+        # published example: n=14, j=4 gives ranks 4 and 11.
+        lo_rank, hi_rank = (n // 2) - j + 1, (n // 2) + j
+
+    lo_rank = max(1, min(n, lo_rank))
+    hi_rank = max(1, min(n, hi_rank))
+    return float(r[lo_rank - 1]), float(r[hi_rank - 1])
+
+
 def trim_outliers_mask(
     values: np.ndarray,
     max_percent: float = 0.10,
