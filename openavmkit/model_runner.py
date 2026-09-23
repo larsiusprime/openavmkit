@@ -5186,7 +5186,10 @@ def _run_models(
             print(f"Skipping model {model_name}.")
             continue
         model_entry = model_entries.get(model_name, model_entries.get("default", {}))
-        model_engine = model_entry.get("engine", model_name)
+        # The settings schema names the engine with the "model" key (see
+        # docs/models_reference.md), which is also what run_one_model reads. Reading
+        # "engine" here made every aliased entry resolve to its own name instead.
+        model_engine = model_entry.get("model", model_name)
         # For tree-based models, and multi-mra, we don't perform variable reduction
         if model_engine not in ["pass_through", "ground_truth", "xgboost", "lightgbm", "catboost", "multi_mra"]:
             auto_reduce_vars = True
@@ -5223,7 +5226,7 @@ def _run_models(
     # Announce the determinism contract once if any tunable tree model will run.
     _tunable = {"xgboost", "lightgbm", "catboost", "ngboost", "lcomp"}
     if any(
-        model_entries.get(m, model_entries.get("default", {})).get("engine", m) in _tunable
+        model_entries.get(m, model_entries.get("default", {})).get("model", m) in _tunable
         or m in _tunable
         for m in models_to_run
         if m not in models_to_skip
@@ -5237,8 +5240,8 @@ def _run_models(
             print(f"Skipping model {model_name}.")
             continue
         model_entry = model_entries.get(model_name, model_entries.get("default", {}))
-        model_engine = model_entry.get("engine", model_name)
-        
+        model_engine = model_entry.get("model", model_name)
+
         # Tree-based models don't auto-reduce variables ever
         if model_engine not in ["xgboost", "catboost", "lightgbm"]:
             model_variables = best_variables
