@@ -35,7 +35,7 @@ from openavmkit.utilities.settings import (
   _is_series_all_bools,
 )
 from openavmkit.utilities.cache import write_cache
-from openavmkit.calculations import resolve_filter
+from openavmkit.calculations import resolve_filter, perform_calculations
 
 
 def clean_valid_sales(sup: SalesUniversePair, settings: dict) -> SalesUniversePair:
@@ -61,8 +61,12 @@ def clean_valid_sales(sup: SalesUniversePair, settings: dict) -> SalesUniversePa
     # load metadata
     val_date = get_valuation_date(settings)
     val_year = val_date.year
-    from openavmkit.utilities.settings import resolve_use_sales_from
-    use_sales_from_impr, use_sales_from_vacant = resolve_use_sales_from(settings)
+    # Use the FLOOR (widest window any model group needs), not a per-group window: this
+    # stage permanently drops too-old sales and runs before the per-group train/test
+    # split, so dropping to a group's narrower window here would starve a longer-reach
+    # group (e.g. commercial). Per-group narrowing happens later in get_data_split_for.
+    from openavmkit.utilities.settings import use_sales_from_floor
+    use_sales_from_impr, use_sales_from_vacant = use_sales_from_floor(settings)
     if use_sales_from_impr is None:
         use_sales_from_impr = val_year - 5
     if use_sales_from_vacant is None:
@@ -481,11 +485,20 @@ def filter_invalid_sales(
     if verbose:
         print("Filtering out invalid sales...")
 
-    # Get sales data
+    # Get sales data (hydrated: universe fields such as assr_market_value are merged on,
+    # so the filter / calc below can reference them alongside the raw sale fields).
     df_sales = get_hydrated_sales_from_sup(sup)
     total_sales = len(df_sales)
     excluded_sales = []
     total_excluded = 0
+
+    # Optional derived fields for the filter. The filter DSL compares a field to a scalar
+    # or another field but cannot do inline arithmetic, so relative rules
+    # (e.g. "sale_price < 0.5 * assr_market_value") need a precomputed ratio column. Compute
+    # any `invalid_sales.calc` entries on the hydrated frame before resolving the filter.
+    s_calc = s_validation.get("calc", {})
+    if s_calc:
+        df_sales = perform_calculations(df_sales, s_calc)
 
     # Identify sales by filter
     filter_conditions = s_validation.get("filter", [])
@@ -732,8 +745,12 @@ def _fill_unknown_values(df, settings: dict):
     if cat_fields is not None:
         for field in cat_fields:
             if field in df:
-                df[field] = df[field].astype("str")
-                df[field] = df[field].fillna("UNKNOWN")
+                # Cast to object, not str: astype("str") turns NaN/None into the
+                # literal strings "nan"/"None", which makes the fillna below a no-op
+                # and feeds models a junk category. Going through object preserves
+                # real NaN so the fill lands, and sidesteps the categorical-dtype
+                # restriction on filling with an unseen category.
+                df[field] = df[field].astype("object").fillna("UNKNOWN").astype("str")
 
     if bool_fields is not None:
         for field in bool_fields:

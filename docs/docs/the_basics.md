@@ -192,6 +192,40 @@ The portion of the sale set (typically 20%) that we set aside to evaluate our mo
 **Universe set**  
 The full set of parcels in the jurisdiction, regardless of whether the parcels have sold or not. This is the data set we will generate predictions for.
 
+**Post-valuation holdout**  
+Sales that occurred *after* the valuation date. Our models never train on these, so they are a genuinely out-of-sample test. They are also the only sales that are out-of-sample for the *assessor* — see below.
+
+#### Comparing against the assessor
+
+When we report ratio-study statistics, we also show the assessor's existing values alongside ours for comparison. These head-to-head numbers are useful, but interpret them with one thing in mind: the holdout discipline we apply to our own models does not automatically apply to values we didn't generate. This is an information gap — it just means the two columns aren't always answering the same question.
+
+- Our models are evaluated on sales they never saw during training (out-of-sample). For a third party's roll, we generally **cannot know** whether those same sales informed the values. If they did, the roll's figures reflect an in-sample fit rather than an out-of-sample test — a different test, not necessarily better or worse work.
+- Because of this, by default the assessor is **left off the random pre-valuation "Test set"**: that holdout is one we draw ourselves, and there is no reason to expect a third party held out the same sales (or any). A head-to-head there would not be like-for-like.
+- The assessor **is** shown on (1) the **Study set** — an IAAO-style audit of the finished roll against all sales, which has no holdout requirement — and (2) the **post-valuation holdout**, which is out-of-sample for both parties.
+- The post-valuation comparison is only meaningful if the **valuation date is aligned with the roll-close date** of the values being compared. openavmkit uses a single `valuation_date`; if you want a like-for-like comparison, set it to match the date the compared roll closed. Aligning them is your responsibility.
+
+To help interpret a very tight assessor result, the ratio study report includes a **sales-chasing check** (see the [tutorial](tutorial.md)). Note that the checker cannot by itself *prove* sales-chasing, it can only detect likely signs of it; final judgment rests with you.
+
+#### When *you* are the assessor
+
+If you are the assessor (or otherwise know the holdout status of the values being compared), you can tell openavmkit to include assessor valuations in the random "Test set" head-to-head. Set `analysis.ratio_study.assessor_holdout` to `"shared"`, which declares that the assessor's values honor the same test holdout openavmkit uses. You have two ways to make that true:
+
+- **Use openavmkit's generated holdout.** Let openavmkit draw the test/train split as usual, and ensure your own values were produced without using the held-out sales (that is, your models were trained on a set of sales records that excluded the test keys). Then set `assessor_holdout: "shared"`.
+- **Supply your own holdout.** If your roll was built holding out a specific set of sales, put a CSV of those sale keys in your `in/` folder and point `modeling.instructions.test_keys_file` at it. openavmkit will use those keys as the canonical test set (training on everything else, never on post-valuation sales), so both your roll and openavmkit's models are scored on the same genuinely held-out sales. Set `assessor_holdout: "shared"` as well.
+
+  The file is a **single-column CSV with the header `key_sale`** — the sale-level key (one row per held-out sale), matching openavmkit's own `out/models/<model_group>/_data/test_keys.csv`. For example:
+
+  ```csv
+  key_sale
+  2021-00012345
+  2021-00067890
+  2022-00004567
+  ```
+
+  Keys can span all model groups; openavmkit matches each against the sales in the relevant group. (If the file has no `key_sale` header, the first column is used.)
+
+The default (`"unknown"`) is the conservative choice for the common case where the comparison roll comes from someone else.
+
 **SalesUniversePair set**
 
 In any OpenAVMKit model, this refers to a data set created by merging together "Sales" set and the "Universe" set. We use this data structure to make sure that both the "sales" and "universe" data set are processed together in a consistent manner.

@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+research/
 dist/
 build/
 tests/catboost_info/
@@ -32,11 +33,9 @@ notebooks/examples/debug_local_sqft_univ.csv
 .env
 docker-compose.yml
 .dockerignore
-
 tests/cache/
-
 cache/
-
 out/
-
 .claude/
+research/**/*.log
+research/benchmark/*/

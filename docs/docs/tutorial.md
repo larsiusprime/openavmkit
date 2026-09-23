@@ -22,7 +22,7 @@ The Center for Land Economics publishes a small public dataset for **Guilford Co
 Before anything else, make sure your install is complete and your virtual environment is **active**. The pipeline notebooks won't run otherwise. If you're new to OpenAVMKit, work through these sections of [Getting Started](getting_started.md) in order:
 
 1. **[Install Python 3.11](getting_started.md#2-install-python)** — OpenAVMKit is tested on 3.11 specifically. Older or newer versions may produce import errors or subtle bugs.
-2. **[Clone the repo](getting_started.md#1-clone-the-repository)** (if installing from Git) or `pip install openavmkit` (if installing from [PyPI](getting_started.md#option-1---install-from-pypi)).
+2. **[Clone the repo](getting_started.md#1-clone-the-repository)** (if installing from Git) or `pip install openavmkit` (if installing from [PyPI](getting_started.md#option-1-install-from-pypi)).
 3. **[Set up a virtual environment](getting_started.md#3-set-up-a-virtual-environment)** with `python -m venv venv` and activate it (`source venv/bin/activate` on macOS/Linux, `venv\Scripts\activate` on Windows). **You must activate the venv every time you open a new terminal** — your prompt should show `(venv)` when it's active.
 4. **[Install dependencies](getting_started.md#4-install-dependencies)** with `pip install -r requirements.txt` and **[install openavmkit itself](getting_started.md#5-install-openavmkit)** with `pip install -e .`.
 5. **[Install Jupyter](getting_started.md#running-jupyter-notebooks)** with `pip install jupyter` if you haven't already — the pipeline runs as Jupyter notebooks.
@@ -70,7 +70,8 @@ Now run, in order:
 After all four notebooks run cleanly:
 
 - `data/us-nc-guilford/out/` has parquet files for the universe, sales, and predictions
-- `data/us-nc-guilford/out/models/<model_group>/` has per-model output: predictions, `params_<subset>.csv`, `contributions_<subset>.csv` — including an `ensemble/` folder with its own reassembled params/contributions
+- `data/us-nc-guilford/out/models/<model_group>/` has per-model output: predictions, `params_<subset>.csv`, `contributions_<subset>.csv` — including an `ensemble/` folder with its own reassembled params/contributions. Each model folder (and the `ensemble/` folder) also gets the [openratiostudy.com](https://openratiostudy.com) export pair, written alongside its `pred_sales.csv`/`pred_test.csv`.
+- `data/us-nc-guilford/out/models/all_model_groups/` has the combined `universe.csv`/`universe.parquet` (all model groups merged onto the universe), plus a combined [openratiostudy.com](https://openratiostudy.com) export concatenated from each model group's **ensemble**: `open_ratio_study_sales.csv` (study set) and `open_ratio_study_test.csv` (held-out test set). Each open-ratio-study file is one row per sale with `key`, `key_sale`, `prediction`, `sale_price`, `sale_price_time_adj`, `latitude`, `longitude`, the report-location breakdown fields, and `model_group`.
 - `data/us-nc-guilford/out/reports/` has ratio study and equity reports
 - The `examine_sup` output shows non-null fields for every parcel, sales correctly partitioned into model groups
 
@@ -524,6 +525,8 @@ Strong signal: if **all** your models — including the assessor baseline — sh
 - **Tight slope ≈ 1.0 paired with a high `prb` (PRB).** Slope close to 1 looks great, but if PRB is also far from zero, the assessor is hitting the sale on the dollar without actually being uniformly accurate across the price spectrum.
 
 If your assessor baseline is sales-chasing, the right comparison is the assessor's metrics on **prior-year sales the assessor hadn't seen yet at the time of valuation**, not the current cycle. Several jurisdictions also publish the prior-cycle assessed value separately — comparing your model to *that* avoids the chase confound.
+
+**Automated check.** The ratio study report runs several of these signals for you in its **"Sales-chasing check"** section (ratio spike at 1.0, the COD-vs-CHD divergence above, and a pre- vs. post-valuation COD gap), comparing the assessor baseline against your own model. Thresholds are configurable under `analysis.ratio_study.sales_chasing` (see [advanced settings](advanced_settings.md)). It reports *likely*/*possible* as a context cue, not a verdict, and is not a substitute for the manual investigation above. Relatedly, openavmkit by default **does not show the assessor on the random pre-valuation holdout** — not because the assessor did anything wrong, but because we can't know the holdout status of values we didn't generate, so it wouldn't be a like-for-like comparison. The assessor is shown on the post-valuation holdout and the full study set; the post-valuation comparison assumes your `valuation_date` is aligned with the roll-close date of the values being compared. If you *are* the assessor and know the holdout status, you can opt back into the holdout comparison via `analysis.ratio_study.assessor_holdout` (see [the basics](the_basics.md#when-you-are-the-assessor)).
 
 ##### Diagnostic flow for outlier investigation
 

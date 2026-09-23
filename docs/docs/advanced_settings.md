@@ -235,6 +235,51 @@ If a sales dataframe ever lacks `key_sale` in its dedupe `subset`, OpenAVMKit em
 
 `data.process.dupes.universe` and `data.process.dupes.sales` apply the same schema **after** all per-source tables are merged. This is the right place for cross-table rules — for example, deduping the joined universe by `key` once parcels and a separate building file have been combined. The Guilford locality file uses this pattern via `$$ref.dupes_universe` and `$$ref.dupes_sales`.
 
+### 2.6 Discarding scratch columns — `drop_fields`
+
+Some `calc` expressions need an intermediate column that has no business surviving into the modeling data. A common case is decomposing a coded field where the segment boundaries aren't at fixed offsets: you slice off a candidate prefix, test it, and use the result to decide how to slice the rest. The prefix itself is scaffolding.
+
+`drop_fields` is a list of column names to delete, and it goes alongside `filename`, `load`, and `calc`:
+
+```json
+"parcels": {
+  "filename": "parcels.csv",
+  "load": { "key": ["REID", "string"], "neighborhood": "VCS" },
+  "calc": {
+    "vcs_pre4": ["substr", "neighborhood", {"left": 0, "right": 4}],
+    "vcs_area": ["where", ["isin", "vcs_pre4", ["str:GOLF", "str:MHPK"]],
+                 "vcs_pre4",
+                 ["substr", "neighborhood", {"left": 0, "right": 2}]]
+  },
+  "drop_fields": ["vcs_pre4"]
+}
+```
+
+`vcs_pre4` is computed, consumed by `vcs_area`, and then discarded. `vcs_area` survives.
+
+**Ordering.** `drop_fields` participates in the same ordered operation queue as `calc` and `tweak`: operations run in the order their keys appear in the JSON object. Put `drop_fields` after the `calc` block that needs the scratch column. If you need to drop something mid-sequence, you can interleave — `calc`, `drop_fields`, `calc_2` — using the same suffixed-key convention that `calc` and `tweak` already support.
+
+**Missing names are ignored.** Dropping a column that isn't there is a no-op, not an error, so the block is idempotent and safe to leave in place while you iterate on the `calc` above it. The trade-off is that a typo fails silently — if a column you expected to disappear is still present, check the spelling against the *renamed* (canonical) name, not the source column name. Names that don't match a current column are retried once through the rename map, so either spelling usually works.
+
+**It also works at enrich time.** `data.process.enrich.drop_fields.universe` and `.sales` take the same list form and run after that stage's `calc` and `tweak`:
+
+```json
+"data": {
+  "process": {
+    "enrich": {
+      "calc":        { "universe": { "_ratio_tmp": ["/", "a", "b"] } },
+      "drop_fields": { "universe": ["_ratio_tmp"] }
+    }
+  }
+}
+```
+
+**What it is not.** `drop_fields` is not a feature-selection mechanism. It deletes the column outright at load time, so anything downstream that expects it — `dupes.agg` fields, model variable lists, `field_classification` entries — will no longer find it. Use it for scaffolding you created yourself, and leave real columns to the modeling-side controls.
+
+> **Why not just prefix scratch columns with `__`?** `calc` already auto-drops columns named `__temp_*`, but that hook is unreachable from settings: the preprocessor strips every `__`-prefixed key as a comment (§ 1.1) before `calc` ever runs. `drop_fields` is the settings-visible equivalent.
+
+- **Source** — `_drop_fields` and `load_dataframe` in [openavmkit/data.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/data.py).
+
 ---
 
 ## 3. Time adjustment
@@ -371,7 +416,7 @@ For each configured feature class (e.g. `parks`), every parcel gets **three** co
 
 | Column                         | Meaning                                                                                                                                |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `dist_to_<feature>`            | Raw distance to the nearest instance, in the configured unit (default `km`). Past `max_distance`, clipped to `max_distance + 1`.       |
+| `dist_to_<feature>`            | Raw distance to the nearest instance, in the configured unit (default `km`). Past `max_distance` it is `NaN` (no measured distance) — regress on `proximity_to_` instead, which is defined everywhere. |
 | `within_<feature>`             | Boolean: is the parcel within `max_distance` of any instance?                                                                          |
 | `proximity_to_<feature>`       | `max(dist_to_<feature>) - dist_to_<feature>`. Past `max_distance`, falls to `0.0`. **Higher value = closer.**                          |
 
@@ -395,7 +440,7 @@ You can use either column (or both, or `log_dist_to_*`) in your modeling — the
 | `enabled`      | `true`           | Toggle this specific feature.                                                                                   |
 | `osm`          | `false`          | **Geometry source — option A.** Pull this feature's geometry from OpenStreetMap automatically.                  |
 | `source`       | (none)           | **Geometry source — option B.** Reference the ID of a dataframe you've loaded under `data.load.<id>` (must contain a `geometry` column). Use this for jurisdiction-supplied shapefiles or anything OSM doesn't cover well. Mutually exclusive with `osm`. |
-| `max_distance` | (none)           | Beyond this distance (in `unit`), parcels are clipped: `dist_to` saturates at `max_distance + 1`, `proximity_to` falls to `0.0`. Strongly recommended — sets the "no longer care" threshold. |
+| `max_distance` | (none)           | Beyond this distance (in `unit`): `dist_to` is `NaN`, `proximity_to` falls to `0.0`. Strongly recommended — sets the "no longer care" threshold, and (see note below) lets the enrichment **skip the nearest-neighbor join entirely for parcels beyond range**, which is a large speed-up for sparse features. |
 | `unit`         | `km`             | Distance unit. Affects every `dist_to` / `proximity_to` value for this feature.                                 |
 | `store_top`    | `false`          | If `true`, also compute distances to the **top N individual named instances** (see below).                      |
 | `top_n`        | `0`              | How many top instances to single out when `store_top` is true.                                                  |
@@ -403,6 +448,10 @@ You can use either column (or both, or `log_dist_to_*`) in your modeling — the
 | `type_field`   | feature-specific | Field used as a fallback name when an OSM feature has no `name` tag.                                            |
 
 > Specify **either** `osm: true` **or** `source: "<id>"` per feature — not both, and not neither.
+
+#### Performance — set `max_distance`
+
+The cost of a distance feature is the nearest-neighbor spatial join over every parcel. When `max_distance` is set, the enrichment first finds the parcels that intersect the features buffered by `max_distance` and runs the join on **only those**; every other parcel is assigned `proximity 0` / `within False` without a join. For a *sparse* feature (e.g. rivers, with most of the jurisdiction beyond range) and especially for `store_top` named-feature columns (each named feature is tiny), this skips the vast majority of the work. So always set `max_distance` — it's both a modeling threshold and the main performance lever. (Parcels are also projected to the distance CRS once and reused across all features, so adding more feature classes is comparatively cheap.)
 
 #### Distance to specific named features — `store_top` + `top_n`
 
@@ -894,6 +943,8 @@ For `custom`, the list contains dicts instead of plain field names:
 }
 ```
 
+> **Critical: every field in a model's `ind_vars` must be NaN-free, or the linear models crash.** `mra` / `multi_mra` go through `statsmodels` OLS, which raises `MissingDataError: exog contains inf or nans` on the first NaN/inf in the design matrix. Tree engines (LightGBM / XGBoost / CatBoost) tolerate NaN, so a missing fill rule only surfaces when a *linear* model runs. This bites most often with **enrichment-derived fields that have partial coverage** — `census` (block-group misses), `dem` (coverage gaps / parcels outside the tile footprint), `ref_tables` (unmatched keys) — because `data.process.fill` only fills the fields you explicitly list. **Rule of thumb: whenever you add an enrichment numeric to `ind_vars`, add it to `data.process.fill` too** (usually `median` for continuous). `proximity_to_*` (0-filled by the distance enricher) and the basic-geo fields are already safe. Because fill runs in the **clean** stage, fixing a missed field requires re-running notebook 2 — not just the modeling notebook.
+
 #### Conditional suffixes — `_impr` and `_vacant`
 
 Any fill method can be scoped to improved or vacant parcels by suffixing the method name. The cleaner strips the suffix and applies the underlying method to the matching subset only:
@@ -945,6 +996,37 @@ Filter out non-arms-length sales after data processing, using the conditions def
 - **Effect** — when `true`, sales matching the filter are excluded. When `false`, the step is skipped silently.
 - **Source** — `filter_invalid_sales` in [openavmkit/cleaning.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/cleaning.py)
 - **When to use** — if you have a set of sales you know are invalid and can exclude by rule, that aren't covered by your existing sales validity codes
+
+The filter runs on the **hydrated** sales frame, so it can reference universe (parcel/CAMA) fields such as `assr_market_value` alongside the raw sale fields.
+
+#### `data.process.invalid_sales.calc` — derived fields for relative rules
+
+The filter DSL compares a field to a scalar or to another field, but it cannot do inline arithmetic (you can write `["<", "sale_price", "assr_market_value"]` but not `["<", "sale_price", ["*", 0.5, "assr_market_value"]]`). To express a **relative** rule, precompute the needed column with an optional `calc` block (same expression DSL as `data.process.calc` / `enrich.*.calc`, including the zero-safe `/0` divide). `calc` runs on the hydrated frame immediately before the filter resolves, so the derived column is available to the filter.
+
+Example — drop any improved sale closing below half the assessor's fair-market total (a strong distressed / non-arms-length signal that the validity code missed), while exempting vacant land and parcels with no assessed total:
+
+```json
+{
+  "data": {
+    "process": {
+      "invalid_sales": {
+        "enabled": true,
+        "calc": {
+          "sale_to_assr_ratio": ["/0", "sale_price", "assr_market_value"]
+        },
+        "filter": [
+          "or",
+          ["<", "sale_price", 1000],
+          ["and", ["==", "vacant_sale", false], ["<", "sale_price", 5000]],
+          ["and", ["==", "vacant_sale", false], [">", "assr_market_value", 0], ["<", "sale_to_assr_ratio", 0.5]]
+        ]
+      }
+    }
+  }
+}
+```
+
+The `["/0", ...]` divide yields `0` when the denominator is `0`/blank; the `[">", "assr_market_value", 0]` guard then keeps those parcels out of the relative clause so they're judged only by the absolute floors.
 
 ### 5.4 `data.process.collapse_sparse_categories`
 
@@ -1022,31 +1104,164 @@ collapse_sparse_categories: roof_material
 
 > For the **full catalog of model engines** (XGBoost, LightGBM, CatBoost, MRA, GWR, kernel, baselines, etc.), the **model-name-vs-engine dispatch** mechanism, and how to run **multiple variants of the same engine** (e.g. two XGBoost configurations side-by-side), see **[Models reference](models_reference.md)**. The settings on this page are the orchestration layer; that page documents each model.
 
+### `modeling.metadata.use_sales_from` — how far back to reach for sales
+
+Controls the **training lookback window**: how old a sale may be and still be used to *calibrate* the models. (This is distinct from the *evaluation* window — see `analysis.ratio_study.look_back_years` in § 7 — which governs which sales the IAAO ratio study scores against. Training reach and evaluation window are set independently.)
+
+Older sales add data but are less representative of the current market (time adjustment compensates only so far), so this is the main lever for trading data quantity against recency. It takes four forms:
+
+| Form | Example | Meaning |
+| --- | --- | --- |
+| (omitted) | — | No cutoff; falls back to `valuation_year − 5` at the cleaning stage. |
+| Scalar year | `"use_sales_from": 2021` | One cutoff for all sales, both improved and vacant. |
+| Per-type | `{"improved": 2023, "vacant": 2020}` | Different cutoffs for improved vs vacant sales (e.g. a tight improved window for the ratio study, a looser vacant window to feed a thin land-sale pool). Missing keys fall back to `valuation_year − 5`. |
+| **Per-model-group** | see below | A `default` plus per-group overrides. Each entry is itself a scalar **or** a per-type `{improved, vacant}` dict. |
+
+- **Source** — `resolve_use_sales_from` and `use_sales_from_floor` in [openavmkit/utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py).
+
+#### Per-model-group windows
+
+Different model groups often have opposite needs: a data-rich group (a big residential class) floods and wants a *recent* window for fast, current calibration, while a data-starved group (commercial in a small county) needs to reach *further back* just to assemble enough sales. Set them independently:
+
+```json
+"modeling": {
+  "metadata": {
+    "use_sales_from": {
+      "default": 2022,
+      "by_model_group": {
+        "residential_single_family_suburban": 2023,
+        "commercial": 2016
+      }
+    }
+  }
+}
+```
+
+- A group listed in `by_model_group` uses its own window; every other group (and any global context) uses `default`.
+- Each value may be a scalar year or a `{"improved": …, "vacant": …}` dict, so the per-type axis composes with the per-group axis.
+
+**How it's applied (two layers).** The cleaning and clipping stages permanently *drop* too-old sales, and they run **before** the per-group train/test split. If they dropped down to a narrow group's window, a longer-reach group would lose its older sales before it was ever modeled. So those stages keep the **floor** — the widest (oldest) window across `default` and all per-group entries (here, `2016`, driven by commercial). The per-group narrowing then happens at the train/test split, where each group is restricted to its own window. Net effect for the example above: commercial trains on sales back to 2016, the big suburban group trains on 2023+, everything else on 2022+, and none of them lose sales they were entitled to.
+
+> **Tip.** Set `default` to your common window and override only the groups that genuinely differ. The floor widens automatically to accommodate the longest-reaching group — you don't set it yourself.
+
 ### `modeling.instructions.<main|vacant>.run`
 
 Explicit list of model names to run for the main or vacant stages. Without it, all models defined under `modeling.models.<main|vacant>` are run.
 
-- **Source** — `_run_models` in [openavmkit/benchmark.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/benchmark.py)
+- **Source** — `_run_models` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py)
 - **When to use** — you want a fast iteration on a single model, or you want to skip slow models (e.g. `gwr`) for a quick run.
 
 ### `modeling.instructions.<main|vacant>.skip.<model_group>`
 
 Per-model-group skip list. For the named model group, the listed models are skipped even if they're in `run`.
 
-- **Source** — `_run_models` in [openavmkit/benchmark.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/benchmark.py)
+- **Source** — `_run_models` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py)
 - **When to use** — a particular model is unstable on a particular model group (low sample count, rank-deficient features) and you want to exclude it from that group only.
 
 ### `modeling.models.<main|vacant>.<model_group>` — per-model-group overrides
 
 The entries under `modeling.models.<main|vacant>` can be **overridden per model group** by nesting a block keyed on the model-group id. When present, the override block replaces the top-level entries wholesale for that group (no merge). Use this when one model group needs a different set of `ind_vars`, `n_trials`, or even a different list of models entirely. See [models_reference.md § 1.5](models_reference.md#15-per-model-group-overrides) for the resolution rule and a worked example.
 
+### `log` — train a linear model on log(price) (per-model)
+
+Linear models (`mra`, `multi_mra`) fit price additively, so for expensive or atypical parcels they can extrapolate **negative** predictions. Setting `"log": true` on the model's entry under `modeling.models.<main|vacant>.<model_group>.<model>` fits that model on the natural log of the target instead; `exp()` of a linear prediction is always positive and the log scale tames tail regressivity.
+
+- **Source** — `run_mra` / `run_multi_mra` in [openavmkit/modeling.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/modeling.py), via `entry.get("log")` in `run_one_model`.
+- **Scope** — read **only** by `mra` and `multi_mra`. Other engines ignore the flag. It is deliberately *not* a `dep_var` change: the model log-transforms its target internally and **exponentiates its own predictions back to price space**, so everything downstream (metrics, ratio study, ensemble) sees ordinary price-space predictions and needs no log awareness. Zero blast radius.
+- **Requirement** — the target must be strictly positive (the invalid-sales scrub already removes non-positive sales); `run_mra(log=True)` raises if it finds a value `<= 0`.
+
+```json
+{
+  "modeling": {
+    "models": {
+      "main": {
+        "residential_single_family_suburban_prewar": {
+          "mra":       { "log": true },
+          "multi_mra": { "log": true },
+          "default":   { "ind_vars": ["...", "..."] }
+        }
+      }
+    }
+  }
+}
+```
+
+The `mra` / `multi_mra` entries above carry no `ind_vars`, so they inherit the group's `default` (or auto-selected) feature list — `log` is the only override. Leave it off (the default) for tree and nearest-neighbor models, which don't extrapolate negative and don't need it.
+
+**Contributions & params for log models.** A log model's coefficients are log-space (semi-elasticities, not $/unit) and its per-feature contributions are additive in **log** space (they sum to `log(prediction)`, not to the dollar prediction). To keep these from being misread as dollars — and to keep them out of the price-space consumers that would otherwise mix incommensurable units — `write_mra_params` / `write_multi_mra_params` write a log model's artifacts under a `log_` prefix: `log_params.csv`, `log_params_global.csv`, `log_contributions_<subset>.csv` (with a `log_prediction` column, reconciled in log space). The ordinary `params.csv` / `contributions_*.csv` are therefore absent for that model, which means:
+
+- the per-model `contributions_map.parquet` is not built for it (the builder finds no `contributions_universe.csv` and skips), and
+- the **ensemble contribution builder excludes it** — `_write_ensemble_contributions` detects the log member and warns (`'<model>' is log-transformed … cannot be meaningfully combined with price-space members`); the member's *prediction* still folds into the ensemble base, so the ensemble **valuation** is unchanged, but the log member contributes no per-feature attribution.
+
+None of this affects the model's predictions, the benchmark metrics, the ratio study, or the published `market_value` — those are all price-space and consume neither contributions nor params.
+
 ### Train / test split rules
 
-The canonical train/test split lives in `_perform_canonical_split` in [openavmkit/data.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/data.py). It splits each model group's valid sales into a test set (default 20%) and a training set (default 80%), maintaining vacant/improved balance and respecting three constraints:
+> **Note:** By default (`modeling.instructions.cv_folds = 5`) models are evaluated with **nested cross-validation** — see the [Cross-validation](#cross-validation-nested-holdout) section below. This single-split path applies only when `cv_folds <= 1` (and always for the user-provided `test_keys_file` assessor case). The stratification rules described here are still used to build the CV folds, so they remain relevant either way.
+
+The single train/test split lives in `_perform_canonical_split` in [openavmkit/data.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/data.py). It splits each model group's valid sales into a test set (default 20%) and a training set (default 80%), maintaining vacant/improved balance and respecting three constraints:
 
 1. **No leakage.** Post-valuation-date sales never appear in the training set.
 2. **Sufficient lookback representation in test, without overrepresentation.** The lookback period (sales within `analysis.ratio_study.look_back_years` of the valuation date) gets a hard floor in the test set so the resulting ratio study has a defensible IAAO-aligned sample size, and a cap that prevents the lookback period from dominating the test set when other years are available.
 3. **Stratified random sampling** within each tier. Vacant sales are stratified by `sale_year` only; improved sales are stratified by age, finished area, and `sale_year` (user-configurable). Stratification uses `sklearn.model_selection.train_test_split` with graceful fallback when strata are too thin.
+
+### Cross-validation (nested holdout)
+
+When `modeling.instructions.cv_folds > 1` (default **5**), each model group is evaluated with **nested cross-validation** instead of a single 20% holdout. This produces two prediction streams from the same model:
+
+- **Holdout / test scores** (`benchmark_holdout`): the model is run once per fold — each fold trains on the other folds and predicts its own held-out slice. Stitched together, this gives an out-of-fold (OOF) prediction for **every** sale (100% coverage), so the reported COD/PRD/PRB/ratio study have the same *n* as the study set instead of a noisy ~20% slice. Because each fold **re-tunes hyperparameters from scratch on its own training data**, the held-out slice is leakage-free with respect to both training *and* hyperparameter selection (genuine nested CV).
+- **Study scores + shipped values** (`benchmark_study`, `universe`): the model is refit on **all** trainable sales; its predictions on all sales (study, optimistic) and on the universe (the values that ship) come from this refit. Leakage is irrelevant here — this model is shipped, not evaluated.
+
+**Folds are grouped by parcel (`key`), not by sale.** All sales of one parcel land in the same fold (`StratifiedGroupKFold`, degrading to `GroupKFold` when strata are thin — grouping is never dropped). This prevents a repeat-sale parcel from appearing in both a fold's training set and its holdout, an entity-level leak that would otherwise be worst exactly in small localities with wide sale windows.
+
+**Interpretation contract:**
+
+- Holdout scores are an **interpolation** estimate (predict a randomly-missing sale from neighbors on both sides in time), not a forecast. Random folds are defensible here because sale prices are time-adjusted to the valuation date upstream, which removes the dominant temporal leak (the price level).
+- **Post-valuation sales** remain the pristine **forecast** number — they never train under any scenario, so their holdout predictions come from the full-refit model and are broken out separately.
+- The study−holdout gap is a **direction** sanity check for overfitting, not a calibrated optimism measure.
+- *Known caveats (out of scope):* the time-adjustment index is fit per-group on all sales including held-out ones (small, low-dimensional preprocessing leak); and random folds leak mildly via spatial autocorrelation.
+
+#### `modeling.instructions.cv_folds`
+
+Number of cross-validation folds *N*. Each fold holds out ~`1/N` of sales.
+
+- **Default** — `5` (20% held out per fold; the conventional COD-stable choice)
+- **`1` or less** — disables CV; reverts to the single stratified split documented above.
+- **Source** — `_perform_canonical_folds` / `_read_fold_keys` in [openavmkit/data.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/data.py), orchestrated by `run_one_model_cv` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py).
+
+#### `modeling.instructions.cv_inner`
+
+Controls the **inner** hyperparameter-tuning validation used inside each fold (and in the production refit). Only active when `cv_folds > 1`; in single-split mode the tuners keep their historical shuffled 5-fold inner CV unchanged.
+
+- **Default** — `"auto"`: a single grouped holdout split when the training set is large (≥ 2500 rows), else **3** grouped folds. This spends more inner folds exactly where fits are cheap (small localities) and single-split HP noise bites hardest.
+- **An integer** — use that many grouped inner folds (`1` = single grouped holdout split).
+- The inner split is parcel-grouped for XGBoost / LightGBM / NGBoost. CatBoost uses its built-in `cv()` (ungrouped inner) — a small HP-selection optimism only; the outer holdout stays parcel-grouped.
+- **Source** — `_resolve_cv_inner` / `_cv_index_splits` in [openavmkit/tuning.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/tuning.py).
+
+#### `modeling.instructions.cv_production_params`
+
+How the **production** model (Phase 2, refit on all trainable sales) gets its hyperparameters. Only relevant for tunable engines under `cv_folds > 1`; non-tunable models are unaffected.
+
+- **`aggregate`** (default) — reuse the per-fold tuned HPs instead of running a separate production study: **median** for continuous HPs, **mode** for categorical and discrete/multimodal HPs (tree depth, leaf/round counts). This skips the extra production tune (≈ today's tuning budget rather than one study more) and is a robust, variance-reduced estimate of what tuning on all data would pick. Because the reported metrics come entirely from the OOF holdout, the production HPs affect only the shipped values' quality, never a statistic — so a slightly-suboptimal aggregate can't corrupt anything.
+- **`refit`** — run a fresh Optuna study on all trainable sales (maximally tuned production model, one extra study's worth of compute).
+- **`best_fold`** — use the hyperparameters of the fold with the best holdout score. *Discouraged*: selecting on the best of N noisy per-fold scores courts winner's-curse; `aggregate` pools all folds and is more robust.
+- The chosen HPs are written to `cv_prod/{model}_params.json` with a `__CV_AGGREGATE__` sentinel fingerprint so `_get_params` reuses them without a fingerprint match.
+- **Source** — `_aggregate_fold_params` / `run_one_model_cv` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py).
+
+#### `modeling.instructions.cv_max_workers`
+
+How many folds run in parallel (each fold is an independent tune + fit, so they parallelize cleanly). Only relevant under `cv_folds > 1`.
+
+- **Default** — `min(cv_folds, cores − 2)`, i.e. parallel by default.
+- Each parallel worker is pinned to **single-threaded math** (`OMP_NUM_THREADS=1`, etc.) and a **fixed `PYTHONHASHSEED`**. The thread pin prevents CPU oversubscription (parallelism comes from the fold axis, not from stacking each fold's internal threads); the hash-seed pin is essential for **reproducibility** — without it, loky workers would order features via a randomized hash and XGBoost/LightGBM column subsampling would then pick different features per run. With both pinned, parallel runs are bit-reproducible run-to-run.
+- **Biggest speedups** are for the serial-tuning engines (CatBoost, NGBoost), which otherwise leave most cores idle, and scale with core count. XGBoost/LightGBM already parallelize across trials, so the fold-parallel gain there is more modest.
+- **Memory** scales with the worker count (each worker holds a copy of the model group's data) — lower this on very large localities (e.g. metros with >1M parcels) if memory-constrained.
+- **`1`** disables fold parallelism (each fold keeps full trial-level parallelism instead). Results at `cv_max_workers=1` may differ slightly from the parallel path (different thread/hash environment); each setting is internally reproducible.
+- **Source** — `run_one_model_cv` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py).
+
+The **ensemble** is CV-aware for all types (`median`, `mean`, and `local`): under `cv_folds > 1` it combines the base models' full-coverage OOF predictions, so the ensemble's holdout covers the same sales the base models do rather than a base model's fold slice. (The `local` per-location ensemble still selects its per-location winner on the in-sample training predictions — as it does in single-split mode — but now reports on the full out-of-fold holdout.)
+
+A `log_`-prefixed `dep_var_test` is handled uniformly under CV as well: the out-of-fold stitch re-applies the same log back-transform the single-split path does, so no special fallback is needed.
 
 #### `modeling.instructions.test_train_frac`
 
@@ -1125,7 +1340,7 @@ Fine-tune the variable-selection scoring used during model setup. The thresholds
   }
   ```
 
-- **Source** — `modeling.instructions.feature_selection` in [openavmkit/resources/settings/settings.template.json](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/resources/settings/settings.template.json), consumed in `benchmark.py`.
+- **Source** — `modeling.instructions.feature_selection` in [openavmkit/resources/settings/settings.template.json](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/resources/settings/settings.template.json), consumed in `model_runner.py`.
 - **When to use** — your standard variable-selection results don't reflect domain knowledge. Loosen `correlation` to keep weak-but-meaningful features, or tighten `vif` to drop more multicollinear ones.
 
 ### `modeling.instructions.<main|vacant>.ensemble`
@@ -1151,7 +1366,7 @@ Runs a greedy backward-elimination over the candidate models: starts with all of
   - `models` given → `optimize` defaults to **`false`** (use the listed models exactly).
   - Set `"optimize": true` *with* a `models` list to optimize *from* that whitelist (treat it as a candidate pool to prune).
   - Set `"optimize": false` *without* a `models` list to combine every model that ran with no pruning.
-- **Source** — `_perform_default_ensemble` in [openavmkit/benchmark.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/benchmark.py)
+- **Source** — `_perform_default_ensemble` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py)
 
 ```json
 "main": {
@@ -1175,7 +1390,7 @@ Identical to `median` — same `models` whitelist and `optimize` semantics — e
 
 - **Optional** `models` — explicit list of models to ensemble (whitelist by default). See `median` above.
 - **Optional** `optimize` (bool) — whether to greedily prune. See `median` above for the default rules.
-- **Source** — `_perform_default_ensemble` (with `agg="mean"`) in [openavmkit/benchmark.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/benchmark.py)
+- **Source** — `_perform_default_ensemble` (with `agg="mean"`) in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py)
 
 #### `type: "local"` — best-model-per-location
 
@@ -1195,19 +1410,19 @@ This is **not averaging** — at each parcel, exactly one model's prediction is 
 
 - **`locations`** — list of categorical fields to partition by, ordered specific → general (the painter walks the list and the *most specific* match wins). If omitted, falls back to `field_classification.important.locations`.
 - **Only valid for `main`** — the vacant stage supports `median`/`mean` but not `local`.
-- **Source** — `_perform_local_ensemble` and `_run_local_ensemble_test_and_paint` in [openavmkit/benchmark.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/benchmark.py)
+- **Source** — `_perform_local_ensemble` and `_run_local_ensemble_test_and_paint` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py)
 - **When to use** — different sub-markets favor different models (e.g. tree-based dominates dense urban neighborhoods where it has plenty of sales, but multi-MRA wins in rural areas where signals are sparser). Local ensemble lets each neighborhood pick its own winner. Avoid when (a) you have very few sales per location (many locations will pick a model based on noise), or (b) you want a single coherent global prediction for explainability.
 - **Pairs naturally with** — model engines that themselves vary by location (`multi_mra`, `local_area`, `gwr`), since they often dominate in different parts of the locality.
 
 #### Ensemble interpretability output
 
-All three types reassemble the ensemble's own `params_<subset>.csv` / `contributions_<subset>.csv` (and a `contributions_map.parquet`) from the member models, plus an `ensemble_meta.json` recording the resolved type and member list. Because each strategy is a per-row convex combination of members, the decomposition reconstructs the ensemble prediction exactly: `mean`/`median` average the members' per-feature contributions for the row, `local` passes through the selected model's. Members that don't emit per-feature contributions (e.g. `local_area`, naive baselines) fold into the ensemble's base term rather than breaking the reconstruction. See [models_reference.md § 3.4](models_reference.md) and `_write_ensemble_contributions` in [openavmkit/benchmark.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/benchmark.py).
+All three types reassemble the ensemble's own `params_<subset>.csv` / `contributions_<subset>.csv` (and a `contributions_map.parquet`) from the member models, plus an `ensemble_meta.json` recording the resolved type and member list. Because each strategy is a per-row convex combination of members, the decomposition reconstructs the ensemble prediction exactly: `mean`/`median` average the members' per-feature contributions for the row, `local` passes through the selected model's. Members that don't emit per-feature contributions (e.g. `local_area`, naive baselines) fold into the ensemble's base term rather than breaking the reconstruction. See [models_reference.md § 3.4](models_reference.md) and `_write_ensemble_contributions` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py).
 
 ### `modeling.try_variables.variables`
 
 Run a dedicated variable-importance experiment over a custom set of candidate variables before main modeling. Surfaced via [openavmkit.pipeline.try_variables](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/pipeline.py).
 
-- **Source** — `try_variables` in [openavmkit/benchmark.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/benchmark.py)
+- **Source** — `try_variables` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py)
 - **When to use** — you have hypotheses about which variables matter and want a slower, more thorough comparison than the auto-reduction step does inline.
 
 ---
@@ -1243,6 +1458,34 @@ How many years before the valuation date to include sales from when running the 
 - **Default** — `1` (from template)
 - **Source** — `get_look_back_dates` in [openavmkit/utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py)
 - **When to use** — your jurisdiction expects a multi-year ratio-study window, or you want to widen the sample for low-volume model groups.
+
+### `analysis.ratio_study.sales_chasing`
+
+Optional thresholds for the **sales-chasing check** in the ratio study report (see [tutorial.md](tutorial.md)). The check probes whether the assessor's values look suspiciously tight on *sold* parcels relative to how uniformly they treat *similar* parcels — the signature of pushing assessed value toward sale price. It runs three signals: a ratio spike at 1.0, a COD-CHD divergence (mirrors the model utility scorer's `sales_chase_score`), and a pre- vs. post-valuation COD gap.
+
+- **Default** — empty `{}` (uses built-in thresholds)
+- **Source** — `detect_sales_chasing` in [openavmkit/sales_chasing.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/sales_chasing.py)
+- **Keys** (all optional) — `spike_eps` (default `0.02`), `spike_min_share` (`0.10`), `spike_ratio_vs_ref` (`1.5`), `cod_ratio_max` (`0.7`), `chd_ratio_min` (`0.9`), `oos_cod_jump` (`1.5`). Each key is forwarded directly as a keyword argument to `detect_sales_chasing`.
+- **When to use** — the defaults flag tight-to-moderate chasing while leaving honest rolls alone; loosen `cod_ratio_max` / raise `spike_min_share` if you get false positives in a jurisdiction with genuinely excellent assessments, or tighten them to catch subtler chasing.
+
+> **Note** — the check compares the assessor (`assr_market_value`) against our own model (`prediction`) as a baseline, so it only runs when both are present. The post-valuation signals assume `valuation_date` is aligned with the assessor's roll-close date.
+
+### `analysis.ratio_study.assessor_holdout`
+
+Declares how the assessor's values relate to openavmkit's test holdout, controlling whether the assessor is shown head-to-head on the **random pre-valuation "Test" holdout** (it is always shown on the post-valuation holdout and the full study set).
+
+- **Default** — `"unknown"` — we can't know the holdout status of values we didn't generate, so the assessor is left off the random holdout to avoid a comparison that isn't like-for-like. (This is not a judgment on the assessor; see [the basics → comparing against the assessor](the_basics.md#comparing-against-the-assessor).)
+- **`"shared"`** — you certify the assessor's values honor this same test holdout, so the assessor **is** shown on the random holdout. Use this when *you* are the assessor (or know the holdout status). See [the basics → when you are the assessor](the_basics.md#when-you-are-the-assessor).
+- **Source** — `get_assessor_holdout_mode` in [openavmkit/utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py)
+
+### `modeling.instructions.test_keys_file`
+
+Optional. Supply your own holdout instead of openavmkit's randomly-drawn one: a CSV in your `in/` folder listing the `key_sale` values that should form the **test set**. openavmkit uses them as the canonical split (training on everything else for each model group, never on post-valuation sales). Useful when your assessment roll was built holding out a known set of sales and you want both your roll and openavmkit's models scored on exactly those sales.
+
+- **Default** — unset (openavmkit draws the split per `test_train_frac` / `random_seed`)
+- **Format** — path relative to `in/` (e.g. `"my_holdout_keys.csv"`); CSV with a `key_sale` column (or a single-column file)
+- **Source** — `_read_provided_test_keys` / `_do_write_canonical_split` in [openavmkit/data.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/data.py)
+- **When to use** — you are the assessor and know your roll's holdout; typically paired with `analysis.ratio_study.assessor_holdout: "shared"`.
 
 ---
 
@@ -1306,7 +1549,8 @@ This is a separate concern from the other two layers. Tunable models (XGBoost, L
 
 | File | Produced by | Contains |
 | --- | --- | --- |
-| `<slug>_params.json` | XGBoost / LightGBM / CatBoost (Optuna) | Best tuned hyperparameters from the last search |
+| `<slug>_params.json` | XGBoost / LightGBM / CatBoost / NGBoost (Optuna) | Best tuned hyperparameters from the last *completed* search |
+| `<slug>_study_<fingerprint>.journal` | XGBoost / LightGBM / CatBoost / NGBoost (Optuna) | **Transient** incremental trial log for crash-resume; deleted on a clean finish (see below) |
 | `<model_name>_bw.json` | GWR | Optimal bandwidth from the last search |
 | `kernel_bw.pkl` | Kernel regression | Optimal per-variable bandwidth from the last search |
 
@@ -1322,6 +1566,10 @@ This is a separate concern from the other two layers. Tunable models (XGBoost, L
 
 > **In other words**: the saved params don't cache *predictions*. The model still re-fits on whatever training data it sees. They cache the *tuning step* — the search for which hyperparameters to use. That's a much bigger deal for tree-based models with deep search spaces (Optuna trials can take minutes to hours) than for fast-fitting linear models.
 
+**Crash-resume during tuning** (Optuna tree models, when `save_params=True`) — the parameter search itself can take a long time, so it is made resumable. While a study runs, each completed trial is appended to a journal file `<slug>_study_<fingerprint>.journal` next to the eventual `<slug>_params.json`. If the run is interrupted (crash, `Ctrl-C`, OOM, killed job), the next run **reattaches to that journal and continues from the last completed trial** rather than restarting at trial 0; it runs only the *remaining* trials needed to reach `n_trials`. On a clean finish, `<slug>_params.json` is written and the journal is **deleted** — so a leftover `*_study_*.journal` file always means "the last tuning run was interrupted and will be resumed."
+
+The `<fingerprint>` is a short hash of the feature columns, training-row count, and `n_trials`. It scopes the journal to its exact search context: if you change `ind_vars`, the sales window, or the trial budget, the fingerprint changes, the old journal no longer matches, and it is discarded (not resumed) — so you never silently mix trials scored against a different objective. Implementation: `_resumable_study` / `_study_fingerprint` in [tuning.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/tuning.py), driven by `_get_params` in [modeling.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/modeling.py). When `save_params=False` tuning stays fully in-memory (no journal). GWR/kernel bandwidth searches are single-shot and are not journaled.
+
 **When to delete saved params:**
 
 - You've meaningfully changed the training data (different sales, different features, different model group definitions, different fill rules) and want the tuning to adapt.
@@ -1332,6 +1580,28 @@ This is a separate concern from the other two layers. Tunable models (XGBoost, L
 
 - You want fast, reproducible re-runs (e.g. for iterating on downstream analysis without paying the tuning cost again).
 - You're confident the previous tuning is still appropriate — incremental data changes that aren't likely to shift the optimal hyperparameters.
+
+### 8.4.1 Reproducibility — `modeling.metadata.seed`
+
+The tree-based models (XGBoost, LightGBM, CatBoost, NGBoost, lcomp) involve randomness in both the Optuna hyperparameter search and the model fit; MRA does not. To make their output reproducible, all of that randomness is fed from a single seed at `modeling.metadata.seed`.
+
+- **Default** — `42`. Modeling is **always deterministic**; there is no nondeterministic mode. Change the integer to vary the seed; a `null`/absent value falls back to `42`.
+- **Effect** — the seed is threaded into the Optuna TPE sampler, the cross-validation folds, and the final model fits (`get_model_seed` in [utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py); `_seeded_sampler` in [tuning.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/tuning.py)). Two runs on the same data produce identical hyperparameters and identical predictions.
+
+```json
+{ "modeling": { "metadata": { "seed": 42 } } }   // default
+{ "modeling": { "metadata": { "seed": 12345 } } } // a different reproducible run
+```
+
+**Determinism does NOT cost parallelism.** A naive seeded search would have to run serially, because Optuna's TPE sampler proposes each trial from the results of *completed* trials — so under `n_jobs=-1` the racing completion order makes the search non-reproducible even with a seeded sampler. OpenAVMKit sidesteps this for XGBoost and LightGBM with **synchronous batched ask-and-tell** (`_run_batched` in [tuning.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/tuning.py)):
+
+1. A batch of trials is *asked sequentially* — parameters are sampled in a deterministic order (never inside the parallel section, which would race on the sampler RNG).
+2. The batch is *evaluated in parallel*; each fit is single-threaded so it is itself bit-reproducible and doesn't oversubscribe cores.
+3. Results are *told back in ask order*, so the study's state after each generation is identical run-to-run regardless of who finished first.
+
+You get reproducibility **and** up to batch-width parallelism. The only cost is that TPE adapts once per batch instead of once per trial — a minor sample-efficiency nuance, not a speed or correctness one. CatBoost and NGBoost tune serially (CatBoost's pruning is hard to parallelize deterministically; NGBoost isn't thread-safe) but are still fully reproducible via the seeded sampler.
+
+> **Interaction with the tuning journal (§8.4).** The seed is part of the resume-journal fingerprint, so changing the seed starts a fresh study rather than resuming one tuned under a different seed. A study that is interrupted and *resumed* is not guaranteed bit-identical to a single-process run (the sampler re-seeds on reattach); clean start-to-finish runs are reproducible.
 
 ### 8.5 When self-invalidation isn't enough
 

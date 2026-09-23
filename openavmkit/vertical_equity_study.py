@@ -28,7 +28,7 @@ def get_vertical_equity_scores(df, sale_field: str, valuation_field: str) -> Dic
         percentile_group_count = 2
     elif 51 <= observation_count <= 500:
         percentile_group_count = 4
-    elif observation_count > 501:
+    elif observation_count > 500:
         percentile_group_count = 10
     else:
         # VEI cannot be calculated for less than 20 observations
@@ -47,18 +47,44 @@ def get_vertical_equity_scores(df, sale_field: str, valuation_field: str) -> Dic
         if len(x) <= 1: return np.nan
         return np.mean(x) + stats.sem(x) * stats.t.ppf(0.95, df=len(x) - 1)
 
+    # Guard against a degenerate market proxy. If a model produced all-NaN predictions
+    # (e.g. its inputs are absent for this model group), the ratio -> market_proxy chain is
+    # all-NaN, and pd.qcut would raise "Bin edges must be unique: [nan, nan, ...]". With too
+    # few distinct values to form the requested number of groups, qcut likewise can't build
+    # unique bin edges. Either way, warn and return NaN VEI rather than crashing the run.
+    n_distinct = int(df["market_proxy"].nunique(dropna=True))
+    if n_distinct < percentile_group_count:
+        warnings.warn(
+            f"get_vertical_equity_scores: 'market_proxy' has only {n_distinct} distinct "
+            f"non-NaN value(s) — too few to form {percentile_group_count} percentile groups "
+            f"(often all-NaN predictions from a model whose inputs are absent for this group). "
+            f"Returning NaN VEI.",
+            stacklevel=2,
+        )
+        return {"vei": np.nan, "vei_significance": np.nan, "group_stats": None}
+
     #split the df into percentile_group_count groups based on the market proxy
-    df["percentile_group"] = pd.qcut(df["market_proxy"], q=percentile_group_count, labels=False)
-    grouped = df.groupby("percentile_group")
-    group_stats = grouped['ratio'].agg(
-        ratio='median',
-        lower=ci_90_lower,
-        upper=ci_90_upper
-    )
-    #VEI is 100 * (median of last percentile grop - median of first percentile group)/median_ratio
-    vei_score = 100 * (group_stats[group_stats.index == (percentile_group_count - 1)].iloc[0]["ratio"] - group_stats[group_stats.index == 0].iloc[0]["ratio"]) / median_ratio
-    # VEI significance = 100 * (Lower CI for Highest PG - Upper CI for Lowest PG)/median
-    vei_significance = 100 * (group_stats[group_stats.index == (percentile_group_count -1)].iloc[0]["lower"] - group_stats[group_stats.index == 0].iloc[0]["upper"]) / median_ratio
+    try:
+        df["percentile_group"] = pd.qcut(df["market_proxy"], q=percentile_group_count, labels=False)
+        grouped = df.groupby("percentile_group")
+        group_stats = grouped['ratio'].agg(
+            ratio='median',
+            lower=ci_90_lower,
+            upper=ci_90_upper
+        )
+        top_group = percentile_group_count - 1
+        if top_group not in group_stats.index or 0 not in group_stats.index:
+            raise ValueError("percentile groups collapsed below the requested count")
+        #VEI is 100 * (median of last percentile grop - median of first percentile group)/median_ratio
+        vei_score = 100 * (group_stats[group_stats.index == top_group].iloc[0]["ratio"] - group_stats[group_stats.index == 0].iloc[0]["ratio"]) / median_ratio
+        # VEI significance = 100 * (Lower CI for Highest PG - Upper CI for Lowest PG)/median
+        vei_significance = 100 * (group_stats[group_stats.index == top_group].iloc[0]["lower"] - group_stats[group_stats.index == 0].iloc[0]["upper"]) / median_ratio
+    except (ValueError, IndexError) as e:
+        warnings.warn(
+            f"get_vertical_equity_scores: could not compute VEI ({e}); returning NaN.",
+            stacklevel=2,
+        )
+        return {"vei": np.nan, "vei_significance": np.nan, "group_stats": None}
     return {
         "vei": vei_score,
         "vei_significance": vei_significance,
@@ -107,7 +133,8 @@ class VerticalEquityStudy:
         sales = df_sales[field_sales].to_numpy()
         
         results = calc_ratio_stats_bootstrap(predictions, sales, confidence_interval, iterations=iterations, seed=seed)
-        
+        self.prd = results["prd"]
+
         prb_point, prb_low, prb_high = calc_prb(predictions, sales, confidence_interval)
         
         self.prb = ConfidenceStat(prb_point, confidence_interval, prb_low, prb_high)
@@ -232,6 +259,7 @@ def _calc_quantiles(df: pd.DataFrame, field: str):
 def _calc_grouped_quantiles(df_in: pd.DataFrame, value_field: str, group_field: str):
     df = df_in.copy()
     df["quantile"] = _calc_quantiles(df, value_field)
+    df_group_to_quantile = df.groupby(group_field)["quantile"].agg(lambda x: pd.Series.mode(x)[0]).reset_index()
     df2 = df_in.merge(df_group_to_quantile, on=group_field, how="left")
     return df2["quantile"]
 

@@ -189,7 +189,12 @@ class OpenStreetMapService:
             # Project back to WGS84
             osm_features_filtered = osm_features_filtered.to_crs("EPSG:4326")
 
-            # Clean up names
+            # Clean up names. osmnx only includes a "name" column when at least one
+            # returned feature carries a name tag; for feature classes that are commonly
+            # unnamed (e.g. riverbank polygons from water=river/stream), the column can be
+            # absent entirely, which previously raised KeyError here. Backfill it.
+            if "name" not in osm_features_filtered.columns:
+                osm_features_filtered["name"] = np.nan
             osm_features_filtered["name"] = osm_features_filtered["name"].fillna(
                 f"unnamed_{thing}"
             )
@@ -205,8 +210,9 @@ class OpenStreetMapService:
             self.features[f"{thing}"] = osm_features_filtered
             self.features[f"{thing}_top"] = osm_features_top
 
-            # write to cache so we can skip on next run
-            write_cache(f"osm/{thing}", osm_features_filtered, settings, "df")
+            # write to cache so we can skip on next run -- must use the same osm_dir
+            # the cache check above reads from, or the cache can never hit
+            write_cache(f"{osm_dir}/{thing}", osm_features_filtered, settings, "df")
 
             return osm_features_filtered
 

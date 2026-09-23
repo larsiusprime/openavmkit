@@ -11,12 +11,34 @@ import os
 from openavmkit.modeling import (
     DataSplit,
     run_mra,
+    run_multi_mra,
     run_ngboost,
     SingleModelResults,
     write_model_parameters,
 )
 
 import warnings
+
+import pytest
+
+# The lcomp JSON model cache needs layeredcompmodel >= 0.3.0. `run_layeredcomp` gates on the
+# capability rather than a version string (the dev fork may still self-report 0.2.1), so the tests
+# that exercise the cache gate the same way: they skip on the stock PyPI build and start running by
+# themselves once a build with serialization is installed. See the note in requirements.txt.
+_LCOMP_HAS_SERIALIZATION = True
+try:
+    from layeredcompmodel import LayeredCompBaggingModel as _LCompProbe
+
+    _LCOMP_HAS_SERIALIZATION = hasattr(_LCompProbe, "to_dict") and hasattr(
+        _LCompProbe, "from_dict"
+    )
+except Exception:  # pragma: no cover - layeredcompmodel missing entirely
+    _LCOMP_HAS_SERIALIZATION = False
+
+requires_lcomp_serialization = pytest.mark.skipif(
+    not _LCOMP_HAS_SERIALIZATION,
+    reason="layeredcompmodel build lacks to_dict/from_dict (needs >= 0.3.0)",
+)
 
 def test_vif():
 	
@@ -316,3 +338,280 @@ def test_simple_mra():
 		true_value = true_coefs[coef]
 		mra_value = coefs[coef]
 		assert abs(true_value - mra_value) < 1e-2, f"Coefficient for {coef} does not match: expected {true_value}, got {mra_value}"
+
+
+def _log_target_dataset():
+    """20-row synthetic SF dataset with strictly positive prices, for log-target tests."""
+    n = 20
+    keys = [str(i) for i in range(n)]
+    sqft = np.array([1000, 1500, 2000, 2500, 3000] * 4, dtype=float)
+    land = np.array([10000, 20000, 30000, 40000, 50000] * 4, dtype=float)
+    loc_a = np.array(([1, 0] * 10), dtype=float)
+    data = {
+        "key": keys,
+        "key_sale": keys,
+        "bldg_area_finished_sqft": sqft,
+        "land_area_sqft": land,
+        "location_A": loc_a,
+        "model_group": ["a"] * n,
+    }
+    df = pd.DataFrame(data)
+    # price is linear & strictly positive (so log is well-defined)
+    df["sale_price"] = 20.0 * df["bldg_area_finished_sqft"] + 1.5 * df["land_area_sqft"] \
+        + df["location_A"] * 5000.0 + 10000.0
+    df["valid_sale"] = True
+    df["vacant_sale"] = False
+    df["is_vacant"] = False
+    df["valid_for_ratio_study"] = True
+    df["sale_date"] = pd.to_datetime("2025-01-01", format="%Y-%m-%d")
+    df["sale_age_days"] = 0
+
+    ind_vars = ["bldg_area_finished_sqft", "land_area_sqft", "location_A"]
+    df_sales = df.copy()
+    df_universe = df[["key", "is_vacant"] + ind_vars].copy()
+    test_keys = ["0", "1", "2", "3", "4", "5"]
+    train_keys = [k for k in keys if k not in test_keys]
+    return df_sales, df_universe, ind_vars, test_keys, train_keys
+
+
+def test_mra_log_param_predictions_price_space_and_positive():
+    # run_mra(log=True) fits on log(price) and exponentiates predictions back internally, so the
+    # model's output is price-space (not the ~10 log range), strictly positive, and in the same
+    # ballpark as an equivalent price-target fit. dep_var stays "sale_price" — no dep_var games.
+    df_sales, df_universe, ind_vars, test_keys, train_keys = _log_target_dataset()
+
+    ds_log = DataSplit("", df_sales.copy(), df_universe.copy(), "a", {},
+                       "sale_price", "sale_price", ind_vars, [], {}, test_keys, train_keys)
+    res_log = run_mra(ds_log, intercept=True, log=True)
+
+    ds_price = DataSplit("", df_sales.copy(), df_universe.copy(), "a", {},
+                         "sale_price", "sale_price", ind_vars, [], {}, test_keys, train_keys)
+    res_price = run_mra(ds_price, intercept=True, log=False)
+
+    assert res_log.pred_test.y_pred.mean() > 1000
+    assert res_log.pred_test.y_pred.mean() < 1e7
+    assert (np.asarray(res_log.pred_univ, dtype="float64") > 0).all()
+    ratio = res_log.pred_test.y_pred.mean() / res_price.pred_test.y_pred.mean()
+    assert 0.33 < ratio < 3.0
+
+
+def test_mra_log_param_handles_nullable_float_predictions():
+    # Pipeline frames use pandas nullable dtypes, so statsmodels returns a Float64 Series for
+    # y_pred, which np.exp can't consume ("'float' object has no callable exp method"). The
+    # internal exp must coerce to plain float64 first. Cast features to Float64 to reproduce it.
+    df_sales, df_universe, ind_vars, test_keys, train_keys = _log_target_dataset()
+    for c in ind_vars:
+        df_universe[c] = df_universe[c].astype("Float64")
+        df_sales[c] = df_sales[c].astype("Float64")
+
+    ds = DataSplit("", df_sales, df_universe, "a", {}, "sale_price", "sale_price",
+                   ind_vars, [], {}, test_keys, train_keys)
+    res = run_mra(ds, intercept=True, log=True)  # would TypeError on the Float64 Series without coerce
+
+    assert np.isfinite(np.asarray(res.pred_univ, dtype="float64")).all()
+    assert (np.asarray(res.pred_univ, dtype="float64") > 0).all()
+
+
+def test_mra_log_params_written_with_log_prefix(tmp_path):
+    # A log model's params/contributions are log-space; they must be written under a "log_" prefix
+    # (so they aren't read as dollars AND are auto-excluded from the price-space ensemble/ map
+    # consumers, which key off the bare filenames). The log contributions reconcile in log space.
+    import os
+    from openavmkit.modeling import write_mra_params
+
+    df_sales, df_universe, ind_vars, test_keys, train_keys = _log_target_dataset()
+    ds = DataSplit("", df_sales, df_universe, "a", {}, "sale_price", "sale_price",
+                   ind_vars, [], {}, test_keys, train_keys)
+    res = run_mra(ds, intercept=True, log=True)
+
+    xs = {"test": res.ds.X_test, "sales": res.ds.X_sales, "universe": res.ds.X_univ}
+    dfs = {"test": res.df_test, "train": res.df_train,
+           "universe": res.df_universe, "sales": res.df_sales}
+    write_mra_params(res.model, str(tmp_path), xs, dfs)
+
+    # log_ artifacts exist; bare (price-space) names do NOT (so consumers skip them)
+    assert os.path.exists(tmp_path / "log_params.csv")
+    assert os.path.exists(tmp_path / "log_contributions_test.csv")
+    assert not os.path.exists(tmp_path / "params.csv")
+    assert not os.path.exists(tmp_path / "contributions_test.csv")
+
+    # The log contributions file is self-consistent in log space (sum ~ log_prediction)
+    con = pd.read_csv(tmp_path / "log_contributions_test.csv")
+    assert "log_prediction" in con.columns
+    assert "prediction" not in con.columns
+    assert np.max(np.abs(con["check_delta"].to_numpy())) < 1e-6
+
+
+def test_mra_non_log_params_have_no_prefix(tmp_path):
+    # A plain (price-space) model keeps the bare filenames — no behavior change.
+    import os
+    from openavmkit.modeling import write_mra_params
+
+    df_sales, df_universe, ind_vars, test_keys, train_keys = _log_target_dataset()
+    ds = DataSplit("", df_sales, df_universe, "a", {}, "sale_price", "sale_price",
+                   ind_vars, [], {}, test_keys, train_keys)
+    res = run_mra(ds, intercept=True)  # log defaults False
+
+    xs = {"test": res.ds.X_test, "sales": res.ds.X_sales, "universe": res.ds.X_univ}
+    dfs = {"test": res.df_test, "train": res.df_train,
+           "universe": res.df_universe, "sales": res.df_sales}
+    write_mra_params(res.model, str(tmp_path), xs, dfs)
+
+    assert os.path.exists(tmp_path / "params.csv")
+    assert os.path.exists(tmp_path / "contributions_test.csv")
+    assert not os.path.exists(tmp_path / "log_params.csv")
+    con = pd.read_csv(tmp_path / "contributions_test.csv")
+    assert "prediction" in con.columns  # price-space reconciliation, unchanged
+
+
+def test_multi_mra_log_param_price_space(tmp_path):
+    # Multi-MRA has its own train/predict path; log=True must likewise produce positive,
+    # price-space predictions (it log-transforms the target once and exps at the end).
+    df_sales, df_universe, ind_vars, test_keys, train_keys = _log_target_dataset()
+    nbhd = ["n1", "n2"] * 10
+    df_sales["neighborhood"] = nbhd
+    df_universe = df_universe.copy()
+    df_universe["neighborhood"] = nbhd
+
+    ds = DataSplit("", df_sales, df_universe, "a", {}, "sale_price", "sale_price",
+                   ind_vars, ["neighborhood"], {}, test_keys, train_keys)
+    res = run_multi_mra(ds, str(tmp_path), ["neighborhood"],
+                        optimize_vars=False, intercept=True, log=True)
+
+    assert np.isfinite(np.asarray(res.pred_univ, dtype="float64")).all()
+    assert (np.asarray(res.pred_univ, dtype="float64") > 0).all()
+    assert res.pred_test.y_pred.mean() > 1000
+
+
+@requires_lcomp_serialization
+def test_lcomp_serialization_roundtrip_matches_full_fit():
+    # Safety proof for the lcomp model cache: serializing a fitted ensemble to JSON and reloading it
+    # (no refit) must reproduce the original predictions bit-for-bit. If this ever diverges (e.g.
+    # layeredcompmodel changes its serialization), the version guard in run_layeredcomp falls back to
+    # a full fit instead. Requires layeredcompmodel >= 0.3.0 (to_dict/from_dict).
+    from layeredcompmodel import LayeredCompBaggingModel
+    from openavmkit.modeling import (
+        _LCOMP_TREE_COUNT, _LCOMP_SAMPLE_PCT, _LCOMP_SPLIT_METRIC, _LCOMP_N_JOBS,
+    )
+    rng = np.random.default_rng(0)
+    nn = 300
+    X = pd.DataFrame({
+        "land_area_sqft": rng.uniform(3000, 20000, nn),
+        "bldg_area_finished_sqft": rng.uniform(800, 4000, nn),
+        "bldg_age_years": rng.integers(0, 120, nn).astype(float),
+        "neighborhood": rng.integers(0, 8, nn).astype(str).astype(object),
+    })
+    y = 50000 + 40 * X["bldg_area_finished_sqft"] + rng.normal(0, 15000, nn)
+
+    full = LayeredCompBaggingModel(
+        tree_count=_LCOMP_TREE_COUNT, sample_pct=_LCOMP_SAMPLE_PCT,
+        random_state=42, split_metric=_LCOMP_SPLIT_METRIC, n_jobs=_LCOMP_N_JOBS,
+    )
+    full.fit(X, y)
+    restored = LayeredCompBaggingModel.from_dict(full.to_dict())
+
+    Xq = X.head(100)
+    np.testing.assert_array_equal(full.predict(Xq), restored.predict(Xq))
+
+
+def _lcomp_cache_ds_factory():
+    """Return a callable producing a fresh DataSplit over one fixed lcomp-cacheable dataset."""
+    rng = np.random.default_rng(1)
+    nn = 200
+    keys = [str(i) for i in range(nn)]
+    df = pd.DataFrame({
+        "key": keys, "key_sale": keys,
+        "land_area_sqft": rng.uniform(3000, 20000, nn),
+        "bldg_area_finished_sqft": rng.uniform(800, 4000, nn),
+        "bldg_age_years": rng.integers(0, 120, nn).astype(float),
+        "neighborhood": rng.integers(0, 8, nn).astype(str),
+        "model_group": ["a"] * nn,
+    })
+    df["sale_price"] = 50000 + 40 * df["bldg_area_finished_sqft"] + rng.normal(0, 15000, nn)
+    df["valid_sale"] = True; df["vacant_sale"] = False; df["is_vacant"] = False
+    df["valid_for_ratio_study"] = True
+    df["sale_date"] = pd.to_datetime("2025-01-01"); df["sale_age_days"] = 0
+    ind_vars = ["land_area_sqft", "bldg_area_finished_sqft", "bldg_age_years", "neighborhood"]
+    df_universe = df[["key", "is_vacant"] + ind_vars].copy()
+    test_keys = keys[:40]; train_keys = keys[40:]
+
+    def fresh_ds():
+        return DataSplit("", df.copy(), df_universe.copy(), "a", {}, "sale_price", "sale_price",
+                         ind_vars, ["neighborhood"], {}, test_keys, train_keys)
+
+    return fresh_ds
+
+
+@requires_lcomp_serialization
+def test_lcomp_save_and_reuse_model_cache_roundtrip(tmp_path):
+    # End-to-end: first run saves lcomp_model.json; second run (use_saved_params) reloads the fitted
+    # ensemble, skips the fit entirely, and produces identical universe predictions.
+    import os
+    from openavmkit.modeling import run_layeredcomp
+
+    fresh_ds = _lcomp_cache_ds_factory()
+
+    r1 = run_layeredcomp(fresh_ds(), str(tmp_path), save_params=True, use_saved_params=False)
+    assert os.path.exists(tmp_path / "lcomp_model.json")
+
+    r2 = run_layeredcomp(fresh_ds(), str(tmp_path), save_params=False, use_saved_params=True)
+    np.testing.assert_allclose(
+        np.asarray(r1.pred_univ, dtype="float64"),
+        np.asarray(r2.pred_univ, dtype="float64"),
+        rtol=1e-9, atol=1e-6,
+    )
+
+
+@requires_lcomp_serialization
+def test_lcomp_cache_is_invalidated_by_a_library_version_change(tmp_path, monkeypatch):
+    # The cache blob is layeredcompmodel's own serialization format, so upgrading the library can
+    # change what it means while our fingerprint (training data + OUR hyperparameters) is unchanged.
+    # The writer's version is recorded in the file and must be compared on read, or a cache written
+    # by one version gets silently deserialized by the next.
+    import json
+    import openavmkit.modeling as M
+
+    fresh_ds = _lcomp_cache_ds_factory()
+
+    fits = []
+    real_fit = M.LCompModel.fit
+
+    def counting_fit(self, X, y, *args, **kwargs):
+        fits.append(1)
+        return real_fit(self, X, y, *args, **kwargs)
+
+    monkeypatch.setattr(M.LCompModel, "fit", counting_fit)
+
+    M.run_layeredcomp(fresh_ds(), str(tmp_path), save_params=True, use_saved_params=False)
+    assert fits == [1], "first run must fit"
+
+    # Same version -> the cache is reused and no fit happens.
+    M.run_layeredcomp(fresh_ds(), str(tmp_path), save_params=False, use_saved_params=True)
+    assert fits == [1], "cache written by the running version should have been reused"
+
+    # Rewrite only the recorded version, leaving the fingerprint and the model blob untouched, so
+    # the version is the single variable under test.
+    cache_path = tmp_path / "lcomp_model.json"
+    cached = json.loads(cache_path.read_text())
+    assert cached["lcompmodel_version"] is not None, "writer version must be recorded"
+    cached["lcompmodel_version"] = "9.9.9-not-the-running-version"
+    cache_path.write_text(json.dumps(cached))
+
+    M.run_layeredcomp(fresh_ds(), str(tmp_path), save_params=False, use_saved_params=True)
+    assert fits == [1, 1], "a cache from a different library version must force a refit"
+
+
+def test_mra_log_param_off_is_unchanged():
+    # log defaults to False -> identical to a plain run_mra (no behavior change for everyone else).
+    df_sales, df_universe, ind_vars, test_keys, train_keys = _log_target_dataset()
+    ds_a = DataSplit("", df_sales.copy(), df_universe.copy(), "a", {}, "sale_price", "sale_price",
+                     ind_vars, [], {}, test_keys, train_keys)
+    ds_b = DataSplit("", df_sales.copy(), df_universe.copy(), "a", {}, "sale_price", "sale_price",
+                     ind_vars, [], {}, test_keys, train_keys)
+    res_default = run_mra(ds_a, intercept=True)
+    res_explicit = run_mra(ds_b, intercept=True, log=False)
+    np.testing.assert_allclose(
+        np.asarray(res_default.pred_test.y_pred, dtype="float64"),
+        np.asarray(res_explicit.pred_test.y_pred, dtype="float64"),
+        rtol=1e-9,
+    )

@@ -14,7 +14,7 @@ Plus helpers (``greedy_forward_loocv``, ``TreeBasedCategoricalData``)
 shared across model fitting routines.
 
 When adding a new model, subclass here and follow the existing pattern;
-register the prediction wrapper in :mod:`openavmkit.benchmark` and the
+register the prediction wrapper in :mod:`openavmkit.model_runner` and the
 params/contribs writer in :mod:`openavmkit.modeling`.
 """
 from __future__ import annotations
@@ -537,10 +537,14 @@ class MRAModel:
         Fitted model from running the regression
     intercept : bool
         Whether the model was fit with an intercept or not.
+    log : bool
+        Whether the model was fit on a log-transformed target. When True, predictions are
+        produced in log space and exponentiated back to price space by ``predict_mra``.
     """
-    def __init__(self, fitted_model: RegressionResults, intercept: bool):
+    def __init__(self, fitted_model: RegressionResults, intercept: bool, log: bool = False):
         self.fitted_model = fitted_model
         self.intercept = intercept
+        self.log = log
 
 
 class MultiMRAModel:
@@ -579,6 +583,7 @@ class MultiMRAModel:
         feature_names: list[str],
         intercept: bool,
         location_fields: list[str],
+        log: bool = False,
     ):
         """
         Parameters
@@ -594,12 +599,16 @@ class MultiMRAModel:
             Whether an intercept column was used.
         location_fields : list[str]
             Location fields in order from most specific to least specific.
+        log : bool
+            Whether the regressions were fit on a log-transformed target. When True,
+            predictions are produced in log space and exponentiated back by ``predict_multi_mra``.
         """
         self.coef_map = coef_map
         self.global_coef = global_coef
         self.feature_names = feature_names
         self.intercept = intercept
         self.location_fields = location_fields
+        self.log = log
        
 # Multi-MRA optimization:
 

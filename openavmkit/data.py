@@ -23,6 +23,7 @@ openavmkit.pipeline : High-level wrappers for the loading and enrichment
 openavmkit.cleaning : Operates on the ``sup`` after data is loaded.
 """
 import gc
+import json
 import math
 import os
 from datetime import date
@@ -60,7 +61,7 @@ import traceback
 import importlib.util
 
 from shapely.strtree import STRtree
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedGroupKFold, GroupKFold
 
 from openavmkit.calculations import (
     _crawl_calc_dict_for_fields,
@@ -356,9 +357,11 @@ def get_sale_field(settings: dict, df: pd.DataFrame = None) -> str:
         sale_field = "sale_price_time_adj"
     else:
         sale_field = "sale_price"
+    # When time adjustment is on but the caller's frame does not carry the adjusted
+    # column, fall back to the raw price rather than naming a column that isn't there.
     if df is not None:
-        if sale_field == "sale_price_time_adj" and "sale_price_time_adj" in df.columns:
-            return "sale_price_time_adj"
+        if sale_field == "sale_price_time_adj" and "sale_price_time_adj" not in df.columns:
+            return "sale_price"
     return sale_field
 
 
@@ -785,6 +788,64 @@ def enrich_sup_spatial_lag(
     return sup
 
 
+def _spatial_lag_kernel(
+    source_coords: np.ndarray,
+    source_values: np.ndarray,
+    target_coords: np.ndarray,
+    k: int,
+    d_scale: float,
+):
+    """Gaussian-kernel spatial lag of ``source_values`` evaluated at ``target_coords``.
+
+    For each target point: the weighted average of the ``k`` nearest source points, where
+    the weight is ``exp(-d^2 / 2*sigma^2)`` and ``sigma`` is the mean distance to those k
+    neighbors (so the kernel adapts to local sale density), normalized to sum to 1. Also
+    returns a fixed-bandwidth confidence in [0, 1], comparing the neighbors' inverse-square
+    "information mass" against what k neighbors at ``d_scale`` would supply.
+
+    Returns ``(lag, confidence)``, both 1-D arrays of length ``len(target_coords)``. Targets
+    with no usable geometry come back as NaN lag / 0 confidence, for the caller to fill.
+    Asking for more neighbors than there are sources is fine: ``k`` is clamped to what is
+    available.
+    """
+    target_coords = np.asarray(target_coords, dtype=float)
+    lag = np.full(len(target_coords), np.nan)
+    conf = np.zeros(len(target_coords))
+
+    # cKDTree.query rejects non-finite query points outright. A parcel with no geometry
+    # simply has no spatial lag, so hold those rows out and let the caller fill them.
+    ok = np.isfinite(target_coords).all(axis=1)
+    if not ok.any():
+        return lag, conf
+
+    k_eff = int(min(len(source_coords), k))
+    tree = cKDTree(source_coords)
+    distances, indices = tree.query(target_coords[ok], k=k_eff)
+
+    # Ensure that distances and indices are 2D arrays (if k==1, reshape them)
+    if k_eff == 1:
+        distances = np.asarray(distances)[:, None]
+        indices = np.asarray(indices)[:, None]
+
+    # For each target, sigma is the mean distance to its k neighbors.
+    sigma = distances.mean(axis=1, keepdims=True)
+    sigma[sigma == 0] = np.finfo(float).eps  # Avoid division by zero
+
+    weights = np.exp(-(distances**2) / (2 * sigma**2))
+    weights_norm = weights / weights.sum(axis=1, keepdims=True)
+
+    neighbor_values = np.asarray(source_values)[indices]
+    lag[ok] = (np.asarray(weights_norm) * np.asarray(neighbor_values)).sum(axis=1)
+
+    # Confidence: raw inverse-square information mass against a fixed bandwidth.
+    distances_safe = distances.copy()
+    distances_safe[distances_safe == 0] = np.finfo(float).eps  # protect division by 0
+    info_mass = (1.0 / distances_safe**2).sum(axis=1)  # sum of 1/d^2
+    conf[ok] = np.clip(1.0 - (k_eff / d_scale**2) / info_mass, 0.0, 1.0)
+
+    return lag, conf
+
+
 def _enrich_sup_spatial_lag_for_model_group(
     sup: SalesUniversePair, 
     settings: dict, 
@@ -851,6 +912,31 @@ def _enrich_sup_spatial_lag_for_model_group(
 
     value_fields = [sale_field, sale_field_vacant, per_land_field, per_impr_field]
 
+    # Fold assignments, when this model group runs under cross-validation. The sales-side
+    # spatial lag is built out-of-fold from these; see the loop below.
+    fold_data = _read_fold_keys(model_group)
+    key_to_fold = None
+    univ_fold = None
+    fold_ids = []
+    if fold_data is not None and fold_data["n_folds"] > 1:
+        key_to_fold = fold_data["key_to_fold"]
+        univ_fold = df_universe["key"].astype(str).map(key_to_fold)
+        fold_ids = sorted(set(key_to_fold.values()))
+
+    # Projected universe centroids are the query targets for every value field. Compute
+    # them once, lazily -- some value fields bail out before they are needed.
+    _univ_coords = {}
+
+    def _get_universe_coords():
+        if not _univ_coords:
+            crs = get_crs(df_universe, "equal_distance")
+            proj = df_universe.to_crs(crs)
+            _univ_coords["crs"] = crs
+            _univ_coords["coords"] = np.vstack(
+                [proj.geometry.centroid.x.values, proj.geometry.centroid.y.values]
+            ).T
+        return _univ_coords["coords"], _univ_coords["crs"]
+
     for value_field in value_fields:
 
         if value_field == sale_field:
@@ -880,103 +966,99 @@ def _enrich_sup_spatial_lag_for_model_group(
         k = s_sl.get("sale_price", 5)  # adjust this number as needed
 
         df_sub_train = df_sub.loc[df_sub["key_sale"].isin(train_keys)].copy()
-        
-        if len(df_sub_train) <= (k+1):
-            continue
-        
-        # Get the coordinates for the universe parcels
-        crs_equal_distance = get_crs(df_universe, "equal_distance")
-        df_proj = df_universe.to_crs(crs_equal_distance)
 
-        # Use the projected coordinates for the universe parcels
-        universe_coords = np.vstack(
-            [df_proj.geometry.centroid.x.values, df_proj.geometry.centroid.y.values]
-        ).T
+        if len(df_sub_train) <= (k + 1):
+            # Not enough training sales to build a surface. Write zeros rather than leaving
+            # the column off entirely: a missing column is a KeyError deep inside the model
+            # runner, which takes down every other model group with it.
+            warnings.warn(
+                f"Spatial lag for '{value_field}' in model group '{model_group}': only "
+                f"{len(df_sub_train)} training sales (need > {k + 1}); writing zeros."
+            )
+            df_universe[f"spatial_lag_{value_field}"] = 0
+            df_sales[f"spatial_lag_{value_field}"] = 0
+            continue
+
+        universe_coords, crs_equal_distance = _get_universe_coords()
 
         # Get the coordinates for the sales training parcels
         df_sub_train_proj = df_sub_train.to_crs(crs_equal_distance)
-
         sales_coords_train = np.vstack(
             [
                 df_sub_train_proj.centroid.geometry.x.values,
                 df_sub_train_proj.centroid.geometry.y.values,
             ]
         ).T
-
-        # Build a cKDTree from df_sales coordinates -- but ONLY from the training set
-        sales_tree = cKDTree(sales_coords_train)
-
-        # count any NA coordinates in the universe
-        n_na_coords = universe_coords.shape[0] - np.count_nonzero(
-            pd.isna(universe_coords).any(axis=1)
-        )
-
-        # Query the tree: for each parcel in df_universe, find the k nearest sales
-        # distances: shape (n_universe, k); indices: corresponding indices in df_sales
-        distances, indices = sales_tree.query(universe_coords, k=min(len(sales_coords_train), k))
-
-        # Ensure that distances and indices are 2D arrays (if k==1, reshape them)
-        if k == 1:
-            distances = distances[:, None]
-            indices = indices[:, None]
-
-        # For each universe parcel, compute sigma as the mean distance to its k neighbors.
-        sigma = distances.mean(axis=1, keepdims=True)
-
-        # Handle zeros in sigma
-        sigma[sigma == 0] = np.finfo(float).eps  # Avoid division by zero
-
-        # Compute Gaussian kernel weights for all neighbors
-        weights = np.exp(-(distances**2) / (2 * sigma**2))
-
-        # Normalize the weights so that they sum to 1 for each parcel
-        weights_norm = weights / weights.sum(axis=1, keepdims=True)
-
-        # Get the sales prices corresponding to the neighbor indices
-        sales_prices = df_sub_train[value_field].values
-        neighbor_prices = sales_prices[indices]  # shape (n_universe, k)
-
-        # Compute the weighted average (spatial lag) for each parcel in the universe
-        spatial_lag = (np.asarray(weights_norm) * np.asarray(neighbor_prices)).sum(
-            axis=1
-        )
-
-        # Add the spatial lag as a new column
-        df_universe[f"spatial_lag_{value_field}"] = spatial_lag
-
-        # Fill NaN values in the spatial lag with the median value of the original field
+        sales_values_train = df_sub_train[value_field].values
         median_value = df_sub_train[value_field].median()
-        df_universe[f"spatial_lag_{value_field}"] = df_universe[
-            f"spatial_lag_{value_field}"
-        ].fillna(median_value)
 
-        # Add the new field to sales:
-        df_sales = df_sales.merge(
-            df_universe[["key", f"spatial_lag_{value_field}"]], on="key", how="left"
+        # Baseline surface, built from every training sale. This is what the UNIVERSE
+        # (shipped values) sees, and what the post-valuation sales see -- neither is ever a
+        # CV holdout, so there is nothing to leak.
+        lag_univ, conf_univ = _spatial_lag_kernel(
+            sales_coords_train, sales_values_train, universe_coords, k, D_SCALE
         )
 
-        # ------------------------------------------------
-        # Calculate confidence:
+        # Surface the SALES rows see. Under cross-validation every trainable sale is a
+        # holdout in exactly one fold, and the baseline surface above would hand its parcel
+        # a neighbor at distance zero -- its own sale price, which then dominates the
+        # Gaussian kernel. So each fold's parcels get their own surface, rebuilt from the
+        # sales OUTSIDE that fold. Folds are parcel-grouped, so dropping a fold's parcels
+        # drops every sale of theirs at once. With no folds.csv (legacy single-split mode)
+        # this is a no-op and the sales rows keep the baseline surface, as before.
+        lag_sales, conf_sales = lag_univ, conf_univ
+        if univ_fold is not None:
+            lag_sales, conf_sales = lag_univ.copy(), conf_univ.copy()
+            src_fold = df_sub_train["key"].astype(str).map(key_to_fold)
+            for f in fold_ids:
+                target_mask = (univ_fold == f).values
+                if not target_mask.any():
+                    continue
+                src_mask = src_fold.ne(f).values
+                if src_mask.sum() <= (k + 1):
+                    # Too little left outside this fold to build an honest surface. Leave
+                    # these NaN so they fall through to the median fill below, rather than
+                    # silently keeping the leaky baseline value.
+                    lag_sales[target_mask] = np.nan
+                    conf_sales[target_mask] = 0.0
+                    continue
+                lag_f, conf_f = _spatial_lag_kernel(
+                    sales_coords_train[src_mask],
+                    sales_values_train[src_mask],
+                    universe_coords[target_mask],
+                    k,
+                    D_SCALE,
+                )
+                lag_sales[target_mask] = lag_f
+                conf_sales[target_mask] = conf_f
 
-        # Raw inverse-square information mass
-        distances_safe = distances.copy()
-        distances_safe[distances_safe == 0] = np.finfo(float).eps  # protect ÷ 0
+        col = f"spatial_lag_{value_field}"
+        col_conf = f"{col}_confidence"
 
-        inv_sq = 1.0 / distances_safe**2  # shape (n_parcel, 5)
-        info_mass = inv_sq.sum(axis=1)  # Σ 1/d²
-
-        # Fixed-bandwidth confidence
-        conf = 1.0 - (k / D_SCALE**2) / info_mass
-        spatial_lag_confidence = np.clip(conf, 0.0, 1.0)  # keep in [0, 1]
-
-        # store
-        df_universe[f"spatial_lag_{value_field}_confidence"] = spatial_lag_confidence
-        df_sales = df_sales.merge(
-            df_universe[["key", f"spatial_lag_{value_field}_confidence"]],
-            on="key",
-            how="left",
+        # Add the spatial lag as a new column, filling NaNs with the median of the
+        # original field
+        df_universe[col] = pd.Series(lag_univ, index=df_universe.index).fillna(
+            median_value
         )
-        # ------------------------------------------------
+        df_universe[col_conf] = conf_univ
+
+        # Add the new fields to sales, from the out-of-fold surface. Mapped by parcel key
+        # rather than merged, so that re-running on an already-enriched frame overwrites
+        # the columns instead of spawning _x/_y duplicates -- and so a duplicated universe
+        # key can't silently fan a sale out into several rows.
+        univ_keys = pd.Index(df_universe["key"].astype(str))
+        first = ~univ_keys.duplicated()
+        sales_keys = df_sales["key"].astype(str)
+        df_sales[col] = (
+            sales_keys.map(pd.Series(lag_sales[first], index=univ_keys[first]))
+            .fillna(median_value)
+            .values
+        )
+        df_sales[col_conf] = (
+            sales_keys.map(pd.Series(conf_sales[first], index=univ_keys[first]))
+            .fillna(0.0)
+            .values
+        )
 
     df_test = df_sales.loc[df_sales["key_sale"].isin(test_keys)].copy()
     
@@ -1163,6 +1245,9 @@ def _enrich_data(
             )
 
         if "permits" in s_enrich:
+            df_univ = _enrich_permits(
+                df_univ, s_enrich, dataframes, settings, is_sales=False, verbose=verbose
+            )
             df_sales = _enrich_permits(
                 df_sales, s_enrich, dataframes, settings, is_sales=True, verbose=verbose
             )
@@ -1639,6 +1724,12 @@ def _enrich_df_distances(
                 continue
             features_config[key] = dist_settings[key]
 
+        # Project parcels to the equal-distance CRS ONCE and reuse across every feature
+        # and named-feature distance call below, instead of re-projecting all parcels on
+        # each call (the dominant cost when many features / store_top are configured).
+        crs_eq = get_crs(df, "equal_distance")
+        parcels_proj = df[["key", "geometry"]].to_crs(crs_eq)
+
         # Loop through each feature configuration:
         for feature, config in features_config.items():
             # Check if feature is enabled in the osm_settings
@@ -1683,7 +1774,8 @@ def _enrich_df_distances(
 
                         # Calculate distances to all features
                         df = _do_perform_distance_calculations_osm(
-                            df, result, feature_id, max_distance=max_distance, unit=unit
+                            df, result, feature_id, max_distance=max_distance, unit=unit,
+                            parcels_proj=parcels_proj,
                         )
 
                         # If store_top is enabled, calculate distances to top features
@@ -1757,6 +1849,7 @@ def _enrich_df_distances(
                                     col_id,
                                     max_distance=max_distance,
                                     unit=unit,
+                                    parcels_proj=parcels_proj,
                                 )
 
                 except Exception as e:
@@ -1774,6 +1867,56 @@ def _enrich_df_distances(
     except Exception as e:
         warnings.warn(f"Failed to enrich with OpenStreetMap data: {str(e)}")
         return df
+
+
+_STREETS_CACHE_PATH = "in/osm/streets.parquet"
+_STREETS_SIG_PATH = "in/osm/streets.signature.json"
+
+
+def _read_streets_signature() -> dict | None:
+    """Read the sidecar signature for the cached streets file, if there is one."""
+    if not os.path.exists(_STREETS_SIG_PATH):
+        return None
+    try:
+        with open(_STREETS_SIG_PATH, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _write_streets_signature(signature: dict) -> None:
+    """Record what parcel set the cached streets file was built from."""
+    try:
+        with open(_STREETS_SIG_PATH, "w") as f:
+            json.dump(signature, f)
+    except OSError as e:
+        warnings.warn(f"Could not write {_STREETS_SIG_PATH}: {e}")
+
+
+# Street stubs that hold text rather than numbers. The pivot in _enrich_df_streets
+# emits slots 1..4 per parcel, so any parcel fronting fewer than four roads gets
+# missing values in the higher slots.
+_STREET_TEXT_STUBS = ["road_name", "road_type", "road_face"]
+
+
+def _fill_street_text_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Give the textual street columns an explicit UNKNOWN for absent road slots.
+
+    _finish_df_streets already fills the numeric stubs (frontage / depth /
+    dist_to_road) with 0.0, but left the textual ones missing. These fields are not
+    in the settings' categorical list, so the residual fill in cleaning never reaches
+    them either, and a later blanket string cast renders them as the literal text
+    "None" -- a junk category that then flows into models and reports.
+    """
+    for stub in _STREET_TEXT_STUBS:
+        for i in range(1, 5):
+            for col in (f"{stub}_{i}", f"osm_{stub}_{i}"):
+                if col in df.columns:
+                    filled = df[col].astype("object")
+                    # catch both real nulls and any that were already stringified
+                    filled = filled.mask(filled.isin(["None", "nan", "NaN", "<NA>"]))
+                    df[col] = filled.fillna("UNKNOWN").astype("str")
+    return df
 
 
 def _enrich_df_streets(
@@ -1797,16 +1940,37 @@ def _enrich_df_streets(
         },
     }
 
-    if os.path.exists("in/osm/streets.parquet"):
-        df_streets = pd.read_parquet("in/osm/streets.parquet")
-        if "key" in df_streets:
-            df_out = df_in.copy()
-            df_out = df_out.merge(df_streets, on="key", how="left")
+    # The signature above is only worth computing if we actually check it: a cached
+    # streets file built from a different parcel set (different row count or extent)
+    # must not be merged in as if it matched.
+    if os.path.exists(_STREETS_CACHE_PATH):
+        cached_sig = _read_streets_signature()
+        if cached_sig is not None and cached_sig != signature:
             if verbose:
                 print(
-                    f"--> found streets in in/osm/streets.parquet, loading from disk!"
+                    f"--> {_STREETS_CACHE_PATH} does not match the current parcel set "
+                    f"(signature mismatch); rebuilding streets."
                 )
-            return df_out
+        else:
+            df_streets = pd.read_parquet(_STREETS_CACHE_PATH)
+            if "key" in df_streets:
+                if cached_sig is None:
+                    warnings.warn(
+                        f"{_STREETS_CACHE_PATH} has no accompanying "
+                        f"{_STREETS_SIG_PATH}, so it cannot be validated against the "
+                        f"current parcel set. Using it as-is. Delete it to force a "
+                        f"rebuild with a signature."
+                    )
+                df_out = df_in.copy()
+                df_out = df_out.merge(df_streets, on="key", how="left")
+                # Also normalise here, so caches written before this fix (and parcels
+                # the cache has no row for) do not carry missing values forward.
+                df_out = _fill_street_text_columns(df_out)
+                if verbose:
+                    print(
+                        f"--> found streets in {_STREETS_CACHE_PATH}, loading from disk!"
+                    )
+                return df_out
     # ---- setup parcels ----
 
     t = TimingData()
@@ -2335,7 +2499,9 @@ def _enrich_df_streets(
 
     os.makedirs("in/osm", exist_ok=True)
 
-    df_net_streets.to_parquet("in/osm/streets.parquet")
+    df_net_streets.to_parquet(_STREETS_CACHE_PATH)
+    # Record the parcel set this was built from so the read path can validate it
+    _write_streets_signature(signature)
 
     return df_out
 
@@ -2398,6 +2564,10 @@ def _finish_df_streets(df: gpd.GeoDataFrame, settings: dict) -> gpd.GeoDataFrame
             renames[f"{stub}_{i}"] = f"osm_{stub}_{i}"
 
     df = df.rename(columns=renames)
+
+    # The numeric stubs above were filled with 0.0; give the textual ones the same
+    # treatment so absent road slots carry UNKNOWN rather than a missing value.
+    df = _fill_street_text_columns(df)
 
     return df
 
@@ -2483,7 +2653,16 @@ def _do_enrich_year_built(
     else:
         df.loc[df["sale_year"].notna(), new_col] = df["sale_year"] - df[col]
 
-        df.loc[df["sale_year"].isna() | df["sale_year"].le(0), new_col] = 0
+        # Guard the year-built side too, exactly as the non-sales branch does: a
+        # year_built of 0 (a common assessor placeholder) against a valid sale year
+        # otherwise yields a ~2000-year-old building.
+        df.loc[
+            df["sale_year"].isna()
+            | df["sale_year"].le(0)
+            | df[col].isna()
+            | df[col].le(0),
+            new_col,
+        ] = 0
     return df
 
 
@@ -2733,7 +2912,7 @@ def _enrich_df_basic(
 
     supkey = "sales" if is_sales else "universe"
     
-    for word in ["ref_tables", "calc", "tweak"]:
+    for word in ["ref_tables", "calc", "tweak", "drop_fields"]:
         val = s_enrich_this.get(word)
         if val is None:
             continue
@@ -2747,6 +2926,7 @@ def _enrich_df_basic(
     s_ref = s_enrich_this.get("ref_tables", {}).get(supkey, [])
     s_calc = s_enrich_this.get("calc", {}).get(supkey, {})
     s_tweak = s_enrich_this.get("tweak", {}).get(supkey, {})
+    s_drop = s_enrich_this.get("drop_fields", {}).get(supkey, [])
 
     # reference tables:
     df = _perform_ref_tables(df, s_ref, dataframes, verbose=verbose)
@@ -2756,6 +2936,9 @@ def _enrich_df_basic(
 
     # tweaks:
     df = perform_tweaks(df, s_tweak)
+
+    # drop scratch fields:
+    df = _drop_fields(df, s_drop)
 
     # enrich year built:
     df = _enrich_year_built(df, settings, is_sales)
@@ -2983,13 +3166,19 @@ def _enrich_permits(
     s_enrich_this: dict,
     dataframes: dict[str, pd.DataFrame],
     settings: dict,
-    is_sales: bool = False,
+    is_sales: bool,
     verbose: bool = False,
 ) -> pd.DataFrame:
+    # is_sales is deliberately required, with no default: the sales and universe
+    # processors expect different frames and ask their questions relative to different
+    # dates, so silently defaulting one way sends the wrong frame to the wrong one.
     s_permits = s_enrich_this.get("permits", {})
 
     sources = s_permits.get("sources", [])
-    if sources is None:
+    # A missing, empty, or None sources list means there is nothing to enrich. Without
+    # this guard the source loop never runs, df_all_permits stays None, and the
+    # downstream processing raises a TypeError on it.
+    if not sources:
         return df_in
 
     df = df_in.copy()
@@ -3526,9 +3715,22 @@ def _do_perform_distance_calculations_osm(
     _id: str,
     max_distance: float = None,
     unit: str = "km",
+    parcels_proj: gpd.GeoDataFrame = None,
 ) -> pd.DataFrame:
-    """Perform a divide-by-zero-safe nearest neighbor spatial join to calculate
-    distances.
+    """Nearest-neighbor distance + proximity for one OSM feature class.
+
+    Produces ``dist_to_<id>`` (target unit; NaN beyond ``max_distance``), ``within_<id>``
+    (bool), and ``proximity_to_<id>`` (``max(dist) - dist``; 0 beyond range).
+
+    Two performance levers vs. the previous implementation, both behavior-preserving:
+
+    1. **Buffer pre-filter** — when ``max_distance`` is set, only parcels intersecting the
+       features buffered by ``max_distance`` can be in range, so the (expensive) nearest
+       join runs on just those; everyone else gets ``proximity 0`` / ``within False``
+       without a join. This is the same pattern the source-shapefile path uses, and is a
+       big win for sparse features (rivers) and the per-named-feature ``store_top`` calls.
+    2. **Reproject once** — pass ``parcels_proj`` (parcels already in the equal-distance
+       CRS) and we skip re-projecting all parcels on every feature/named-feature call.
     """
     unit_factors = {"m": 1, "km": 0.001, "mile": 0.000621371, "ft": 3.28084}
     if unit not in unit_factors:
@@ -3543,16 +3745,13 @@ def _do_perform_distance_calculations_osm(
             f"Duplicate keys found before distance calculation for '{_id}.' This should not happen."
         )
 
-    if max_distance is not None:
-        # Convert max_distance to meters (since our distances are in meters)
-        max_distance_m = max_distance / unit_factors[unit]
-    else:
-        max_distance_m = None
+    max_distance_m = (max_distance / unit_factors[unit]) if max_distance is not None else None
 
     print(f"Calculating distance, id={_id}, max_distance={max_distance}, unit={unit}, max_distance (in meters)={max_distance_m}")
 
-    # Construct cache signature
+    # Construct cache signature ("v" bumped: pre-filter + reproject-once implementation)
     signature = {
+        "v": 2,
         "crs": crs.name,
         "_id": _id,
         "max_distance": max_distance,
@@ -3568,56 +3767,60 @@ def _do_perform_distance_calculations_osm(
     if df_out is not None:
         return df_out
 
-    # Project geometries
-    df_projected = df_in.to_crs(crs).copy()
-    gdf_projected = gdf_in.to_crs(crs).copy()
-
-    # Calculate distances for all parcels first
-    nearest = gpd.sjoin_nearest(
-        df_projected, gdf_projected, how="left", distance_col="distance", max_distance=max_distance_m
-    )
-
-    # Handle duplicates by keeping shortest distance
-    if nearest.duplicated(subset="key").sum() > 0:
-        nearest = nearest.sort_values("distance").drop_duplicates("key")
-
-    # Create distance series (distances are in meters at this point)
-    distance_series = pd.Series(nearest["distance"].values, index=nearest.index)
-
-    # Initialize within flag
-    within_series = pd.Series(False, index=df_projected.index)
-
-    if max_distance is not None:
-        # Mark parcels within max_distance
-        within_series[distance_series <= max_distance_m] = True
-
-        # Set distances beyond max_distance to max_distance + 1 (in the target unit)
-        distance_series[distance_series > max_distance_m] = (
-            max_distance + 1
-        ) / unit_factors[unit]
-
-        # Convert all distances to target unit
-        distance_series = distance_series * unit_factors[unit]
+    # Parcels in the equal-distance CRS. Reuse the caller's pre-projected frame when given
+    # (so we don't re-project all parcels once per feature / named-feature call).
+    if parcels_proj is not None and parcels_proj.crs is not None and parcels_proj.crs == crs:
+        df_projected = parcels_proj
     else:
-        # If no max_distance, all parcels are considered "within"
-        within_series[:] = True
-        # Convert distances to target unit
-        distance_series = distance_series * unit_factors[unit]
+        df_projected = df_in.to_crs(crs)
+    gdf_projected = gdf_in.to_crs(crs)
 
-    proximity_series = np.max(distance_series) - distance_series
+    # distance in METERS, indexed like df_projected; NaN == beyond range / no match
+    dist_m = pd.Series(np.nan, index=df_projected.index)
+    within = pd.Series(False, index=df_projected.index)
 
-    # Create output DataFrame with new columns
+    def _nearest_distances(parcels_subset):
+        """Nearest-feature distance (m) per parcel, indexed by parcels_subset.index."""
+        nn = gpd.sjoin_nearest(
+            parcels_subset, gdf_projected, how="left", distance_col="__dist_m"
+        ).drop(columns=["index_right"], errors="ignore")
+        # sjoin_nearest emits one row per tie; keep the shortest distance per parcel
+        if nn.index.has_duplicates:
+            nn = nn.sort_values("__dist_m")
+            nn = nn[~nn.index.duplicated(keep="first")]
+        return nn["__dist_m"]
+
+    if max_distance_m is not None:
+        # Only parcels intersecting the features' max_distance buffer can be in range.
+        buffered = gdf_projected[["geometry"]].copy()
+        buffered["geometry"] = buffered.geometry.buffer(max_distance_m)
+        in_range = gpd.sjoin(df_projected, buffered, how="inner", predicate="intersects")
+        in_range_idx = in_range.index.unique()
+        if len(in_range_idx) > 0:
+            d = _nearest_distances(df_projected.loc[in_range_idx])
+            dist_m.loc[d.index] = d
+            within.loc[d.index] = True
+    else:
+        d = _nearest_distances(df_projected)
+        dist_m.loc[d.index] = d
+        within[:] = True
+
+    # Convert to target unit; far/no-match parcels stay NaN -> proximity 0 (as before).
+    dist_unit = dist_m * unit_factors[unit]
+    max_finite = dist_unit.max()  # Series.max() skips NaN
+    if pd.notna(max_finite):
+        proximity = (max_finite - dist_unit).fillna(0.0)
+    else:
+        proximity = pd.Series(0.0, index=dist_unit.index)
+
     new_df = pd.DataFrame(
         {
-            f"dist_to_{_id}": distance_series,
-            f"within_{_id}": within_series,
-            f"proximity_to_{_id}": proximity_series
+            f"dist_to_{_id}": dist_unit,
+            f"within_{_id}": within,
+            f"proximity_to_{_id}": proximity,
         },
         index=df_projected.index,
     )
-
-    # Fill null proximity with 0.0 (maximum distance)
-    new_df[f"proximity_to_{_id}"] = new_df[f"proximity_to_{_id}"].fillna(0.0)
 
     # Combine with original DataFrame
     df_out = pd.concat([df_in, new_df], axis=1)
@@ -3836,6 +4039,46 @@ def _do_get_calc_cols(df_entry: dict) -> list[str]:
     return fields_in_calc
 
 
+def _drop_fields(
+    df_in: pd.DataFrame, fields: list, rename_map: dict = None
+) -> pd.DataFrame:
+    """Drop the columns named in a ``drop_fields`` block.
+
+    Intended for scratch/intermediate columns that a ``calc`` block needs in order to
+    compute something else, but which shouldn't survive into the modeling data. Missing
+    fields are ignored, so the operation is idempotent and safe to re-run.
+
+    Parameters
+    ----------
+    df_in : pandas.DataFrame
+        Input DataFrame.
+    fields : list
+        List of column names to drop. Canonical (renamed) names are matched first; if a
+        name isn't found, it is retried through ``rename_map`` as a source-column name.
+    rename_map : dict, optional
+        Optional mapping of original to renamed columns.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame with the named columns removed.
+    """
+    if not isinstance(fields, list):
+        warnings.warn(
+            f"`drop_fields` must be a list of column names, found {type(fields)}. Nothing will be dropped."
+        )
+        return df_in
+    to_drop = []
+    for field in fields:
+        if field in df_in.columns:
+            to_drop.append(field)
+        elif rename_map and rename_map.get(field) in df_in.columns:
+            to_drop.append(rename_map[field])
+    if not to_drop:
+        return df_in
+    return df_in.drop(columns=to_drop)
+
+
 def load_dataframe(
     entry: dict,
     settings: dict,
@@ -3858,12 +4101,19 @@ def load_dataframe(
 
     e_load = entry.get("load", {})
 
-    # Get all calc and tweak operations in order they appear
+    # Get all calc, tweak, and drop_fields operations in order they appear
     operation_order = []
     for key in entry:
-        if "calc" in key or "tweak" in key:  # Match any key containing calc or tweak
-            op_type = "calc" if "calc" in key else "tweak"
-            operation_order.append({"type": op_type, "operations": entry[key]})
+        # Match any key containing calc, tweak, or drop_fields
+        if "calc" in key:
+            op_type = "calc"
+        elif "tweak" in key:
+            op_type = "tweak"
+        elif "drop_fields" in key:
+            op_type = "drop_fields"
+        else:
+            continue
+        operation_order.append({"type": op_type, "operations": entry[key]})
     
     # Get all fields used in aggregation operations
     dupes = get_dupes(entry, None, "geometry" in column_names)
@@ -4002,6 +4252,8 @@ def load_dataframe(
             df = perform_calculations(df, operation["operations"], rename_map)
         elif op_type == "tweak":
             df = perform_tweaks(df, operation["operations"], rename_map)
+        elif op_type == "drop_fields":
+            df = _drop_fields(df, operation["operations"], rename_map)
 
     if fields_cat is None:
         fields_cat = get_fields_categorical(settings, include_boolean=False)
@@ -4138,6 +4390,10 @@ def _handle_duplicated_rows(
 ) -> pd.DataFrame:
     """Handle duplicated rows in a DataFrame based on specified rules."""
     if dupes == "allow":
+        return df_in
+    # get_dupes() resolves the "allow" string to {"allow": True}; honor it here so a keyed
+    # source declared dupes:"allow" keeps ALL rows instead of silently de-duping on key.
+    if isinstance(dupes, dict) and dupes.get("allow"):
         return df_in
     subset = dupes.get("subset", "key")
     if not isinstance(subset, list):
@@ -4535,9 +4791,11 @@ def _write_canonical_splits(sup: SalesUniversePair, settings: dict, verbose: boo
     instructions = settings.get("modeling", {}).get("instructions", {})
     test_train_frac = instructions.get("test_train_frac", 0.8)
     random_seed = instructions.get("random_seed", 1337)
+    n_folds = int(instructions.get("cv_folds", 5))
     for model_group in model_groups:
         _do_write_canonical_split(
-            model_group, df_sales, settings, test_train_frac, random_seed, verbose
+            model_group, df_sales, settings, test_train_frac, random_seed, verbose,
+            n_folds=n_folds,
         )
 
 
@@ -4760,8 +5018,11 @@ def _perform_canonical_split(
     rs = settings.get("analysis", {}).get("ratio_study", {})
     look_back_years = rs.get("look_back_years", 1)
 
+    # Per-model-group window: this is where each group narrows to its own use_sales_from
+    # (the cleaning/clip stages kept the widest floor). Falls back to the default/global
+    # window when no per-group override is configured.
     from openavmkit.utilities.settings import resolve_use_sales_from
-    use_sales_from_impr, use_sales_from_vacant = resolve_use_sales_from(settings)
+    use_sales_from_impr, use_sales_from_vacant = resolve_use_sales_from(settings, model_group=model_group)
 
     val_date = get_valuation_date(settings)
 
@@ -4934,25 +5195,222 @@ def _perform_canonical_split(
     return df_test, df_train
 
 
+def _assign_grouped_folds(
+    df: pd.DataFrame,
+    n_folds: int,
+    random_seed: int,
+    strat_fields: list[str] | None,
+) -> pd.Series:
+    """Assign each row of ``df`` to one of ``n_folds`` folds, grouped by parcel ``key``.
+
+    All sales of a given parcel (``key``) land in the same fold — folding by ``key_sale``
+    would let a repeat-sale parcel appear in both a fold's train and its holdout, an
+    entity-level training leak (and the AVM's generalization target is the parcel, not the
+    transaction). Folds are also stratified on ``strat_fields`` (via a combined label) for
+    metric stability, but stratification is the negotiable part: when strata are too thin
+    for ``StratifiedGroupKFold`` the most-granular field is dropped and it retries,
+    ultimately degrading to plain ``GroupKFold``. Grouping is never dropped.
+
+    Returns an integer fold-index Series aligned to ``df.index`` (values 0..n_splits-1).
+    """
+    folds = pd.Series(-1, index=df.index, dtype=int)
+    if len(df) == 0:
+        return folds
+
+    groups = df["key"].astype(str).values
+    n_groups = len(np.unique(groups))
+    # Can't make more folds than we have parcels.
+    n_splits = min(n_folds, n_groups)
+    if n_splits < 2:
+        folds[:] = 0
+        return folds
+
+    def _group_kfold():
+        splitter = GroupKFold(n_splits=n_splits)
+        for fold_idx, (_, holdout_pos) in enumerate(splitter.split(df, None, groups)):
+            folds.iloc[holdout_pos] = fold_idx
+        return folds
+
+    fields = list(strat_fields) if strat_fields else []
+    while True:
+        label = _build_strat_label(df, fields) if fields else None
+        if label is None:
+            return _group_kfold()
+        try:
+            splitter = StratifiedGroupKFold(
+                n_splits=n_splits, shuffle=True, random_state=random_seed
+            )
+            for fold_idx, (_, holdout_pos) in enumerate(
+                splitter.split(df, label, groups)
+            ):
+                folds.iloc[holdout_pos] = fold_idx
+            return folds
+        except ValueError:
+            # A stratum was too thin for this many splits — drop the most granular field
+            # and retry. Grouping (the leakage guarantee) is preserved throughout.
+            if not fields:
+                return _group_kfold()
+            fields = fields[:-1]
+
+
+def _perform_canonical_folds(
+    model_group: str,
+    df_sales_in: pd.DataFrame,
+    settings: dict,
+    n_folds: int = 5,
+    random_seed: int = 1337,
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """Assign parcel-grouped, stratified CV folds for one model group.
+
+    Returns a DataFrame with columns ``key_sale``, ``key``, ``fold``, ``train_eligible``.
+    Post-valuation sales (``sale_age_days < 0``) never train under any scenario, so they get
+    ``train_eligible=False`` and ``fold=-1`` — they are covered in the holdout report via the
+    full-refit (Phase 2) model, not via the fold models. The three-tier temporal balancing
+    the single-split path uses is unnecessary here: every trainable sale lands in the holdout
+    exactly once (100% coverage), so the "enough recent sales in test" floor is automatic.
+    """
+    if verbose:
+        print(f"\nMaking canonical {n_folds}-fold CV split for model group {model_group}...")
+
+    from openavmkit.utilities.settings import resolve_use_sales_from
+    use_sales_from_impr, use_sales_from_vacant = resolve_use_sales_from(
+        settings, model_group=model_group
+    )
+
+    df = df_sales_in[df_sales_in["model_group"].eq(model_group)].copy()
+    df = _boolify_column_in_df(df, "vacant_sale", "na_false")
+
+    # Apply per-type use_sales_from thresholds (mirrors _perform_canonical_split).
+    if use_sales_from_impr is not None or use_sales_from_vacant is not None:
+        is_vac = df["vacant_sale"].fillna(False)
+        keep = pd.Series(True, index=df.index)
+        if use_sales_from_impr is not None:
+            keep &= is_vac | df["sale_year"].ge(use_sales_from_impr)
+        if use_sales_from_vacant is not None:
+            keep &= ~is_vac | df["sale_year"].ge(use_sales_from_vacant)
+        df = df[keep]
+
+    # Post-valuation sales never train.
+    is_post_val = df["sale_age_days"].lt(0)
+    df_trainable = df[~is_post_val].copy()
+    df_post = df[is_post_val].copy()
+
+    # Combined stratification label: vacancy flag + the improved strat fields (which append
+    # sale_year). Folding V/I into one label (rather than splitting into separate V/I streams)
+    # keeps a parcel that sold both vacant and improved from splitting across streams. Vacant
+    # rows have null age/area — _build_strat_label bins those to -1.
+    instr = settings.get("modeling", {}).get("instructions", {})
+    strat_fields = ["vacant_sale"] + _resolve_strat_fields_improved(
+        df_trainable, settings, instr.get("test_strat_fields_improved", None)
+    )
+    strat_fields = [f for f in strat_fields if f in df_trainable.columns]
+
+    fold_idx = _assign_grouped_folds(df_trainable, n_folds, random_seed, strat_fields)
+
+    # Diagnostic: repeat-sale parcels are exactly where parcel-grouping matters.
+    if len(df_trainable) > 0 and verbose:
+        per_parcel = df_trainable.groupby("key")["key_sale"].nunique()
+        n_repeat = int((per_parcel > 1).sum())
+        print(
+            f"--> {len(df_trainable)} trainable sales across {len(per_parcel)} parcels; "
+            f"{n_repeat} parcel(s) have >1 trainable sale "
+            f"({'grouping is active' if n_repeat else 'grouping is a no-op'})."
+        )
+
+    out_trainable = pd.DataFrame({
+        "key_sale": df_trainable["key_sale"].astype(str).values,
+        "key": df_trainable["key"].astype(str).values,
+        "fold": fold_idx.values,
+        "train_eligible": True,
+    })
+    out_post = pd.DataFrame({
+        "key_sale": df_post["key_sale"].astype(str).values,
+        "key": df_post["key"].astype(str).values,
+        "fold": -1,
+        "train_eligible": False,
+    })
+    result = pd.concat([out_trainable, out_post], ignore_index=True)
+
+    if verbose and len(out_trainable) > 0:
+        counts = out_trainable["fold"].value_counts().sort_index()
+        print(f"--> fold sizes (trainable): {counts.to_dict()}; post-val: {len(out_post)}")
+
+    return result
+
+
+def _read_provided_test_keys(filename: str) -> set:
+    """Read a user-supplied set of test (holdout) sale keys from ``in/<filename>``.
+
+    The file is a CSV; the ``key_sale`` column is used if present, otherwise the first
+    column. Values are returned as a set of strings. See ``modeling.instructions.test_keys_file``.
+    """
+    path = f"in/{filename}"
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"modeling.instructions.test_keys_file is set but '{path}' was not found."
+        )
+    df = pd.read_csv(path)
+    col = "key_sale" if "key_sale" in df.columns else df.columns[0]
+    return set(df[col].astype(str))
+
+
 def _do_write_canonical_split(
     model_group: str,
     df_sales_in: pd.DataFrame,
     settings: dict,
     test_train_fraction: float = 0.8,
     random_seed: int = 1337,
-    verbose: bool = False
+    verbose: bool = False,
+    n_folds: int = 1,
 ):
     """Write the canonical split keys (train and test) for a given model group to disk.
     Also performs outlier detection on training data if enabled in settings.
-    """
-    # Get initial split
-    df_test, df_train = _perform_canonical_split(
-        model_group, df_sales_in, settings, test_train_fraction, random_seed, verbose
-    )
 
-    # Get initial keys
-    train_keys = df_train["key_sale"].values
-    test_keys = df_test["key_sale"].values
+    When ``n_folds > 1`` (and no user-provided ``test_keys_file``), writes parcel-grouped
+    CV fold assignments to ``folds.csv`` instead of the single train/test split. The
+    ``test_keys_file`` assessor path always uses the single split (it pins a specific
+    holdout that CV would violate).
+    """
+    instr = settings.get("modeling", {}).get("instructions", {})
+    test_keys_file = instr.get("test_keys_file")
+
+    outpath = f"out/models/{model_group}/_data"
+    os.makedirs(outpath, exist_ok=True)
+
+    if n_folds and n_folds > 1 and not test_keys_file:
+        folds_df = _perform_canonical_folds(
+            model_group, df_sales_in, settings, n_folds, random_seed, verbose
+        )
+        folds_df.to_csv(f"{outpath}/folds.csv", index=False)
+        return
+
+    if test_keys_file:
+        # The user supplied their own holdout. This is the "I am the assessor and I know
+        # which sales were held out of my roll" case: the provided keys define the test
+        # set so that both openavmkit and the assessor are scored on the same, genuinely
+        # held-out sales. Training = everything else for this model group, minus
+        # post-valuation sales (which never train, regardless of the split source).
+        provided = _read_provided_test_keys(test_keys_file)
+        mg_sales = df_sales_in[df_sales_in["model_group"].eq(model_group)]
+        in_test = mg_sales["key_sale"].astype(str).isin(provided)
+        is_post_val = mg_sales["sale_age_days"].lt(0)
+        test_keys = mg_sales.loc[in_test, "key_sale"].values
+        train_keys = mg_sales.loc[~in_test & ~is_post_val, "key_sale"].values
+        if verbose:
+            print(
+                f"Using user-provided test keys from in/{test_keys_file}: "
+                f"{len(test_keys)} test / {len(train_keys)} train for {model_group}"
+            )
+    else:
+        # Get initial split
+        df_test, df_train = _perform_canonical_split(
+            model_group, df_sales_in, settings, test_train_fraction, random_seed, verbose
+        )
+
+        # Get initial keys
+        train_keys = df_train["key_sale"].values
+        test_keys = df_test["key_sale"].values
 
     # Create output directory and save keys
     outpath = f"out/models/{model_group}/_data"
@@ -4969,7 +5427,15 @@ def _do_write_canonical_split(
 def _read_split_keys(model_group: str):
     """Read the train and test split keys for a model group from disk.
 
-    Returns empty arrays (with a warning) when keys are missing — happens for
+    In CV mode (`cv_folds > 1`) `_do_write_canonical_split` writes `folds.csv` instead of
+    `train_keys.csv` / `test_keys.csv`, so we fall back to the fold file and collapse it to
+    the same single split Phase 2 of `run_one_model_cv` uses: train = all trainable sales,
+    test = post-valuation sales (which never train). Callers that need genuine per-fold
+    membership must use `_read_fold_keys` directly — see `_enrich_sup_spatial_lag_for_model_group`,
+    which builds its neighbor surface out-of-fold precisely because this collapsed split
+    would otherwise let a fold's holdout sale feed its own spatial lag.
+
+    Returns empty arrays (with a warning) when neither file exists — happens for
     model groups that have sales records but no `valid_sale=True` rows, so
     `_write_canonical_splits` skips them. Callers either union keys across
     model groups (where empty contributes nothing) or feed into the existing
@@ -4979,11 +5445,61 @@ def _read_split_keys(model_group: str):
     train_path = f"{path}/train_keys.csv"
     test_path = f"{path}/test_keys.csv"
     if not os.path.exists(train_path) or not os.path.exists(test_path):
+        fold_data = _read_fold_keys(model_group)
+        if fold_data is not None:
+            train_keys = np.asarray(fold_data["train_all"], dtype=str)
+            test_keys = np.asarray(fold_data["post_val"], dtype=str)
+            return test_keys, train_keys
         warnings.warn(f"No split keys found for model group: {model_group} (returning empty)")
         return np.array([], dtype=str), np.array([], dtype=str)
     train_keys = pd.read_csv(train_path)["key_sale"].astype(str).values
     test_keys = pd.read_csv(test_path)["key_sale"].astype(str).values
     return test_keys, train_keys
+
+
+def _read_fold_keys(model_group: str):
+    """Read parcel-grouped CV fold assignments for a model group from disk.
+
+    Returns ``None`` when no ``folds.csv`` exists (e.g. legacy single-split mode, or a model
+    group skipped for lack of valid sales). Otherwise returns a dict:
+
+      - ``n_folds``: number of folds actually assigned
+      - ``folds``: list of ``(holdout_keys, train_keys)`` per fold, where ``train_keys`` are
+        all trainable sales NOT in this fold's holdout (post-val already excluded)
+      - ``train_all``: all trainable sale keys (post-val excluded) — Phase-2 training set
+      - ``post_val``: post-valuation sale keys (never train; scored by the Phase-2 model)
+      - ``key_to_fold``: parcel ``key`` -> fold index, for trainable parcels only. Folds are
+        parcel-grouped, so this is well-defined. Used by out-of-fold feature engineering
+        (see ``_enrich_sup_spatial_lag_for_model_group``).
+    """
+    path = f"out/models/{model_group}/_data/folds.csv"
+    if not os.path.exists(path):
+        return None
+    df = pd.read_csv(path)
+    df["key_sale"] = df["key_sale"].astype(str)
+    # train_eligible may round-trip through CSV as bool or "True"/"False" string.
+    te = df["train_eligible"]
+    if te.dtype != bool:
+        te = te.astype(str).str.strip().str.lower().isin(["true", "1"])
+    trainable = df[te]
+    post_val = df.loc[~te, "key_sale"].values
+    train_all = trainable["key_sale"].values
+    fold_ids = sorted(int(f) for f in trainable["fold"].unique())
+    folds = []
+    for f in fold_ids:
+        holdout_keys = trainable.loc[trainable["fold"] == f, "key_sale"].values
+        train_keys = trainable.loc[trainable["fold"] != f, "key_sale"].values
+        folds.append((holdout_keys, train_keys))
+    key_to_fold = dict(
+        zip(trainable["key"].astype(str).values, trainable["fold"].astype(int).values)
+    )
+    return {
+        "n_folds": len(fold_ids),
+        "folds": folds,
+        "train_all": train_all,
+        "post_val": post_val,
+        "key_to_fold": key_to_fold,
+    }
 
 
 def _tag_model_groups_sup(
@@ -5248,82 +5764,169 @@ def _process_permits_univ(
     settings: dict,
     verbose: bool = False,
 ):
+    """Enrich the parcel universe with demolition and renovation permit history.
+
+    This is the universe-frame counterpart to :func:`_process_permits_sales`. Where the
+    sales version asks each question relative to a *sale date*, this version asks it
+    relative to the *valuation date*: permits dated on or after the valuation date are
+    ignored, because the universe describes what each parcel looks like as of that date.
+
+    Adds the following columns to ``df_in``:
+
+    - ``last_permit_was_teardown`` -- True if the parcel's most recent permit on or
+      before the valuation date was a demolition permit.
+    - ``demo_date`` -- the date of that demolition permit, NaT when the last permit was
+      not a teardown or the parcel has no qualifying permits.
+    - ``is_renovated``, ``reno_date``, ``days_to_reno``, ``renovation_num``,
+      ``renovation_txt`` -- the most significant, then most recent, renovation on or
+      before the valuation date.
+    - ``bldg_effective_year_built`` -- only when ``calc_effective_age`` is set.
+
+    ``days_to_reno`` is negative (renovation precedes the valuation date), matching the
+    sales path's sign convention.
+    """
     calc_effective_age = s_permits.get("calc_effective_age", False)
+    valuation_date = get_valuation_date(settings)
+
+    df_univ = df_in.copy()
 
     # We might have multiple permits per key. We have multiple questions to answer:
 
-    # 1. Do we have a demolition permit? When was the demolition date?
-    df_demos = df_permits[df_permits["is_teardown"].eq(True)][["key", "date"]].copy()
+    # =========================================================================================#
+    #                              Process teardown universe                                   #
+    # =========================================================================================#
+
+    # 1. Was the most recent permit for this parcel a demolition permit?
+    if "is_teardown" in df_permits:
+        df_u = df_in[["key"]].copy()
+
+        df_permits_dated = df_permits.rename(columns={"date": "permit_date"})
+        df_u = df_u.merge(df_permits_dated, on="key", how="left")
+        df_u["valuation_date"] = valuation_date
+        # Ignore permits dated on or after the valuation date -- as of the valuation
+        # date they have not happened yet.
+        df_u.loc[df_u["permit_date"].ge(df_u["valuation_date"]), "permit_date"] = pd.NaT
+        # A row whose date was just voided must not contribute its teardown flag either,
+        # or a parcel with only future permits would be judged on one of them.
+        df_u.loc[pd.isna(df_u["permit_date"]), "is_teardown"] = False
+
+        # we could have multiple hits, we need to de-duplicate.
+        # most recent qualifying permit first (NaT sorts last), then keep it
+        df_u = df_u.sort_values(by=["permit_date"], ascending=[False], na_position="last")
+        df_u = df_u.drop_duplicates(subset=["key"], keep="first")
+
+        df_u["last_permit_was_teardown"] = df_u["is_teardown"].eq(True)
+        df_u = df_u.rename(columns={"permit_date": "demo_date"})
+        # demo_date is only meaningful when that last permit actually was a teardown
+        df_u.loc[~df_u["last_permit_was_teardown"], "demo_date"] = pd.NaT
+
+        # Now we know, for each parcel, if its last permit was for a teardown, and when
+        # it was torn down
+        df_univ = df_univ.merge(
+            df_u[["key", "last_permit_was_teardown", "demo_date"]], on="key", how="left"
+        )
+        df_univ["last_permit_was_teardown"] = (
+            df_univ["last_permit_was_teardown"].fillna(False).astype(bool)
+        )
+
+        if verbose:
+            n_teardown = int(df_univ["last_permit_was_teardown"].sum())
+            print(f"Identified {n_teardown} parcels whose last permit was a teardown.")
+
+    # =========================================================================================#
+    #                              Process renovation universe                                 #
+    # =========================================================================================#
 
     # 2. Do we have a renovation permit? When was the renovation date?
-    df_renos = df_permits[df_permits["is_renovation"].eq(True)][["key", "date"]].copy()
+    if "is_renovation" in df_permits:
 
-    # ==========================================================================================#
-    #                              Process teardown universe                                   #
-    # ==========================================================================================#
+        if "renovation_num" not in df_permits:
+            raise ValueError(
+                "Missing field 'renovation_num' in df_permits. Cannot process renovation permits."
+            )
+        if "renovation_txt" not in df_permits:
+            raise ValueError(
+                "Missing field 'renovation_txt' in df_permits. Cannot process renovation permits."
+            )
 
-    # We want to know -- was the most recent permit for this parcel a demolition permit?
+        df_renos = df_permits[df_permits["is_renovation"].eq(True)][
+            ["key", "date", "renovation_num", "renovation_txt", "is_renovation"]
+        ].copy()
 
-    df_u = df_in[["key"]].copy()
+        df_renos = df_renos.rename(
+            columns={"date": "reno_date", "is_renovation": "is_renovated"}
+        )
 
-    df_permits = df_permits.rename(columns={"date": "permit_date"})
-    df_u = df_u.merge(df_permits, on="key", how="left")
-    df_u["sale_date"] = get_valuation_date(settings)
-    # Ignore permits that happened AFTER the valuation date
-    df_u.loc[df_u["permit_date"].gt(df_u["sale_date"]), "permit_date"] = np.nan
+        df_u = df_in[["key"]].copy()
+        df_u = df_u.merge(df_renos, on="key", how="left")
+        df_u.loc[pd.isna(df_u["is_renovated"]), "is_renovated"] = False
+        df_u["valuation_date"] = valuation_date
+        df_u["days_to_reno"] = (df_u["reno_date"] - df_u["valuation_date"]).dt.days
 
-    # we could have multiple hits, we need to de-duplicate.
-    # find the permit date closest to the valuation date for each key
-    df_u = df_u.sort_values(by=["permit_date"], descending=[True])
-    df_u = df_u.drop_duplicates(subset=["key"], keep="first")
+        # Ignore renovations dated on or after the valuation date, and clear the rest of
+        # that row's renovation data along with it
+        df_u.loc[df_u["days_to_reno"].ge(0), "days_to_reno"] = np.nan
+        df_u.loc[pd.isna(df_u["days_to_reno"]), "reno_date"] = None
+        df_u.loc[pd.isna(df_u["days_to_reno"]), "renovation_num"] = np.nan
+        df_u.loc[pd.isna(df_u["days_to_reno"]), "renovation_txt"] = None
+        df_u.loc[pd.isna(df_u["days_to_reno"]), "is_renovated"] = False
 
-    df_u["last_permit_was_teardown"] = df_u[df_u["is_teardown"].eq(True)]
-    df_u = df_u.rename(columns={"permit_date": "demo_date"})
+        # Find the most significant renovation, and among those the most recent.
+        # days_to_reno is negative here, so descending puts the closest to the
+        # valuation date first -- same convention as the sales path.
+        df_u = df_u.sort_values(
+            by=["renovation_num", "days_to_reno"], ascending=[False, False]
+        )
+        df_u = df_u.drop_duplicates(subset=["key"], keep="first")
 
-    # Now we know, for each parcel, if it's last permit was for a teardown, and when it was torn down
-    df_univ = df_in.merge(
-        df_u[["key", "last_permit_was_teardown", "demo_date"]], on="key", how="left"
-    )
+        # Merge the results back onto df_universe
+        df_univ = df_univ.merge(
+            df_u[
+                [
+                    "key",
+                    "is_renovated",
+                    "reno_date",
+                    "days_to_reno",
+                    "renovation_num",
+                    "renovation_txt",
+                ]
+            ],
+            on="key",
+            how="left",
+        )
+        df_univ["is_renovated"] = df_univ["is_renovated"].fillna(False).astype(bool)
 
-    # ===========================================================================================#
-    #                              Process renovation universe                                  #
-    # ===========================================================================================#
-
-    valuation_date = get_valuation_date(settings)
-
-    df_u = df_in[["key"]].copy()
-
-    df_u = df_u.merge(df_renos, on="key", how="left")
-    df_u["sale_date"] = valuation_date
-    df_u["days_to_reno"] = (df_u["reno_date"] - df_u["sale_date"]).dt.days
-    # Ignore renovations that happened AFTER the valuation date
-    df_u.loc[df_u["days_to_reno"].ge(0), "days_to_reno"] = np.nan
-
-    # Find the most recent major renovation date:
-    df_u = df_u.sort_values(by=["renovation_num", "days_to_reno"], ascending=[False])
-    df_u = df_u.drop_duplicates(subset=["key"], keep="first")
-
-    # Merge the results back onto df_universe
-    df_univ = df_univ.merge(
-        df_u[["key", "reno_date", "days_to_reno", "renovation_num", "renovation_txt"]],
-        on="key",
-        how="left",
-    )
+        if verbose:
+            print(f"Identified {int(df_univ['is_renovated'].sum())} renovated parcels.")
+            for num, label in ((3, "major"), (2, "medium"), (1, "minor")):
+                n = int(df_univ["renovation_num"].eq(num).sum())
+                print(f"--> {n} {label} renovations.")
 
     if calc_effective_age:
+        if "renovation_num" not in df_univ:
+            raise ValueError(
+                "calc_effective_age requires renovation permits, but no 'is_renovation' "
+                "field was found in the permits data."
+            )
+        if "bldg_year_built" not in df_univ:
+            raise ValueError(
+                "calc_effective_age requires a 'bldg_year_built' field on the universe."
+            )
+
         # Calculate effective year built based on last major renovation
         if "bldg_effective_year_built" in df_univ:
             warnings.warn(
                 "bldg_effective_year_built already exists in df_univ, overwriting it."
             )
-            df_univ["bldg_effective_year_built"] = df_univ["bldg_effective_year_built"]
-        else:
-            df_univ["bldg_effective_year_built"] = df_univ["bldg_year_built"]
+        df_univ["bldg_effective_year_built"] = df_univ["bldg_year_built"]
 
-        # Major renovations reset the date to the current year
+        # Major renovations reset the date to the renovation year
         df_univ.loc[df_univ["renovation_num"].eq(3), "bldg_effective_year_built"] = (
             df_univ["reno_date"].dt.year
         )
+
+        # TODO: Medium renovations reset the date partially, which requires knowing a
+        # bunch of stuff. Minor renovations do not reset the date.
 
     return df_univ
 

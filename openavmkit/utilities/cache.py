@@ -12,6 +12,7 @@ import os
 import json
 import pickle
 
+import numpy as np
 import pandas as pd
 import geopandas as gpd
 
@@ -295,17 +296,16 @@ def write_cached_df(
             is_different = False
             if len(col_new) == len(col_orig):
                 values_equal = col_new.values == col_orig.values
-                na_equal = col_new.isna() & col_orig.isna()
+                na_equal = (col_new.isna() & col_orig.isna()).to_numpy()
 
-                count_na_equal = na_equal.sum()
-                count_values_equal = values_equal.sum()
-
-                count_to_match = len(col_new)
-
-                all_equal = (
-                    count_na_equal == count_to_match
-                    and count_values_equal == count_to_match
-                )
+                # A position matches if the values compare equal OR both sides are
+                # NA. Requiring BOTH counts to reach len(col) -- as this once did --
+                # is unsatisfiable for any non-empty column, because a NaN position
+                # can never be values-equal and a non-NaN position can never be
+                # na-equal. Every common column was therefore flagged as modified and
+                # rewritten on every save, defeating the incremental diff entirely.
+                matches = np.asarray(values_equal) | na_equal
+                all_equal = bool(matches.sum() == len(col_new))
                 if not all_equal:
                     is_different = True
             else:

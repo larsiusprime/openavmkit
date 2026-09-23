@@ -171,7 +171,7 @@ By default, the entries under `modeling.models.<stage>` apply to **every** model
 
 Resolution: for each model group, OpenAVMKit first checks whether `modeling.models.<stage>.<model_group_id>` exists. If it does, that nested dict is used in place of the top-level one (same shape — `default` plus model-name entries). If it doesn't, the top-level entries apply. There is **no merging** between the override block and the top level: the override replaces it wholesale for that model group, so include every model entry you want to run there.
 
-- **Source** — see `_run_models`, `_prepare_ds`, `get_variable_recommendations`, and `get_model_location` in [openavmkit/benchmark.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/benchmark.py); all four do `model_entries.get(model_group, model_entries)`.
+- **Source** — see `_run_models`, `_prepare_ds`, `get_variable_recommendations`, and `get_model_location` in [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py); all four do `model_entries.get(model_group, model_entries)`.
 - **When to use** — different model groups need substantively different feature sets (e.g. single-family wants neighborhood encodings; vacant-land wants only land features), or you want to tune trees harder on one group than another.
 - **When not to use** — small per-entry tweaks; just override `ind_vars` on the specific model entry at the top level if every group is otherwise the same.
 
@@ -422,4 +422,4 @@ After a run, compare the test-set metrics across `xgboost_rich`, `xgboost_lean`,
 - [Advanced settings § 8.4 — Saved model parameters](advanced_settings.md#84-saved-model-parameters-different-semantics) — caching tuned hyperparameters
 - [AGENTS.md § 7 → Adding a new model](https://github.com/larsiusprime/openavmkit/blob/master/AGENTS.md) — for contributors wiring up a new engine
 - [openavmkit/utilities/modeling.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/modeling.py) — model class definitions
-- [openavmkit/benchmark.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/benchmark.py) — dispatch and orchestration
+- [openavmkit/model_runner.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/model_runner.py) — dispatch and orchestration

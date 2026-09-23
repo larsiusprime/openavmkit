@@ -26,6 +26,7 @@ from pandas import read_pickle
 import openavmkit.utilities.stats as stats
 from openavmkit.data import get_vacant_sales, get_important_field
 from openavmkit.reports import start_report, finish_report
+from openavmkit.sales_chasing import detect_sales_chasing
 from openavmkit.utilities.data import df_to_markdown, div_series_z_safe
 from openavmkit.utilities.settings import (
     get_fields_categorical,
@@ -364,7 +365,20 @@ def _run_and_write_ratio_study_breakdowns(
     breakdowns = _run_ratio_study_breakdowns(
         settings, model_group, df_sales, confidence_interval, iterations
     )
-    _write_ratio_study_report(breakdowns, settings, model_group, path)
+    sales_chasing = None
+    if "assr_market_value" in df_sales:
+        sc_settings = settings.get("analysis", {}).get("ratio_study", {}).get(
+            "sales_chasing", {}
+        )
+        sales_chasing = detect_sales_chasing(
+            df_sales,
+            suspect_field="assr_market_value",
+            reference_field="prediction",
+            **sc_settings,
+        )
+    _write_ratio_study_report(
+        breakdowns, settings, model_group, path, sales_chasing=sales_chasing
+    )
 
 
 def _add_ratio_study(
@@ -659,7 +673,7 @@ def _format_pair(value, value2):
 
 
 def _write_ratio_study_report(
-    all_results: dict, settings: dict, model_group: str, path: str
+    all_results: dict, settings: dict, model_group: str, path: str, sales_chasing=None
 ):
 
     report = start_report("ratio_study", settings, model_group)
@@ -800,6 +814,14 @@ def _write_ratio_study_report(
     report.set_var("overall_results", overall_results)
     report.set_var("locality_results", locality_results)
     report.set_var("modeler_results", modeler_results)
+
+    if sales_chasing is not None:
+        report.set_var("sales_chasing", sales_chasing.to_markdown())
+    else:
+        report.set_var(
+            "sales_chasing",
+            "Not evaluated (no `assr_market_value` available for this model group).",
+        )
 
     rs = settings.get("analysis", {}).get("ratio_study", {})
     look_back_years = rs.get("look_back_years", 1)

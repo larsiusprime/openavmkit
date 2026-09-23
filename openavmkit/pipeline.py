@@ -22,7 +22,7 @@ import geopandas as gpd
 import openavmkit
 import openavmkit.data
 import openavmkit.area_stats
-import openavmkit.benchmark
+import openavmkit.model_runner
 import openavmkit.checkpoint
 import openavmkit.ratio_study
 import openavmkit.horizontal_equity_study
@@ -1537,7 +1537,7 @@ def try_variables(
         If True, generates PDF reports. Defaults to False.
     """
     sup = fill_unknown_values_sup(sup, settings)
-    openavmkit.benchmark.try_variables(sup, settings, verbose, plot, do_report)
+    openavmkit.model_runner.try_variables(sup, settings, verbose, plot, do_report)
 
 
 def try_models(
@@ -1565,7 +1565,7 @@ def try_models(
     is true, it will run vacant models as well -- models that only use vacant sales as
     evidence to generate land values.
 
-    This function delegates the model execution to `openavmkit.benchmark.run_models`
+    This function delegates the model execution to `openavmkit.model_runner.run_models`
     with the given settings.
 
     Parameters
@@ -1592,7 +1592,7 @@ def try_models(
         Flag to plot scatterplots. Defaults to False.
     """
 
-    openavmkit.benchmark.run_models(
+    openavmkit.model_runner.run_models(
         sup,
         settings,
         save_params,
@@ -1789,13 +1789,13 @@ def identify_outliers(
         print(f"MODEL GROUP = {id}")
 
         # Fit comp-analysis models once per model group (reused across mtypes / pred files).
-        ind_vars_lc = (
-            settings.get("modeling", {})
-            .get("models", {})
-            .get("main", {})
-            .get("lcomp", {})
-            .get("ind_vars", [])
-        )
+        # Resolve lcomp ind_vars with the canonical per-group pattern: narrow models.main to
+        # this model group (falling back to the top-level dict for the legacy/global layout),
+        # then read lcomp's ind_vars (falling back to the group "default" entry).
+        model_entries = settings.get("modeling", {}).get("models", {}).get("main", {})
+        model_entries = model_entries.get(id, model_entries)
+        lc_entry = model_entries.get("lcomp", model_entries.get("default", {}))
+        ind_vars_lc = lc_entry.get("ind_vars", []) if isinstance(lc_entry, dict) else []
         if not isinstance(ind_vars_lc, list):
             ind_vars_lc = []
         comp_models = (None, None, None, [])
@@ -1830,9 +1830,10 @@ def identify_outliers(
                 }
                 dfm = pd.read_csv(path, dtype=dtypes, usecols=usecols)
                 dfm["sale_date"] = pd.to_datetime(dfm["sale_date"])
+                # Outliers are the sales OUTSIDE the [0.75, 1.25] ratio band.
                 dfm = dfm[
-                    dfm["prediction_ratio"].ge(0.75) |
-                    dfm["prediction_ratio"].le(1.25)
+                    dfm["prediction_ratio"].lt(0.75) |
+                    dfm["prediction_ratio"].gt(1.25)
                 ]
                 key_fields = [
                     "key_sale", 
@@ -2045,7 +2046,7 @@ def finalize_models(
 
     This function iterates over model groups and runs models for main and vacant cases.
 
-    It delegates the model execution to `openavmkit.benchmark.run_models` with the given settings.
+    It delegates the model execution to `openavmkit.model_runner.run_models` with the given settings.
 
     Parameters
     ----------
@@ -2072,7 +2073,7 @@ def finalize_models(
         The MultiModelResults containing all model results and benchmarks.
     """
 
-    openavmkit.benchmark.run_models(
+    openavmkit.model_runner.run_models(
         sup,
         settings,
         save_params,
@@ -2143,7 +2144,7 @@ def run_models(
     MultiModelResults
         The MultiModelResults containing all model results and benchmarks.
     """
-    return openavmkit.benchmark.run_models(
+    return openavmkit.model_runner.run_models(
         sup,
         settings,
         save_params,
@@ -2367,8 +2368,10 @@ def _clip_sales_to_use(
 
     val_year = get_valuation_date(settings).year
 
-    from openavmkit.utilities.settings import resolve_use_sales_from
-    use_sales_from_impr, use_sales_from_vacant = resolve_use_sales_from(settings)
+    # Global clip uses the FLOOR (widest window any group needs); per-group narrowing
+    # happens later at the train/test split. See use_sales_from_floor for rationale.
+    from openavmkit.utilities.settings import use_sales_from_floor
+    use_sales_from_impr, use_sales_from_vacant = use_sales_from_floor(settings)
     if use_sales_from_impr is None:
         use_sales_from_impr = val_year - 5
     if use_sales_from_vacant is None:
@@ -2412,6 +2415,10 @@ def _set_locality(nbs, locality: str):
     os.makedirs(f"data/{locality}", exist_ok=True)
 
     os.chdir(f"data/{locality}")
+
+    # The rest of the pipeline assumes these exist; a brand new locality has neither.
+    os.makedirs("in", exist_ok=True)
+    os.makedirs("out", exist_ok=True)
 
     print(f"locality = {locality}")
     print(f"base path = {nbs.base_path}")

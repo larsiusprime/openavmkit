@@ -7,7 +7,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
-from openavmkit.benchmark import (
+from openavmkit.model_runner import (
     run_one_model,
     MultiModelResults,
     _calc_benchmark,

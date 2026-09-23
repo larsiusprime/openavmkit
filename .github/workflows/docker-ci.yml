@@ -1,12 +1,12 @@
 #
 name: Create and publish a Docker image to GitHub Container Repository
 
-# Configures this workflow to run every time a change is pushed to a branch, or when main receives a pull request
+# Configures this workflow to run every time a change is pushed to a branch, or when master receives a pull request
 on:
   push:
   pull_request:
     branches:
-      - main
+      - master
 
 # Defines two custom environment variables for the workflow. These are used for the Container registry domain, and a name for the Docker image that this workflow builds.
 env:
@@ -65,7 +65,7 @@ jobs:
       # It uses the `tags` and `labels` parameters to tag and label the image with the output from the "meta" step.
       - name: Build and push Docker image
         id: push
-        uses: docker/build-push-action@v7.2.0
+        uses: docker/build-push-action@v7.3.0
         with:
           context: .
           push: true
