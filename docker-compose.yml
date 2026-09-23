@@ -1,6 +1,6 @@
 services:
   openavmkit:
-    image: ghcr.io/jnarnold7/openavmkit:latest
+    image: ghcr.io/larsiusprime/openavmkit:latest
     container_name: openavmkit
     restart: unless-stopped
     ports:
