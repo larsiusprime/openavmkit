@@ -9,7 +9,6 @@ enrichment (``data.process.enrich.distances``) and the streets enrichment
 feature.
 """
 from typing import Dict, Tuple
-import pandas as pd
 import geopandas as gpd
 import numpy as np
 from shapely.geometry import box
@@ -222,129 +221,6 @@ class OpenStreetMapService:
 
             print(f"Traceback: {traceback.format_exc()}")
             return gpd.GeoDataFrame()
-
-
-    def calculate_distances(
-        self, gdf: gpd.GeoDataFrame, features: gpd.GeoDataFrame, feature_type: str
-    ) -> pd.DataFrame:
-        """Calculate distances to features, both aggregate and specific top N features.
-
-        Parameters
-        ----------
-        gdf : gpd.GeoDataFrame
-            Parcel GeoDataFrame
-        features : gpd.GeoDataFrame
-            Features GeoDataFrame
-        feature_type : str
-            Type of feature (e.g., 'water', 'park')
-
-        Returns
-        -------
-        pd.DataFrame
-            DataFrame with distances
-        """
-
-        # check if we have already cached this data, AND the settings are the same
-        # construct a unique signature:
-        signature = {"feature_type": feature_type, "features": hash(features.to_json())}
-        if check_cache(
-            f"osm/{feature_type}_distances", signature=signature, filetype="df"
-        ):
-            print("----> using cached distances")
-            # if so return the cached version
-            return read_cache(f"osm/{feature_type}_distances", "df")
-
-        # Project to UTM for accurate distance calculation
-        utm_crs = self._get_utm_crs(gdf.total_bounds)
-        gdf_proj = gdf.to_crs(utm_crs)
-        features_proj = features.to_crs(utm_crs)
-
-        # Initialize dictionary to store all distance calculations
-        distance_data = {}
-
-        # Calculate aggregate distance (distance to nearest feature of any type)
-        distance_data[f"dist_to_{feature_type}_any"] = gdf_proj.geometry.apply(
-            lambda g: features_proj.geometry.distance(g).min()
-        )
-
-        # Calculate distances to top N features if available
-        if f"{feature_type}_top" in self.features:
-            top_features = self.features[f"{feature_type}_top"]
-            for _, feature in top_features.iterrows():
-                feature_name = feature["name"]
-                feature_geom = feature.geometry
-                feature_proj = gpd.GeoSeries([feature_geom]).to_crs(utm_crs)[0]
-
-                distance_data[f"dist_to_{feature_type}_{feature_name}"] = (
-                    gdf_proj.geometry.apply(lambda g: feature_proj.distance(g))
-                )
-
-        # write to cache so we can skip on next run
-        write_cache(f"osm/{feature_type}_distances", signature, distance_data, "df")
-
-        # Create DataFrame from all collected distances at once
-        return pd.DataFrame(distance_data, index=gdf.index)
-
-
-    def enrich_parcels(
-        self,
-        gdf: gpd.GeoDataFrame,
-        settings: Dict
-    ) -> Dict[str, gpd.GeoDataFrame]:
-        """Get OpenStreetMap features and prepare them for spatial joins. Returns a
-        dictionary of feature dataframes for use by data.py's spatial join logic.
-
-        Parameters
-        ----------
-        gdf : gpd.GeoDataFrame
-            Parcel GeoDataFrame (used for bbox)
-        settings : dict
-            Settings for enrichment
-
-        Returns
-        -------
-        dict[str, gpd.GeoDataFrame]
-            Dictionary of feature dataframes
-        """
-        # Get the bounding box of the GeoDataFrame
-        bbox = gdf.total_bounds
-
-        # Dictionary to store all dataframes
-        dataframes = {}
-
-        # Process each feature type based on settings
-        if settings.get("water_bodies", {}).get("enabled", False):
-            water_bodies = self.get_features(bbox, "water_bodies", settings["water_bodies"])
-            if not water_bodies.empty:
-                # Store both the main and top features in dataframes
-                dataframes["water_bodies"] = self.features["water_bodies"]
-                dataframes["water_bodies_top"] = self.features["water_bodies_top"]
-
-        if settings.get("transportation", {}).get("enabled", False):
-            transportation = self.get_features(bbox, "transportation", settings["transportation"])
-            if not transportation.empty:
-                dataframes["transportation"] = self.features["transportation"]
-                dataframes["transportation_top"] = self.features["transportation_top"]
-
-        if settings.get("educational", {}).get("enabled", False):
-            institutions = self.get_features(bbox, "educational", settings["educational"])
-            if not institutions.empty:
-                dataframes["educational"] = self.features["educational"]
-                dataframes["educational_top"] = self.features["educational_top"]
-
-        if settings.get("parks", {}).get("enabled", False):
-            parks = self.get_features(bbox, "parks", settings["parks"])
-            if not parks.empty:
-                dataframes["parks"] = self.features["parks"]
-                dataframes["parks_top"] = self.features["parks_top"]
-
-        if settings.get("golf_courses", {}).get("enabled", False):
-            golf_courses = self.get_features(bbox, "golf_courses", settings["golf_courses"])
-            if not golf_courses.empty:
-                dataframes["golf_courses"] = self.features["golf_courses"]
-                dataframes["golf_courses_top"] = self.features["golf_courses_top"]
-
-        return dataframes
 
 
 def init_service_openstreetmap(settings: Dict = None) -> OpenStreetMapService:
