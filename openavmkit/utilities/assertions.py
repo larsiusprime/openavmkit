@@ -104,7 +104,13 @@ def lists_are_equal(a: list, b: list) -> bool:
         for i in range(len(a)):
             entry_a = a[i]
             entry_b = b[i]
-            result = objects_are_equal(entry_a, entry_b)
+            # Stop at the first mismatch. Re-assigning `result` each pass meant only
+            # the LAST element decided the outcome, so lists_are_equal([2, 2], [3, 2])
+            # returned True -- and this helper backs dicts_are_equal and several test
+            # assertions, which were therefore passing on unequal data.
+            if not objects_are_equal(entry_a, entry_b):
+                result = False
+                break
     if not result:
         # print both lists for debugging:
         print(a)
