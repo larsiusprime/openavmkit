@@ -804,8 +804,13 @@ def _xgb_kfold_cv(
             verbose_eval=verbose_eval,
         )
 
-        # Predict and evaluate
-        y_pred = model.predict(val_data, iteration_range=(0, model.best_iteration))
+        # Predict and evaluate.
+        # best_iteration is a ZERO-BASED index and iteration_range is half-open, so the
+        # end bound must be best_iteration + 1 to include the round early stopping
+        # actually chose. Without the +1 the fold is scored on a model one tree short.
+        y_pred = model.predict(
+            val_data, iteration_range=(0, model.best_iteration + 1)
+        )
         mape = mean_absolute_percentage_error(y_val, y_pred)
         mape_scores.append(mape)
 

@@ -97,3 +97,46 @@ def test_tuner_entry_point_completes_a_trial(name):
     # bypassed rather than merely unlucky.
     assert "learning_rate" in best, f"{name} tuner did not sample learning_rate: {sorted(best)}"
     assert np.isfinite(best["learning_rate"])
+
+
+def test_xgb_fold_eval_includes_the_best_iteration(monkeypatch):
+    """The XGBoost fold objective must score the model early stopping actually chose.
+
+    ``best_iteration`` is a ZERO-BASED index and ``iteration_range`` is half-open, so
+    ``(0, best_iteration)`` silently drops the best round and scores a model one tree
+    short. That perturbs the Optuna objective, which can steer it to different
+    hyperparameters.
+
+    (LightGBM's ``best_iteration`` is a COUNT, not an index, so ``num_iteration=
+    best_iteration`` there is already correct and must NOT get the same +1.)
+    """
+    import xgboost as xgb
+    from openavmkit.tuning import _xgb_kfold_cv
+
+    seen = []
+    real_predict = xgb.Booster.predict
+
+    def spy(self, data, *args, **kwargs):
+        seen.append((kwargs.get("iteration_range"), self.best_iteration))
+        return real_predict(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(xgb.Booster, "predict", spy)
+
+    X, y = _toy_xy()
+    score = _xgb_kfold_cv(
+        X, y,
+        params={"objective": "reg:squarederror", "eta": 0.1},
+        num_boost_round=60,
+        n_splits=2,
+        random_state=42,
+        verbose_eval=False,
+    )
+
+    assert np.isfinite(score), "fold CV produced a non-finite score"
+    assert seen, "Booster.predict was never called -- the spy did not attach"
+    for rng_, best_iteration in seen:
+        assert rng_ is not None, "fold evaluation stopped passing iteration_range"
+        assert rng_ == (0, best_iteration + 1), (
+            f"fold scored with iteration_range={rng_} but best_iteration="
+            f"{best_iteration}; the end bound must be best_iteration + 1"
+        )
