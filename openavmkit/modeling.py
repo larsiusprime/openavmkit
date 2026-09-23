@@ -2165,28 +2165,28 @@ def _run_multi_mra(
     if optimize_vars:
         if verbose:
             print(f"Tuning Multi-MRA: searching for optimal variables. (Total variables = {n_features})...")
-            
-            model_name = ds.name
-            
-            if os.path.exists(f"{outpath}/{model_name}_vars.json"):
-                best_var_map = json.load(open(f"{outpath}/{model_name}_vars.json", "r"))
+
+        model_name = ds.name
+
+        if os.path.exists(f"{outpath}/{model_name}_vars.json"):
+            best_var_map = json.load(open(f"{outpath}/{model_name}_vars.json", "r"))
+            if verbose:
+                print(f"--> using saved variables")
+
+        if not best_var_map:
+            for location_field in location_fields:
+                if location_field not in df_train.columns:
+                    continue
+
+                field_map: Dict[str, list] = {}
+                unique_locs = df_train[location_field].unique()
+
                 if verbose:
-                    print(f"--> using saved variables")
-            
-            if not best_var_map:
-                for location_field in location_fields:
-                    if location_field not in df_train.columns:
-                        continue
-
-                    field_map: Dict[Any, np.ndarray] = {}
-                    unique_locs = df_train[location_field].unique()
-
-                    if verbose:
-                        print(
-                            f"[Multi-MRA] Optimizing local OLS for field '{location_field}' "
-                            f"with {len(unique_locs)} distinct values."
+                    print(
+                        f"[Multi-MRA] Optimizing local OLS for field '{location_field}' "
+                        f"with {len(unique_locs)} distinct values."
                     )
-                
+
                 i = 0
                 for loc in unique_locs:
                     # Build mask for this specific location value
@@ -2200,21 +2200,24 @@ def _run_multi_mra(
                     min_n_loc = X_loc.shape[1] + 1
                     if n_loc < min_n_loc:
                         continue
-                    print(f"--> {i/len(unique_locs):5.2%} -- {i:>6}/{len(unique_locs)} -- value = {loc}...")
+                    if verbose:
+                        print(f"--> {i/len(unique_locs):5.2%} -- {i:>6}/{len(unique_locs)} -- value = {loc}...")
 
                     try:
                         best_vars = greedy_forward_loocv(X_loc, y_loc).variables
                     except np.linalg.LinAlgError:
                         best_vars = []
                     field_map[str(loc)] = best_vars
-                    
-                    i += 1
-                    best_var_map[location_field] = field_map
 
-                os.makedirs(outpath, exist_ok=True)
-                if verbose:
-                    print(f"--> saving variables to \"{outpath}/{model_name}_vars.json\"")
-                json.dump(best_var_map, open(f"{outpath}/{model_name}_vars.json", "w"))
+                    i += 1
+
+                # One entry per location field, recorded after its per-location search
+                best_var_map[location_field] = field_map
+
+            os.makedirs(outpath, exist_ok=True)
+            if verbose:
+                print(f"--> saving variables to \"{outpath}/{model_name}_vars.json\"")
+            json.dump(best_var_map, open(f"{outpath}/{model_name}_vars.json", "w"))
 
     timing.stop("parameter_search")
 
@@ -3399,7 +3402,7 @@ def run_gwr(
 
 
 
-def _fix_bool_objs(ds:DataSplit):
+def _fix_bool_objs(ds:DataSplit, verbose: bool = False):
     # Fix for object-typed boolean columns (especially 'within_*' fields)
     for col in ds.X_train.columns:
         if col.startswith("within_") or (
@@ -3519,7 +3522,7 @@ def run_xgboost(
     ds.split()
 
     # Fix for object-typed boolean columns (especially 'within_*' fields)
-    ds = _fix_bool_objs(ds)
+    ds = _fix_bool_objs(ds, verbose)
 
     parameters = _get_params(
         "XGBoost",
@@ -3674,7 +3677,7 @@ def run_lightgbm(
     ds.split()
     
     # Fix for object-typed boolean columns (especially 'within_*' fields)
-    ds = _fix_bool_objs(ds)
+    ds = _fix_bool_objs(ds, verbose)
     timing.stop("setup")
 
     timing.start("parameter_search")
@@ -3867,7 +3870,7 @@ def run_catboost(
     ds = ds.encode_categoricals_as_categories()
     ds.split()
     # Fix for object-typed boolean columns (especially 'within_*' fields)
-    ds = _fix_bool_objs(ds)
+    ds = _fix_bool_objs(ds, verbose)
     timing.stop("setup")
 
     timing.start("parameter_search")
@@ -4046,7 +4049,7 @@ def run_ngboost(
     ds = ds.encode_categoricals_as_categories()
     ds.split()
     # Fix for object-typed boolean columns (especially 'within_*' fields)
-    ds = _fix_bool_objs(ds)
+    ds = _fix_bool_objs(ds, verbose)
     timing.stop("setup")
 
     timing.start("parameter_search")
