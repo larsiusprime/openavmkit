@@ -676,6 +676,82 @@ def test_update_sales():
 	assert len_after == 7
 
 
+def test_street_text_columns_fill_absent_road_slots():
+	"""Parcels fronting fewer than four roads must get UNKNOWN, not "None".
+
+	The street pivot emits slots 1..4 per parcel. _finish_df_streets filled the
+	numeric stubs (frontage / depth / dist_to_road) with 0.0 but left the textual
+	ones missing, and since these fields are not in the settings' categorical list
+	the residual fill in cleaning never reached them either -- so a later string
+	cast rendered them as the literal text "None" and fed models a junk category.
+	"""
+	from openavmkit.data import _fill_street_text_columns
+
+	df = pd.DataFrame({
+		"key": ["a", "b", "c", "d"],
+		"osm_road_name_1": ["Main St", None, np.nan, "None"],
+		"osm_road_type_2": ["residential", None, "nan", "<NA>"],
+		"osm_road_face_3": [None, None, None, None],
+		"osm_frontage_ft_1": [1.0, 2.0, 3.0, 4.0],
+	})
+	out = _fill_street_text_columns(df.copy())
+
+	# real values survive; every flavour of missing becomes UNKNOWN
+	assert out["osm_road_name_1"].tolist() == ["Main St", "UNKNOWN", "UNKNOWN", "UNKNOWN"]
+	assert out["osm_road_type_2"].tolist() == ["residential", "UNKNOWN", "UNKNOWN", "UNKNOWN"]
+	assert out["osm_road_face_3"].tolist() == ["UNKNOWN"] * 4
+	# numeric siblings are left alone
+	assert out["osm_frontage_ft_1"].tolist() == [1.0, 2.0, 3.0, 4.0]
+	# nothing junk-looking survives anywhere
+	for col in out.columns:
+		assert not out[col].astype(str).isin(["None", "nan", "NaN", "<NA>"]).any()
+
+
+def test_street_text_fill_handles_pre_rename_columns():
+	"""The helper runs both before and after the osm_ prefix rename."""
+	from openavmkit.data import _fill_street_text_columns
+
+	df = pd.DataFrame({"key": ["a"], "road_name_1": [None], "road_face_4": [None]})
+	out = _fill_street_text_columns(df.copy())
+	assert out["road_name_1"].tolist() == ["UNKNOWN"]
+	assert out["road_face_4"].tolist() == ["UNKNOWN"]
+
+
+def test_sale_age_guards_invalid_year_built():
+	"""year_built of 0 with a valid sale year must not yield a ~2000-year-old building.
+
+	The non-sales branch already guarded the year-built side; the sales branch only
+	guarded sale_year, so the assessor placeholder 0 produced an age of ~2024.
+	"""
+	from datetime import datetime
+	val_date = datetime(2025, 1, 1)
+
+	df = pd.DataFrame({
+		"key": ["ok", "zero", "null", "negative"],
+		"bldg_year_built": [1990, 0, None, -1],
+		"sale_year": [2020, 2020, 2020, 2020]
+	})
+	out = _do_enrich_year_built(df, "bldg_year_built", "bldg_age_years", val_date, True)
+	assert out["bldg_age_years"].tolist() == [30, 0, 0, 0]
+	assert out["bldg_age_years"].max() < 500
+
+
+def test_get_sale_field_falls_back_when_adjusted_column_absent():
+	"""With time adjustment on, naming a column the frame doesn't have is a KeyError
+	waiting to happen; fall back to the raw sale price instead."""
+	from openavmkit.data import get_sale_field
+	settings = {"data": {"process": {"time_adjustment": {"use": True}}}}
+
+	# no frame supplied -> unchanged behaviour, report the adjusted field
+	assert get_sale_field(settings) == "sale_price_time_adj"
+	# frame HAS the adjusted column -> use it
+	df_with = pd.DataFrame({"sale_price": [1], "sale_price_time_adj": [1]})
+	assert get_sale_field(settings, df_with) == "sale_price_time_adj"
+	# frame LACKS it -> fall back rather than naming a missing column
+	df_without = pd.DataFrame({"sale_price": [1]})
+	assert get_sale_field(settings, df_without) == "sale_price"
+
+
 def test_permits_teardown_sales():
 	print("")
 
