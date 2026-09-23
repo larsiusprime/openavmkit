@@ -5068,10 +5068,11 @@ def _model_performance_metrics(
         trimmed_data["m.ratio"].append(model_result.pred_test.ratio_study.median_ratio_trim)
         trimmed_data["avg.ratio"].append(model_result.pred_test.ratio_study.mean_ratio_trim)
 
-        # NOTE: this is the UNTRIMMED VEI. There is no trimmed vertical-equity score on
-        # the results object to use here, so the column repeats the untrimmed value.
-        trimmed_data["VEI"].append(model_result.ve_test["vei"])
-        trimmed_data["VEI_sig"].append(model_result.ve_test["vei_significance"])
+        # The trimmed vertical-equity score, computed on the same rows the other
+        # trimmed statistics in this table use.
+        ve_trim = getattr(model_result, "ve_test_trim", None) or model_result.ve_test
+        trimmed_data["VEI"].append(ve_trim["vei"])
+        trimmed_data["VEI_sig"].append(ve_trim["vei_significance"])
         trimmed_data["Slope"].append(slope_trim)
 
     # Create and display metrics DataFrame

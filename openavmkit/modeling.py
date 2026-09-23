@@ -456,6 +456,14 @@ class PredictionResults:
             y_ratio = y_pred / y
             mask = trim_outliers_mask(y_ratio, max_trim)
 
+            # Keep the mask and the rows it selects. y / y_pred are taken from df_clean
+            # in order, so the mask indexes df_clean positionally. Statistics that need
+            # the whole row rather than just the ratio -- the trimmed vertical-equity
+            # score, for one -- can then be computed on the same trimmed set the other
+            # _trim figures use, instead of silently reporting an untrimmed value.
+            self.trim_mask = mask
+            self.df_trim = self.df.iloc[np.flatnonzero(mask)]
+
             y_pred_trim = y_pred[mask]
             y_trim = y[mask]
 
@@ -497,9 +505,12 @@ class PredictionResults:
             self.slope = float("nan")
             self.mse_trim = float("nan")
             self.rmse_trim = float("nan")
+            self.mape_trim = float("nan")
             self.r2_trim = float("nan")
             self.slope_trim = float("nan")
             self.adj_r2_trim = float("nan")
+            self.trim_mask = np.zeros(0, dtype=bool)
+            self.df_trim = self.df.iloc[:0]
 
         n = len(y_pred)
         k = len(ind_vars)
@@ -1513,6 +1524,12 @@ class SingleModelResults:
 
         timing.start("vertical_equity")
         self.ve_test = get_vertical_equity_scores(df_test, self.dep_var_test, field_prediction)
+        # The trimmed counterpart, computed on the same rows the other _trim statistics
+        # use. Reports that show a trimmed table need this; without it they can only
+        # repeat the untrimmed score under a "trimmed" heading.
+        self.ve_test_trim = get_vertical_equity_scores(
+            self.pred_test.df_trim, self.dep_var_test, field_prediction
+        )
         if y_pred_sales is not None:
             self.ve_sales_lookback = get_vertical_equity_scores(self.df_sales_lookback, self.dep_var_test, field_prediction)
         timing.stop("vertical_equity")
@@ -1598,6 +1615,11 @@ class SingleModelResults:
         )
         self.df_test = self.pred_test.df.copy()
         self.ve_test = get_vertical_equity_scores(self.df_test, self.dep_var_test, field)
+        # Recomputed from the rebuilt pred_test, or the trimmed score would still
+        # describe the old (small, Phase-2) holdout rather than the OOF frame.
+        self.ve_test_trim = get_vertical_equity_scores(
+            self.pred_test.df_trim, self.dep_var_test, field
+        )
         self.utility_test = self.pred_test.mape * 100
         # Match __init__ + _deal_with_log_and_area: ratio_study / mape / ve are computed on the raw
         # (pre-transform) predictions above; a log-target test var then exponentiates y_pred to
