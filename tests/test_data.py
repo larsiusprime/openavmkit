@@ -853,6 +853,288 @@ def test_permits_reno_sales():
 	assert dfs_are_equal(df_expected, df_results, allow_weak=True)
 
 
+def _univ_permit_settings(calc_effective_age: bool = False):
+	"""Settings for the universe permits path, with an explicit valuation date."""
+	s_permits = {"sources": ["permits"]}
+	if calc_effective_age:
+		s_permits["calc_effective_age"] = True
+	return {
+		"modeling": {
+			"metadata": {
+				"valuation_date": "2020-06-01"
+			}
+		},
+		"data": {
+			"process": {
+				"enrich": {
+					"universe": {
+						"permits": s_permits
+					}
+				}
+			}
+		}
+	}
+
+
+def test_permits_teardown_univ():
+	print("")
+
+	# The universe asks its questions relative to the VALUATION date (2020-06-01),
+	# not a sale date: a permit dated on or after that date has not happened yet.
+	univ = {
+		"key": ["0", "1", "2", "3", "4"]
+	}
+
+	permits = {
+		"key": ["0", "1", "2", "2", "3", "3"],
+		"is_teardown": [True, True, False, True, True, False],
+		"date": [
+			"2020-01-01",  # key 0: only permit, a teardown before val date -> flagged
+
+			"2020-07-01",  # key 1: teardown AFTER val date -> not yet happened, ignored
+
+			# key 2: last qualifying permit (2020-05-01) is NOT a teardown
+			"2020-05-01",  # most recent, not a teardown
+			"2019-01-01",  # older teardown, superseded
+
+			# key 3: last qualifying permit (2020-05-01) IS a teardown
+			"2020-05-01",  # most recent, a teardown
+			"2019-01-01",  # older, not a teardown
+		]
+		# key 4 has no permits at all
+	}
+
+	expected = {
+		"key": ["0", "1", "2", "3", "4"],
+		"last_permit_was_teardown": [True, False, False, True, False],
+		# demo_date is only set when the last qualifying permit actually was a teardown
+		"demo_date": ["2020-01-01", None, None, "2020-05-01", None]
+	}
+
+	df_expected = pd.DataFrame(data=expected)
+	df_expected["demo_date"] = pd.to_datetime(df_expected["demo_date"], format="%Y-%m-%d")
+
+	df_univ = pd.DataFrame(data=univ)
+	df_permits = pd.DataFrame(data=permits)
+	df_permits["date"] = pd.to_datetime(df_permits["date"], format="%Y-%m-%d")
+
+	settings = _univ_permit_settings()
+	s_enrich_univ = settings.get("data", {}).get("process", {}).get("enrich", {}).get("universe")
+
+	df_results = _enrich_permits(
+		df_univ,
+		s_enrich_univ,
+		{"permits": df_permits},
+		settings,
+		is_sales=False,
+		verbose=True
+	)
+
+	assert dfs_are_equal(df_expected, df_results, allow_weak=True)
+
+
+def test_permits_reno_univ():
+	print("")
+
+	univ = {
+		"key": ["0", "1", "2", "3"]
+	}
+
+	nan = float('nan')
+	permits = {
+		"key": ["0", "1", "2", "2", "2"],
+		"is_renovation": [True, True, True, True, True],
+		"renovation_num": [2, 3, 1, 3, 3],
+		"renovation_txt": ["medium", "major", "minor", "major", "major"],
+		"date": [
+			"2020-05-01",  # key 0: before val date -> picked
+
+			"2020-07-01",  # key 1: AFTER val date -> dismissed
+
+			# key 2: pick the most significant (num 3), then the most recent of those
+			"2020-05-20",  # minor, more recent but less significant
+			"2020-05-10",  # major, most recent major -> winner
+			"2019-05-10",  # major, older
+		]
+		# key 3 has no permits at all
+	}
+
+	expected = {
+		"key": ["0", "1", "2", "3"],
+		"is_renovated": [True, False, True, False],
+		"reno_date": ["2020-05-01", None, "2020-05-10", None],
+		"days_to_reno": [-31.0, nan, -22.0, nan],
+		"renovation_num": [2, nan, 3, nan],
+		"renovation_txt": ["medium", None, "major", None]
+	}
+
+	df_expected = pd.DataFrame(data=expected)
+	df_expected["reno_date"] = pd.to_datetime(df_expected["reno_date"], format="%Y-%m-%d")
+
+	df_univ = pd.DataFrame(data=univ)
+	df_permits = pd.DataFrame(data=permits)
+	df_permits["date"] = pd.to_datetime(df_permits["date"], format="%Y-%m-%d")
+
+	settings = _univ_permit_settings()
+	s_enrich_univ = settings.get("data", {}).get("process", {}).get("enrich", {}).get("universe")
+
+	df_results = _enrich_permits(
+		df_univ,
+		s_enrich_univ,
+		{"permits": df_permits},
+		settings,
+		is_sales=False,
+		verbose=True
+	)
+
+	assert dfs_are_equal(df_expected, df_results, allow_weak=True)
+
+
+def test_permits_univ_calc_effective_age():
+	print("")
+
+	# Only a MAJOR renovation (renovation_num == 3) resets the effective year built.
+	univ = {
+		"key": ["0", "1", "2", "3"],
+		"bldg_year_built": [1950, 1960, 1970, 1980]
+	}
+
+	permits = {
+		"key": ["0", "1", "2"],
+		"is_renovation": [True, True, True],
+		"renovation_num": [3, 2, 1],
+		"renovation_txt": ["major", "medium", "minor"],
+		"date": ["2015-05-01", "2015-05-01", "2015-05-01"]
+		# key 3 has no permits at all
+	}
+
+	df_univ = pd.DataFrame(data=univ)
+	df_permits = pd.DataFrame(data=permits)
+	df_permits["date"] = pd.to_datetime(df_permits["date"], format="%Y-%m-%d")
+
+	settings = _univ_permit_settings(calc_effective_age=True)
+	s_enrich_univ = settings.get("data", {}).get("process", {}).get("enrich", {}).get("universe")
+
+	df_results = _enrich_permits(
+		df_univ,
+		s_enrich_univ,
+		{"permits": df_permits},
+		settings,
+		is_sales=False,
+		verbose=True
+	)
+
+	eff = df_results.set_index("key")["bldg_effective_year_built"]
+	assert eff["0"] == 2015, "major renovation should reset effective year built"
+	assert eff["1"] == 1960, "medium renovation should not reset effective year built"
+	assert eff["2"] == 1970, "minor renovation should not reset effective year built"
+	assert eff["3"] == 1980, "a parcel with no permits keeps its original year built"
+
+
+def test_permits_univ_ignores_future_permits():
+	print("")
+
+	# A parcel whose ONLY permits post-date the valuation date must come back clean:
+	# it must not inherit the teardown flag from a permit that has not happened yet.
+	univ = {"key": ["0"]}
+	permits = {
+		"key": ["0", "0"],
+		"is_teardown": [True, True],
+		"date": ["2020-06-01", "2021-01-01"]  # on, and after, the valuation date
+	}
+
+	df_univ = pd.DataFrame(data=univ)
+	df_permits = pd.DataFrame(data=permits)
+	df_permits["date"] = pd.to_datetime(df_permits["date"], format="%Y-%m-%d")
+
+	settings = _univ_permit_settings()
+	s_enrich_univ = settings.get("data", {}).get("process", {}).get("enrich", {}).get("universe")
+
+	df_results = _enrich_permits(
+		df_univ, s_enrich_univ, {"permits": df_permits}, settings,
+		is_sales=False, verbose=True
+	)
+
+	assert df_results["last_permit_was_teardown"].tolist() == [False]
+	assert df_results["demo_date"].isna().all()
+
+
+def test_permits_univ_reachable_through_enrich_data():
+	print("")
+
+	# The universe permits path is only useful if the pipeline actually calls it.
+	# Drive the real _enrich_data entry point and confirm the universe frame comes
+	# back carrying the permit columns, alongside the sales frame's own.
+	import geopandas as gpd
+	from shapely.geometry import Polygon
+	from openavmkit.data import _enrich_data
+
+	df_univ = pd.DataFrame({
+		"key": ["0", "1"],
+		"bldg_year_built": [1950, 1960]
+	})
+	df_sales = pd.DataFrame({
+		"key": ["0", "1"],
+		"key_sale": ["0---2020-06-01", "1---2020-06-01"],
+		"sale_date": pd.to_datetime(["2020-06-01", "2020-06-01"]),
+		"sale_price": [1, 1],
+		"valid_sale": [True, True],
+		"vacant_sale": [False, False]
+	})
+	df_permits = pd.DataFrame({
+		"key": ["0", "1"],
+		"is_teardown": [True, False],
+		"date": pd.to_datetime(["2020-01-01", "2020-01-01"])
+	})
+	gdf_parcels = gpd.GeoDataFrame(
+		{"key": ["0", "1"]},
+		geometry=[
+			Polygon([(0, 0), (0, 1), (1, 1), (1, 0)]),
+			Polygon([(1, 0), (1, 1), (2, 1), (2, 0)])
+		],
+		crs="EPSG:4326"
+	)
+
+	settings = {"modeling": {"metadata": {"valuation_date": "2020-06-01"}}}
+	# permits config lives at the top level of `enrich`, shared by both frames
+	s_enrich = {"permits": {"sources": ["permits"]}}
+
+	sup = SalesUniversePair(universe=df_univ, sales=df_sales)
+	out = _enrich_data(
+		sup,
+		s_enrich,
+		{"permits": df_permits, "geo_parcels": gdf_parcels},
+		settings,
+		verbose=True
+	)
+
+	# universe got the universe-flavoured columns...
+	assert "last_permit_was_teardown" in out.universe.columns
+	assert "demo_date" in out.universe.columns
+	univ = out.universe.set_index("key")
+	assert bool(univ.loc["0", "last_permit_was_teardown"]) is True
+	assert bool(univ.loc["1", "last_permit_was_teardown"]) is False
+	assert pd.isna(univ.loc["1", "demo_date"])
+
+	# ...and sales still got the sales-flavoured ones
+	assert "is_teardown_sale" in out.sales.columns
+	assert "days_to_demo" in out.sales.columns
+
+
+def test_permits_empty_sources_is_a_noop():
+	print("")
+
+	df_univ = pd.DataFrame({"key": ["0", "1"]})
+	for s_permits in ({}, {"sources": []}, {"sources": None}):
+		settings = {"data": {"process": {"enrich": {"universe": {"permits": s_permits}}}}}
+		s_enrich_univ = settings["data"]["process"]["enrich"]["universe"]
+		for is_sales in (True, False):
+			df_results = _enrich_permits(
+				df_univ, s_enrich_univ, {}, settings, is_sales=is_sales
+			)
+			assert dfs_are_equal(df_univ, df_results, allow_weak=True)
+
+
 def test_boolify_series():
 
 	bool_series = pd.Series([True, False, True, False, None])
