@@ -210,8 +210,9 @@ class OpenStreetMapService:
             self.features[f"{thing}"] = osm_features_filtered
             self.features[f"{thing}_top"] = osm_features_top
 
-            # write to cache so we can skip on next run
-            write_cache(f"osm/{thing}", osm_features_filtered, settings, "df")
+            # write to cache so we can skip on next run -- must use the same osm_dir
+            # the cache check above reads from, or the cache can never hit
+            write_cache(f"{osm_dir}/{thing}", osm_features_filtered, settings, "df")
 
             return osm_features_filtered
 
