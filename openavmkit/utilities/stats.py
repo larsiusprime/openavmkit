@@ -1727,6 +1727,42 @@ def calc_cross_validation_score(
     float
         The mean cross-validated mean squared error.
     """
+    # Impute NaN with column medians, matching calc_elastic_net_regularization,
+    # calc_p_values_recursive_drop, calc_t_values_recursive_drop and
+    # calc_vif_recursive_drop.
+    #
+    # Without this, sklearn raises "Input X contains NaN" inside each affected fold.
+    # cross_val_score does not propagate that as an exception -- it records NaN for the
+    # failed folds and warns -- so the `except ValueError` below never fires and this
+    # returns NaN. The caller in model_runner.get_variable_recommendations then does
+    # `if cv_score < best_score`, and `nan < x` is always False, so best_variables is
+    # never updated: the cross-validation refinement silently does nothing on any
+    # dataset with a NaN anywhere in X. Real assessment data routinely has some.
+    if isinstance(X, pd.DataFrame):
+        if X.isnull().values.any():
+            warnings.warn(
+                f"calc_cross_validation_score: NaN detected in "
+                f"{list(X.columns[X.isnull().any()])}. "
+                "Imputing with column medians for the cross-validation step only.",
+                UserWarning,
+            )
+            # A column that is entirely NaN has no median, so the fill leaves it NaN
+            # and we would be right back to the silent-NaN failure above. It carries
+            # no signal either way, so flatten it to 0 and let the fit proceed.
+            X = X.fillna(X.median(numeric_only=True)).fillna(0.0)
+    else:
+        X = np.asarray(X, dtype=float)
+        if np.isnan(X).any():
+            warnings.warn(
+                "calc_cross_validation_score: NaN detected in X. "
+                "Imputing with column medians for the cross-validation step only.",
+                UserWarning,
+            )
+            medians = np.nanmedian(X, axis=0)
+            # An all-NaN column has no median; fall back to 0 so the fit can proceed.
+            medians = np.where(np.isnan(medians), 0.0, medians)
+            X = np.where(np.isnan(X), medians, X)
+
     model = LinearRegression()
     # Use negative MSE and negate it to return positive MSE
     try:
