@@ -156,18 +156,28 @@ def clear_cache(filename: str, filetype: str) -> None:
     """
     ext = _get_extension(filetype)
     path = f"cache/{filename}"
+
+    # write_cached_df stores its fragments under "<filename>.cols" / "<filename>.rows"
+    # (see filename_cols / filename_rows there), which write_cache then lands at
+    # "cache/<filename>.cols.<ext>". The templates here disagreed with that: the
+    # existence checks omitted the dot before the extension ("....colsparquet") so they
+    # never matched, and the .cols removal used a doubled dot. The large column-diff
+    # caches were therefore left on disk by every clear_cache call.
+    for fragment in ("cols", "rows"):
+        frag_path = f"{path}.{fragment}.{ext}"
+        if os.path.exists(frag_path):
+            os.remove(frag_path)
+
+    for sig_path in (
+        f"{path}.signature.json",
+        f"{path}.cols.signature.json",
+        f"{path}.rows.signature.json",
+    ):
+        if os.path.exists(sig_path):
+            os.remove(sig_path)
+
     if os.path.exists(f"{path}.{ext}"):
         os.remove(f"{path}.{ext}")
-    if os.path.exists(f"{path}.cols{ext}"):
-        os.remove(f"{path}..cols.{ext}")
-    if os.path.exists(f"{path}.rows{ext}"):
-        os.remove(f"{path}.rows{ext}")
-    if os.path.exists(f"{path}.signature.json"):
-        os.remove(f"{path}.signature.json")
-    if os.path.exists(f"{path}.cols.signature.json"):
-        os.remove(f"{path}.cols.signature.json")
-    if os.path.exists(f"{path}.rows.signature.json"):
-        os.remove(f"{path}.rows.signature.json")
 
 
 def write_cached_df(
