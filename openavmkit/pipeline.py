@@ -28,6 +28,7 @@ import openavmkit.checkpoint
 import openavmkit.ratio_study
 import openavmkit.horizontal_equity_study
 import openavmkit.vertical_equity_study
+import openavmkit.value_studies
 import openavmkit.cleaning
 
 from dotenv import load_dotenv, find_dotenv
@@ -2365,6 +2366,50 @@ def run_vertical_equity_study(
         field_location
     )
 
+
+def run_value_field_studies(
+    sup: SalesUniversePair,
+    settings: dict,
+    fields: list[str],
+    location: str = None,
+    start_date: str = None,
+    end_date: str = None,
+    confidence_interval: float = 0.90,
+    outpath: str = "out/studies",
+) -> dict:
+    """Run ratio, vertical-equity and horizontal-equity studies on value fields.
+
+    Studies every model group plus the whole jurisdiction for each field (for
+    example the assessor's current market value), with no modeling required, and
+    writes ``<outpath>/<field>.json``.
+
+    Parameters
+    ----------
+    sup : SalesUniversePair
+        Sales and universe, after the clean stage.
+    settings : dict
+        Settings dictionary.
+    fields : list[str]
+        Universe value fields to study.
+    location : str, optional
+        Location field for grouped vertical-equity quantiles. Defaults to the first
+        available entry of ``field_classification.important.locations``.
+    start_date, end_date : str, optional
+        Sales window. Defaults to the ratio-study look-back window.
+    confidence_interval : float, optional
+        Confidence level for intervals. Defaults to 0.90.
+    outpath : str, optional
+        Output folder. ``None`` writes nothing.
+
+    Returns
+    -------
+    dict
+        Results keyed by field; see :func:`openavmkit.value_studies.run_value_field_studies`.
+    """
+    return openavmkit.value_studies.run_value_field_studies(
+        sup, settings, fields, location=location, start_date=start_date, end_date=end_date,
+        confidence_interval=confidence_interval, outpath=outpath,
+    )
 
 def plot_prediction_vs_sales(
     sup: SalesUniversePair,
