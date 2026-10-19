@@ -287,6 +287,27 @@ def test_dupes_allow_keeps_all_rows():
 	assert len(_handle_duplicated_rows(df, {})) == 3
 
 
+
+def test_dupes_default_geometry_prefers_key():
+	# Regression: a geometry layer loaded without a `dupes` setting used to be de-duped on
+	# its first non-geometry column, whose position came from set() ordering. On a parcel
+	# layer that could be e.g. a building-type column, silently dropping most parcels.
+	import geopandas as gpd
+	from shapely.geometry import Point
+	from openavmkit.utilities.settings import get_dupes
+
+	df = gpd.GeoDataFrame(
+		{
+			"bldg_type": ["A", "A", "B", "B"],
+			"key": ["1", "2", "3", "4"],
+			"geometry": [Point(0, 0), Point(1, 0), Point(2, 0), Point(3, 0)],
+		},
+		geometry="geometry",
+	)
+	dupes = get_dupes({}, df, is_geometry=True)
+	assert dupes["subset"] == ["key"]
+	assert len(_handle_duplicated_rows(df, dupes)) == 4
+
 def test_ref_table():
 	print("")
 

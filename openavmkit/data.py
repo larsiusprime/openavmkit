@@ -4193,7 +4193,10 @@ def load_dataframe(
     fields_in_agg = [f for f in agg_fields if f in column_names]
     cols_to_load += fields_in_agg
     
-    cols_to_load = list(set(cols_to_load))
+    # Keep the source file's column order so anything that falls back to "the first
+    # column" (e.g. de-dupe keys) is deterministic; set() order varies between runs.
+    wanted = set(cols_to_load)
+    cols_to_load = [c for c in column_names if c in wanted] + sorted(wanted - set(column_names))
     
     is_geometry = False
     if "geometry" in column_names and "geometry" not in cols_to_load:
