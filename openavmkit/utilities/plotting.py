@@ -18,7 +18,7 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter, ScalarFormatter
 from mpld3 import plugins
 
-from IPython.display import display, HTML
+from openavmkit.utilities.notebook import display, HTML
 
 
 def get_nice_random_colors(n: int, shuffle=False, seed=1337):

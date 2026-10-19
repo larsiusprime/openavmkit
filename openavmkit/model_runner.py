@@ -42,7 +42,8 @@ from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_percentage_error
 from statsmodels.nonparametric.kernel_regression import KernelReg
 from xgboost import XGBRegressor
-from IPython.display import display
+from openavmkit.utilities.notebook import display
+from openavmkit import progress
 import numpy as np
 from openavmkit.reports import finish_report
 from openavmkit.utilities.stats import calc_representation
@@ -5311,6 +5312,7 @@ def _run_models(
         if model_name in models_to_skip:
             print(f"Skipping model {model_name}.")
             continue
+        progress.report(f"model:{model_group}:{model_name}", None, f"Training {model_name} for {model_group}")
         model_entry = model_entries.get(model_name, model_entries.get("default", {}))
         model_engine = model_entry.get("model", model_name)
 

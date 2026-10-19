@@ -80,7 +80,7 @@ from openavmkit.vertical_equity_study import (
     VerticalEquityStudy
 )
 
-from IPython.display import display
+from openavmkit.utilities.notebook import display
 
 # Basic data stuff
 
