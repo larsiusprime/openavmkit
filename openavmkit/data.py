@@ -4132,9 +4132,10 @@ def load_dataframe(
     if filename == "":
         return None
     filename = f"in/{filename}"
-    ext = str(filename).split(".")[-1]
+    ext = str(filename).split(".")[-1].lower()
+    layer = entry.get("layer")  # GeoPackage only: which layer to read (default: the first)
 
-    column_names = _snoop_column_names(filename)
+    column_names = _snoop_column_names(filename, layer)
 
     e_load = entry.get("load", {})
 
@@ -4231,6 +4232,17 @@ def load_dataframe(
                 dtype_value = "string"
             csv_dtype_map[key] = dtype_value
         df = pd.read_csv(filename, usecols=cols_to_load, dtype=csv_dtype_map)
+    elif ext in GIS_EXTENSIONS:
+        attrs = [c for c in cols_to_load if c != "geometry"]
+        df = gpd.read_file(
+            filename,
+            layer=layer,
+            columns=attrs,
+            read_geometry="geometry" in cols_to_load,
+            engine="pyogrio",
+        )
+        if "geometry" in df:
+            df = ensure_geometries(df, geom_col="geometry", crs=df.crs)
     else:
         raise ValueError(f"Unsupported file extension: {ext}")
     
@@ -4382,14 +4394,27 @@ def load_dataframe(
     return df
 
 
-def _snoop_column_names(filename: str) -> list[str]:
+# GeoPackage and shapefile, read through GDAL (pyogrio). A shapefile's sidecar files
+# (.shx, .dbf, .prj, ...) must sit next to the .shp in in/.
+GIS_EXTENSIONS = ("gpkg", "shp")
+
+
+def _snoop_column_names(filename: str, layer: str | None = None) -> list[str]:
     """Retrieve column names from a file without loading full data."""
-    ext = str(filename).split(".")[-1]
+    ext = str(filename).split(".")[-1].lower()
     if ext == "parquet" or ext == "geoparquet":
         parquet_file = pq.ParquetFile(filename)
         return parquet_file.schema.names
     elif ext == "csv":
         return pd.read_csv(filename, nrows=0).columns.tolist()
+    elif ext in GIS_EXTENSIONS:
+        import pyogrio
+
+        info = pyogrio.read_info(filename, layer=layer)
+        names = list(info["fields"])
+        if info.get("geometry_type"):
+            names.append("geometry")
+        return names
     raise ValueError(f'Unsupported file extension: "{ext}"')
 
 

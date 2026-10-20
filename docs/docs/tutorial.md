@@ -99,7 +99,7 @@ Now the real work. You have an assessor extract for a jurisdiction OpenAVMKit do
 - **Reference shapefiles** for distance/proximity features — CBD polygon, school district boundaries, airport, employment centers, etc. (See [advanced_settings.md § 4.5](advanced_settings.md#45-distance-proximity-enrichment-dataprocessenrichdistances) for what these unlock.)
 - **Time adjustment factors** if your jurisdiction publishes its own — see [advanced_settings.md § 3](advanced_settings.md#3-time-adjustment).
 
-**File formats** — CSV, parquet, shapefile, geopackage. OpenAVMKit reads them all. Parquet is fastest; shapefiles work fine for geometry.
+**File formats** — CSV, parquet, shapefile, geopackage. OpenAVMKit reads them all. Parquet is fastest; shapefiles work fine for geometry. Upper-case extensions (`PARCELS.SHP`) are fine. A shapefile's sidecar files (`.shx`, `.dbf`, `.prj`) must sit next to the `.shp` in `in/`. A GeoPackage with several layers reads its first layer unless the `data.load` entry names one with `"layer": "parcels"`.
 
 **Units — imperial or metric, your choice.** OpenAVMKit fully supports both unit systems. You declare which one applies via `locality.units` in `settings.json` (covered in § B.4 below), and the rest of the pipeline follows. Your raw data can be in either system as long as it's consistent within itself — you just map the appropriate columns to the matching canonical field names (`land_area_sqft` vs. `land_area_sqm`, `bldg_area_finished_sqft` vs. `bldg_area_finished_sqm`, `frontage_ft` vs. `frontage_m`, etc.). If your data is in one system but you want to work in the other, use a `calc` to convert at load time (e.g. `["*", "AREA_ACRES", 43560]` for acres → sqft, or `["*", "AREA_HECTARES", 10000]` for ha → sqm).
 
