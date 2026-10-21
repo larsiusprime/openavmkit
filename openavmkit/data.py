@@ -4217,7 +4217,9 @@ def load_dataframe(
         csv_dtype_map = {}
         for key in dtype_map:
             dtype_value = dtype_map[key]
-            if dtype_value == "datetime":
+            # Read dates and booleans as text; they are converted after loading (CSV
+            # has no boolean type, and read_csv can't parse "Y"/"N" as bool itself).
+            if dtype_value in ("datetime", "bool", "boolean"):
                 dtype_value = "string"
             csv_dtype_map[key] = dtype_value
         df = pd.read_csv(filename, usecols=cols_to_load, dtype=csv_dtype_map)
