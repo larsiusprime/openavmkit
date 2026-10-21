@@ -2766,7 +2766,9 @@ def _boolify_series(series: pd.Series, na_handling: str = None):
         series = series.replace(["true", "t", "1", "y", "yes"], 1)
         series = series.replace(["false", "f", "0", "n", "no"], 0)
         # Convert common string representations of missing values to NaN
-        none_patterns = ["none", "nan", "null", "na", "n/a", "-", "unknown"]
+        # "<na>" and "" are how missing text values read after astype(str) (pandas'
+        # string dtype and CSV blanks); without them a blank became True.
+        none_patterns = ["none", "nan", "null", "na", "n/a", "-", "unknown", "<na>", ""]
         series = series.replace(none_patterns, pd.NA)
 
     # Handle NA values before boolean conversion
