@@ -11,6 +11,12 @@
 		"type": "string",
 		"source": "input"
 	},
+	"key_sale":{
+		"name": "Sale key",
+		"description": "Unique identifier for each sale. The sales merge (data.process.merge.sales) joins on it",
+		"type": "string",
+		"source": "input"
+	},
 	"model_group":{
 		"name": "Modeling group",
 		"description": "Properties of different types are separated into different modeling groups for analysis",
