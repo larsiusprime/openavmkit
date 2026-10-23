@@ -1603,6 +1603,10 @@ def _collapse_features_by_name(gdf: gpd.GeoDataFrame, name_field: str = "name") 
     return dissolved
 
 
+class _SourceDistanceError(ValueError):
+    """A distance feature from the user's own file failed: raised, not just warned about."""
+
+
 def _enrich_df_distances(
     df_in: pd.DataFrame | gpd.GeoDataFrame,
     dist_settings: dict,
@@ -1867,6 +1871,9 @@ def _enrich_df_distances(
 
                 except Exception as e:
                     err_msg = f"Failed to get {config.get('verbose_label', feature)}: {str(e)}"
+                    if config.get("source") and not config.get("osm", False):
+                        # The user's own file: stop and say why, rather than leave the feature out.
+                        raise _SourceDistanceError(err_msg) from e
                     if config.get("error_method", None) == "warn":
                         warnings.warn(err_msg)
                     else:
@@ -1877,6 +1884,8 @@ def _enrich_df_distances(
 
         return df
 
+    except _SourceDistanceError:
+        raise
     except Exception as e:
         warnings.warn(f"Failed to enrich with OpenStreetMap data: {str(e)}")
         return df
@@ -4396,7 +4405,7 @@ def load_dataframe(
 
 # GeoPackage and shapefile, read through GDAL (pyogrio). A shapefile's sidecar files
 # (.shx, .dbf, .prj, ...) must sit next to the .shp in in/.
-GIS_EXTENSIONS = ("gpkg", "shp")
+GIS_EXTENSIONS = ("gpkg", "shp", "geojson")
 
 
 def _snoop_column_names(filename: str, layer: str | None = None) -> list[str]:
