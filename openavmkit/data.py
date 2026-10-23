@@ -3263,13 +3263,16 @@ def _enrich_polar_coordinates(
     gdf = gdf_in[["key", "geometry"]].copy()
 
     longitude, latitude = get_center(settings, gdf)
+    # locality.center is in degrees (EPSG:4326). Without it, get_center gives the middle of the
+    # parcels in their own coordinates. Either way, place the point in the coordinates it's in.
+    center_crs = "EPSG:4326" if settings.get("locality", {}).get("center") else gdf_in.crs
 
     crs = get_crs(gdf, "equal_area")
     gdf = gdf.to_crs(crs)
 
     # convert longitude, latitude, to same point space as gdf:
     point = Point(longitude, latitude)
-    single_point_gdf = gpd.GeoDataFrame({"geometry": [point]}, crs=gdf_in.crs)
+    single_point_gdf = gpd.GeoDataFrame({"geometry": [point]}, crs=center_crs)
     single_point_gdf = single_point_gdf.to_crs(crs)
 
     x_center = single_point_gdf.geometry.x.iloc[0]
