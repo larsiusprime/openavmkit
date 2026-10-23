@@ -4384,7 +4384,10 @@ def load_dataframe(
         gdf: gpd.GeoDataFrame = gpd.GeoDataFrame(df, geometry="geometry", crs=df.crs)
         
         pre_len = len(gdf)
-        gdf = clean_geometry(gdf, ensure_polygon=True)
+        # Parcels and areas are polygons; a layer of only points or lines (schools, roads: distances)
+        # keeps them.
+        has_polygons = gdf.geometry.geom_type.isin(["Polygon", "MultiPolygon"]).any()
+        gdf = clean_geometry(gdf, ensure_polygon=bool(has_polygons))
         post_len = len(gdf)
         
         perc_len = (pre_len-post_len)/pre_len

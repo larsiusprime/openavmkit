@@ -43,3 +43,21 @@ def test_a_broken_source_layer_stops_the_run(tmp_path, monkeypatch):
     settings = {"enabled": True, "schools": {"source": "not_loaded", "max_distance": 5}}
     with pytest.raises(ValueError, match="schools"):
         _enrich_df_distances(_parcels(), settings, {})
+
+
+def test_point_and_line_layers_load(tmp_path, monkeypatch):
+    """Distances' sources are often points (schools) or lines (roads): loading keeps them."""
+    from shapely.geometry import LineString
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "in").mkdir()
+    gpd.GeoDataFrame({"SCHOOL": ["A", "B"]}, geometry=[Point(0, 0), Point(1, 1)], crs="EPSG:4326").to_file(
+        tmp_path / "in" / "schools.shp"
+    )
+    gpd.GeoDataFrame({"ROAD": ["Main"]}, geometry=[LineString([(0, 0), (1, 1)])], crs="EPSG:4326").to_file(
+        tmp_path / "in" / "roads.geojson", driver="GeoJSON"
+    )
+    s = {"locality": {"units": "imperial"}}
+    schools = load_dataframe({"filename": "schools.shp", "load": {"name": "SCHOOL"}, "dupes": "allow"}, s)
+    roads = load_dataframe({"filename": "roads.geojson", "load": {"name": "ROAD"}, "dupes": "allow"}, s)
+    assert list(schools["name"]) == ["A", "B"] and list(roads["name"]) == ["Main"]
