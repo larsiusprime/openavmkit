@@ -2064,3 +2064,8 @@ def test_tweaks():
 
   df_result = perform_tweaks(df, tweaks)
   assert dfs_are_equal(df_result, df_expected)
+
+def test_upper():
+	df = pd.DataFrame({"pid": ["r0123456", "R0123456", "m77a"]})
+	out = perform_calculations(df, {"pid_up": ["upper", "pid"]})
+	assert out["pid_up"].tolist() == ["R0123456", "R0123456", "M77A"]
