@@ -401,8 +401,7 @@
 				"bldg_foundation",
 				"bldg_quality_txt",
 				"bldg_condition_txt",
-				"renovation_txt",
-				"reno_date"
+				"renovation_txt"
 			]
 		},
 		"+other": {
@@ -448,6 +447,7 @@
 				"sale_date",
 				"assr_date",
 				"demo_date",
+				"reno_date",
 				"sale_year_month",
 				"sale_year_quarter",
 				"key",
