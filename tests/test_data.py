@@ -407,11 +407,18 @@ def test_merge_conflicts():
 		df = pd.DataFrame(data=datas[data])
 		dfs[data] = df
 
-	_merge_dict_of_dfs(
+	merged = _merge_dict_of_dfs(
 		dataframes=dfs,
 		merge_list=["a", "b", "c"],
 		settings={}
 	)
+	expected = ["apple", "banana", "cherry", "date", "elderberry", "fig", "grape", "honeydew", "kiwi", "lemon"]
+	assert merged["fruit"].tolist() == expected
+	assert [c for c in merged.columns if c.startswith("fruit_")] == []
+
+	# Two frames, one clash: the second still fills the first's blanks.
+	merged = _merge_dict_of_dfs(dataframes={"a": dfs["a"], "b": dfs["b"]}, merge_list=["a", "b"], settings={})
+	assert merged["fruit"].tolist()[:5] == ["apple", "banana", "cherry", "date", "elderberry"]
 
 
 def test_enrich_year_built():

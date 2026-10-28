@@ -4752,7 +4752,9 @@ def _merge_dict_of_dfs(
             )
             continue
         child_fields = conflicts[base_field]
-        if len(child_fields) > 1:
+        # One clashing frame is enough: its values fill the first frame's blanks (with ">1", a field that only
+        # two frames carry kept the first frame's blanks and silently dropped the second's values).
+        if len(child_fields) >= 1:
             # TODO: remove this when this becomes default pandas behavior
             old_value = pd.get_option("future.no_silent_downcasting")
             pd.set_option("future.no_silent_downcasting", True)
