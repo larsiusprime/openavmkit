@@ -2794,9 +2794,12 @@ def _boolify_column_in_df(df: pd.DataFrame, field: str, na_handling: str = None)
     elif na_handling == "na_true":
         na_handling = "true"
     elif na_handling is None:
-        warnings.warn(
-            f"No NA handling specified for boolean field '{field}'. Defaulting to 'na_false'."
-        )
+        # Only worth saying when something is missing: a field made by a calc (a rule, or "every sale is valid")
+        # has no blanks for the choice to apply to.
+        if series.isna().any():
+            warnings.warn(
+                f"No NA handling specified for boolean field '{field}'. Defaulting to 'na_false'."
+            )
         na_handling = "false"
     else:
         raise ValueError(

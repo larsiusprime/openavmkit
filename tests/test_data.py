@@ -2232,3 +2232,19 @@ def test_permits_teardown_sales_sale_by_sale():
 	assert not out.loc["0---2016-03-01", "is_renovated"]
 	assert out.loc["0---2020-06-01", "is_renovated"]
 	assert "bldg_effective_year_built" not in out
+
+
+def test_boolify_warns_about_na_handling_only_when_something_is_missing():
+	import warnings as w
+	from openavmkit.data import _boolify_column_in_df
+
+	with w.catch_warnings(record=True) as caught:
+		w.simplefilter("always")
+		out = _boolify_column_in_df(pd.DataFrame({"valid_sale": [True, True]}), "valid_sale")
+	assert out["valid_sale"].tolist() == [True, True]
+	assert not [c for c in caught if "NA handling" in str(c.message)]
+	with w.catch_warnings(record=True) as caught:
+		w.simplefilter("always")
+		out = _boolify_column_in_df(pd.DataFrame({"vacant_sale": [True, None]}), "vacant_sale")
+	assert out["vacant_sale"].tolist() == [True, False]
+	assert [c for c in caught if "NA handling" in str(c.message)]
