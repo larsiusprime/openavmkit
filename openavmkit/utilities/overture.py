@@ -21,6 +21,8 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 import shapely.wkb
 
+from openavmkit import progress
+
 from openavmkit.utilities.geometry import get_crs
 from openavmkit.utilities.timing import TimingData
 
@@ -319,6 +321,12 @@ class OvertureService:
                     disable=not verbose,
                 ) as pbar:
                     for batch in batches:
+                        # A checkpoint per batch: the download streams from S3, batch by batch.
+                        progress.report(
+                            "footprints",
+                            message=f"Downloading buildings: {buildings_found:,} so far",
+                            part="footprints",
+                        )
                         if batch.num_rows > 0:
                             try:
                                 # Convert batch to GeoDataFrame with proper geometry handling
