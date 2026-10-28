@@ -4101,6 +4101,8 @@ def _drop_fields(
     fields : list
         List of column names to drop. Canonical (renamed) names are matched first; if a
         name isn't found, it is retried through ``rename_map`` as a source-column name.
+        A name with ``*`` is a pattern (``fnmatch``), for columns named as they're made,
+        such as the distances to each of the largest features: ``dist_to_osm_parks_*``.
     rename_map : dict, optional
         Optional mapping of original to renamed columns.
 
@@ -4114,12 +4116,17 @@ def _drop_fields(
             f"`drop_fields` must be a list of column names, found {type(fields)}. Nothing will be dropped."
         )
         return df_in
+    import fnmatch
+
     to_drop = []
     for field in fields:
-        if field in df_in.columns:
+        if isinstance(field, str) and "*" in field:
+            to_drop += [c for c in df_in.columns if isinstance(c, str) and fnmatch.fnmatchcase(c, field)]
+        elif field in df_in.columns:
             to_drop.append(field)
         elif rename_map and rename_map.get(field) in df_in.columns:
             to_drop.append(rename_map[field])
+    to_drop = list(dict.fromkeys(to_drop))
     if not to_drop:
         return df_in
     return df_in.drop(columns=to_drop)
