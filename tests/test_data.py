@@ -2198,3 +2198,37 @@ def test_drop_fields_absent_leaves_frame_untouched(tmp_path, monkeypatch):
 
 	df = load_dataframe(entry, {}, verbose=False)
 	assert "vcs_pre4" in df.columns
+
+
+def test_permits_teardown_sales_sale_by_sale():
+	"""A parcel sold twice, then demolished a month after the second sale: only that sale is the
+	teardown (land) sale; the earlier one stays a sale of the house. Renovations likewise go to each
+	sale by its own date. Effective age is skipped on sales that carry no year built."""
+	sales = pd.DataFrame({
+		"key": ["0", "0"],
+		"key_sale": ["0---2016-03-01", "0---2020-06-01"],
+		"valid_sale": [True, True],
+		"vacant_sale": [False, False],
+		"sale_price": [1, 1],
+		"sale_date": pd.to_datetime(["2016-03-01", "2020-06-01"]),
+	})
+	permits = pd.DataFrame({
+		"key": ["0", "0"],
+		"date": pd.to_datetime(["2018-01-01", "2020-07-01"]),
+		"is_teardown": [False, True],
+		"is_renovation": [True, False],
+		"renovation_num": [3, 0],
+		"renovation_txt": ["ADDITION", "DEMOLITION"],
+	})
+	s_enrich = {"permits": {"sources": ["permits"], "calc_effective_age": True}}
+	out = _enrich_permits(sales, s_enrich, {"permits": permits}, {}, is_sales=True, verbose=False)
+	out = out.set_index("key_sale")
+	assert len(out) == 2
+	assert not out.loc["0---2016-03-01", "is_teardown_sale"]
+	assert not out.loc["0---2016-03-01", "vacant_sale"]
+	assert out.loc["0---2020-06-01", "is_teardown_sale"]
+	assert out.loc["0---2020-06-01", "vacant_sale"]
+	# The 2018 addition came after the first sale and before the second.
+	assert not out.loc["0---2016-03-01", "is_renovated"]
+	assert out.loc["0---2020-06-01", "is_renovated"]
+	assert "bldg_effective_year_built" not in out

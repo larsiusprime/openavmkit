@@ -6011,9 +6011,10 @@ def _process_permits_sales(
         df.loc[df["days_to_demo"].le(0), "days_to_demo"] = np.nan
 
         # we could have multiple hits, we need to de-duplicate.
-        # find the demo date closest to the sale for each key
+        # find the demo date closest to the sale for each SALE (a parcel can have several
+        # sales, and only one before the demolition is the teardown sale)
         df = df.sort_values(by=["days_to_demo"], ascending=[True])
-        df = df.drop_duplicates(subset=["key"], keep="first")
+        df = df.drop_duplicates(subset=["key_sale"], keep="first")
 
         max_days_to_demo = s_permits.get("max_days_to_demo", 365)
 
@@ -6027,8 +6028,8 @@ def _process_permits_sales(
         # Merge the results back onto df_sales
         # Now we know, for each sale, if it's a likely teardown sale and when it was torn down
         df_sales = df_sales.merge(
-            df[["key", "is_teardown_sale", "demo_date", "days_to_demo"]],
-            on="key",
+            df[["key_sale", "is_teardown_sale", "demo_date", "days_to_demo"]],
+            on="key_sale",
             how="left",
         )
 
@@ -6079,13 +6080,13 @@ def _process_permits_sales(
             by=["renovation_num", "days_to_reno"], ascending=[False, False]
         )
 
-        df = df.drop_duplicates(subset=["key"], keep="first")
+        df = df.drop_duplicates(subset=["key_sale"], keep="first")
 
-        # Merge the results back onto df_sales
+        # Merge the results back onto df_sales, sale by sale
         df_sales = df_sales.merge(
             df[
                 [
-                    "key",
+                    "key_sale",
                     "is_renovated",
                     "reno_date",
                     "days_to_reno",
@@ -6093,11 +6094,16 @@ def _process_permits_sales(
                     "renovation_txt",
                 ]
             ],
-            on="key",
+            on="key_sale",
             how="left",
         )
 
-        if calc_effective_age:
+        if calc_effective_age and "bldg_year_built" not in df_sales:
+            # The sales record usually carries no building fields: its sales take their
+            # parcel's (the universe's effective year, worked out above) when hydrated.
+            if verbose:
+                print("No bldg_year_built on the sales: their effective year comes from the universe.")
+        elif calc_effective_age:
             # Calculate effective year built based on last major renovation
             if "bldg_effective_year_built" in df_sales:
                 warnings.warn(
