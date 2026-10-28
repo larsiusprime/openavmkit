@@ -100,3 +100,35 @@ def test_floor_area_land_share_sums_to_parcel():
     assert abs(alloc["U2"] - 2 * alloc["B001"]) < 1e-6
     # condos' land_area_sqft is overwritten with the per-unit share.
     assert abs(c.loc["U2", "land_area_sqft"] - alloc["U2"]) < 1e-6
+
+
+def test_equal_land_share_needs_nothing_from_the_units():
+    dfs, _ = _frames([None, None, None])
+    dfs["char"] = dfs["char"].drop(columns=["land_area_sqft", "bldg_area_finished_sqft"])
+    s = _settings(_condos_cfg({"method": "equal"}))
+    out = resolve_condos(dfs, s)
+    c = out["char"].set_index("key")
+    parcel_area = float(_polygon_areas_sqft(dfs["geo_parcels"]).iloc[0])
+    alloc = c[LAND_ALLOC_FIELD].astype(float)
+    assert abs(alloc.sum() - parcel_area) < 1e-3 * parcel_area
+    assert abs(alloc["U2"] - alloc["U3"]) < 1e-9
+
+
+def test_floor_area_from_another_file_is_shared_after_the_merge():
+    """The units' finished area is in their building cards, not their own file: shared out once merged, and
+    every unit's land size becomes its share."""
+    from openavmkit.condos import apply_deferred_land_share
+
+    dfs, _ = _frames([None, None, None])
+    floors = dfs["char"][["key", "bldg_area_finished_sqft"]].copy()
+    dfs["char"] = dfs["char"].drop(columns=["land_area_sqft", "bldg_area_finished_sqft"])
+    s = _settings(_condos_cfg({"method": "floor_area", "floor_field": "bldg_area_finished_sqft"}))
+    out = resolve_condos(dfs, s)
+    assert out["char"][LAND_ALLOC_FIELD].isna().all()  # nothing yet: the finished area isn't here
+    merged = out["char"].merge(floors, on="key")  # as the universe merge joins the building cards
+    univ = apply_deferred_land_share(merged, s).set_index("key")
+    parcel_area = float(_polygon_areas_sqft(dfs["geo_parcels"]).iloc[0])
+    alloc = univ[LAND_ALLOC_FIELD].astype(float)
+    assert abs(alloc.sum() - parcel_area) < 1e-3 * parcel_area
+    assert abs(alloc["U2"] - 2 * alloc["B001"]) < 1e-6
+    assert (univ["land_area_sqft"].astype(float) == alloc).all()

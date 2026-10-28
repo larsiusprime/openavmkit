@@ -635,6 +635,8 @@ def process_data(
         )
 
     df_univ = _merge_dict_of_dfs(dataframes, merge_univ, settings, required_key="key")
+    from openavmkit.condos import apply_deferred_land_share
+    df_univ = apply_deferred_land_share(df_univ, settings, verbose=verbose)
     df_sales = _merge_dict_of_dfs(
         dataframes, merge_sales, settings, required_key="key_sale"
     )
