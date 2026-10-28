@@ -114,6 +114,18 @@ def test_equal_land_share_needs_nothing_from_the_units():
     assert abs(alloc["U2"] - alloc["U3"]) < 1e-9
 
 
+def test_no_land_share_leaves_the_land_to_the_shared_parcel():
+    """Homes in a mobile-home park, buildings on leased land: the land is the parcel's, each unit has none."""
+    dfs, _ = _frames([None, None, None])
+    s = _settings(_condos_cfg({"method": "none"}))
+    out = resolve_condos(dfs, s)
+    c = out["char"].set_index("key")
+    units = c[c[LAND_ALLOC_FIELD].notna()]
+    assert len(units) > 0
+    assert (units[LAND_ALLOC_FIELD].astype(float) == 0).all()
+    assert (units["land_area_sqft"].astype(float) == 0).all()
+
+
 def test_floor_area_from_another_file_is_shared_after_the_merge():
     """The units' finished area is in their building cards, not their own file: shared out once merged, and
     every unit's land size becomes its share."""

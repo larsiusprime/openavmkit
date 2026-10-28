@@ -112,7 +112,10 @@ def _apply_land_share(
             print(f"resolve_condos: land_share 'floor_area' for {len(bid)} units deferred until after the merge")
         return df
 
-    if method == "equal":
+    if method == "none":
+        # The land is the shared parcel's, not the units' (homes in a mobile-home park, buildings on leased land).
+        alloc = pd.Series(0.0, index=condo_idx)
+    elif method == "equal":
         # The building's land in equal shares, one per unit: needs nothing from the units themselves.
         n = bid.map(bid.value_counts())
         alloc = pd.to_numeric(parcel_land, errors="coerce") / n
@@ -225,7 +228,7 @@ def resolve_condos(dataframes: dict, settings: dict, verbose: bool = False) -> d
       1. links each unit to a building polygon (``link.method``: id_prefix | parent_id | spatial);
       2. borrows that polygon as the unit's geometry (appends rows to ``geo_parcels``);
       3. writes ``group_field`` (the building id) onto the source;
-      4. writes a per-unit allocated land size (``land_share.method``: field | floor_area | equal; floor_area
+      4. writes a per-unit allocated land size (``land_share.method``: field | floor_area | equal | none; floor_area
          with the finished area in another file is shared out after the merge: apply_deferred_land_share)
          to ``land_area_alloc_sqft`` and into ``land_area_sqft`` for condos;
       5. auto-registers the new fields in field_classification.
