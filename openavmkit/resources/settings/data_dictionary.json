@@ -1047,6 +1047,20 @@
 		"groups": ["deed"],
 		"source": "input"
 	},
+	"deed_grantor_surname": {
+		"name": "Deed grantor surname",
+		"description": "Surname of the person granting the deed (the seller), when the name has been split; used by sales scrutiny's same-surname check",
+		"type": "string",
+		"groups": ["deed"],
+		"source": "input"
+	},
+	"deed_grantee_surname": {
+		"name": "Deed grantee surname",
+		"description": "Surname of the person receiving the deed (the buyer), when the name has been split; used by sales scrutiny's same-surname check",
+		"type": "string",
+		"groups": ["deed"],
+		"source": "input"
+	},
 	"sale_date":{
 		"name": "Sale date",
 		"description": "Date of sale",

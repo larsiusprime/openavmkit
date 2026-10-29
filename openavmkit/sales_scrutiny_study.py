@@ -10,6 +10,7 @@ from training data while remaining visible for audit.
 Cluster definitions come from ``analysis.sales_scrutiny`` in ``settings.json``.
 """
 import os
+import re
 import warnings
 import pandas as pd
 import numpy as np
@@ -156,8 +157,10 @@ class SalesScrutinyStudy:
             other_fields = [f for f in other_fields if f in df.columns]
 
             df_cluster_fields = df[["key", "key_sale"] + other_fields]
-            passes = settings.get("analysis", {}).get("sales_scrutiny", {}).get("passes", 1)
-            df = _calc_sales_scrutiny(df, sale_field_per, passes=passes)
+            ss_settings = settings.get("analysis", {}).get("sales_scrutiny", {})
+            passes = ss_settings.get("passes", 1)
+            strict = ss_settings.get("patterns", "classic") == "strict"
+            df = _calc_sales_scrutiny(df, sale_field_per, passes=passes, strict=strict)
             df["vacant"] = key == "v"
             df["area"] = per_area
             df = df.merge(df_cluster_fields, on="key_sale", how="left")
@@ -230,14 +233,14 @@ class SalesScrutinyStudy:
         keys_flagged = []
 
         if "flagged" in df_v:
-            # remove flagged sales:
-            vacant_flags = df_v[df_v["flagged"].eq(True)]["key_sale"].tolist()
+            # remove flagged sales (not those flagged only: no pattern, the user decides):
+            vacant_flags = df_v[df_v["flagged"].eq(True) & ~_flag_only(df_v)]["key_sale"].tolist()
             keys_flagged += vacant_flags
             if verbose:
                 print(f"--> Flagged {len(vacant_flags)} vacant sales")
 
         if "flagged" in df_i:
-            improved_flags = df_i[df_i["flagged"].eq(True)]["key_sale"].tolist()
+            improved_flags = df_i[df_i["flagged"].eq(True) & ~_flag_only(df_i)]["key_sale"].tolist()
             keys_flagged += improved_flags
             if verbose:
                 print(f"--> Flagged {len(improved_flags)} improved sales")
@@ -381,14 +384,34 @@ class SalesScrutinyStudy:
 
 # The heuristic checks, each on unless analysis.sales_scrutiny.heuristics.<name> is false.
 HEURISTICS = ("dupe_deed_date", "dupe_date_price", "bulk_deed", "false_vacant")
+# The checks that are off unless analysis.sales_scrutiny.heuristics.<name> is true.
+OPT_IN_HEURISTICS = ("built_after_sale", "vacant_priced_improved", "same_surname")
 FLAG_COLUMNS = [
     "key_sale", "key", "model_group", "check", "vacant", "ss_id", "count", "price", "price_per_area", "area",
     "median", "stdev", "relative_ratio", "med_dist_stdevs", "rules", "pattern", "scrutiny_pass", "bimodal",
+    "price_rating", "per_area_rating", "size_rating", "price_median", "price_dist", "size", "size_median",
+    "size_dist", "flag_only", "detail",
 ]
+# How a flagged sale's price, price per area and size compare with its cluster: "low", "in" (range) or "high".
+_RATINGS = ["price_rating", "per_area_rating", "size_rating"]
+_SIDE = ["price_median", "price_dist", "size", "size_median", "size_dist"]
 # The fewest sales a cluster is compared on in a later pass (as make_clusters' min_cluster_size).
 _MIN_PASS_SALES = 5
 _ANOMALIES = [f"anomaly_{i}" for i in range(1, 6)]
-_PASS_COLS = ["count", "median", "chd", "max", "min", "stdev", "relative_ratio", "med_dist_stdevs", "flagged", "rules"] + _ANOMALIES
+_PASS_COLS = (
+    ["count", "median", "chd", "max", "min", "stdev", "relative_ratio", "med_dist_stdevs", "flagged", "rules"]
+    + _ANOMALIES
+    + ["anomaly_other"]
+    + _RATINGS
+    + _SIDE
+)
+
+
+def _flag_only(df: pd.DataFrame) -> pd.Series:
+    """Flagged but fitting none of the five patterns (strict patterns): shown, never dropped."""
+    if "anomaly_other" not in df:
+        return pd.Series(False, index=df.index)
+    return df["anomaly_other"].eq(True)
 
 
 def _floats(s: pd.Series) -> pd.Series:
@@ -424,16 +447,21 @@ def _threshold_flags(
     return flagged, rules
 
 
-def _scrutinize(df_in: pd.DataFrame, sales_field: str, ratios_only: bool = False) -> pd.DataFrame:
+def _scrutinize(
+    df_in: pd.DataFrame, sales_field: str, ratios_only: bool = False, strict: bool = False
+) -> pd.DataFrame:
     df = _apply_he_stats(df_in, "ss_id", sales_field)
     if "median" not in df:
         return df
     df["flagged"], df["rules"] = _threshold_flags(df, sales_field, ratios_only)
-    return _check_for_anomalies(df, df_in, sales_field)
+    return _check_for_anomalies(df, df_in, sales_field, strict=strict)
 
 
-def _calc_sales_scrutiny(df_in: pd.DataFrame, sales_field: str, passes: int = 1):
-    df = _scrutinize(df_in, sales_field)
+def _calc_sales_scrutiny(df_in: pd.DataFrame, sales_field: str, passes: int = 1, strict: bool = False):
+    """Cluster outliers. strict: the patterns as the five-pattern table reads (each of price, price per area and
+    size low, in range or high at 2 standard deviations from the cluster's median, each flagged sale exactly one
+    pattern); a flagged sale that fits none is "other", flagged only (never dropped)."""
+    df = _scrutinize(df_in, sales_field, strict=strict)
 
     if "median" not in df:
         # If the median is not present, then we can't do anything
@@ -455,7 +483,7 @@ def _calc_sales_scrutiny(df_in: pd.DataFrame, sales_field: str, passes: int = 1)
         rest = rest[rest.groupby("ss_id")["ss_id"].transform("size").ge(_MIN_PASS_SALES)]
         if len(rest) == 0:
             break
-        again = _scrutinize(rest, sales_field, ratios_only=True)
+        again = _scrutinize(rest, sales_field, ratios_only=True, strict=strict)
         if "median" not in again:
             break
         new = again[again["flagged"].eq(True)].set_index("key_sale")
@@ -490,7 +518,7 @@ def _calc_sales_scrutiny(df_in: pd.DataFrame, sales_field: str, passes: int = 1)
         "rules",
         "scrutiny_pass",
         "bimodal",
-    ] + _ANOMALIES
+    ] + _ANOMALIES + ["anomaly_other"] + _RATINGS + _SIDE
 
     df = df[the_cols]
 
@@ -526,9 +554,12 @@ def _flag_rows(dfs: list[pd.DataFrame], model_group: str) -> pd.DataFrame:
                 "rules": f["rules"].astype(str),
                 "pattern": f[_ANOMALIES].fillna(False).astype(bool).apply(
                     lambda r: ",".join(str(i + 1) for i, v in enumerate(r) if v), axis=1
-                ),
+                ).where(~_flag_only(f), "other"),
                 "scrutiny_pass": pd.to_numeric(f["scrutiny_pass"]).astype("Int64"),
                 "bimodal": f["bimodal"].astype(bool),
+                **{c: f[c].astype(object) for c in _RATINGS},
+                **{c: pd.to_numeric(f[c]).astype(float) for c in _SIDE},
+                "flag_only": _flag_only(f).astype(bool),
             }
         )
         rows.append(out)
@@ -716,6 +747,121 @@ def drop_manual_exclusions(
     return sup
 
 
+# Words that mark a name as a company, trust, bank or government rather than a person.
+SURNAME_SKIP_WORDS = (
+    "LLC", "L.L.C.", "INC", "INCORPORATED", "CORP", "CORPORATION", "CO", "COMPANY", "LP", "LLP", "LTD", "PLLC",
+    "TRUST", "TR", "TRS", "TRUSTEE", "TRUSTEES", "ESTATE", "EST", "BANK", "MORTGAGE", "FINANCIAL", "CREDIT", "LENDING",
+    "ASSOCIATION", "ASSN", "HOA", "CHURCH", "MINISTRIES", "COUNTY", "CITY", "STATE", "TOWN", "VILLAGE", "AUTHORITY",
+    "DEPARTMENT", "DEPT", "HOUSING", "FEDERAL", "NATIONAL", "UNITED", "SECRETARY", "HUD", "PROPERTIES", "PROPERTY",
+    "HOLDINGS", "INVESTMENTS", "INVESTORS", "PARTNERS", "PARTNERSHIP", "GROUP", "REALTY", "HOMES", "BUILDERS",
+    "DEVELOPMENT", "ENTERPRISES", "FUND", "FOUNDATION", "UNIVERSITY", "SCHOOL", "DISTRICT", "VENTURES", "CAPITAL",
+)
+# The surname is the first word ("SMITH JOHN A"). Others: "^\\s*(?P<surname>[^,]+)," ("SMITH, JOHN"), and the last word
+# before a suffix ("John A Smith Jr").
+SURNAME_FIRST = r"^\s*(?P<surname>[A-Za-z][A-Za-z'\-]*)"
+_JOINT = re.compile(r"\s*(?:&|;|/|\bAND\b)\s*", re.IGNORECASE)
+
+
+def surnames(name, pattern: str = SURNAME_FIRST, skip_words=SURNAME_SKIP_WORDS) -> list[str]:
+    """The surnames in a buyer's or seller's name, upper case.
+
+    A name can hold several people, joined by ``&``, ``;``, ``/`` or ``AND`` ("SMITH JOHN & MARY JONES"); each is
+    read with ``pattern``, a regular expression with a ``surname`` group. A part of one word only is a given name
+    sharing the surname before it ("SMITH JOHN & MARY": two Smiths). A part with any of ``skip_words`` (a company, a
+    trust, a bank, a government) has no surname.
+
+    Parameters
+    ----------
+    name : str
+        The name as recorded
+    pattern : str, optional
+        Where the surname is: a regular expression with a ``surname`` group. Default: the first word.
+    skip_words : iterable of str, optional
+        Words that mean it isn't a person.
+
+    Returns
+    -------
+    list[str]
+        The surnames found; empty for a blank name, a company, or a name the pattern doesn't match.
+    """
+    if name is None or (not isinstance(name, str) and pd.isna(name)):
+        return []
+    skip = {w.upper().strip(".") for w in skip_words}
+    rx = re.compile(pattern, re.IGNORECASE)
+    out: list[str] = []
+    last = None
+    for part in _JOINT.split(str(name)):
+        words = re.findall(r"[A-Za-z][A-Za-z'.\-]*", part)
+        if not words:
+            continue
+        if any(w.upper().strip(".") in skip for w in words):
+            last = None
+            continue
+        if len(words) == 1 and last:
+            continue  # "& MARY": a given name, the surname before it
+        m = rx.search(part)
+        if not m or not m.groupdict().get("surname"):
+            continue
+        last = re.sub(r"[^A-Z'\-]", "", m.group("surname").upper())
+        if last and last not in out:
+            out.append(last)
+    return out
+
+
+def _same_surname(df: pd.DataFrame, ss: dict) -> tuple[pd.Series, pd.Series]:
+    """Buyer and seller share a surname. Surnames from deed_grantor_surname / deed_grantee_surname where those are
+    filled, else read from deed_grantor / deed_grantee with analysis.sales_scrutiny.same_surname.pattern."""
+    cfg = ss.get("same_surname", {}) or {}
+    pattern = cfg.get("pattern") or SURNAME_FIRST
+    skip = cfg.get("skip_words", SURNAME_SKIP_WORDS)
+    none = pd.Series(False, index=df.index), pd.Series(pd.NA, index=df.index, dtype=object)
+    if not any(c in df for c in ("deed_grantor", "deed_grantor_surname")) or not any(
+        c in df for c in ("deed_grantee", "deed_grantee_surname")
+    ):
+        warnings.warn("No buyer and seller names in the sales (deed_grantee, deed_grantor), so the same-surname check can't be run")
+        return none
+
+    def names(who: str) -> pd.Series:
+        given = df.get(f"deed_{who}_surname")
+        parsed = df[f"deed_{who}"].map(lambda n: surnames(n, pattern, skip)) if f"deed_{who}" in df else None
+        if given is None:
+            return parsed
+        mine = given.map(lambda n: surnames(n, r"(?P<surname>.+)", skip))
+        return mine.where(mine.map(len) > 0, parsed) if parsed is not None else mine
+
+    seller, buyer = names("grantor"), names("grantee")
+    shared = pd.Series([sorted(set(a or []) & set(b or [])) for a, b in zip(seller, buyer)], index=df.index)
+    idx = shared.map(len).gt(0)
+    return idx, shared.map(lambda x: ", ".join(x) if x else pd.NA)
+
+
+def _vacant_priced_improved(df: pd.DataFrame, ss: dict) -> tuple[pd.Series, pd.Series]:
+    """A vacant sale for at least `share` (default half) of the median improved sale in its model group and
+    location (analysis.sales_scrutiny.vacant_priced_improved.location, else sales scrutiny's location), compared
+    when there are at least `min_sales` (default 3) improved sales there."""
+    cfg = ss.get("vacant_priced_improved", {}) or {}
+    share = float(cfg.get("share", 0.5))
+    min_sales = int(cfg.get("min_sales", 3))
+    location = cfg.get("location", ss.get("location"))
+    if isinstance(location, list):
+        location = location[0] if location else None
+    price = "sale_price_time_adj" if "sale_price_time_adj" in df else "sale_price"
+    keys = [c for c in ("model_group", location) if c and c in df]
+    if location and location not in df:
+        warnings.warn(f"No `{location}` in the sales: vacant sales are compared with their whole model group")
+    p = pd.to_numeric(df[price], errors="coerce")
+    vacant = df["vacant_sale"].eq(1).fillna(False).astype(bool)
+    improved = ~vacant & p.gt(0)
+    group = df[keys].astype(str).agg("|".join, axis=1) if keys else pd.Series("", index=df.index)
+    medians = p[improved].groupby(group[improved]).median()
+    counts = p[improved].groupby(group[improved]).size()
+    median = group.map(medians)
+    enough = group.map(counts).fillna(0).ge(min_sales)
+    idx = vacant & enough & p.ge(share * median)
+    said = (p / median).map(lambda r: f"{r:.0%} of the median improved sale" if pd.notna(r) else pd.NA)
+    return idx.fillna(False).astype(bool), said
+
+
 def run_heuristics(
     sup: SalesUniversePair, settings: dict, drop: bool = True, verbose: bool = False
 ) -> SalesUniversePair:
@@ -756,6 +902,10 @@ def run_heuristics(
         if mask.any():
             df_sales.loc[mask, flag] = True
 
+    # The newer checks are off unless turned on: analysis.sales_scrutiny.heuristics.<name> = true
+    on |= {name: ss.get("heuristics", {}).get(name, False) is True for name in OPT_IN_HEURISTICS}
+    detail = pd.Series(pd.NA, index=df_sales.index, dtype=object)
+    
     # 1 -- Flag sales with identical deed IDs AND identical sale dates
     if not on["dupe_deed_date"]:
         pass
@@ -794,11 +944,38 @@ def run_heuristics(
         )
         df_sales.loc[idx_false_vacant, "flag_false_vacant"] = True
 
+    # 4 -- Flag improved sales whose building was built after the sale year: likely land when sold
+    if on["built_after_sale"] and "bldg_year_built" not in df_sales:
+        warnings.warn("No `bldg_year_built` in the sales, so the built-after-the-sale check can't be run")
+    elif on["built_after_sale"]:
+        idx = (
+            df_sales["vacant_sale"].ne(1)
+            & df_sales["bldg_year_built"].gt(0)
+            & df_sales["bldg_year_built"].gt(df_sales["sale_year"])
+        )
+        df_sales.loc[idx, "flag_built_after_sale"] = True
+        detail[idx] = "built " + df_sales.loc[idx, "bldg_year_built"].astype(int).astype(str)
+
+    # 5 -- Flag vacant sales priced like the improved sales around them: likely had a building
+    if on["vacant_priced_improved"]:
+        idx, said = _vacant_priced_improved(df_sales, ss)
+        df_sales.loc[idx, "flag_vacant_priced_improved"] = True
+        detail[idx] = said[idx]
+
+    # 6 -- Flag sales whose buyer and seller share a surname: possibly between family
+    if on["same_surname"]:
+        idx, said = _same_surname(df_sales, ss)
+        df_sales.loc[idx, "flag_same_surname"] = True
+        detail[idx] = said[idx]
+
     files = {
         "flag_dupe_deed_date": "duplicated_deeds_and_dates",
         "flag_dupe_date_price": "duplicated_dates_and_prices",
         "flag_false_vacant": "classified_vacant_but_bldg_older_than_sale_year",
         "flag_bulk_deed": "multi_parcel_bulk_deeds",
+        "flag_built_after_sale": "classified_improved_but_bldg_built_after_sale_year",
+        "flag_vacant_priced_improved": "classified_vacant_but_priced_like_improved",
+        "flag_same_surname": "buyer_and_seller_share_a_surname",
     }
 
     locations = get_locations(settings, df_sales)
@@ -869,6 +1046,9 @@ def run_heuristics(
                         "flag_dupe_date_price": "Repeated\nsale date & price",
                         "flag_false_vacant": "Bldg older\nthan sale year",
                         "flag_bulk_deed": "Multi-parcel\nbulk deed",
+                        "flag_built_after_sale": "Bldg built\nafter sale year",
+                        "flag_vacant_priced_improved": "Vacant, priced\nlike improved",
+                        "flag_same_surname": "Buyer & seller\nshare a surname",
                     }
                 )
 
@@ -927,6 +1107,8 @@ def run_heuristics(
                         "check": key.removeprefix("flag_"),
                         "vacant": df["vacant_sale"].eq(1).fillna(False).astype(bool),
                         "price": pd.to_numeric(df["sale_price"]).astype(float),
+                        "flag_only": False,
+                        "detail": detail[df.index].astype(object),
                     }
                 )
             )
@@ -1173,7 +1355,13 @@ def _apply_he_stats(df: pd.DataFrame, cluster_id: str, sales_field: str):
     return df
 
 
-def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_field: str):
+def _rate(dist: pd.Series) -> pd.Series:
+    """low below -2 standard deviations from the median, high above +2, else in (range)."""
+    d = _floats(dist)
+    return pd.Series(np.where(d.lt(-2.0), "low", np.where(d.gt(2.0), "high", "in")), index=dist.index, dtype=object)
+
+
+def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_field: str, strict: bool = False):
 
     # Limit search only to clusters with flagged sales
     df_flagged = df_in[df_in["flagged"].eq(True)]
@@ -1188,6 +1376,9 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
         for i in range(1, 6):
             field = f"anomaly_{i}"
             df[field] = False
+        df["anomaly_other"] = False
+        for c in _RATINGS + _SIDE:
+            df[c] = np.nan if c in _SIDE else None
         return df
 
     # land or bldg area? Check sales_field:
@@ -1304,6 +1495,37 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
         "anomaly_5",
     ] = True
 
+    # Each flagged sale's three readings, against its cluster: price, price per area, size.
+    by_key = lambda d, col: df["key_sale"].map(d.set_index("key_sale")[col])  # noqa: E731
+    ratings = pd.DataFrame(index=df.index)
+    ratings["price_rating"] = _rate(by_key(df_price_fl, "med_dist_stdevs"))
+    ratings["per_area_rating"] = _rate(by_key(df_fl, "med_dist_stdevs"))
+    ratings["size_rating"] = _rate(by_key(df_area_fl, "med_dist_stdevs"))
+    ratings["price_median"] = by_key(df_price_fl, "median")
+    ratings["price_dist"] = by_key(df_price_fl, "med_dist_stdevs")
+    ratings["size"] = by_key(df_area_fl, area)
+    ratings["size_median"] = by_key(df_area_fl, "median")
+    ratings["size_dist"] = by_key(df_area_fl, "med_dist_stdevs")
+    is_flagged = df["key_sale"].isin(df_fl["key_sale"].values)
+    for c in _RATINGS:
+        ratings.loc[~is_flagged, c] = None
+    df["anomaly_other"] = False
+    if strict:
+        price, per, size = (ratings[c] for c in _RATINGS)
+        size_off = size.isin(["low", "high"])
+        per_off = per.isin(["low", "high"])
+        strict_patterns = {
+            "anomaly_1": size_off & per_off,
+            "anomaly_2": ~size_off & price.eq("low") & per.eq("low"),
+            "anomaly_3": ~size_off & price.eq("high") & per.eq("high"),
+            "anomaly_4": ~size_off & price.eq("in") & per.eq("high"),
+            "anomaly_5": ~size_off & price.eq("in") & per.eq("low"),
+        }
+        for field, idx in strict_patterns.items():
+            df[field] = is_flagged & idx.fillna(False)
+        matched = pd.concat([df[f].eq(True) for f in _ANOMALIES], axis=1).any(axis=1)
+        df["anomaly_other"] = is_flagged & ~matched
+
     df_out = df_in.copy()
     df_out["anomalies"] = 0
     df_out["anomalies"] = df_out["anomalies"].astype("Int64")
@@ -1313,7 +1535,11 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
         df_out[field] = df[field]
         df_out["anomalies"] = df_out["anomalies"] + df[field].astype("Int64").fillna(0)
 
-    df_out.loc[df_out["anomalies"].le(0), "flagged"] = False
+    df_out["anomaly_other"] = df["anomaly_other"].reindex(df_out.index).eq(True)
+    for c in _RATINGS + _SIDE:
+        df_out[c] = ratings[c].reindex(df_out.index)
+    # Classic: a sale fitting none of the five patterns isn't flagged. Strict: it's "other", flagged only.
+    df_out.loc[df_out["anomalies"].le(0) & ~df_out["anomaly_other"], "flagged"] = False
 
     df_out.drop(columns=["anomalies"], inplace=True)
 

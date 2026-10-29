@@ -1242,7 +1242,8 @@ def _write_scrutiny_flags(settings: dict, drop_clusters: bool, drop_heuristics: 
     df["bimodal"] = df["bimodal"].astype("boolean")
     df["kept"] = df["key_sale"].isin(keep) & df["check"].ne("excluded")
     dropping = df["check"].map(lambda c: True if c == "excluded" else drop_clusters if c == "cluster" else drop_heuristics)
-    df["dropped"] = dropping.astype(bool) & ~df["kept"]
+    flag_only = df["flag_only"].astype("boolean").fillna(False).astype(bool)
+    df["dropped"] = dropping.astype(bool) & ~df["kept"] & ~flag_only
     df.to_parquet("out/sales_scrutiny/flags.parquet", index=False)
 
 
