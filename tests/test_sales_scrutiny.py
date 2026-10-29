@@ -106,3 +106,11 @@ def test_each_heuristic_can_be_turned_off(tmp_path, monkeypatch):
     }
     out = run_heuristics(_sales(), settings, drop=True)
     assert sorted(out.sales["key_sale"]) == ["s0", "s1", "s2", "s3"]
+
+
+def test_without_year_built_the_vacant_check_is_skipped(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    sup = _sales()
+    sup.universe = sup.universe.drop(columns="bldg_year_built")
+    out = run_heuristics(sup, {"locality": {"units": "imperial"}}, drop=True)
+    assert sorted(out.sales["key_sale"]) == ["s2", "s3"]  # the same-day, same-price pair still goes

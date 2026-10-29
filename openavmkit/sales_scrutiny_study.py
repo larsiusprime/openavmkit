@@ -784,7 +784,9 @@ def run_heuristics(
     #### Misclassified vacant sales detection heuristics
 
     # 3 -- Flag vacant sales with a building year built older than the sale year
-    if on["false_vacant"]:
+    if on["false_vacant"] and "bldg_year_built" not in df_sales:
+        warnings.warn("No `bldg_year_built` in the sales, so the sold-as-vacant-but-built-before check can't be run")
+    elif on["false_vacant"]:
         idx_false_vacant = (
             df_sales["vacant_sale"].eq(1)
             & df_sales["bldg_year_built"].gt(0)
