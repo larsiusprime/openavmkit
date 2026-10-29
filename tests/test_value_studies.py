@@ -100,3 +100,17 @@ def test_a_time_adjusted_price_can_be_studied():
 	)["assr_market_value"]
 	ma, mb = (x["overall"]["ratio"]["median_ratio"]["value"] for x in (a, b))
 	assert abs(mb - ma / 2) < 1e-9 and b["sale_field"] == "sale_price_time_adj"
+
+
+def test_trimming_takes_the_furthest_out_and_never_more_than_a_tenth():
+	from openavmkit.value_studies import _trimmed
+
+	def group(ratios):
+		return pd.DataFrame({"sale_price": [100.0] * len(ratios), "v": [100.0 * r for r in ratios]})
+
+	assert not _trimmed(group([1.0, 1.0, 5.0, 0.1]), "v", 1.5).any()  # under 10 sales: none
+	ratios = [1.0 + 0.01 * i for i in range(18)] + [9.0, 40.0]
+	t = _trimmed(group(ratios), "v", 1.5)
+	assert t.sum() == 2 and t[-1] and t[-2]
+	t = _trimmed(group(ratios[:-1] + [1.05] + [0.0001]), "v", 1.5)
+	assert t.sum() == 2  # 2 of 20: the cap

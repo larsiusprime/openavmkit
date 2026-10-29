@@ -30,7 +30,7 @@ from openavmkit.data import SalesUniversePair, get_hydrated_sales_from_sup
 from openavmkit.horizontal_equity_study import HorizontalEquityStudy
 from openavmkit.ratio_study import RatioStudyBootstrapped
 from openavmkit.utilities.settings import get_look_back_dates, get_model_group_ids
-from openavmkit.utilities.stats import ConfidenceStat, calc_median_confidence_interval, trim_outliers_mask
+from openavmkit.utilities.stats import ConfidenceStat, calc_median_confidence_interval
 from openavmkit.vertical_equity_study import VerticalEquityStudy, get_vertical_equity_scores
 
 OVERALL = "__overall__"
@@ -94,7 +94,8 @@ def run_value_field_studies(
         ``sale_price_time_adj``.
     trim_outliers : bool, optional
         Leave ratios outside ``iqr_factor`` × the interquartile range out of every statistic, per model group (at
-        most 10% of a group's sales), and list them under ``trimmed``; the overall study leaves out the groups'.
+        most 10% of a group's sales, the furthest out first; none in a group of fewer than 10), and list them under
+        ``trimmed``; the overall study leaves out the groups'.
         Default False: the untrimmed statistics, with the trimmed ones beside them (``*_trim``).
     iqr_factor : float, optional
         1.5 (outliers, the IAAO's usual) or 3.0 (extreme outliers only).
@@ -183,12 +184,21 @@ def _usable(df_sales: pd.DataFrame, field: str) -> pd.DataFrame:
     return df_sales[values.notna() & np.isfinite(values) & df_sales["sale_price"].gt(0)]
 
 
-def _trimmed(df: pd.DataFrame, field: str, iqr_factor: float) -> np.ndarray:
-    """Which sales' ratios are outside the IQR fences (at most 10% of them)."""
-    if len(df) < 4:
-        return np.zeros(len(df), dtype=bool)
+def _trimmed(df: pd.DataFrame, field: str, iqr_factor: float, max_share: float = 0.10) -> np.ndarray:
+    """Which sales' ratios are outside the IQR fences: at most ``max_share`` of the group, the furthest out first
+    (a group of fewer than 10 sales has none trimmed)."""
     ratios = (df[field] / df["sale_price"]).to_numpy(dtype=float)
-    return ~trim_outliers_mask(ratios, 0.10, iqr_factor)
+    out = np.zeros(len(ratios), dtype=bool)
+    cap = int(max_share * len(ratios))
+    if cap == 0:
+        return out
+    q1, q3 = np.quantile(ratios, [0.25, 0.75])
+    iqr = q3 - q1
+    low, high = q1 - iqr_factor * iqr, q3 + iqr_factor * iqr
+    beyond = np.where(ratios < low, (low - ratios), np.where(ratios > high, (ratios - high), 0.0)) / (iqr or 1.0)
+    candidates = np.flatnonzero(beyond > 0)
+    out[candidates[np.argsort(-beyond[candidates], kind="stable")][:cap]] = True
+    return out
 
 
 def _sale_table(df: pd.DataFrame, field: str) -> pd.DataFrame:
