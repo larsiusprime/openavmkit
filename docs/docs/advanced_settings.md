@@ -1555,6 +1555,16 @@ How many years before the valuation date to include sales from when running the 
 - **Source** — `get_look_back_dates` in [openavmkit/utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py)
 - **When to use** — your jurisdiction expects a multi-year ratio-study window, or you want to widen the sample for low-volume model groups.
 
+### Value-field studies: `run_value_field_studies`
+
+Ratio, vertical-equity and horizontal-equity studies on any value field (the assessor's market value, say), every model group and overall, with no modeling, written to `out/studies/<field>.json`. Arguments beyond the window and fields, all optional:
+
+- **`sale_field`** (`"sale_price"`) — the price values are compared with: as sold (the formal ratio study), or e.g. `sale_price_time_adj`.
+- **`trim_outliers`** (`False`), **`iqr_factor`** (`1.5`) — leave ratios outside the IQR fences out of *every* statistic, per model group (at most 10% of a group), and list them per group under `trimmed` (key, date, price, value, ratio); the overall study leaves out the groups' (`count_trimmed`). Each sale studied, its ratio and whether it was trimmed, goes to `out/studies/<field>.sales.parquet`. Without it, the untrimmed statistics with the trimmed ones beside them, as before.
+- **`median_ci`** (`"bootstrap"`) — `"iaao"`: the median's order-statistic interval of the Standard's Appendix D.2 (as the VEI uses, and openratiostudy.com).
+- **`standards`**, **`classes`** — judge each model group: `IAAO_STANDARDS` (level 0.90–1.10, PRD 0.98–1.03, PRB ±0.05, VEI within ±10%, at least 5 sales, COD ≤ 15 residential, 20 income, 25 vacant) or your own, and each group's class (`residential`, `income`, `vacant`, or none: not judged). Adds `verdict` per group: each statistic met (`true`), missed (`false`) or not judged (`null`). A VEI beyond ±10% is missed only when significant (`vei_verdict`: `compliant`, `inconclusive`, `regressive`, `progressive`, `insufficient`, read as openratiostudy.com reads it).
+- The vertical study now carries `vei_strata` (each percentile group's sales, median and interval).
+
 ### `analysis.ratio_study.sales_chasing`
 
 Optional thresholds for the **sales-chasing check** in the ratio study report (see [tutorial.md](tutorial.md)). The check probes whether the assessor's values look suspiciously tight on *sold* parcels relative to how uniformly they treat *similar* parcels — the signature of pushing assessed value toward sale price. It runs three signals: a ratio spike at 1.0, a COD-CHD divergence (mirrors the model utility scorer's `sales_chase_score`), and a pre- vs. post-valuation COD gap.

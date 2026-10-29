@@ -30,10 +30,21 @@ from openavmkit.data import SalesUniversePair, get_hydrated_sales_from_sup
 from openavmkit.horizontal_equity_study import HorizontalEquityStudy
 from openavmkit.ratio_study import RatioStudyBootstrapped
 from openavmkit.utilities.settings import get_look_back_dates, get_model_group_ids
-from openavmkit.utilities.stats import ConfidenceStat
+from openavmkit.utilities.stats import ConfidenceStat, calc_median_confidence_interval, trim_outliers_mask
 from openavmkit.vertical_equity_study import VerticalEquityStudy, get_vertical_equity_scores
 
 OVERALL = "__overall__"
+
+# The IAAO's targets (Standard on Ratio Studies, 2013; VEI from the May 2026 exposure draft): the level and price
+# bias ranges, the most a VEI may stray, the fewest sales judged, and the COD ceiling for each class of property.
+IAAO_STANDARDS = {
+    "level": [0.90, 1.10],
+    "prd": [0.98, 1.03],
+    "prb": [-0.05, 0.05],
+    "vei": 10.0,
+    "min_sales": 5,
+    "cod": {"residential": 15.0, "income": 20.0, "vacant": 25.0},
+}
 
 
 def run_value_field_studies(
@@ -47,6 +58,12 @@ def run_value_field_studies(
     confidence_interval: float = 0.90,
     max_trim: float = 0.05,
     outpath: Optional[str] = "out/studies",
+    sale_field: str = "sale_price",
+    trim_outliers: bool = False,
+    iqr_factor: float = 1.5,
+    median_ci: str = "bootstrap",
+    standards: Optional[dict] = None,
+    classes: Optional[dict] = None,
 ) -> dict:
     """Run ratio and equity studies on value fields for every model group.
 
@@ -70,7 +87,24 @@ def run_value_field_studies(
     max_trim : float, optional
         Maximum share of ratios trimmed for the trimmed statistics. Defaults to 0.05.
     outpath : str or None, optional
-        Folder to write ``<field>.json`` into. ``None`` writes nothing.
+        Folder to write ``<field>.json`` into (and, with ``trim_outliers``, ``<field>.sales.parquet``: each sale
+        studied, its ratio and whether it was trimmed). ``None`` writes nothing.
+    sale_field : str, optional
+        The price the values are compared with: ``sale_price`` (as sold, the formal ratio study) or e.g.
+        ``sale_price_time_adj``.
+    trim_outliers : bool, optional
+        Leave ratios outside ``iqr_factor`` × the interquartile range out of every statistic, per model group (at
+        most 10% of a group's sales), and list them under ``trimmed``; the overall study leaves out the groups'.
+        Default False: the untrimmed statistics, with the trimmed ones beside them (``*_trim``).
+    iqr_factor : float, optional
+        1.5 (outliers, the IAAO's usual) or 3.0 (extreme outliers only).
+    median_ci : str, optional
+        ``"bootstrap"`` (default) or ``"iaao"``: the order-statistic interval of the Standard's Appendix D.2, as
+        the VEI uses.
+    standards : dict, optional
+        Targets to judge each study against (``IAAO_STANDARDS``'s keys); adds ``verdict``.
+    classes : dict, optional
+        Model group -> class (``residential``, ``income``, ``vacant``, or None: not judged), for the COD target.
 
     Returns
     -------
@@ -82,6 +116,8 @@ def run_value_field_studies(
     start_date, end_date = pd.Timestamp(start_date), pd.Timestamp(end_date)
 
     df_sales = get_hydrated_sales_from_sup(sup)
+    if sale_field != "sale_price":
+        df_sales = df_sales.drop(columns=["sale_price"], errors="ignore").rename(columns={sale_field: "sale_price"})
     sale_dates = pd.to_datetime(df_sales["sale_date"], errors="coerce")
     df_sales = df_sales[sale_dates.ge(start_date) & sale_dates.le(end_date)]
     valid_field = "valid_for_ratio_study" if "valid_for_ratio_study" in df_sales else "valid_sale"
@@ -100,17 +136,33 @@ def run_value_field_studies(
         if field not in df_univ:
             raise ValueError(f"Value field '{field}' not found in the universe.")
         groups = {}
+        opts = dict(confidence_interval=confidence_interval, max_trim=max_trim, median_ci=median_ci)
+        usable = _usable(df_sales, field)
+        trimmed = pd.Series(False, index=usable.index)
+        if trim_outliers:
+            for mg in model_groups:
+                mine = usable["model_group"].eq(mg)
+                trimmed[mine] = _trimmed(usable[mine], field, iqr_factor)
         for mg in model_groups:
+            mine = usable["model_group"].eq(mg)
             groups[mg] = _study_one(
-                df_sales[df_sales["model_group"].eq(mg)],
-                df_univ[df_univ["model_group"].eq(mg)],
-                field, location, confidence_interval, max_trim,
+                usable[mine & ~trimmed], df_univ[df_univ["model_group"].eq(mg)], field, location, **opts
             )
-        overall = _study_one(df_sales, df_univ, field, location, confidence_interval, max_trim)
+            if trim_outliers:
+                groups[mg]["trimmed"] = _sale_rows(usable[mine & trimmed], field)
+        overall = _study_one(usable[~trimmed], df_univ, field, location, **opts)
+        if trim_outliers:
+            overall["count_trimmed"] = int(trimmed.sum())
+        if standards is not None:
+            for mg, g in groups.items():
+                g["verdict"] = _verdict(g, standards, (classes or {}).get(mg))
         results[field] = {
             "field": field,
             "window": {"start": start_date.date().isoformat(), "end": end_date.date().isoformat()},
+            "sale_field": sale_field,
             "confidence_interval": confidence_interval,
+            "median_ci": median_ci,
+            "trim_outliers": trim_outliers,
             "location": location,
             "groups": groups,
             "overall": overall,
@@ -119,13 +171,82 @@ def run_value_field_studies(
             os.makedirs(outpath, exist_ok=True)
             with open(os.path.join(outpath, f"{field}.json"), "w") as f:
                 json.dump(results[field], f, indent=2, default=_json_default)
+            if trim_outliers:
+                table = _sale_table(usable, field)
+                table["trimmed"] = trimmed.to_numpy()
+                table.to_parquet(os.path.join(outpath, f"{field}.sales.parquet"), index=False)
     return results
 
 
-def _study_one(df_sales, df_univ, field, location, confidence_interval, max_trim) -> dict:
-    usable = df_sales[
-        df_sales[field].notna() & np.isfinite(df_sales[field]) & df_sales["sale_price"].gt(0)
-    ]
+def _usable(df_sales: pd.DataFrame, field: str) -> pd.DataFrame:
+    values = pd.to_numeric(df_sales[field], errors="coerce")
+    return df_sales[values.notna() & np.isfinite(values) & df_sales["sale_price"].gt(0)]
+
+
+def _trimmed(df: pd.DataFrame, field: str, iqr_factor: float) -> np.ndarray:
+    """Which sales' ratios are outside the IQR fences (at most 10% of them)."""
+    if len(df) < 4:
+        return np.zeros(len(df), dtype=bool)
+    ratios = (df[field] / df["sale_price"]).to_numpy(dtype=float)
+    return ~trim_outliers_mask(ratios, 0.10, iqr_factor)
+
+
+def _sale_table(df: pd.DataFrame, field: str) -> pd.DataFrame:
+    cols = [c for c in ("key_sale", "key", "model_group", "sale_date") if c in df]
+    out = df[cols].copy()
+    out["sale_price"] = df["sale_price"].astype(float)
+    out["value"] = df[field].astype(float)
+    out["ratio"] = out["value"] / out["sale_price"]
+    return out.reset_index(drop=True)
+
+
+def _sale_rows(df: pd.DataFrame, field: str) -> list[dict]:
+    t = _sale_table(df, field)
+    if "sale_date" in t:
+        t["sale_date"] = pd.to_datetime(t["sale_date"], errors="coerce").dt.date.astype(str)
+    return json.loads(t.sort_values("ratio").to_json(orient="records"))
+
+
+def _verdict(g: dict, standards: dict, cls: Optional[str]) -> dict:
+    """Each statistic against its target: True met, False missed, None not judged (too few sales, no class, or no
+    statistic). The VEI is missed only when it's significant (its groups' intervals apart, and over the limit)."""
+    n = g["ratio"]["count"]
+    cod_max = (standards.get("cod") or {}).get(cls) if cls else None
+    judged = cls is not None and n >= standards.get("min_sales", 5)
+
+    def within(value, bounds):
+        if not judged or value is None or bounds is None:
+            return None
+        return bool(bounds[0] <= value <= bounds[1])
+
+    v = g.get("vertical") or {}
+    vei = v.get("vei_verdict")
+    return {
+        "judged": judged,
+        "class": cls,
+        "level": within(g["ratio"]["median_ratio"]["value"], standards.get("level")),
+        "cod": None if not judged or cod_max is None or g["ratio"]["cod"]["value"] is None
+        else bool(g["ratio"]["cod"]["value"] <= cod_max),
+        "cod_target": cod_max,
+        "prd": within((v.get("prd") or {}).get("value"), standards.get("prd")),
+        "prb": within((v.get("prb") or {}).get("value"), standards.get("prb")),
+        "vei": None if not judged or vei in (None, "insufficient") else vei in ("compliant", "inconclusive"),
+    }
+
+
+def _vei_verdict(vei: Optional[float], significance: Optional[float], limit: float = 10.0) -> str:
+    """The VEI's reading: compliant within the limit; beyond it, regressive or progressive only when significant
+    (as openratiostudy reads it), else inconclusive."""
+    if vei is None:
+        return "insufficient"
+    if abs(vei) <= limit:
+        return "compliant"
+    if significance is not None and significance > limit:
+        return "progressive" if vei > 0 else "regressive"
+    return "inconclusive"
+
+
+def _study_one(usable, df_univ, field, location, confidence_interval, max_trim, median_ci="bootstrap") -> dict:
     out = {"count_sales": int(len(usable)), "count_parcels": int(len(df_univ))}
 
     rs = RatioStudyBootstrapped(
@@ -134,7 +255,7 @@ def _study_one(df_sales, df_univ, field, location, confidence_interval, max_trim
     out["ratio"] = {
         "count": int(rs.count),
         "count_trim": int(rs.count_trim),
-        "median_ratio": _stat(rs.median_ratio),
+        "median_ratio": _median(rs.median_ratio, usable, field, confidence_interval, median_ci),
         "cod": _stat(rs.cod),
         "prd": _stat(rs.prd),
         "median_ratio_trim": _stat(rs.median_ratio_trim),
@@ -146,11 +267,17 @@ def _study_one(df_sales, df_univ, field, location, confidence_interval, max_trim
     if len(usable) >= 3 and usable["sale_price"].nunique() > 1:
         ves = VerticalEquityStudy(usable, "sale_price", field, location, confidence_interval)
         vei = get_vertical_equity_scores(usable, "sale_price", field)
+        gs = vei.get("group_stats")
         out["vertical"] = {
             "prd": _stat(ves.prd),
             "prb": _stat(ves.prb),
             "vei": _num(vei["vei"]),
             "vei_significance": _num(vei["vei_significance"]),
+            "vei_verdict": _vei_verdict(_num(vei["vei"]), _num(vei["vei_significance"])),
+            "vei_strata": [] if gs is None else [
+                {"n": int(r["n"]), "median": _num(r["ratio"]), "low": _num(r["lower"]), "high": _num(r["upper"])}
+                for _, r in gs.iterrows()
+            ],
         }
 
     out["horizontal"] = None
@@ -163,6 +290,15 @@ def _study_one(df_sales, df_univ, field, location, confidence_interval, max_trim
             "min_chd": _num(he.min_chd),
             "max_chd": _num(he.max_chd),
         }
+    return out
+
+
+def _median(stat: ConfidenceStat, usable, field, confidence_interval, median_ci) -> dict:
+    out = _stat(stat)
+    if median_ci == "iaao" and len(usable):
+        ratios = (usable[field] / usable["sale_price"]).to_numpy(dtype=float)
+        low, high = calc_median_confidence_interval(ratios, confidence_interval)
+        out = {"value": _num(np.median(ratios)), "low": _num(low), "high": _num(high)}
     return out
 
 
