@@ -51,7 +51,7 @@ def run_stage(
     *,
     verbose: bool = False,
     run_vacant: bool = True,
-    drop_scrutiny_outliers: bool = True,
+    drop_scrutiny_outliers: Optional[bool] = None,
     do_shaps: bool = False,
     use_saved_params: bool = True,
 ) -> None:
@@ -75,7 +75,8 @@ def run_stage(
         matching 03-model.
     drop_scrutiny_outliers : bool, optional
         Whether sales scrutiny drops flagged sales (cluster and heuristic outliers).
-        Defaults to True, matching 02-clean.
+        Defaults to ``analysis.sales_scrutiny.drop`` (``clusters``, ``heuristics``), each
+        True when not set, matching 02-clean.
     do_shaps : bool, optional
         Whether ``try_models`` computes SHAP values. Defaults to False.
     use_saved_params : bool, optional
@@ -118,7 +119,7 @@ def _assemble(verbose: bool) -> None:
     progress.report("done", 1.0, f"{len(sup.universe):,} parcels, {len(sup.sales):,} sales")
 
 
-def _clean(verbose: bool, drop_scrutiny_outliers: bool) -> None:
+def _clean(verbose: bool, drop_scrutiny_outliers: Optional[bool]) -> None:
     from openavmkit import pipeline as p
 
     p.delete_checkpoints("2-clean")
@@ -133,11 +134,17 @@ def _clean(verbose: bool, drop_scrutiny_outliers: bool) -> None:
     progress.report("process_sales", 0.45, "Checking sale validity and time trends")
     sup = p.process_sales(sup=sup, settings=p.load_settings(), verbose=verbose)
     progress.report("sales_scrutiny", 0.55, "Scrutinizing sales")
+    from openavmkit.utilities.settings import get_sales_scrutiny_drops
+
+    settings = p.load_settings()
+    drop_clusters, drop_heuristics = get_sales_scrutiny_drops(settings, clusters=True, heuristics=True)
+    if drop_scrutiny_outliers is not None:
+        drop_clusters = drop_heuristics = drop_scrutiny_outliers
     sup = p.run_sales_scrutiny(
         sup=sup,
-        settings=p.load_settings(),
-        drop_cluster_outliers=drop_scrutiny_outliers,
-        drop_heuristic_outliers=drop_scrutiny_outliers,
+        settings=settings,
+        drop_cluster_outliers=drop_clusters,
+        drop_heuristic_outliers=drop_heuristics,
         verbose=verbose,
     )
     progress.report("collapse_sparse_categories", 0.9, "Tidying rare categories")

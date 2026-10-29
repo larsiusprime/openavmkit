@@ -15,6 +15,7 @@ modeling-ready dataset. Responsibilities include:
 
 Public entry points are surfaced through :mod:`openavmkit.pipeline`.
 """
+import os
 from warnings import warn
 
 import numpy as np
@@ -414,6 +415,34 @@ def _apply_collapse_mapping(
     return df
 
 
+def write_filled(df: pd.DataFrame, blank: dict[str, pd.Series], path: str = "out/filled.parquet") -> pd.DataFrame:
+    """Record which values were filled, not found in the data: ``key``, then one column per field
+    that had any filled, True where that parcel's value was blank before filling.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The universe after filling.
+    blank : dict[str, pd.Series]
+        Per field, where it was blank before filling.
+    path : str, optional
+        Where to write it. Default ``out/filled.parquet``.
+
+    Returns
+    -------
+    pd.DataFrame
+        What was written.
+    """
+    filled = {c: was & df[c].notna() for c, was in blank.items() if c in df}
+    out = pd.DataFrame({"key": df["key"].astype(str)})
+    for c, idx in filled.items():
+        if idx.any():
+            out[c] = idx.astype(bool).values
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    out.to_parquet(path, index=False)
+    return out
+
+
 def fill_unknown_values_sup(
     sup: SalesUniversePair, settings: dict
 ) -> SalesUniversePair:
@@ -435,7 +464,9 @@ def fill_unknown_values_sup(
     df_univ = sup["universe"].copy()
 
     # Fill ALL unknown values for the universe
+    blank = {c: df_univ[c].isna() for c in df_univ.columns if c != "geometry" and df_univ[c].hasnans}
     df_univ = _fill_unknown_values_per_model_group(df_univ, settings)
+    write_filled(df_univ, blank)
 
     # For sales, fill ONLY the unknown values that pertain to sales metadata
     # df_sales can contain characteristics, but we want to preserve the blanks in those fields because they function

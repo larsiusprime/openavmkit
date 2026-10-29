@@ -1447,6 +1447,19 @@ Run a dedicated variable-importance experiment over a custom set of candidate va
 
 ## 7. Analysis & QA
 
+### `analysis.sales_scrutiny` — drops, keeps, passes and the flags file
+
+Sales scrutiny (`run_sales_scrutiny`, notebook 2) flags sales by heuristic (same deed and date, same date and price, sold vacant but the building is older than the sale) and as outliers among clusters of similar sales.
+
+- **`drop.clusters`**, **`drop.heuristics`** — whether the flagged sales are dropped. Explicit `drop_cluster_outliers` / `drop_heuristic_outliers` arguments win; without either, `run_sales_scrutiny` defaults to `false` / `true` and `headless.run_stage("clean")` to `true` / `true`.
+- **`keep_file`** — a CSV with a `key_sale` column: sales you've looked at and kept. They are still flagged, but never dropped by scrutiny. (`invalid_key_file` is the opposite: sales always dropped.)
+- **`passes`** (default `1`) — with `2` or more, each cluster that had a sale flagged is compared again without it. One far-off sale stretches its cluster's spread, which can hide another (a sale at 1% of the median with a sale at 10× the median in the same cluster of eight). Later passes use the ratio thresholds only (4× the median or more; 0.35× or less and more than one deviation below), because a small cluster without its outlier has a narrow spread and 2 deviations would set aside ordinary sales.
+- **`fields_categorical`**, **`fields_numeric`**, **`location`** — what makes sales "similar" (see `make_clusters`). (The template's former `fields_categorical_improved` key was never read.)
+
+**The flags file**, `out/sales_scrutiny/flags.parquet`: every sale a check flagged, one row per sale and check, whether it was dropped or not — `key_sale`, `key`, `model_group`, `check` (`dupe_deed_date`, `dupe_date_price`, `false_vacant`, `excluded` for `invalid_key_file`, or `cluster`), and for cluster flags `vacant`, `ss_id`, `count` (sales it was compared with), `price`, `price_per_area`, `area`, `median`, `stdev`, `relative_ratio`, `med_dist_stdevs`, `rules` (the thresholds crossed: `below_2sd`, `above_2sd`, `4x_median`, `0.35x_median`), `pattern` (which of the five anomalies, e.g. `"2"`), `scrutiny_pass`, `bimodal`; then `kept` and `dropped`. Each part also writes its own (`out/sales_scrutiny/<model_group>/flags.parquet`, `heuristics/`, `excluded/`).
+
+- **Source** — `run_sales_scrutiny` in [openavmkit/pipeline.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/pipeline.py), [openavmkit/sales_scrutiny_study.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/sales_scrutiny_study.py)
+
 ### `analysis.outliers.skip`
 
 List of model groups to exclude from outlier analysis entirely.

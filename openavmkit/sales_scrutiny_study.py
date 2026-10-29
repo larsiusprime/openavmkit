@@ -156,7 +156,10 @@ class SalesScrutinyStudy:
             other_fields = [f for f in other_fields if f in df.columns]
 
             df_cluster_fields = df[["key", "key_sale"] + other_fields]
-            df = _calc_sales_scrutiny(df, sale_field_per)
+            passes = settings.get("analysis", {}).get("sales_scrutiny", {}).get("passes", 1)
+            df = _calc_sales_scrutiny(df, sale_field_per, passes=passes)
+            df["vacant"] = key == "v"
+            df["area"] = per_area
             df = df.merge(df_cluster_fields, on="key_sale", how="left")
 
             total_anomalies = 0
@@ -191,6 +194,23 @@ class SalesScrutinyStudy:
         """
         self._write(path, True)
         self._write(path, False)
+        os.makedirs(path, exist_ok=True)
+        self.flags().to_parquet(f"{path}/flags.parquet", index=False)
+
+    def flags(self) -> pd.DataFrame:
+        """Every sale this study flagged, one row each, with the numbers behind the flag.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: ``key_sale``, ``key``, ``model_group``, ``check`` (``"cluster"``),
+            ``vacant``, ``ss_id``, ``count`` (sales in the cluster it was compared with),
+            ``price``, ``price_per_area``, ``area`` (what the price is per, e.g. ``"impr_sqft"``),
+            ``median``, ``stdev``, ``relative_ratio``, ``med_dist_stdevs``, ``rules`` (which
+            thresholds it crossed), ``pattern`` (which of the five anomalies, e.g. ``"2"``),
+            ``scrutiny_pass`` and ``bimodal``.
+        """
+        return _flag_rows([self.df_improved, self.df_vacant], self.model_group)
 
     def get_scrutinized(self, df_in: pd.DataFrame, verbose: bool = False):
         """Remove flagged sales from the dataset and return the modified dataset
@@ -222,8 +242,14 @@ class SalesScrutinyStudy:
             if verbose:
                 print(f"--> Flagged {len(improved_flags)} improved sales")
 
-        # ensure unique:
+        # ensure unique, and leave the sales the user has kept:
         keys_flagged = list(dict.fromkeys(keys_flagged))
+        keep = read_keep_keys(self.settings)
+        if keep:
+            kept = [k for k in keys_flagged if k in keep]
+            keys_flagged = [k for k in keys_flagged if k not in keep]
+            if verbose and kept:
+                print(f"--> Kept {len(kept)} flagged sales listed in the keep file")
 
         if len(df) > 0:
 
@@ -353,78 +379,160 @@ class SalesScrutinyStudy:
         finish_report(report, outpath, "sales_scrutiny", self.settings)
 
 
-def _calc_sales_scrutiny(df_in: pd.DataFrame, sales_field: str):
-    df = df_in.copy()
+FLAG_COLUMNS = [
+    "key_sale", "key", "model_group", "check", "vacant", "ss_id", "count", "price", "price_per_area", "area",
+    "median", "stdev", "relative_ratio", "med_dist_stdevs", "rules", "pattern", "scrutiny_pass", "bimodal",
+]
+# The fewest sales a cluster is compared on in a later pass (as make_clusters' min_cluster_size).
+_MIN_PASS_SALES = 5
+_ANOMALIES = [f"anomaly_{i}" for i in range(1, 6)]
+_PASS_COLS = ["count", "median", "chd", "max", "min", "stdev", "relative_ratio", "med_dist_stdevs", "flagged", "rules"] + _ANOMALIES
 
-    df = _apply_he_stats(df, "ss_id", sales_field)
-    
+
+def _floats(s: pd.Series) -> pd.Series:
+    values = pd.to_numeric(s, errors="coerce").astype("Float64").to_numpy(dtype=float, na_value=np.nan)
+    return pd.Series(values, index=s.index)
+
+
+def _threshold_flags(
+    df: pd.DataFrame, sales_field: str, ratios_only: bool = False
+) -> tuple[pd.Series, pd.Series]:
+    """Which sales cross a threshold, and which: more than 2 standard deviations below or above
+    the median, 4x the median or more, 0.35x the median or less and more than one deviation
+    below. A sale is flagged when it also shows one of the five anomalies. ratios_only: only the
+    two ratio thresholds (later passes, where a cluster is smaller and its spread narrower)."""
+    x, median, stdev, ratio, dist = (
+        _floats(df[c]) for c in (sales_field, "median", "stdev", "relative_ratio", "med_dist_stdevs")
+    )
+    has = median.notna() & stdev.notna()
+    checks = {
+        "below_2sd": has & x.lt(median - 2 * stdev),
+        "above_2sd": has & x.gt(median + 2 * stdev),
+        "4x_median": ratio.ge(4.0),
+        "0.35x_median": ratio.le(0.35) & dist.lt(-1.0),
+    }
+    if ratios_only:
+        checks = {k: v for k, v in checks.items() if k.endswith("_median")}
+    rules = pd.Series("", index=df.index, dtype=object)
+    flagged = pd.Series(False, index=df.index)
+    for name, idx in checks.items():
+        idx = idx.fillna(False).astype(bool)
+        flagged |= idx
+        rules[idx] = rules[idx].where(rules[idx].eq(""), rules[idx] + ",") + name
+    return flagged, rules
+
+
+def _scrutinize(df_in: pd.DataFrame, sales_field: str, ratios_only: bool = False) -> pd.DataFrame:
+    df = _apply_he_stats(df_in, "ss_id", sales_field)
+    if "median" not in df:
+        return df
+    df["flagged"], df["rules"] = _threshold_flags(df, sales_field, ratios_only)
+    return _check_for_anomalies(df, df_in, sales_field)
+
+
+def _calc_sales_scrutiny(df_in: pd.DataFrame, sales_field: str, passes: int = 1):
+    df = _scrutinize(df_in, sales_field)
+
     if "median" not in df:
         # If the median is not present, then we can't do anything
         # This is usually because there's nothing to analyze
         return df
 
     base_sales_field = _get_base_sales_field(sales_field)
+    df["scrutiny_pass"] = pd.Series(pd.NA, index=df.index, dtype="Int64")
+    df.loc[df["flagged"].eq(True), "scrutiny_pass"] = 1
 
-    # Calculate standard deviation thresholds:
-    df["low_thresh"] = -float("inf")
-    df["high_thresh"] = float("inf")
-    df["low_thresh"] = df["low_thresh"].astype("Float64")
-    df["high_thresh"] = df["high_thresh"].astype("Float64")
+    # Later passes: one far-off sale stretches its cluster's spread, which can hide another.
+    # Compare the rest of each cluster that had a sale flagged again, without the flagged ones,
+    # on the ratio thresholds only: without its outlier a small cluster's spread is narrow, and
+    # 2 deviations would set aside ordinary sales.
+    for n in range(2, int(passes) + 1):
+        out = df.loc[df["flagged"].eq(True), "key_sale"]
+        changed = df.loc[df["scrutiny_pass"].eq(n - 1), "ss_id"].unique()
+        rest = df_in[~df_in["key_sale"].isin(out) & df_in["ss_id"].isin(changed)]
+        rest = rest[rest.groupby("ss_id")["ss_id"].transform("size").ge(_MIN_PASS_SALES)]
+        if len(rest) == 0:
+            break
+        again = _scrutinize(rest, sales_field, ratios_only=True)
+        if "median" not in again:
+            break
+        new = again[again["flagged"].eq(True)].set_index("key_sale")
+        if len(new) == 0:
+            break
+        idx = df["key_sale"].isin(new.index)
+        for col in _PASS_COLS:
+            df[col] = df[col].astype(object)
+            df.loc[idx, col] = df.loc[idx, "key_sale"].map(new[col]).values
+        df.loc[idx, "scrutiny_pass"] = n
 
-    # Flag anything above or below 2 standard deviations from the median
-    df.loc[~df["median"].isna() & ~df["stdev"].isna(), "low_thresh"] = df["median"] - (
-        2 * df["stdev"]
-    )
-    df.loc[~df["median"].isna() & ~df["stdev"].isna(), "high_thresh"] = df["median"] + (
-        2 * df["stdev"]
-    )
-
-    idx_low = df[sales_field].lt(df["low_thresh"])
-    idx_high = df[sales_field].gt(df["high_thresh"])
-
-    df["flagged"] = False
-    df.loc[idx_low | idx_high, "flagged"] = True
-
-    # Additionally, flag anything with a relative ratio >= 4.0
-    df.loc[df["relative_ratio"].ge(4.0), "flagged"] = True
-
-    # Additionally, flag anything with a relative ratio <= .35 AND a stdev distance of < -1.0
-    df.loc[
-        df["relative_ratio"].le(0.35) & df["med_dist_stdevs"].lt(-1.0), "flagged"
-    ] = True
-
-    # Check for the five anomalies:
-    df = _check_for_anomalies(df, df_in, sales_field)
+    for col in ["count", "median", "chd", "max", "min", "stdev", "relative_ratio", "med_dist_stdevs"]:
+        df[col] = pd.to_numeric(df[col])
+    df["flagged"] = df["flagged"].eq(True)
 
     df["bimodal"] = False
     bimodal_clusters = _identify_bimodal_clusters(df, sales_field)
     df.loc[df["ss_id"].isin(bimodal_clusters), "bimodal"] = True
 
-    # drop low_thresh/high_thresh:
-    df = df.drop(columns=["low_thresh", "high_thresh"])
-    
     the_cols = [
         "key_sale",
         "ss_id",
         "count",
         sales_field,
         base_sales_field,
+        "median",
         "chd",
         "stdev",
         "relative_ratio",
         "med_dist_stdevs",
         "flagged",
+        "rules",
+        "scrutiny_pass",
         "bimodal",
-        "anomaly_1",
-        "anomaly_2",
-        "anomaly_3",
-        "anomaly_4",
-        "anomaly_5",
-    ]
+    ] + _ANOMALIES
 
     df = df[the_cols]
 
     return df
+
+
+def _flag_rows(dfs: list[pd.DataFrame], model_group: str) -> pd.DataFrame:
+    rows = []
+    for df in dfs:
+        if "flagged" not in df or len(df) == 0:
+            continue
+        f = df[df["flagged"].eq(True)].copy()
+        if len(f) == 0:
+            continue
+        area = str(f["area"].iloc[0])
+        per = next(c for c in f.columns if c.endswith(f"_{area}") and c.startswith("sale_price"))
+        out = pd.DataFrame(
+            {
+                "key_sale": f["key_sale"].astype(str),
+                "key": f["key"].astype(str) if "key" in f else pd.NA,
+                "model_group": str(model_group),
+                "check": "cluster",
+                "vacant": f["vacant"].astype(bool),
+                "ss_id": f["ss_id"].astype(str),
+                "count": pd.to_numeric(f["count"]).astype("Int64"),
+                "price": pd.to_numeric(f[_get_base_sales_field(per)]).astype(float),
+                "price_per_area": pd.to_numeric(f[per]).astype(float),
+                "area": area,
+                "median": pd.to_numeric(f["median"]).astype(float),
+                "stdev": pd.to_numeric(f["stdev"]).astype(float),
+                "relative_ratio": pd.to_numeric(f["relative_ratio"]).astype(float),
+                "med_dist_stdevs": pd.to_numeric(f["med_dist_stdevs"]).astype(float),
+                "rules": f["rules"].astype(str),
+                "pattern": f[_ANOMALIES].fillna(False).astype(bool).apply(
+                    lambda r: ",".join(str(i + 1) for i, v in enumerate(r) if v), axis=1
+                ),
+                "scrutiny_pass": pd.to_numeric(f["scrutiny_pass"]).astype("Int64"),
+                "bimodal": f["bimodal"].astype(bool),
+            }
+        )
+        rows.append(out)
+    if not rows:
+        return pd.DataFrame(columns=FLAG_COLUMNS)
+    return pd.concat(rows, ignore_index=True)
 
 
 def _mark_sales_scrutiny_clusters(
@@ -518,6 +626,39 @@ def _run_land_percentiles(sup: SalesUniversePair, settings: dict):
     do_per_model_group(df_sales, settings, _do_run_land_percentiles, {}, key="key_sale")
 
 
+def _read_key_file(path: str | None, what: str) -> list[str]:
+    if path is None:
+        return []
+    if not os.path.exists(path):
+        warnings.warn(f"--> {what} file {path} does not exist, skipping it")
+        return []
+    return pd.read_csv(path, dtype={"key_sale": str})["key_sale"].dropna().tolist()
+
+
+def read_keep_keys(settings: dict) -> set[str]:
+    """The sales the user has looked at and kept: sales scrutiny flags them but never drops them.
+
+    Read from the CSV named in ``analysis.sales_scrutiny.keep_file`` (a ``key_sale`` column).
+
+    Parameters
+    ----------
+    settings : dict
+        Settings dictionary
+
+    Returns
+    -------
+    set[str]
+        The kept sales' ``key_sale`` values; empty without a keep file.
+    """
+    path = settings.get("analysis", {}).get("sales_scrutiny", {}).get("keep_file", None)
+    return set(_read_key_file(path, "Keep"))
+
+
+def _write_flags(df: pd.DataFrame, name: str) -> None:
+    os.makedirs(f"out/sales_scrutiny/{name}", exist_ok=True)
+    df.to_parquet(f"out/sales_scrutiny/{name}/flags.parquet", index=False)
+
+
 def drop_manual_exclusions(
     sup: SalesUniversePair, settings: dict, verbose: bool = False
 ) -> SalesUniversePair:
@@ -543,16 +684,20 @@ def drop_manual_exclusions(
         .get("invalid_key_file", None)
     )
     if invalid_key_file is not None:
-        if os.path.exists(invalid_key_file):
-            df_invalid_keys = pd.read_csv(invalid_key_file, dtype={"key_sale": str})
-            bad_keys = df_invalid_keys["key_sale"].tolist()
-        else:
-            warnings.warn(
-                f"--> Invalid key file {invalid_key_file} does not exist, skipping manual exclusions"
-            )
-            bad_keys = []
+        bad_keys = _read_key_file(invalid_key_file, "Invalid key")
         df_sales = sup.sales.copy()
         len_before = len(df_sales)
+        excluded = df_sales[df_sales["key_sale"].isin(bad_keys)]
+        _write_flags(
+            pd.DataFrame(
+                {
+                    "key_sale": excluded["key_sale"].astype(str),
+                    "key": excluded["key"].astype(str),
+                    "check": "excluded",
+                }
+            ),
+            "excluded",
+        )
         df_sales = df_sales[~df_sales["key_sale"].isin(bad_keys)]
         len_after = len(df_sales)
         num_dropped = len_before - len_after
@@ -758,6 +903,33 @@ def run_heuristics(
                     {"columns": {"formats": columns, "conditions": column_conditions}},
                 )
 
+    flag_rows = []
+    for key in files:
+        if key in df_sales.columns:
+            df = df_sales[df_sales[key].eq(True)]
+            flag_rows.append(
+                pd.DataFrame(
+                    {
+                        "key_sale": df["key_sale"].astype(str),
+                        "key": df["key"].astype(str),
+                        "model_group": df["model_group"].astype(str) if "model_group" in df else pd.NA,
+                        "check": key.removeprefix("flag_"),
+                        "vacant": df["vacant_sale"].eq(1).fillna(False).astype(bool),
+                        "price": pd.to_numeric(df["sale_price"]).astype(float),
+                    }
+                )
+            )
+    _write_flags(
+        pd.concat(flag_rows, ignore_index=True) if flag_rows else pd.DataFrame(columns=["key_sale", "key", "check"]),
+        "heuristics",
+    )
+
+    keep = read_keep_keys(settings)
+    kept = [k for k in bad_keys if k in keep]
+    bad_keys = [k for k in bad_keys if k not in keep]
+    if kept:
+        print(f"Kept {len(kept)} sales identified by heuristic that are listed in the keep file")
+
     if drop:
         print(f"Dropped {len(bad_keys)} invalid sales keys identified by heuristic")
         df_sales = sup.sales.copy()
@@ -909,6 +1081,8 @@ def _get_ss_renames():
         "relative_ratio": "Relative ratio",
         "med_dist_stdevs": "Median distance from median, in std. deviations",
         "flagged": "Flagged",
+        "rules": "Thresholds crossed",
+        "scrutiny_pass": "Found in pass",
         "bimodal": "Bimodal cluster",
         "anomaly_1": "Weird price/area & weird area",
         "anomaly_2": "Low price & low price/area",
@@ -998,7 +1172,8 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
     df = df[df["ss_id"].isin(flagged_clusters)]
 
     if len(df) == 0:
-        df["anomalies"] = 0
+        # Nothing flagged: every sale stays, with no anomalies.
+        df = df_in.copy()
         for i in range(1, 6):
             field = f"anomaly_{i}"
             df[field] = False

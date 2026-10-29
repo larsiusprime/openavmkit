@@ -27,6 +27,7 @@ from collections import defaultdict
 from scipy.spatial._ckdtree import cKDTree
 
 from openavmkit.utilities.settings import get_model_group_ids, area_unit
+from openavmkit import progress
 
 
 def is_column_of_type(df: pd.DataFrame, col: str, type_name: str) -> bool:
@@ -362,7 +363,7 @@ def do_per_model_group(
     if not model_group_values:
         raise ValueError(f"Column '{model_group}' has no values defined. Please define at least one model group in settings.modeling.model_groups.  Re-tag model groups before returning here.")
     
-    for model_group in model_groups:
+    for i, model_group in enumerate(model_groups):
         if pd.isna(model_group):
             continue
         if skip is not None and model_group in skip:
@@ -372,6 +373,7 @@ def do_per_model_group(
 
         if verbose:
             print(f"Processing model group: {model_group}")
+        progress.detail(f"{model_group} ({i + 1} of {len(model_groups)})", sub=i / len(model_groups))
 
         # Copy params locally to avoid side effects.
         params_local = params.copy()

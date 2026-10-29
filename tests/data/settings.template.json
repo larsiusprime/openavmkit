@@ -57,7 +57,7 @@
 		},
 		"sales_scrutiny": {
 			"location": "neighborhood",
-			"fields_categorical_improved": [],
+			"fields_categorical": [],
 			"fields_numeric": []
 		},
 		"horizontal_equity": {
