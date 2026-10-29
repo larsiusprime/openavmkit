@@ -39,11 +39,12 @@ def test_months_years_and_openavmkits_own_schedule_are_read(tmp_path):
 def test_every_problem_in_a_file_is_said(tmp_path):
     df, problems = read_schedule(_write(tmp_path, "date,price\n2022-01,1\n"))
     assert df is None and len(problems) == 2  # no period, no index
-    text = "period,index\n2022-Q1,100\nlast spring,101\n2022-Q1,-3\n2022-Q3,abc\n"
+    text = "period,index\n2022-Q1,100\nlast spring,101\n2022-Q1,-3\n2022-Q3,abc\n2022-Q4,n/a\n2023-Q1,\n"
     df, problems = read_schedule(_write(tmp_path, text))
     assert df is None
     joined = " ".join(problems)
     assert "last spring" in joined and "-3" in joined and "abc" in joined and "more than once" in joined
+    assert "n/a" in joined and "(blank)" in joined
 
 
 def test_held_flat_outside_its_dates():

@@ -245,7 +245,8 @@ def read_schedule(path: str) -> tuple[pd.DataFrame | None, list[str]]:
         prices brought to the last period), or None; and every problem found, in words.
     """
     try:
-        df = pd.read_csv(path, encoding="utf-8-sig")
+        # As written: problems are quoted as the file has them ("n/a", not NaN).
+        df = pd.read_csv(path, encoding="utf-8-sig", dtype=str, keep_default_na=False)
     except Exception as e:
         return None, [f"It couldn't be read as a CSV file: {e}"]
     df.columns = [str(c).strip().lower() for c in df.columns]
@@ -265,7 +266,7 @@ def read_schedule(path: str) -> tuple[pd.DataFrame | None, list[str]]:
             f"{len(bad_dates)} period(s) aren't a date, a month (2023-04), a quarter (2023-Q2) or a year: "
             + ", ".join(bad_dates[:5])
         )
-    bad_levels = df.loc[levels.isna() | levels.le(0), value].astype(str).tolist()
+    bad_levels = [v or "(blank)" for v in df.loc[levels.isna() | levels.le(0), value].astype(str)]
     if bad_levels:
         problems.append(f"{len(bad_levels)} {value} value(s) aren't positive numbers: " + ", ".join(bad_levels[:5]))
     repeated = dates[dates.duplicated() & dates.notna()]
