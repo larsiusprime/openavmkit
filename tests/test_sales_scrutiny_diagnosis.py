@@ -5,7 +5,13 @@ import pandas as pd
 import pytest
 
 from openavmkit.data import SalesUniversePair
-from openavmkit.sales_scrutiny_study import _calc_sales_scrutiny, _flag_rows, run_heuristics, surnames
+from openavmkit.sales_scrutiny_study import (
+    _calc_sales_scrutiny,
+    _flag_rows,
+    _strict_patterns,
+    run_heuristics,
+    surnames,
+)
 
 
 def _cluster(extra: list[tuple[float, float]]) -> pd.DataFrame:
@@ -56,18 +62,41 @@ def test_the_classic_reading_overlaps():
  i in range(1, 6)) > 1
 
 
+def test_a_small_clusters_outlier_reads_low_by_its_ratio():
+    # Seven sales: a $10 deed stretches the spread so far that it isn't 2 deviations below anything. It's still
+    # low: 0.35x the median or less, as it was flagged.
+    # (The sample's own: 320 S Mendenhall St, sold for $12 among houses at $135 to $358 a sq ft.)
+    rows = list(zip([3285, 2610, 2925, 3462, 4115, 3354], [135, 202, 230, 276, 306, 358], strict=True))
+    rows = [(a, a * p) for a, p in rows]
+    df = pd.DataFrame(
+        {
+            "key": [f"p{i}" for i in range(7)],
+            "key_sale": [f"s{i}" for i in range(7)],
+            "ss_id": ["c"] * 7,
+            "bldg_area_finished_sqft": [a for a, _ in rows] + [2968],
+            "sale_price": [p for _, p in rows] + [12],
+            "sale_price_impr_sqft": [p / a for a, p in rows] + [12 / 2968],
+        }
+    )
+    out = _calc_sales_scrutiny(df, "sale_price_impr_sqft", strict=True)
+    row = out[out["key_sale"] == "s6"].iloc[0]
+    assert row["flagged"] and abs(row["price_dist"]) < 2
+    assert (row["price_rating"], row["per_area_rating"], row["size_rating"]) == ("low", "low", "in")
+    assert row["anomaly_2"] == True and row["anomaly_other"] == False  # noqa: E712
+
+
 def test_a_sale_that_fits_no_pattern_is_flagged_only():
-    # Eight sales at 4.5x the median: each crosses the 4x rule, but so many stretch the spread that none is 2
-    # deviations out. Flagged ("other"), never dropped: the user decides.
-    out = _calc_sales_scrutiny(_cluster([(2000, 2000 * 900)] * 8), "sale_price_impr_sqft", strict=True)
-    row = out[out["flagged"]].iloc[0]
-    assert row["anomaly_other"] == True and row["per_area_rating"] == "in"  # noqa: E712
+    # A low price but a high price per area, its size in range (a wide spread of sizes): none of the five.
+    r = lambda *x: pd.Series(list(x))  # noqa: E731
+    patterns = _strict_patterns(r("low", "high", "in"), r("high", "low", "high"), r("in", "in", "high"))
+    assert [k for k, v in patterns.items() if v[0]] == []
+    assert [k for k, v in patterns.items() if v[2]] == ["anomaly_1"]
+    # Flag rows say "other" and flag_only for such a sale; it's never dropped.
+    out = _calc_sales_scrutiny(_cluster([(1700, 400_000)]), "sale_price_impr_sqft", strict=True)
+    out.loc[out["flagged"], ["anomaly_4", "anomaly_other"]] = [False, True]
     out["vacant"], out["area"], out["sale_price_time_adj"] = False, "impr_sqft", out["sale_price"]
-    flags = _flag_rows([out.assign(sale_price_impr_sqft=out["sale_price_impr_sqft"])], "g")
-    assert set(flags["pattern"]) == {"other"} and flags["flag_only"].all()
-    # Classic reads them as pattern 4 (its size test always passes) and drops them with the rest.
-    classic = _calc_sales_scrutiny(_cluster([(2000, 2000 * 900)] * 8), "sale_price_impr_sqft")
-    assert classic["flagged"].sum() == 8 and not classic["anomaly_other"].any()
+    flags = _flag_rows([out], "g")
+    assert flags["pattern"].tolist() == ["other"] and flags["flag_only"].all()
 
 
 @pytest.mark.parametrize(

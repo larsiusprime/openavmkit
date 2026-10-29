@@ -1354,10 +1354,28 @@ def _apply_he_stats(df: pd.DataFrame, cluster_id: str, sales_field: str):
     return df
 
 
-def _rate(dist: pd.Series) -> pd.Series:
-    """low below -2 standard deviations from the median, high above +2, else in (range)."""
-    d = _floats(dist)
-    return pd.Series(np.where(d.lt(-2.0), "low", np.where(d.gt(2.0), "high", "in")), index=dist.index, dtype=object)
+def _rate(dist: pd.Series, ratio: pd.Series) -> pd.Series:
+    """low or high by the thresholds a sale is flagged at: more than 2 standard deviations from the median, or 4x the
+    median or more (high), 0.35x or less and more than one deviation below (low); else in (range). The ratios matter
+    in a small cluster, whose spread the outlier itself stretches: a $10 deed among $300,000 sales is low."""
+    d, r = _floats(dist), _floats(ratio)
+    low = d.lt(-2.0) | (r.le(0.35) & d.lt(-1.0))
+    high = d.gt(2.0) | r.ge(4.0)
+    return pd.Series(np.where(low, "low", np.where(high, "high", "in")), index=dist.index, dtype=object)
+
+
+def _strict_patterns(price: pd.Series, per_area: pd.Series, size: pd.Series) -> dict[str, pd.Series]:
+    """The five patterns from the three readings (low / in / high): 1 size and price per area off; 2-5 size in range,
+    by price and price per area. A flagged sale matching none is "other"."""
+    size_off = size.isin(["low", "high"])
+    per_off = per_area.isin(["low", "high"])
+    return {
+        "anomaly_1": size_off & per_off,
+        "anomaly_2": ~size_off & price.eq("low") & per_area.eq("low"),
+        "anomaly_3": ~size_off & price.eq("high") & per_area.eq("high"),
+        "anomaly_4": ~size_off & price.eq("in") & per_area.eq("high"),
+        "anomaly_5": ~size_off & price.eq("in") & per_area.eq("low"),
+    }
 
 
 def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_field: str, strict: bool = False):
@@ -1497,9 +1515,8 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
     # Each flagged sale's three readings, against its cluster: price, price per area, size.
     by_key = lambda d, col: df["key_sale"].map(d.set_index("key_sale")[col])  # noqa: E731
     ratings = pd.DataFrame(index=df.index)
-    ratings["price_rating"] = _rate(by_key(df_price_fl, "med_dist_stdevs"))
-    ratings["per_area_rating"] = _rate(by_key(df_fl, "med_dist_stdevs"))
-    ratings["size_rating"] = _rate(by_key(df_area_fl, "med_dist_stdevs"))
+    for col, d in (("price_rating", df_price_fl), ("per_area_rating", df_fl), ("size_rating", df_area_fl)):
+        ratings[col] = _rate(by_key(d, "med_dist_stdevs"), by_key(d, "relative_ratio"))
     ratings["price_median"] = by_key(df_price_fl, "median")
     ratings["price_dist"] = by_key(df_price_fl, "med_dist_stdevs")
     ratings["size"] = by_key(df_area_fl, area)
@@ -1510,17 +1527,7 @@ def _check_for_anomalies(df_in: pd.DataFrame, df_sales: pd.DataFrame, sales_fiel
         ratings.loc[~is_flagged, c] = None
     df["anomaly_other"] = False
     if strict:
-        price, per, size = (ratings[c] for c in _RATINGS)
-        size_off = size.isin(["low", "high"])
-        per_off = per.isin(["low", "high"])
-        strict_patterns = {
-            "anomaly_1": size_off & per_off,
-            "anomaly_2": ~size_off & price.eq("low") & per.eq("low"),
-            "anomaly_3": ~size_off & price.eq("high") & per.eq("high"),
-            "anomaly_4": ~size_off & price.eq("in") & per.eq("high"),
-            "anomaly_5": ~size_off & price.eq("in") & per.eq("low"),
-        }
-        for field, idx in strict_patterns.items():
+        for field, idx in _strict_patterns(*(ratings[c] for c in _RATINGS)).items():
             df[field] = is_flagged & idx.fillna(False)
         matched = pd.concat([df[f].eq(True) for f in _ANOMALIES], axis=1).any(axis=1)
         df["anomaly_other"] = is_flagged & ~matched
