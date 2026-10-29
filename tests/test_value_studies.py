@@ -72,22 +72,28 @@ def test_trimmed_ratios_are_left_out_listed_and_judged(tmp_path):
 	)["assr_market_value"]
 	res = out["groups"]["residential"]
 	assert mine in [t["key_sale"] for t in res["trimmed"]]
-	assert res["ratio"]["cod"]["value"] < plain["groups"]["residential"]["ratio"]["cod"]["value"]
+	# Every sale, as before; the trimmed study beside it, without the nominal deed.
+	assert res["ratio"]["cod"]["value"] == plain["groups"]["residential"]["ratio"]["cod"]["value"]
+	assert res["trimmed_study"]["ratio"]["cod"]["value"] < res["ratio"]["cod"]["value"]
+	assert res["trimmed_study"]["count_sales"] == res["count_sales"] - len(res["trimmed"])
 	assert out["overall"]["count_trimmed"] == sum(len(g["trimmed"]) for g in out["groups"].values())
 	# The IAAO's order-statistic interval: bounds are observed ratios around the median.
 	med = res["ratio"]["median_ratio"]
 	assert med["low"] <= med["value"] <= med["high"]
-	# Judged against the targets; a group with no class isn't.
-	assert res["verdict"]["judged"] and res["verdict"]["cod_target"] == 15.0
-	assert set(res["verdict"]) >= {"level", "cod", "prd", "prb", "vei"}
+	# Judged against the targets, both ways; a group with no class isn't.
+	assert res["verdict"]["judged"] and res["verdict"]["cod_target"] == [5.0, 15.0]
+	assert set(res["verdict"]) >= {"level", "cod", "cod_low", "prb", "vei"} and "verdict" in res["trimmed_study"]
+	assert res["vertical"]["mki"] is not None
 	assert out["groups"]["vacant_land"]["verdict"]["judged"] is False
 	# Every sale studied, with its ratio and whether it was trimmed.
 	sales = pd.read_parquet(tmp_path / "assr_market_value.sales.parquet")
 	assert sales.loc[sales["key_sale"] == mine, "trimmed"].all() and sales["trimmed"].sum() == out["overall"]["count_trimmed"]
-	# The VEI's reading.
+	# The VEI's reading, as the exposure draft's Appendix E: within 10%, beyond it but the end groups' intervals
+	# overlapping, significance within 10%, or significantly outside.
 	assert _vei_verdict(4.0, -3.0) == "compliant"
-	assert _vei_verdict(-25.0, 12.0) == "regressive"
-	assert _vei_verdict(25.0, 2.0) == "inconclusive"
+	assert _vei_verdict(-25.0, 12.0, overlap=True) == "not_significant"
+	assert _vei_verdict(-25.0, 12.0, overlap=False) == "regressive"
+	assert _vei_verdict(25.0, 2.0, overlap=False) == "not_significant"
 	assert _vei_verdict(None, None) == "insufficient"
 
 
@@ -134,3 +140,27 @@ def test_grouping_keeps_ties_together():
 	groups = _group_by_sort_key(np.array([1, 1, 1, 2, 3, 4, 5, 6.0]), 4)
 	assert [sorted(g.tolist()) for g in groups][0] == [0, 1, 2]
 	assert sum(len(g) for g in groups) == 8
+
+
+def test_trimming_reproduces_the_exposure_drafts_example():
+	"""Appendix C.4, Tables 9 and 10: 14 ratios, 1.5 x IQR with the Standard's quartile positions; 1.850 and 2.500
+	are outliers (2 of 14: a fifth allowed, "the most extreme cases"), leaving median 0.917 and COD 15.649."""
+	from openavmkit.utilities.stats import calc_cod
+	from openavmkit.value_studies import _trimmed
+
+	ratios = [0.611, 0.756, 0.762, 0.853, 0.867, 0.909, 0.925, 0.944, 1.014, 1.052, 1.178, 1.367, 1.850, 2.500]
+	df = pd.DataFrame({"sale_price": [100.0] * 14, "v": [100.0 * r for r in ratios]})
+	t = _trimmed(df, "v", 1.5, max_share=0.2)
+	assert [r for r, x in zip(ratios, t) if x] == [1.850, 2.500]
+	kept = np.array([r for r, x in zip(ratios, t) if not x])
+	assert round(float(np.median(kept)), 3) == 0.917 and round(calc_cod(kept), 3) == 15.649
+	assert _trimmed(df, "v", 1.5).sum() == 1  # at the usual tenth, only the furthest
+
+
+def test_the_modified_kakwani_index():
+	from openavmkit.utilities.stats import calc_mki
+
+	price = np.array([100.0, 200, 300, 400, 500])
+	assert abs(calc_mki(price * 0.9, price) - 1.0) < 1e-12  # one ratio for all: equitable
+	assert calc_mki(np.array([150.0, 220, 300, 360, 420]), price) < 1  # cheaper over-assessed: regressive
+	assert calc_mki(np.array([60.0, 160, 300, 440, 600]), price) > 1  # progressive

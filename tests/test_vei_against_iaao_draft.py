@@ -146,3 +146,19 @@ def test_vei_significance_uses_highest_and_lowest_median_groups():
     naive = 100 * (gs.loc[last, "lower"] - gs.loc[first, "upper"]) / \
         df["prediction"].div(df["sale_price"]).median()
     assert not np.isclose(res["vei_significance"], naive)
+
+
+def test_the_demonstration_ratio_study_report_matches_the_draft():
+    """Table 6 (the demonstration report on Table 1's 54 sales): median 0.868 (90% CI 0.787 to 0.984), COD 24.65,
+    PRD 0.993, PRB 0.1871 (95% CI 0.0665 to 0.3078)."""
+    from openavmkit.utilities.stats import calc_cod, calc_prb, calc_prd
+
+    av, sp = np.array(_AV, dtype=float), np.array(_SP, dtype=float)
+    r = av / sp
+    assert round(float(np.median(r)), 3) == 0.868
+    low, high = calc_median_confidence_interval(r, 0.90)
+    assert (round(low, 3), round(high, 3)) == (0.787, 0.984)
+    assert round(calc_cod(r), 2) == 24.65
+    assert round(calc_prd(av, sp), 3) == 0.993
+    prb, prb_low, prb_high = calc_prb(av, sp, 0.95)
+    assert (round(prb, 4), round(prb_low, 4), round(prb_high, 4)) == (0.1871, 0.0665, 0.3078)

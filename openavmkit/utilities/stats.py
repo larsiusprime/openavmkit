@@ -294,6 +294,50 @@ def calc_cod_bootstrap(
     return median_cod, lower_bound, upper_bound
 
 
+def calc_mki(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
+    """
+    Calculate the Modified Kakwani Index (MKI) of vertical equity.
+
+    The concentration index of assessments (their Gini coefficient with the parcels ordered by sale price) over the
+    Gini coefficient of sale prices (IAAO Standard on Ratio Studies, exposure draft May 2026, Appendix F; Quintos
+    2020). 1 is vertical equity; under 1, regressive; over 1, progressive. Some consider 0.95 to 1.05 optimal for
+    low-variability strata, 0.90 to 1.10 for higher-variability or small ones.
+
+    Parameters
+    ----------
+    predictions : numpy.ndarray
+        Assessed (or predicted) values.
+    ground_truth : numpy.ndarray
+        Sale prices.
+
+    Returns
+    -------
+    float
+        The MKI; NaN with fewer than 2 observations or no spread in prices.
+    """
+    a = np.asarray(predictions, dtype=float)
+    p = np.asarray(ground_truth, dtype=float)
+    ok = np.isfinite(a) & np.isfinite(p)
+    a, p = a[ok], p[ok]
+    n = len(p)
+    if n < 2:
+        return float("nan")
+    order = np.argsort(p, kind="stable")
+    a, p = a[order], p[order]
+    rank = np.arange(1, n + 1)
+
+    def gini(x: np.ndarray) -> float:
+        total = np.sum(x)
+        if total == 0:
+            return float("nan")
+        return (2 * np.sum(x * rank) / total - (n + 1)) / n
+
+    g_price = gini(p)
+    if not np.isfinite(g_price) or g_price == 0:
+        return float("nan")
+    return float(gini(a) / g_price)
+
+
 def calc_prd(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
     """
     Calculate the Price Related Differential (PRD).

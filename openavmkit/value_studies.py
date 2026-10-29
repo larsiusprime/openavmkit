@@ -30,20 +30,30 @@ from openavmkit.data import SalesUniversePair, get_hydrated_sales_from_sup
 from openavmkit.horizontal_equity_study import HorizontalEquityStudy
 from openavmkit.ratio_study import RatioStudyBootstrapped
 from openavmkit.utilities.settings import get_look_back_dates, get_model_group_ids
-from openavmkit.utilities.stats import ConfidenceStat, calc_median_confidence_interval
+from openavmkit.utilities.stats import ConfidenceStat, calc_median_confidence_interval, calc_mki
 from openavmkit.vertical_equity_study import VerticalEquityStudy, get_vertical_equity_scores
 
 OVERALL = "__overall__"
 
-# The IAAO's targets (Standard on Ratio Studies, 2013; VEI from the May 2026 exposure draft): the level and price
-# bias ranges, the most a VEI may stray, the fewest sales judged, and the COD ceiling for each class of property.
+# The IAAO's targets, from the Standard on Ratio Studies exposure draft of May 2026: the level (11.1), the VEI, the
+# primary vertical equity test (11.2.6, Appendix E), the PRB (good within ±0.05, unacceptable outside ±0.10;
+# glossary), the fewest sales judged, and the COD range for each property category (Table 7: below the range is
+# suspect, 11.2.5). The PRD is no longer a compliance test (Table 4): reported, not judged.
 IAAO_STANDARDS = {
     "level": [0.90, 1.10],
-    "prd": [0.98, 1.03],
     "prb": [-0.05, 0.05],
+    "prb_unacceptable": [-0.10, 0.10],
     "vei": 10.0,
     "min_sales": 5,
-    "cod": {"residential": 15.0, "income": 20.0, "vacant": 25.0},
+    "cod": {
+        "residential": [5.0, 15.0],
+        "residential_homogeneous": [4.0, 10.0],
+        "residential_rural": [10.0, 20.0],
+        "apartments": [7.0, 20.0],
+        "commercial": [10.0, 25.0],
+        "vacant": [10.0, 20.0],
+        "agricultural": [10.0, 25.0],
+    },
 }
 
 
@@ -61,6 +71,7 @@ def run_value_field_studies(
     sale_field: str = "sale_price",
     trim_outliers: bool = False,
     iqr_factor: float = 1.5,
+    trim_share: float = 0.10,
     median_ci: str = "bootstrap",
     standards: Optional[dict] = None,
     classes: Optional[dict] = None,
@@ -94,12 +105,15 @@ def run_value_field_studies(
         The price the values are compared with: ``sale_price`` (as sold, the formal ratio study) or e.g.
         ``sale_price_time_adj``.
     trim_outliers : bool, optional
-        Leave ratios outside ``iqr_factor`` × the interquartile range out of every statistic, per model group (at
-        most 10% of a group's sales, the furthest out first; none in a group of fewer than 10), and list them under
-        ``trimmed``; the overall study leaves out the groups'.
-        Default False: the untrimmed statistics, with the trimmed ones beside them (``*_trim``).
+        Also study each model group without its outlying ratios (outside ``iqr_factor`` × the interquartile range,
+        at most 10% of the group, the furthest out first; none in a group of fewer than 10): ``trimmed_study`` beside
+        the study of every sale (as OpenAVMKit's ratio study shows trimmed and untrimmed side by side), with the
+        trimmed sales listed under ``trimmed``. Default False.
     iqr_factor : float, optional
         1.5 (outliers, the IAAO's usual) or 3.0 (extreme outliers only).
+    trim_share : float, optional
+        The most of a group trimmed (default 0.10; the exposure draft's Appendix C.5: no more than 10% under 30
+        sales, 20% in the most extreme cases; 5 to 10% for larger samples).
     median_ci : str, optional
         ``"bootstrap"`` (default) or ``"iaao"``: the order-statistic interval of the Standard's Appendix D.2, as
         the VEI uses.
@@ -148,20 +162,26 @@ def run_value_field_studies(
         if trim_outliers:
             for mg in model_groups:
                 mine = usable["model_group"].eq(mg)
-                trimmed[mine] = _trimmed(usable[mine], field, iqr_factor)
+                trimmed[mine] = _trimmed(usable[mine], field, iqr_factor, trim_share)
         for mg in model_groups:
             mine = usable["model_group"].eq(mg)
-            groups[mg] = _study_one(
-                usable[mine & ~trimmed], df_univ[df_univ["model_group"].eq(mg)], field, location, **opts
-            )
+            univ = df_univ[df_univ["model_group"].eq(mg)]
+            # Every sale (as OpenAVMKit's ratio study reports it), and with trimming, the same study without the
+            # outlying ratios beside it.
+            groups[mg] = _study_one(usable[mine], univ, field, location, **opts)
             if trim_outliers:
                 groups[mg]["trimmed"] = _sale_rows(usable[mine & trimmed], field)
-        overall = _study_one(usable[~trimmed], df_univ, field, location, **opts)
+                groups[mg]["trimmed_study"] = _study_one(usable[mine & ~trimmed], univ, field, location, **opts)
+        overall = _study_one(usable, df_univ, field, location, **opts)
         if trim_outliers:
             overall["count_trimmed"] = int(trimmed.sum())
+            overall["trimmed_study"] = _study_one(usable[~trimmed], df_univ, field, location, **opts)
         if standards is not None:
             for mg, g in groups.items():
                 g["verdict"] = _verdict(g, standards, (classes or {}).get(mg))
+                if "trimmed_study" in g:
+                    t = g["trimmed_study"]
+                    t["verdict"] = _verdict(t, standards, (classes or {}).get(mg))
         results[field] = {
             "field": field,
             "window": {"start": start_date.date().isoformat(), "end": end_date.date().isoformat()},
@@ -197,7 +217,8 @@ def _trimmed(df: pd.DataFrame, field: str, iqr_factor: float, max_share: float =
     cap = int(max_share * len(ratios))
     if cap == 0:
         return out
-    q1, q3 = np.quantile(ratios, [0.25, 0.75])
+    # The quartiles as the Standard locates them (Appendix C.4: positions 0.25n + 0.25 and 0.75n + 0.75).
+    q1, q3 = np.quantile(ratios, [0.25, 0.75], method="weibull")
     iqr = q3 - q1
     low, high = q1 - iqr_factor * iqr, q3 + iqr_factor * iqr
     beyond = np.where(ratios < low, (low - ratios), np.where(ratios > high, (ratios - high), 0.0)) / (iqr or 1.0)
@@ -225,29 +246,52 @@ def _sale_rows(df: pd.DataFrame, field: str) -> list[dict]:
 
 
 def _verdict(g: dict, standards: dict, cls: Optional[str]) -> dict:
-    """Each statistic against its target: True met, False missed, None not judged (too few sales, no class, or no
-    statistic). The VEI is missed only when it's significant (its groups' intervals apart, and over the limit)."""
+    """Each statistic against its target (the exposure draft's reading): True met, False missed, None neither or not
+    judged (too few sales, no class, or no statistic).
+
+    - level: met when the median is in range; missed only when its whole confidence interval is outside (11.1:
+      noncompliance needs a high degree of confidence); otherwise not proven either way.
+    - cod: met within the category's range; missed above it; below it, ``cod_low`` (suspect: possibly sales chasing).
+    - prb: met within the good range; missed outside the unacceptable one; between, neither.
+    - vei: met unless significantly outside the limit (Appendix E steps 5 to 7).
+    """
     n = g["ratio"]["count"]
-    cod_max = (standards.get("cod") or {}).get(cls) if cls else None
+    cod_range = (standards.get("cod") or {}).get(cls) if cls else None
+    if isinstance(cod_range, (int, float)):
+        cod_range = [0.0, float(cod_range)]
     judged = cls is not None and n >= standards.get("min_sales", 5)
-
-    def within(value, bounds):
-        if not judged or value is None or bounds is None:
-            return None
-        return bool(bounds[0] <= value <= bounds[1])
-
     v = g.get("vertical") or {}
+    med = g["ratio"]["median_ratio"]
+    out = {"judged": judged, "class": cls, "cod_target": cod_range}
+    if not judged:
+        return out | {"level": None, "cod": None, "cod_low": None, "prb": None, "vei": None}
+
+    level, (lo, hi) = None, standards.get("level", [0.90, 1.10])
+    if med.get("value") is not None:
+        if lo <= med["value"] <= hi:
+            level = True
+        elif med.get("low") is not None and med.get("high") is not None and (med["high"] < lo or med["low"] > hi):
+            level = False
+    cod, cod_low = None, None
+    c = g["ratio"]["cod"]["value"]
+    if c is not None and cod_range is not None:
+        cod = bool(c <= cod_range[1]) if c >= cod_range[0] else None
+        cod_low = bool(c < cod_range[0])
+    prb = None
+    b = (v.get("prb") or {}).get("value")
+    if b is not None:
+        good, bad = standards.get("prb", [-0.05, 0.05]), standards.get("prb_unacceptable", [-0.10, 0.10])
+        if good[0] <= b <= good[1]:
+            prb = True
+        elif b < bad[0] or b > bad[1]:
+            prb = False
     vei = v.get("vei_verdict")
-    return {
-        "judged": judged,
-        "class": cls,
-        "level": within(g["ratio"]["median_ratio"]["value"], standards.get("level")),
-        "cod": None if not judged or cod_max is None or g["ratio"]["cod"]["value"] is None
-        else bool(g["ratio"]["cod"]["value"] <= cod_max),
-        "cod_target": cod_max,
-        "prd": within((v.get("prd") or {}).get("value"), standards.get("prd")),
-        "prb": within((v.get("prb") or {}).get("value"), standards.get("prb")),
-        "vei": None if not judged or vei in (None, "insufficient") else vei in ("compliant", "inconclusive"),
+    return out | {
+        "level": level,
+        "cod": cod,
+        "cod_low": cod_low,
+        "prb": prb,
+        "vei": None if vei in (None, "insufficient") else vei in ("compliant", "not_significant"),
     }
 
 
@@ -302,25 +346,42 @@ def _region_stats(df: pd.DataFrame, field: str, region: str, limit: float = 10.0
         )
     out["strata"] = strata
     if len(strata) >= 2:
+        # As the VEI: the point estimate is the last group less the first; its significance uses the groups with
+        # the highest and lowest medians (the exposure draft, p. 79), not necessarily the last and first.
         first, last = strata[0], strata[-1]
         vei = 100 * (last["median"] - first["median"]) / median
+        hi = max(strata, key=lambda x: x["median"])
+        lo = min(strata, key=lambda x: x["median"])
         sig = None
-        if last["low"] is not None and first["high"] is not None:
-            sig = 100 * (last["low"] - first["high"]) / median
-        out |= {"vei": _num(vei), "vei_significance": _num(sig), "vei_verdict": _vei_verdict(vei, sig, limit)}
+        if hi["low"] is not None and lo["high"] is not None:
+            sig = 100 * (hi["low"] - lo["high"]) / median
+        out |= {
+            "vei": _num(vei),
+            "vei_significance": _num(sig),
+            "vei_verdict": _vei_verdict(vei, sig, _overlap(first, last), limit),
+        }
     return out
 
 
-def _vei_verdict(vei: Optional[float], significance: Optional[float], limit: float = 10.0) -> str:
-    """The VEI's reading: compliant within the limit; beyond it, regressive or progressive only when significant
-    (as openratiostudy reads it), else inconclusive."""
+def _vei_verdict(
+    vei: Optional[float], significance: Optional[float], overlap: Optional[bool] = None, limit: float = 10.0
+) -> str:
+    """The VEI's reading, as Appendix E: ``compliant`` within the limit (step 5); beyond it, ``not_significant``
+    when the first and last groups' intervals overlap (step 6) or the significance is within the limit (step 7),
+    else ``regressive`` or ``progressive``. ``insufficient`` without a VEI (under 20 sales)."""
     if vei is None:
         return "insufficient"
     if abs(vei) <= limit:
         return "compliant"
-    if significance is not None and significance > limit:
-        return "progressive" if vei > 0 else "regressive"
-    return "inconclusive"
+    if overlap or significance is None or significance <= limit:
+        return "not_significant"
+    return "progressive" if vei > 0 else "regressive"
+
+
+def _overlap(first: dict, last: dict) -> Optional[bool]:
+    if None in (first.get("low"), first.get("high"), last.get("low"), last.get("high")):
+        return None
+    return not (first["high"] < last["low"] or last["high"] < first["low"])
 
 
 def _study_one(
@@ -354,12 +415,18 @@ def _study_one(
             "prb": _stat(ves.prb),
             "vei": _num(vei["vei"]),
             "vei_significance": _num(vei["vei_significance"]),
-            "vei_verdict": _vei_verdict(_num(vei["vei"]), _num(vei["vei_significance"])),
             "vei_strata": [] if gs is None else [
                 {"n": int(r["n"]), "median": _num(r["ratio"]), "low": _num(r["lower"]), "high": _num(r["upper"])}
                 for _, r in gs.iterrows()
             ],
+            "mki": _num(calc_mki(usable[field].to_numpy(dtype=float), usable["sale_price"].to_numpy(dtype=float))),
         }
+        strata = out["vertical"]["vei_strata"]
+        out["vertical"]["vei_verdict"] = _vei_verdict(
+            _num(vei["vei"]),
+            _num(vei["vei_significance"]),
+            _overlap(strata[0], strata[-1]) if len(strata) >= 2 else None,
+        )
 
     out["horizontal"] = None
     if "he_id" in df_univ and len(df_univ) > 0:
