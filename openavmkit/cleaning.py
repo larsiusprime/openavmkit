@@ -17,6 +17,7 @@ Public entry points are surfaced through :mod:`openavmkit.pipeline`.
 """
 from warnings import warn
 
+import numpy as np
 import pandas as pd
 
 from openavmkit.data import SalesUniversePair, get_hydrated_sales_from_sup
@@ -566,6 +567,10 @@ def filter_invalid_sales(
 def _fill_with(df: pd.DataFrame, field: str, value):
     if field not in df:
         return df
+    # A date can't be "UNKNOWN" (or 0): a missing date stays missing. Filling it with text left a column of dates
+    # and strings that Parquet can't write (the notebook's output then failed).
+    if pd.api.types.is_datetime64_any_dtype(df[field]) and not isinstance(value, (pd.Timestamp, np.datetime64)):
+        return df
 
     if hasattr(df[field].dtype, 'categories'):  # Categorical-like dtype
         if value not in df[field].cat.categories:
@@ -744,6 +749,10 @@ def _fill_unknown_values(df, settings: dict):
 
     if cat_fields is not None:
         for field in cat_fields:
+            # Dates the template lists as categories (sale_date, demo_date, reno_date) stay dates: as text, a missing
+            # one became "UNKNOWN" beside real dates, and the notebook's output couldn't be written.
+            if field in df and pd.api.types.is_datetime64_any_dtype(df[field]):
+                continue
             if field in df:
                 # Cast to object, not str: astype("str") turns NaN/None into the
                 # literal strings "nan"/"None", which makes the fillna below a no-op
