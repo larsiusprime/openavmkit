@@ -766,9 +766,9 @@ def surnames(name, pattern: str = SURNAME_FIRST, skip_words=SURNAME_SKIP_WORDS) 
     """The surnames in a buyer's or seller's name, upper case.
 
     A name can hold several people, joined by ``&``, ``;``, ``/`` or ``AND`` ("SMITH JOHN & MARY JONES"); each is
-    read with ``pattern``, a regular expression with a ``surname`` group. A part of one word only is a given name
-    sharing the surname before it ("SMITH JOHN & MARY": two Smiths). A part with any of ``skip_words`` (a company, a
-    trust, a bank, a government) has no surname.
+    read with ``pattern``, a regular expression with a ``surname`` group. A part of one word is a given name sharing
+    another part's surname ("SMITH JOHN & MARY", "JOHN & MARY SMITH": two Smiths), unless no part has more than one
+    word ("SMITH"). A part with any of ``skip_words`` (a company, a trust, a bank, a government) has no surname.
 
     Parameters
     ----------
@@ -788,23 +788,22 @@ def surnames(name, pattern: str = SURNAME_FIRST, skip_words=SURNAME_SKIP_WORDS) 
         return []
     skip = {w.upper().strip(".") for w in skip_words}
     rx = re.compile(pattern, re.IGNORECASE)
+    texts = [t.strip() for t in _JOINT.split(str(name))]
+    parts = [(t, re.findall(r"[A-Za-z][A-Za-z'.\-]*", t)) for t in texts]
+    parts = [(t, words) for t, words in parts if words]
+    if any(w.upper().strip(".") in skip for _, words in parts for w in words):
+        return []  # a company, trust, bank or government among them: not people
+    longest = max((len(words) for _, words in parts), default=0)
     out: list[str] = []
-    last = None
-    for part in _JOINT.split(str(name)):
-        words = re.findall(r"[A-Za-z][A-Za-z'.\-]*", part)
-        if not words:
-            continue
-        if any(w.upper().strip(".") in skip for w in words):
-            last = None
-            continue
-        if len(words) == 1 and last:
-            continue  # "& MARY": a given name, the surname before it
-        m = rx.search(part)
+    for text, words in parts:
+        if len(words) == 1 and longest > 1:
+            continue  # a given name: its surname is another part's
+        m = rx.search(text)
         if not m or not m.groupdict().get("surname"):
             continue
-        last = re.sub(r"[^A-Z'\-]", "", m.group("surname").upper())
-        if last and last not in out:
-            out.append(last)
+        surname = re.sub(r"[^A-Z'\-]", "", m.group("surname").upper())
+        if surname and surname not in out:
+            out.append(surname)
     return out
 
 

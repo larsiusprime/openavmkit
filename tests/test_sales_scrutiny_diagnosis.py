@@ -77,6 +77,9 @@ def test_a_sale_that_fits_no_pattern_is_flagged_only():
         ("SMITH JOHN & MARY", None, ["SMITH"]),  # Mary is a Smith too
         ("SMITH JOHN & JONES MARY", None, ["SMITH", "JONES"]),
         ("SMITH JOHN AND MARY JONES", None, ["SMITH", "MARY"]),  # surname first: read as written
+        ("JOHN & MARY SMITH", r"(?P<surname>[A-Za-z'\-]+)\s*$", ["SMITH"]),  # Mary is a Smith too
+        ("SMITH", None, ["SMITH"]),
+        ("SMITH JOHN & ACME LLC", None, []),
         ("O'BRIEN-KELLY PAT", None, ["O'BRIEN-KELLY"]),
         ("SMITH FAMILY TRUST", None, []),  # not a person
         ("ACME HOLDINGS LLC", None, []),
