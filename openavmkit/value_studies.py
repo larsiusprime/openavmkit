@@ -64,6 +64,7 @@ def run_value_field_studies(
     median_ci: str = "bootstrap",
     standards: Optional[dict] = None,
     classes: Optional[dict] = None,
+    region: Optional[str] = None,
 ) -> dict:
     """Run ratio and equity studies on value fields for every model group.
 
@@ -106,6 +107,10 @@ def run_value_field_studies(
         Targets to judge each study against (``IAAO_STANDARDS``'s keys); adds ``verdict``.
     classes : dict, optional
         Model group -> class (``residential``, ``income``, ``vacant``, or None: not judged), for the COD target.
+    region : str, optional
+        A location field (a neighborhood, say): adds ``regions``, the median ratio by the price level of the region
+        each sale is in (openratiostudy.com's "neighborhood price level" statistics; not an IAAO test). It tells
+        real vertical inequity (low-priced areas over-assessed) from invalid sales at low prices in dear areas.
 
     Returns
     -------
@@ -137,7 +142,7 @@ def run_value_field_studies(
         if field not in df_univ:
             raise ValueError(f"Value field '{field}' not found in the universe.")
         groups = {}
-        opts = dict(confidence_interval=confidence_interval, max_trim=max_trim, median_ci=median_ci)
+        opts = dict(confidence_interval=confidence_interval, max_trim=max_trim, median_ci=median_ci, region=region)
         usable = _usable(df_sales, field)
         trimmed = pd.Series(False, index=usable.index)
         if trim_outliers:
@@ -173,7 +178,7 @@ def run_value_field_studies(
             with open(os.path.join(outpath, f"{field}.json"), "w") as f:
                 json.dump(results[field], f, indent=2, default=_json_default)
             if trim_outliers:
-                table = _sale_table(usable, field)
+                table = _sale_table(usable, field, region)
                 table["trimmed"] = trimmed.to_numpy()
                 table.to_parquet(os.path.join(outpath, f"{field}.sales.parquet"), index=False)
     return results
@@ -201,8 +206,10 @@ def _trimmed(df: pd.DataFrame, field: str, iqr_factor: float, max_share: float =
     return out
 
 
-def _sale_table(df: pd.DataFrame, field: str) -> pd.DataFrame:
-    cols = [c for c in ("key_sale", "key", "model_group", "sale_date") if c in df]
+def _sale_table(df: pd.DataFrame, field: str, region: Optional[str] = None) -> pd.DataFrame:
+    cols = [c for c in ("key_sale", "key", "model_group", "sale_date", "latitude", "longitude") if c in df]
+    if region and region in df and region not in cols:
+        cols.append(region)
     out = df[cols].copy()
     out["sale_price"] = df["sale_price"].astype(float)
     out["value"] = df[field].astype(float)
@@ -244,6 +251,66 @@ def _verdict(g: dict, standards: dict, cls: Optional[str]) -> dict:
     }
 
 
+def _group_by_sort_key(key: np.ndarray, n_groups: int) -> list[np.ndarray]:
+    """Rows in ``n_groups`` near-equal groups by ascending ``key`` (leftovers to the first groups), a group's end
+    moved past ties so equal keys stay together (openratiostudy.com's grouping)."""
+    order = np.argsort(key, kind="stable")
+    n = len(order)
+    base, extra = divmod(n, n_groups)
+    groups, start = [], 0
+    for g in range(n_groups):
+        end = start + base + (1 if g < extra else 0)
+        while 0 < end < n and key[order[end - 1]] == key[order[end]]:
+            end += 1
+        if start < end:
+            groups.append(order[start:end])
+        start = end
+        if start >= n:
+            break
+    return groups
+
+
+def _region_stats(df: pd.DataFrame, field: str, region: str, limit: float = 10.0) -> dict:
+    """The median ratio by the price level of each sale's region: the region's median market value proxy (half the
+    price, half the value at the median ratio), regions grouped by level as the VEI groups sales."""
+    region_text = df[region].astype("string").str.strip()
+    has = region_text.notna() & region_text.ne("")
+    d = df[has]
+    out = {"field": region, "regions": int(region_text[has].nunique()), "sales": int(len(d)), "strata": []}
+    out |= {"vei": None, "vei_significance": None, "vei_verdict": "insufficient"}
+    if len(d) < 20 or out["regions"] < 2:
+        return out
+    ratios = (d[field] / d["sale_price"]).to_numpy(dtype=float)
+    median = float(np.median((df[field] / df["sale_price"]).to_numpy(dtype=float)))
+    proxy = 0.5 * d["sale_price"].to_numpy(dtype=float) + 0.5 * d[field].to_numpy(dtype=float) / median
+    level = pd.Series(proxy).groupby(region_text[has].to_numpy()).median()
+    key = region_text[has].map(level).to_numpy(dtype=float)
+    n_groups = 2 if len(d) <= 50 else 4 if len(d) <= 500 else 10
+    strata = []
+    for rows in _group_by_sort_key(key, n_groups):
+        r = ratios[rows]
+        low, high = calc_median_confidence_interval(r, 0.90) if len(r) >= 2 else (np.nan, np.nan)
+        strata.append(
+            {
+                "n": int(len(r)),
+                "regions": int(pd.Series(region_text[has].to_numpy()[rows]).nunique()),
+                "level": _num(np.median(key[rows])),
+                "median": _num(np.median(r)),
+                "low": _num(low),
+                "high": _num(high),
+            }
+        )
+    out["strata"] = strata
+    if len(strata) >= 2:
+        first, last = strata[0], strata[-1]
+        vei = 100 * (last["median"] - first["median"]) / median
+        sig = None
+        if last["low"] is not None and first["high"] is not None:
+            sig = 100 * (last["low"] - first["high"]) / median
+        out |= {"vei": _num(vei), "vei_significance": _num(sig), "vei_verdict": _vei_verdict(vei, sig, limit)}
+    return out
+
+
 def _vei_verdict(vei: Optional[float], significance: Optional[float], limit: float = 10.0) -> str:
     """The VEI's reading: compliant within the limit; beyond it, regressive or progressive only when significant
     (as openratiostudy reads it), else inconclusive."""
@@ -256,8 +323,12 @@ def _vei_verdict(vei: Optional[float], significance: Optional[float], limit: flo
     return "inconclusive"
 
 
-def _study_one(usable, df_univ, field, location, confidence_interval, max_trim, median_ci="bootstrap") -> dict:
+def _study_one(
+    usable, df_univ, field, location, confidence_interval, max_trim, median_ci="bootstrap", region=None
+) -> dict:
     out = {"count_sales": int(len(usable)), "count_parcels": int(len(df_univ))}
+    if region is not None and region in usable:
+        out["regions"] = _region_stats(usable, field, region)
 
     rs = RatioStudyBootstrapped(
         usable[field].to_numpy(), usable["sale_price"].to_numpy(), max_trim, confidence_interval

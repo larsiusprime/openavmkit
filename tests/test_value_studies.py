@@ -114,3 +114,23 @@ def test_trimming_takes_the_furthest_out_and_never_more_than_a_tenth():
 	assert t.sum() == 2 and t[-1] and t[-2]
 	t = _trimmed(group(ratios[:-1] + [1.05] + [0.0001]), "v", 1.5)
 	assert t.sum() == 2  # 2 of 20: the cap
+
+
+def test_neighborhood_price_levels():
+	sup = _sup(False)
+	out = run_value_field_studies(sup, SETTINGS, ["assr_market_value"], outpath=None, region="neighborhood")
+	reg = out["assr_market_value"]["overall"]["regions"]
+	assert reg["field"] == "neighborhood" and reg["regions"] >= 2
+	if reg["sales"] >= 20:
+		assert len(reg["strata"]) >= 2 and sum(s["n"] for s in reg["strata"]) == reg["sales"]
+		levels = [s["level"] for s in reg["strata"]]
+		assert levels == sorted(levels)
+		assert reg["vei_verdict"] in ("compliant", "inconclusive", "regressive", "progressive")
+
+
+def test_grouping_keeps_ties_together():
+	from openavmkit.value_studies import _group_by_sort_key
+
+	groups = _group_by_sort_key(np.array([1, 1, 1, 2, 3, 4, 5, 6.0]), 4)
+	assert [sorted(g.tolist()) for g in groups][0] == [0, 1, 2]
+	assert sum(len(g) for g in groups) == 8
