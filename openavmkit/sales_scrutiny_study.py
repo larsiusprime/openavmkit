@@ -385,7 +385,7 @@ class SalesScrutinyStudy:
 # The heuristic checks, each on unless analysis.sales_scrutiny.heuristics.<name> is false.
 HEURISTICS = ("dupe_deed_date", "dupe_date_price", "bulk_deed", "false_vacant")
 # The checks that are off unless analysis.sales_scrutiny.heuristics.<name> is true.
-OPT_IN_HEURISTICS = ("built_after_sale", "vacant_priced_improved", "same_surname")
+OPT_IN_HEURISTICS = ("nominal_price", "built_after_sale", "vacant_priced_improved", "same_surname")
 FLAG_COLUMNS = [
     "key_sale", "key", "model_group", "check", "vacant", "ss_id", "count", "price", "price_per_area", "area",
     "median", "stdev", "relative_ratio", "med_dist_stdevs", "rules", "pattern", "scrutiny_pass", "bimodal",
@@ -943,6 +943,14 @@ def run_heuristics(
         )
         df_sales.loc[idx_false_vacant, "flag_false_vacant"] = True
 
+    # 0 -- Flag nominal prices (a $10 deed): not a price at all, whatever the parcel
+    if on["nominal_price"]:
+        below = float((ss.get("nominal_price", {}) or {}).get("below", 1_000))
+        price = pd.to_numeric(df_sales["sale_price"], errors="coerce")
+        idx = price.gt(0) & price.lt(below)
+        df_sales.loc[idx, "flag_nominal_price"] = True
+        detail[idx] = price[idx].map(lambda x: f"{x:,.0f}")
+
     # 4 -- Flag improved sales whose building was built after the sale year: likely land when sold
     if on["built_after_sale"] and "bldg_year_built" not in df_sales:
         warnings.warn("No `bldg_year_built` in the sales, so the built-after-the-sale check can't be run")
@@ -972,6 +980,7 @@ def run_heuristics(
         "flag_dupe_date_price": "duplicated_dates_and_prices",
         "flag_false_vacant": "classified_vacant_but_bldg_older_than_sale_year",
         "flag_bulk_deed": "multi_parcel_bulk_deeds",
+        "flag_nominal_price": "nominal_prices",
         "flag_built_after_sale": "classified_improved_but_bldg_built_after_sale_year",
         "flag_vacant_priced_improved": "classified_vacant_but_priced_like_improved",
         "flag_same_surname": "buyer_and_seller_share_a_surname",
@@ -1045,6 +1054,7 @@ def run_heuristics(
                         "flag_dupe_date_price": "Repeated\nsale date & price",
                         "flag_false_vacant": "Bldg older\nthan sale year",
                         "flag_bulk_deed": "Multi-parcel\nbulk deed",
+                        "flag_nominal_price": "Nominal\nprice",
                         "flag_built_after_sale": "Bldg built\nafter sale year",
                         "flag_vacant_priced_improved": "Vacant, priced\nlike improved",
                         "flag_same_surname": "Buyer & seller\nshare a surname",

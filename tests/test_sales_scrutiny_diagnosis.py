@@ -191,3 +191,19 @@ def test_surname_fields_win_over_names(tmp_path, monkeypatch):
     run_heuristics(sup, _settings(same_surname=True), drop=False)
     flags = pd.read_parquet("out/sales_scrutiny/heuristics/flags.parquet")
     assert sorted(flags["key_sale"]) == ["s0", "s1", "s3"]
+
+
+def test_nominal_prices(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    sup = _sup()
+    sup.sales.loc[2, "sale_price"] = 10
+    sup.sales.loc[3, "sale_price"] = 999
+    run_heuristics(sup, _settings(nominal_price=True), drop=False)
+    flags = pd.read_parquet("out/sales_scrutiny/heuristics/flags.parquet")
+    nominal = flags[flags["check"] == "nominal_price"].set_index("key_sale")
+    assert sorted(nominal.index) == ["s2", "s3"] and nominal.loc["s2", "detail"] == "10"
+    s = _settings(nominal_price=True)
+    s["analysis"]["sales_scrutiny"]["nominal_price"] = {"below": 100}
+    run_heuristics(sup, s, drop=False)
+    flags = pd.read_parquet("out/sales_scrutiny/heuristics/flags.parquet")
+    assert sorted(flags.loc[flags["check"] == "nominal_price", "key_sale"]) == ["s2"]
