@@ -379,6 +379,8 @@ class SalesScrutinyStudy:
         finish_report(report, outpath, "sales_scrutiny", self.settings)
 
 
+# The heuristic checks, each on unless analysis.sales_scrutiny.heuristics.<name> is false.
+HEURISTICS = ("dupe_deed_date", "dupe_date_price", "bulk_deed", "false_vacant")
 FLAG_COLUMNS = [
     "key_sale", "key", "model_group", "check", "vacant", "ss_id", "count", "price", "price_per_area", "area",
     "median", "stdev", "relative_ratio", "med_dist_stdevs", "rules", "pattern", "scrutiny_pass", "bimodal",
@@ -747,13 +749,17 @@ def run_heuristics(
 
     jurisdiction = ss.get("jurisdiction", None)
     has_deed_id = (deed_id is not None) and (deed_id in df_sales)
+    # Each check can be turned off: analysis.sales_scrutiny.heuristics.<name> = false
+    on = {name: ss.get("heuristics", {}).get(name, True) is not False for name in HEURISTICS}
 
     def _set_flag(mask: pd.Series, flag: str):
         if mask.any():
             df_sales.loc[mask, flag] = True
 
     # 1 -- Flag sales with identical deed IDs AND identical sale dates
-    if has_deed_id:
+    if not on["dupe_deed_date"]:
+        pass
+    elif has_deed_id:
         _set_flag(flag_dupe_deed_date(df_sales, deed_id, jurisdiction), "flag_dupe_deed_date")
     else:
         if deed_id is None:
@@ -764,24 +770,27 @@ def run_heuristics(
     # 2 -- Flag sales made on the same date for the same price. Without deed IDs this is the
     # only bulk-deed detector, so every repeated (date, price) is flagged; with deed IDs,
     # coincidences between separate, known deeds are spared.
-    _set_flag(
-        flag_dupe_date_price(df_sales, jurisdiction, deed_id if has_deed_id else None),
-        "flag_dupe_date_price",
-    )
+    if on["dupe_date_price"]:
+        _set_flag(
+            flag_dupe_date_price(df_sales, jurisdiction, deed_id if has_deed_id else None),
+            "flag_dupe_date_price",
+        )
 
     # 4 -- Flag deeds that covered several parcels at ingestion, even if only one of their
     # rows is left (the others were invalid sales and got filtered out).
-    _set_flag(flag_bulk_deeds(df_sales), "flag_bulk_deed")
+    if on["bulk_deed"]:
+        _set_flag(flag_bulk_deeds(df_sales), "flag_bulk_deed")
 
     #### Misclassified vacant sales detection heuristics
 
     # 3 -- Flag vacant sales with a building year built older than the sale year
-    idx_false_vacant = (
-        df_sales["vacant_sale"].eq(1)
-        & df_sales["bldg_year_built"].gt(0)
-        & df_sales["bldg_year_built"].lt(df_sales["sale_year"])
-    )
-    df_sales.loc[idx_false_vacant, "flag_false_vacant"] = True
+    if on["false_vacant"]:
+        idx_false_vacant = (
+            df_sales["vacant_sale"].eq(1)
+            & df_sales["bldg_year_built"].gt(0)
+            & df_sales["bldg_year_built"].lt(df_sales["sale_year"])
+        )
+        df_sales.loc[idx_false_vacant, "flag_false_vacant"] = True
 
     files = {
         "flag_dupe_deed_date": "duplicated_deeds_and_dates",

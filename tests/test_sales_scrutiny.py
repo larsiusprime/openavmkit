@@ -96,3 +96,13 @@ def test_filled_values_are_recorded(tmp_path):
     assert out.columns.tolist() == ["key", "x"]
     assert out["x"].tolist() == [False, True, False]
     assert pd.read_parquet(tmp_path / "filled.parquet").equals(out)
+
+
+def test_each_heuristic_can_be_turned_off(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    settings = {
+        "analysis": {"sales_scrutiny": {"heuristics": {"dupe_date_price": False}}},
+        "locality": {"units": "imperial"},
+    }
+    out = run_heuristics(_sales(), settings, drop=True)
+    assert sorted(out.sales["key_sale"]) == ["s0", "s1", "s2", "s3"]
