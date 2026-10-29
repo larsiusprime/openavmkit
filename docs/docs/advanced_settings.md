@@ -289,9 +289,23 @@ Some `calc` expressions need an intermediate column that has no business survivi
 Replace OpenAVMKit's built-in time-adjustment engine with a precomputed CSV for a specific model group.
 
 - **Default** — not set; built-in engine runs
-- **Effect** — when set, OpenAVMKit reads the CSV at the configured path and uses those multipliers verbatim. The internal model is not run for that model group.
-- **Source** — `read_time_adjustment_from_file` in [openavmkit/time_adjustment.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/time_adjustment.py)
+- **Effect** — when set, OpenAVMKit reads the CSV at the configured path and uses it instead of working the group's adjustment out from its sales. A file that can't be used is said why (a warning) and the group's own sales are used instead.
+- **The file** — either of:
+  - **a price index**: `period` and `index`. A period is a day (`2023-04-15`), a month (`2023-04`), a quarter (`2023-Q2` or `2023Q2`) or a year (`2023`), one row each; the index is the price level then, at any base (100, 1.0…), positive. Between periods it's interpolated day by day; prices are brought to the last period.
+  - **a schedule as OpenAVMKit writes one** (`out/time_adjustment/<group>/time_adjustment_schedule.csv`): `period`, `start_indexed`, `end_indexed`, `correction_factor`.
+
+  Sales before the first period get the first period's correction, after the last the last period's: no trend is carried past what the file says.
+- **Checking a file** — `read_schedule(path)` returns the daily schedule, or every problem found in words (a missing column, periods that aren't dates, levels that aren't positive numbers, a period twice, fewer than two periods).
+- **Source** — `read_schedule`, `read_time_adjustment_from_file` in [openavmkit/time_adjustment.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/time_adjustment.py)
 - **When to use** — your jurisdiction publishes its own time-adjustment factors; you want reproducible adjustments across runs; you're debugging modeling and want to hold time-adjustment constant.
+
+### `data.process.time_adjustment.borrow.<model_group>`
+
+Use another model group's time adjustment: `"borrow": {"apartments": "small_multi_family"}`.
+
+- **Default** — not set; each group works out its own
+- **Effect** — the group's sales are adjusted with the other group's schedule (worked out from that group's sales, or from its file), held flat outside that schedule's dates. A group borrowing from one with no sales works out its own, with a warning.
+- **When to use** — a group with too few sales for an index of its own (OpenAVMKit needs 5 in most periods) whose prices move like another's.
 
 ---
 
