@@ -4901,6 +4901,26 @@ def _ensemble_beeswarm(
     plot_full_beeswarm(expl, title=title)
 
 
+# Engines that don't get variable reduction: trees and multi-MRA, and the models that take no
+# variables (the assessor is a pass-through of the roll's values).
+_NO_VARIABLE_REDUCTION = ["pass_through", "assessor", "ground_truth", "xgboost", "lightgbm", "catboost", "multi_mra"]
+
+
+def _first_reducing_engine(models_to_run: list, models_to_skip: list, model_entries: dict) -> str | None:
+    """The engine of the first model that runs and needs its variables reduced, if any does."""
+    for model_name in models_to_run:
+        if model_name in models_to_skip:
+            continue
+        model_entry = model_entries.get(model_name, model_entries.get("default", {}))
+        # The settings schema names the engine with the "model" key (see
+        # docs/models_reference.md), which is also what run_one_model reads. Reading
+        # "engine" here made every aliased entry resolve to its own name instead.
+        model_engine = model_entry.get("model", model_name)
+        if model_engine not in _NO_VARIABLE_REDUCTION:
+            return model_engine
+    return None
+
+
 def _get_earliest_and_latest_date(df: pd.DataFrame):
     
     sale_date = df["sale_date"]
@@ -5224,21 +5244,12 @@ def _run_models(
     t.stop("setup")
     
     # Check if we need to auto reduce variables globally
-    auto_reduce_vars = False
     for model_name in models_to_run:
         if model_name in models_to_skip:
             print(f"Skipping model {model_name}.")
-            continue
-        model_entry = model_entries.get(model_name, model_entries.get("default", {}))
-        # The settings schema names the engine with the "model" key (see
-        # docs/models_reference.md), which is also what run_one_model reads. Reading
-        # "engine" here made every aliased entry resolve to its own name instead.
-        model_engine = model_entry.get("model", model_name)
-        # For tree-based models, and multi-mra, we don't perform variable reduction
-        if model_engine not in ["pass_through", "ground_truth", "xgboost", "lightgbm", "catboost", "multi_mra"]:
-            auto_reduce_vars = True
-            break
-        
+    model_engine = _first_reducing_engine(models_to_run, models_to_skip, model_entries)
+    auto_reduce_vars = model_engine is not None
+
     if auto_reduce_vars:
         if verbose:
             print(f"Auto-reducing variables for model type \"{model_engine}\"")
