@@ -4187,7 +4187,7 @@ def _calc_variable_recommendations(
     
     stuff_to_merge = [
         correlation_results,
-        {"final": r2_values_results},
+        None if r2_values_results is None else {"final": r2_values_results},
         enr_results,
         p_values_results,
         t_values_results,
@@ -4214,12 +4214,13 @@ def _calc_variable_recommendations(
     adj_r2_thresh = thresh.get("adj_r2", 0.1)
     adj_r2_thresh_bonus = thresh.get("adj_r2_bonus", 0.25)
 
-    # 1 point for being over the minimum amount
-    df.loc[df["adj_r2"].gt(adj_r2_thresh), "weighted_score"] += 1
+    if "adj_r2" in df:
+        # 1 point for being over the minimum amount
+        df.loc[df["adj_r2"].gt(adj_r2_thresh), "weighted_score"] += 1
 
-    if adj_r2_thresh_bonus > adj_r2_thresh:
-        # 1 point for reaching a higher threshold
-        df.loc[df["adj_r2"].gt(adj_r2_thresh_bonus), "weighted_score"] += 1
+        if adj_r2_thresh_bonus > adj_r2_thresh:
+            # 1 point for reaching a higher threshold
+            df.loc[df["adj_r2"].gt(adj_r2_thresh_bonus), "weighted_score"] += 1
 
     weight_corr_score = weights.get("corr_score", 1)
     weight_enr_coef = weights.get("enr_coef", 1)
