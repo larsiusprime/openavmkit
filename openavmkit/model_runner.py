@@ -517,7 +517,8 @@ def get_variable_recommendations(
     do_report: bool = False,
     do_plots: bool = False,
     verbose: bool = False,
-    t: TimingData = None
+    t: TimingData = None,
+    return_tests: bool = False,
 ) -> dict:
     """Determine which variables are most likely to be meaningful in a model.
 
@@ -551,12 +552,18 @@ def get_variable_recommendations(
         If True, prints additional debugging information.
     t : TimingData or None
         TimingData object
+    return_tests : bool, optional
+        If True, the result also has "tests": each test's results for every variable, before
+        and after its drops (``initial`` / ``final`` where the test drops recursively), with
+        the thresholds and which one-hot columns each categorical became. For a front end
+        that shows the tests one by one. Defaults to False.
     
     Returns
     -------
     dict
-        A dictionary with keys "variables" (the best variables list) and "report"
-        (the generated report).
+        A dictionary with keys "variables" (the best variables list), "report" (the
+        generated report) and "df_results" (each variable's scores); and "tests" when
+        ``return_tests`` is True.
     """    
     if t is None:
         t = TimingData()
@@ -847,7 +854,22 @@ def get_variable_recommendations(
     
     print(t.print())
 
-    return {"variables": best_variables, "report": report, "df_results": df_results}
+    out = {"variables": best_variables, "report": report, "df_results": df_results}
+    if return_tests:
+        out["tests"] = {
+            "thresholds": thresh,
+            "weights": feature_selection.get("weights", {}),
+            "one_hot": dict(ds.one_hot_descendants or {}),
+            "representation": rep_results.get("raw"),
+            "representation_bad": rep_results.get("bad_vars", []),
+            "corr": corr_results,
+            "enr": enr_coefs,
+            "r2": r2_values,
+            "p_value": p_values,
+            "t_value": t_values,
+            "vif": vif,
+        }
+    return out
 
 
 def generate_variable_report(

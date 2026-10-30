@@ -1089,6 +1089,8 @@ def calc_representation(
     )
     
     result = result.sort_values(by="univ_pct_gt0", ascending=False)
+    # The shares as numbers, before they're formatted for display.
+    raw = result[["name", "sales_pct_gt0", "univ_pct_gt0"]].copy()
     
     unrepresented_vars = result[
         result["sales_pct_gt0"].le(0) |
@@ -1114,7 +1116,8 @@ def calc_representation(
     
     return {
         "bad_vars": unrepresented_vars,
-        "df": result
+        "df": result,
+        "raw": raw,
    }
 
 
