@@ -1383,6 +1383,7 @@ Fine-tune the variable-selection scoring used during model setup. The thresholds
   ```
 
 - **Source** — `modeling.instructions.feature_selection` in [openavmkit/resources/settings/settings.template.json](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/resources/settings/settings.template.json), consumed in `model_runner.py`.
+- **`correlation_strength`** (optional, no default) — a first pass of the correlation test: a variable whose correlation with price is weaker than this, in absolute value, is dropped right away, before the combined score (strength × clarity²) is worked out, so it neither gets a score nor lowers the other variables' clarity. Unset, there's no first pass.
 - **When to use** — your standard variable-selection results don't reflect domain knowledge. Loosen `correlation` to keep weak-but-meaningful features, or tighten `vif` to drop more multicollinear ones.
 
 ### `modeling.instructions.<main|vacant>.ensemble`

@@ -686,10 +686,16 @@ def get_variable_recommendations(
         # Correlation
         X_corr = ds.df_sales[[ds.dep_var] + ind_vars]
         t.start("variables.corr")
-        corr_results = calc_correlations(X_corr, thresh.get("correlation", 0.1), do_plots=do_plots)
+        corr_results = calc_correlations(
+            X_corr,
+            thresh.get("correlation", 0.1),
+            do_plots=do_plots,
+            min_strength=thresh.get("correlation_strength"),
+        )
         
         # Remove bad variables
-        ind_vars = [var for var in ds.ind_vars if var not in corr_results["bad_vars"]]
+        dropped = set(corr_results["bad_vars"]) | set(corr_results.get("weak") or [])
+        ind_vars = [var for var in ds.ind_vars if var not in dropped]
         t.stop("variables.corr")
     else:
         corr_results = None

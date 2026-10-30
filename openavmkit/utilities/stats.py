@@ -798,7 +798,8 @@ def _order_by_target_corr(corr: pd.DataFrame, target_col: str | None = None) -> 
 def calc_correlations(
     X: pd.DataFrame,
     threshold: float = 0.1,
-    do_plots: bool = False
+    do_plots: bool = False,
+    min_strength: float | None = None,
 ) -> dict:
     """
     Calculate correlations and iteratively drop variables with low combined scores.
@@ -817,14 +818,22 @@ def calc_correlations(
         value will be dropped. Defaults to 0.1.
     do_plots : bool, optional
         If True, plot the initial and final correlation heatmaps. Defaults to False.
+    min_strength : float or None, optional
+        A first pass: variables whose correlation with the target (the first column) is
+        weaker than this, in absolute value, are dropped before anything else, so they
+        neither get a combined score nor lower the others' clarity. None (the default)
+        skips it.
 
     Returns
     -------
     dict
-        Dictionary with two keys:
+        Dictionary with keys:
 
         - "initial": pandas.Series of combined scores from the first iteration.
         - "final": pandas.Series of combined scores after dropping low-scoring variables.
+        - "bad_vars": variables dropped (null correlations, and overlaps).
+        - "weak": variables dropped by the first pass (``min_strength``), if any.
+        - "matrix": the correlation matrix of every variable, the target first.
     """
     X = X.copy()
     first_run = None
@@ -844,6 +853,16 @@ def calc_correlations(
 
     corr_full = X.corr()
     remaining = list(X.columns)
+
+    # First pass (opt-in): no correlation with the target at all, out before the scores are worked out.
+    weak = []
+    if min_strength is not None and len(remaining) > 1:
+        to_target = corr_full[remaining[0]].abs()
+        weak = [c for c in remaining[1:] if not (to_target[c] >= min_strength)]
+        remaining = [c for c in remaining if c not in weak]
+        if len(remaining) < 2:
+            empty = pd.DataFrame(columns=["variable", "corr_strength", "corr_clarity", "corr_score"])
+            return {"initial": empty, "final": empty, "bad_vars": bad_vars, "weak": weak, "matrix": corr_full}
 
     # Keep a copy of the *initial* ordered corr for plotting later
     naive_corr_for_plot = None  # <--- NEW
@@ -970,7 +989,7 @@ def calc_correlations(
     if do_plots:
         plot_correlation(final_corr, "Correlation of Variables (final)")
 
-    return {"initial": first_run, "final": df_score, "bad_vars": bad_vars}
+    return {"initial": first_run, "final": df_score, "bad_vars": bad_vars, "weak": weak, "matrix": corr_full}
 
 
 def plot_correlation(corr: pd.DataFrame, title: str = "Correlation of Variables") -> None:
