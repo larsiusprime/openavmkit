@@ -2357,6 +2357,8 @@ def _calc_benchmark(
             data["subset"].append(subset)
             if kind == "test" or kind == "test_post_val":
                 data["utility_score"].append(results.utility_test)
+            elif getattr(results, "utility_study", None) is not None:
+                data["utility_score"].append(results.utility_study)
             else:
                 data["utility_score"].append(results.utility_train)
             data["count_sales"].append(pred_results.ratio_study.count)

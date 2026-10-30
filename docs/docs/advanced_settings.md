@@ -1586,6 +1586,14 @@ Declares how the assessor's values relate to openavmkit's test holdout, controll
 - **`"shared"`** — you certify the assessor's values honor this same test holdout, so the assessor **is** shown on the random holdout. Use this when *you* are the assessor (or know the holdout status). See [the basics → when you are the assessor](the_basics.md#when-you-are-the-assessor).
 - **Source** — `get_assessor_holdout_mode` in [openavmkit/utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py)
 
+### `analysis.ratio_study.study_set_predictions`
+
+Which predictions the models are judged by on the **study set** (the sales in the `look_back_years` before the valuation date, where the assessor is audited).
+
+- **Default** — `"all"` — each model's predictions on every sale, most of which it trained on: right for auditing the values a model writes, but they flatter the models when set beside the assessor's.
+- **`"holdout"`** — each model's holdout predictions, every sale valued by a model that never saw it. Under cross-validation every sale has one, so the study set keeps all its sales; with a single split, only the study-set sales drawn into the holdout are left. The assessor's figures don't change (its values are the same either way), nor does the CHD (on every parcel).
+- **Source** — `get_study_set_predictions` in [openavmkit/utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py)
+
 ### `modeling.instructions.test_keys_file`
 
 Optional. Supply your own holdout instead of openavmkit's randomly-drawn one: a CSV in your `in/` folder listing the `key_sale` values that should form the **test set**. openavmkit uses them as the canonical split (training on everything else for each model group, never on post-valuation sales). Useful when your assessment roll was built holding out a known set of sales and you want both your roll and openavmkit's models scored on exactly those sales.
