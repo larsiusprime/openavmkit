@@ -1028,7 +1028,8 @@ def run_models(
                 do_shaps=do_shaps,
                 do_plots=do_plots
             )
-            if mg_results is not None and save_results:
+            if mg_results is not None:
+                # Returned whether or not they're written: a caller trying models reads them here.
                 dict_all_results[model_group] = mg_results
         t.stop(f"model group: {model_group}")
     t.stop("run model groups")

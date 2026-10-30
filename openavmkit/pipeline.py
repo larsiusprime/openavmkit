@@ -1551,7 +1551,7 @@ def try_models(
     run_ensemble: bool = True,
     do_shaps: bool = False,
     do_plots: bool = False
-) -> None:
+) -> dict:
     """
     Tries out predictive models on the given SalesUniversePair. Optimized for speed
     and iteration, doesn't finalize results or write anything to disk.
@@ -1590,9 +1590,14 @@ def try_models(
         Flag to run SHAP analysis. Defaults to False.
     do_plots : bool, optional
         Flag to plot scatterplots. Defaults to False.
+
+    Returns
+    -------
+    dict[str, MultiModelResults]
+        Each model group's results and benchmark, by model group (nothing is written).
     """
 
-    openavmkit.model_runner.run_models(
+    return openavmkit.model_runner.run_models(
         sup,
         settings,
         save_params,
@@ -2036,7 +2041,7 @@ def finalize_models(
     run_main: bool = True,
     run_vacant: bool = True,
     run_ensemble: bool = True,
-) -> None:
+) -> dict:
     """
     Tries out predictive models on the given SalesUniversePair, finalizes results and writes to disk.
 
@@ -2069,11 +2074,11 @@ def finalize_models(
 
     Returns
     -------
-    MultiModelResults
-        The MultiModelResults containing all model results and benchmarks.
+    dict[str, MultiModelResults]
+        Each model group's results and benchmark, by model group.
     """
 
-    openavmkit.model_runner.run_models(
+    return openavmkit.model_runner.run_models(
         sup,
         settings,
         save_params,
