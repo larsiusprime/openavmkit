@@ -123,3 +123,26 @@ def _magnitude_matches(mse_text, rmse_squared, tol=0.02):
     if value == 0:
         return rmse_squared == 0
     return abs(value - rmse_squared) / value < tol
+
+
+def test_academic_metrics_are_numbers_the_printout_agrees_with():
+    from openavmkit.model_runner import academic_metrics
+
+    rng = np.random.default_rng(3)
+    y_true = np.concatenate([rng.uniform(100_000, 400_000, 80), [1_000_000.0]])
+    y_pred = y_true * rng.uniform(0.9, 1.1, len(y_true))
+    y_pred[-1] = y_true[-1] * 4.0
+    all_results = SimpleNamespace(model_results={"modelA": _make_result(y_true, y_pred)})
+
+    untrimmed, trimmed = academic_metrics(all_results, max_trim=0.05)
+    assert list(untrimmed.columns) == ["count", "MAPE", "MSE", "RMSE", "m.ratio", "avg.ratio", "VEI", "VEI_sig", "Slope"]
+    row, trow = untrimmed.loc["modelA"], trimmed.loc["modelA"]
+    assert row["count"] == 81 and trow["count"] < 81
+    assert row["RMSE"] == pytest.approx(np.sqrt(row["MSE"]))
+    assert row["VEI_sig"] == 0.5
+
+    text_untrimmed, text_trimmed = _tables(
+        _model_performance_metrics("test_group", all_results, "Test", max_trim=0.05)
+    )
+    assert _num(text_untrimmed["modelA"]["MAPE"]) == pytest.approx(row["MAPE"], abs=0.005)
+    assert _num(text_trimmed["modelA"]["RMSE"]) == pytest.approx(trow["RMSE"], abs=0.5)

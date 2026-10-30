@@ -5002,25 +5002,24 @@ def _get_earliest_and_latest_date(df: pd.DataFrame):
     return earliest_date, latest_date
 
 
-def _model_performance_metrics(
-    model_group: str, 
-    all_results: MultiModelResults, 
-    title: str,
-    max_trim: float
-):
-    # Get first model_results from all_results:
-    first_results: SingleModelResults = list(all_results.model_results.values())[0]
-    test_count = len(first_results.df_test)
-    sales_count = len(first_results.df_sales)
-    
-    earliest_date, latest_date = _get_earliest_and_latest_date(first_results.df_test)    
+def academic_metrics(
+    all_results: MultiModelResults, max_trim: float
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    The "academic" figures for each model on its test set: untrimmed, then trimmed.
 
-    # Add performance metrics table
-    text = f"\n************************************************************\n"
-    text += f"{title} Benchmark ({model_group}) -- Academic Metrics\n"
-    text += f"************************************************************\n"
-    text += f"Testing {test_count}/{sales_count} sales from ({earliest_date} to {latest_date})\n"
-    text += ("=" * 80) + "\n"
+    Each frame has a row per model (indexed by model name) and the columns ``count``,
+    ``MAPE``, ``MSE``, ``RMSE``, ``m.ratio`` (median ratio), ``avg.ratio`` (mean ratio),
+    ``VEI``, ``VEI_sig`` and ``Slope`` (of prediction on price, through the origin), as
+    numbers. The benchmark printout formats them as text.
+
+    Parameters
+    ----------
+    all_results : MultiModelResults
+        One model group's results.
+    max_trim : float
+        The ratio study's trim, as ``_get_max_ratio_study_trim`` gives it.
+    """
     metrics_data = {
         "Model": [],
         "count": [],
@@ -5143,9 +5142,33 @@ def _model_performance_metrics(
         trimmed_data["VEI_sig"].append(ve_trim["vei_significance"])
         trimmed_data["Slope"].append(slope_trim)
 
-    # Create and display metrics DataFrame
-    metrics_df = pd.DataFrame(metrics_data)
-    metrics_df.set_index("Model", inplace=True)
+    columns = ["count", "MAPE", "MSE", "RMSE", "m.ratio", "avg.ratio", "VEI", "VEI_sig", "Slope"]
+    metrics_df = pd.DataFrame(metrics_data).set_index("Model")[columns]
+    trimmed_df = pd.DataFrame(trimmed_data).set_index("Model")[columns]
+    return metrics_df, trimmed_df
+
+
+def _model_performance_metrics(
+    model_group: str, 
+    all_results: MultiModelResults, 
+    title: str,
+    max_trim: float
+):
+    # Get first model_results from all_results:
+    first_results: SingleModelResults = list(all_results.model_results.values())[0]
+    test_count = len(first_results.df_test)
+    sales_count = len(first_results.df_sales)
+    
+    earliest_date, latest_date = _get_earliest_and_latest_date(first_results.df_test)    
+
+    # Add performance metrics table
+    text = f"\n************************************************************\n"
+    text += f"{title} Benchmark ({model_group}) -- Academic Metrics\n"
+    text += f"************************************************************\n"
+    text += f"Testing {test_count}/{sales_count} sales from ({earliest_date} to {latest_date})\n"
+    text += ("=" * 80) + "\n"
+    metrics_df, trimmed_df = academic_metrics(all_results, max_trim)
+    # Format them for display
     metrics_df["count"] = metrics_df["count"].apply(lambda x: f"{x:,}").astype(str)
     metrics_df["MSE"] = metrics_df["MSE"].apply(lambda x: fancy_format(x)).astype(str)
     metrics_df["RMSE"] = metrics_df["RMSE"].apply(lambda x: f"{x:,.0f}").astype(str)
@@ -5156,8 +5179,6 @@ def _model_performance_metrics(
     metrics_df["VEI"] = metrics_df["VEI"].apply(lambda x: f"{x:.2f}").astype(str)
     metrics_df["VEI_sig"] = metrics_df["VEI_sig"].apply(lambda x: f"{x:.2f}").astype(str)
 
-    trimmed_df = pd.DataFrame(trimmed_data)
-    trimmed_df.set_index("Model", inplace=True)
     trimmed_df["count"] = trimmed_df["count"].apply(lambda x: f"{x:,}").astype(str)
     trimmed_df["MSE"] = trimmed_df["MSE"].apply(lambda x: fancy_format(x)).astype(str)
     trimmed_df["RMSE"] = trimmed_df["RMSE"].apply(lambda x: f"{x:,.0f}").astype(str)
