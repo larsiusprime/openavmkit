@@ -108,6 +108,7 @@ def _fake_smr():
         cod_trim=8.0,
         prd_trim=1.0,
         prb_trim=0.0,
+        median_ratio_trim=1.0,
     )
     pred = SimpleNamespace(ratio_study=rs)
     return SimpleNamespace(

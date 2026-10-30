@@ -1660,6 +1660,9 @@ class SingleModelResults:
         self.ve_sales_lookback = get_vertical_equity_scores(
             self.df_sales_lookback, self.dep_var_test, self.field_prediction
         )
+        self.ve_sales_lookback_trim = get_vertical_equity_scores(
+            self.pred_sales_lookback.df_trim, self.dep_var_test, self.field_prediction
+        )
         # The benchmark's utility on the study set: on the same predictions as its other figures there.
         self.utility_study = self.pred_sales_lookback.mape * 100 if holdout else None
 

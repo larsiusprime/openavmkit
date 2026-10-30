@@ -2337,6 +2337,9 @@ def _calc_benchmark(
         "cod_trim": [],
         "prd_trim": [],
         "prb_trim": [],
+        "median_ratio_trim": [],
+        "vei_trim": [],
+        "vei_sig_trim": [],
         "chd": [],
     }
     for key in model_results:
@@ -2383,6 +2386,16 @@ def _calc_benchmark(
             data["cod_trim"].append(pred_results.ratio_study.cod_trim)
             data["prd_trim"].append(pred_results.ratio_study.prd_trim)
             data["prb_trim"].append(pred_results.ratio_study.prb_trim)
+            # The rest of the trimmed figures, on the same rows. Kept in the frames for callers
+            # that read them; print() leaves them out, so the printed benchmark is as it was.
+            data["median_ratio_trim"].append(pred_results.ratio_study.median_ratio_trim)
+            if kind == "univ":
+                ve_trim = getattr(results, "ve_sales_lookback_trim", None)
+            else:
+                ve_trim = getattr(results, "ve_test_trim", None)
+            ve_trim = ve_trim or {}
+            data["vei_trim"].append(np.nan if kind == "test_post_val" else ve_trim.get("vei", np.nan))
+            data["vei_sig_trim"].append(ve_trim.get("vei_significance", np.nan))
 
             chd_results = None
             if kind == "univ":
@@ -2431,12 +2444,16 @@ def _calc_benchmark(
     return results
 
 
+# Columns the benchmark frames carry for callers but that its printed tables leave out.
+_NOT_PRINTED = ("median_ratio_trim", "vei_trim", "vei_sig_trim")
+
+
 def _format_benchmark_df(df: pd.DataFrame, transpose: bool = True):
     """
     Format a benchmark DataFrame for display.
     """
     # Format a copy: the frames are the benchmark's own, and callers read their numbers after printing.
-    df = df.copy()
+    df = df.drop(columns=[c for c in _NOT_PRINTED if c in df.columns])
     formats = {
         "utility_score": fancy_format,
         "count_sales": "{:,.0f}",
