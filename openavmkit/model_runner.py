@@ -2398,6 +2398,8 @@ def _format_benchmark_df(df: pd.DataFrame, transpose: bool = True):
     """
     Format a benchmark DataFrame for display.
     """
+    # Format a copy: the frames are the benchmark's own, and callers read their numbers after printing.
+    df = df.copy()
     formats = {
         "utility_score": fancy_format,
         "count_sales": "{:,.0f}",
