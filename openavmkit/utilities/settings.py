@@ -224,6 +224,16 @@ def get_assessor_holdout_mode(s: dict) -> str:
     return str(mode).lower()
 
 
+def get_outside_models(s: dict) -> list[str]:
+    """Return the models whose values were made outside openavmkit (``pass_through`` models of a vendor's AVM,
+    say), listed in ``analysis.ratio_study.outside_models``.
+
+    Like the assessor's, their holdout status is unknown: they're left off the pre-valuation random holdout
+    with it (unless ``assessor_holdout`` is ``"shared"``). Default: none.
+    """
+    return list(s.get("analysis", {}).get("ratio_study", {}).get("outside_models", []) or [])
+
+
 def get_look_back_dates(s: dict):
     rs = s.get("analysis", {}).get("ratio_study", {})
     look_back_years = rs.get("look_back_years", 1)

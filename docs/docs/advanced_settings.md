@@ -1586,6 +1586,13 @@ Declares how the assessor's values relate to openavmkit's test holdout, controll
 - **`"shared"`** — you certify the assessor's values honor this same test holdout, so the assessor **is** shown on the random holdout. Use this when *you* are the assessor (or know the holdout status). See [the basics → when you are the assessor](the_basics.md#when-you-are-the-assessor).
 - **Source** — `get_assessor_holdout_mode` in [openavmkit/utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py)
 
+### `analysis.ratio_study.outside_models`
+
+Models whose values were made outside openavmkit: a vendor's AVM or last year's values, run as `pass_through` models. Like the assessor's, their holdout status is unknown, so they're left off the random pre-valuation holdout whenever the assessor is (that is, unless `assessor_holdout` is `"shared"`); they're still shown on the post-valuation holdout and the study set.
+
+- **Default** — none: every model is shown on the holdout, as before.
+- **Source** — `get_outside_models` in [openavmkit/utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py)
+
 ### `analysis.ratio_study.study_set_predictions`
 
 Which predictions the models are judged by on the **study set** (the sales in the `look_back_years` before the valuation date, where the assessor is audited).

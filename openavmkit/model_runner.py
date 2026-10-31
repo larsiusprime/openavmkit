@@ -133,6 +133,7 @@ from openavmkit.utilities.settings import (
     _get_max_ratio_study_trim,
     get_look_back_dates,
     get_assessor_holdout_mode,
+    get_outside_models,
     area_unit,
     length_unit
 )
@@ -288,9 +289,10 @@ class MultiModelResults:
     df_univ_orig: pd.DataFrame
     df_sales_orig: pd.DataFrame
     drop_assessor_from_test: bool
+    outside: tuple
 
     def __init__(
-        self, model_results: dict[str, SingleModelResults], benchmark: BenchmarkResults, df_univ: pd.DataFrame, df_sales: pd.DataFrame, drop_assessor_from_test: bool = False
+        self, model_results: dict[str, SingleModelResults], benchmark: BenchmarkResults, df_univ: pd.DataFrame, df_sales: pd.DataFrame, drop_assessor_from_test: bool = False, outside: tuple = ()
     ):
         """Initialize a MultiModelResults instance.
 
@@ -304,12 +306,15 @@ class MultiModelResults:
             Whether the assessor should be left off the pre-valuation "Test set". Stored so
             that ``add_model`` (which recomputes the benchmark, e.g. when the ensemble is
             added) preserves the same choice as the initial ``_calc_benchmark`` call.
+        outside: tuple
+            Models whose values were made outside openavmkit: left off the "Test set" with the assessor.
         """
         self.model_results = model_results
         self.benchmark = benchmark
         self.df_univ_orig = df_univ
         self.df_sales_orig = df_sales
         self.drop_assessor_from_test = drop_assessor_from_test
+        self.outside = tuple(outside)
 
     def add_model(self, model: str, results: SingleModelResults):
         """Add a new model's results and update the benchmark.
@@ -326,7 +331,7 @@ class MultiModelResults:
         # drop choice -- otherwise adding the ensemble model would silently re-introduce the
         # assessor into the Test-set comparison.
         self.benchmark = _calc_benchmark(
-            self.model_results, drop_assessor_from_test=self.drop_assessor_from_test
+            self.model_results, drop_assessor_from_test=self.drop_assessor_from_test, outside=self.outside
         )
 
 
@@ -2296,7 +2301,7 @@ def run_ensemble(
 
 
 def _calc_benchmark(
-    model_results: dict[str, SingleModelResults], drop_assessor_from_test: bool = False
+    model_results: dict[str, SingleModelResults], drop_assessor_from_test: bool = False, outside: tuple = ()
 ):
     """
     Calculate benchmark statistics from individual model results.
@@ -2310,6 +2315,9 @@ def _calc_benchmark(
         See the note in the body for why; controlled by ``analysis.ratio_study.assessor_holdout``
         at the main call site. Defaults to False (the assessor is kept), which is correct for
         the post-valuation benchmark and for incremental recomputation.
+    outside : tuple, optional
+        Models whose values were made outside openavmkit (``analysis.ratio_study.outside_models``): left off
+        the "Test set" whenever the assessor is, for the same reason.
     """
     data_time = {
         "model": [],
@@ -2430,7 +2438,7 @@ def _calc_benchmark(
     # assessor here (see get_assessor_holdout_mode).
     assessor_in_test = "assessor" in model_results
     if drop_assessor_from_test:
-        df_test = df_test[df_test["model"].ne("assessor")]
+        df_test = df_test[~df_test["model"].isin(["assessor", *outside])]
         assessor_in_test = False
 
     df_test.set_index("model", inplace=True)
@@ -5432,9 +5440,11 @@ def _run_models(
     # the pre-valuation random holdout (we can't know its holdout status); declaring
     # analysis.ratio_study.assessor_holdout: "shared" keeps it in.
     drop_assessor_from_test = get_assessor_holdout_mode(settings) != "shared"
+    outside = tuple(get_outside_models(settings))
     all_results = MultiModelResults(
         model_results=model_results,
-        benchmark=_calc_benchmark(model_results, drop_assessor_from_test=drop_assessor_from_test),
+        benchmark=_calc_benchmark(model_results, drop_assessor_from_test=drop_assessor_from_test, outside=outside),
+        outside=outside,
         df_univ=df_univ,
         df_sales=df_sales,
         drop_assessor_from_test=drop_assessor_from_test,
