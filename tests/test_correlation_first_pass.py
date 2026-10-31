@@ -31,3 +31,19 @@ def test_first_pass_drops_no_correlation():
 def test_nothing_left():
     out = calc_correlations(_x()[["price", "noise"]], 0.1, min_strength=0.05)
     assert out["weak"] == ["noise"] and len(out["initial"]) == 0
+
+
+def test_without_overlap_the_score_is_the_correlation_with_the_target_alone():
+    """overlap=False: a near-duplicate of a strong variable keeps its own score (VIF judges overlap); only what's
+    weakly related to the target goes."""
+    rng = np.random.default_rng(1)
+    n = 500
+    a = rng.normal(size=n)
+    twin = a + rng.normal(scale=0.05, size=n)  # nearly a
+    noise = rng.normal(size=n)
+    y = 2 * a + rng.normal(scale=0.5, size=n)
+    x = pd.DataFrame({"y": y, "a": a, "twin": twin, "noise": noise})
+    out = calc_correlations(x, 0.1, overlap=False)
+    kept = set(out["final"]["variable"])
+    assert {"a", "twin"} <= kept and "noise" not in kept
+    assert (out["initial"]["corr_clarity"] == 1.0).all()

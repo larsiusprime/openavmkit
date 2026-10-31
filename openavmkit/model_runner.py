@@ -696,6 +696,7 @@ def get_variable_recommendations(
             thresh.get("correlation", 0.1),
             do_plots=do_plots,
             min_strength=thresh.get("correlation_strength"),
+            overlap=bool(feature_selection.get("correlation_overlap", True)),
         )
         
         # Remove bad variables

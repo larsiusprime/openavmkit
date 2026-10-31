@@ -800,6 +800,7 @@ def calc_correlations(
     threshold: float = 0.1,
     do_plots: bool = False,
     min_strength: float | None = None,
+    overlap: bool = True,
 ) -> dict:
     """
     Calculate correlations and iteratively drop variables with low combined scores.
@@ -823,6 +824,12 @@ def calc_correlations(
         weaker than this, in absolute value, are dropped before anything else, so they
         neither get a combined score nor lower the others' clarity. None (the default)
         skips it.
+    overlap : bool, optional
+        Whether overlap counts: a variable's overlap with the others lowers its score (its
+        clarity, squared), and one more correlated with a stronger variable than with the
+        target is dropped. False: the score is its correlation with the target alone and
+        nothing is dropped for overlapping; overlap is left to another test (VIF). Defaults
+        to True.
 
     Returns
     -------
@@ -882,10 +889,13 @@ def calc_correlations(
 
         strength = naive_corr.iloc[:, 0].abs().iloc[1:]
 
-        clarity = 1 - (
-            (naive_corr_sans_target.abs().sum(axis=1) - 1.0)
-            / (len(naive_corr_sans_target.columns) - 1)
-        )
+        if overlap:
+            clarity = 1 - (
+                (naive_corr_sans_target.abs().sum(axis=1) - 1.0)
+                / (len(naive_corr_sans_target.columns) - 1)
+            )
+        else:  # judged on the relation to the target alone; overlap is left to another test (VIF)
+            clarity = pd.Series(1.0, index=naive_corr_sans_target.index)
 
         score = strength * clarity * clarity
 
@@ -928,8 +938,9 @@ def calc_correlations(
     )
     
     all_dropped = []
-    
-    for current_variable in ordered_by_target:
+
+    # Without overlap, a variable more related to another than to the target stays: VIF judges overlap.
+    for current_variable in ordered_by_target if overlap else []:
         if current_variable not in remaining:
             continue
 
@@ -961,10 +972,13 @@ def calc_correlations(
 
     naive_corr_sans_target = naive_corr.iloc[1:, 1:]
     strength = naive_corr.iloc[:, 0].abs().iloc[1:]
-    clarity = 1 - (
-        (naive_corr_sans_target.abs().sum(axis=1) - 1.0)
-        / (len(naive_corr_sans_target.columns) - 1)
-    )
+    if overlap:
+        clarity = 1 - (
+            (naive_corr_sans_target.abs().sum(axis=1) - 1.0)
+            / (len(naive_corr_sans_target.columns) - 1)
+        )
+    else:
+        clarity = pd.Series(1.0, index=strength.index)
     score = strength * clarity * clarity
 
     data = {"corr_strength": strength, "corr_clarity": clarity, "corr_score": score}
