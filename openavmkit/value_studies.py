@@ -118,9 +118,12 @@ def run_value_field_studies(
         ``"bootstrap"`` (default) or ``"iaao"``: the order-statistic interval of the Standard's Appendix D.2, as
         the VEI uses.
     standards : dict, optional
-        Targets to judge each study against (``IAAO_STANDARDS``'s keys); adds ``verdict``.
+        Targets to judge each study against (``IAAO_STANDARDS``'s keys); adds ``verdict``. ``by_class`` (optional):
+        class -> its own ``level``, ``prb``, ``prb_unacceptable``, ``vei`` and ``min_sales``, in place of the ones
+        for every class, so each standard (a state's, an office's) can set all its own targets.
     classes : dict, optional
-        Model group -> class (``residential``, ``income``, ``vacant``, or None: not judged), for the COD target.
+        Model group -> class (``residential``, ``income``, ``vacant``, any name ``standards`` has, or None: not
+        judged), for the COD target (and the class's own targets, under ``by_class``).
     region : str, optional
         A location field (a neighborhood, say): adds ``regions``, the median ratio by the price level of the region
         each sale is in (openratiostudy.com's "neighborhood price level" statistics; not an IAAO test). It tells
@@ -255,6 +258,8 @@ def _verdict(g: dict, standards: dict, cls: Optional[str]) -> dict:
     - prb: met within the good range; missed outside the unacceptable one; between, neither.
     - vei: met unless significantly outside the limit (Appendix E steps 5 to 7).
     """
+    own = ((standards.get("by_class") or {}).get(cls) or {}) if cls else {}
+    standards = {**standards, **own}
     n = g["ratio"]["count"]
     cod_range = (standards.get("cod") or {}).get(cls) if cls else None
     if isinstance(cod_range, (int, float)):
@@ -286,6 +291,10 @@ def _verdict(g: dict, standards: dict, cls: Optional[str]) -> dict:
         elif b < bad[0] or b > bad[1]:
             prb = False
     vei = v.get("vei_verdict")
+    if "vei" in own:  # the class's own limit: read the VEI again against it
+        strata = v.get("vei_strata") or []
+        overlap = _overlap(strata[0], strata[-1]) if len(strata) >= 2 else None
+        vei = _vei_verdict(v.get("vei"), v.get("vei_significance"), overlap, float(own["vei"]))
     return out | {
         "level": level,
         "cod": cod,

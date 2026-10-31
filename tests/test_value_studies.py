@@ -164,3 +164,27 @@ def test_the_modified_kakwani_index():
 	assert abs(calc_mki(price * 0.9, price) - 1.0) < 1e-12  # one ratio for all: equitable
 	assert calc_mki(np.array([150.0, 220, 300, 360, 420]), price) < 1  # cheaper over-assessed: regressive
 	assert calc_mki(np.array([60.0, 160, 300, 440, 600]), price) > 1  # progressive
+
+
+def test_each_class_can_have_its_own_targets():
+	"""standards.by_class: a class's own level, PRB, VEI and minimum sales, in place of the ones for every class."""
+	from openavmkit.value_studies import _verdict
+
+	g = {
+		"ratio": {"count": 40, "median_ratio": {"value": 0.85, "low": 0.80, "high": 0.88}, "cod": {"value": 12.0}},
+		"vertical": {
+			"prb": {"value": 0.07},
+			"vei": 15.0,
+			"vei_significance": 12.0,
+			"vei_verdict": "progressive",
+			"vei_strata": [{"low": 0.8, "high": 0.9}, {"low": 0.95, "high": 1.05}],
+		},
+	}
+	everyone = {"level": [0.90, 1.10], "prb": [-0.05, 0.05], "prb_unacceptable": [-0.06, 0.06], "vei": 10.0,
+		"cod": {"state": [5, 15]}}
+	plain = _verdict(g, everyone, "state")
+	assert (plain["level"], plain["prb"], plain["vei"]) == (False, False, False)
+	own = everyone | {"by_class": {"state": {"level": [0.80, 1.20], "prb": [-0.10, 0.10], "vei": 20.0}}}
+	mine = _verdict(g, own, "state")
+	assert (mine["level"], mine["prb"], mine["vei"], mine["cod"]) == (True, True, True, True)
+	assert _verdict(g, everyone | {"by_class": {"state": {"min_sales": 50}}}, "state")["judged"] is False
