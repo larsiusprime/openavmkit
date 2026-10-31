@@ -299,6 +299,13 @@ Replace OpenAVMKit's built-in time-adjustment engine with a precomputed CSV for 
 - **Source** — `read_schedule`, `read_time_adjustment_from_file` in [openavmkit/time_adjustment.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/time_adjustment.py)
 - **When to use** — your jurisdiction publishes its own time-adjustment factors; you want reproducible adjustments across runs; you're debugging modeling and want to hold time-adjustment constant.
 
+### `data.process.time_adjustment.per.<model_group>`
+
+What a group's index is of: `"impr"` (price per finished area) or `"land"` (price per land area). `"per": {"condos": "impr"}`.
+
+- **Default** — unset: worked out from the group's sales (land when its price per land area is close to its price per finished area and many of its sales are of land; else finished area).
+- **When to use** — when the automatic choice is wrong: condo units, whose land is a small share of a shared parcel's, can be indexed on land and give a meaningless index.
+
 ### `data.process.time_adjustment.borrow.<model_group>`
 
 Use another model group's time adjustment: `"borrow": {"apartments": "small_multi_family"}`.

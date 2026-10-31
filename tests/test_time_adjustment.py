@@ -289,3 +289,21 @@ def test_calculate_time_adjustment_handles_mixed_v_i_normally():
     f"Did not expect fallback warning for healthy mixed data; got: {msgs}"
   assert not any("flat multiplier" in m for m in msgs), \
     f"Did not expect flat-schedule warning for healthy data; got: {msgs}"
+
+
+def test_the_index_can_be_of_finished_or_land_area_as_the_settings_say():
+  # Prices flat per finished area, rising per land area (each sale's land smaller than the last): what the index is
+  # of decides whether prices moved. time_adjustment.per.<group> chooses; unset, it's worked out from the sales.
+  df = _build_minimal_sales_df(36)
+  df["sale_price"] = 150000.0
+  df["land_area_sqft"] = np.linspace(6000.0, 3000.0, len(df))
+  flat = calculate_time_adjustment(df, settings={}, period="Q", per="impr")
+  rising = calculate_time_adjustment(df, settings={}, period="Q", per="land")
+  assert abs(flat["value"].iloc[-1] / flat["value"].iloc[0] - 1) < 1e-9
+  assert rising["value"].iloc[-1] / rising["value"].iloc[0] > 1.5
+  from openavmkit.time_adjustment import _schedule
+
+  df["model_group"] = "condos"
+  settings = {"data": {"process": {"time_adjustment": {"per": {"condos": "impr"}}}}}
+  s = _schedule(df, settings, "condos", "Q", False)
+  assert abs(s["start_indexed"].iloc[-1] / s["start_indexed"].iloc[0] - 1) < 1e-9

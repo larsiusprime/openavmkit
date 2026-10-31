@@ -30,7 +30,7 @@ from openavmkit.utilities.settings import area_unit, get_time_adjustment_instruc
 
 
 def calculate_time_adjustment(
-    df_sales_in: pd.DataFrame, settings: dict, period: str = "M", verbose: bool = False
+    df_sales_in: pd.DataFrame, settings: dict, period: str = "M", verbose: bool = False, per: str | None = None
 ) -> pd.DataFrame:
     """
     Calculate a time adjustment multiplier for sales data.
@@ -49,6 +49,9 @@ def calculate_time_adjustment(
         Initial period type ("M", "Q", or "Y"). Defaults to "M".
     verbose : bool, optional
         If True, print progress information. Defaults to False.
+    per : str, optional
+        What the index is of: "impr" (price per finished area) or "land" (price per land
+        area). None (the default) works it out from the sales (_determine_value_driver).
 
     Returns
     -------
@@ -94,8 +97,9 @@ def calculate_time_adjustment(
         df_sales, "sale_price", f"land_area_{unit}"
     )
 
-    # Determine whether land or improvement drives value the modeling group:
-    per = _determine_value_driver(df_sales, settings)
+    # Determine whether land or improvement drives value the modeling group, unless the settings say:
+    if per not in ("impr", "land"):
+        per = _determine_value_driver(df_sales, settings)
     sale_field = f"sale_price_per_{per}_{unit}"
 
     df_per_unfiltered = df_sales[df_sales[sale_field].gt(0)]
@@ -318,7 +322,8 @@ def _schedule(df_sales: pd.DataFrame, settings: dict, model_group: str, period: 
             + " ".join(problems)
             + " Working it out from the sales instead."
         )
-    df_time = calculate_time_adjustment(df_sales, settings, period, verbose)
+    per = get_time_adjustment_instructions(settings).get("per", {}).get(model_group)
+    df_time = calculate_time_adjustment(df_sales, settings, period, verbose, per=per)
     df_time = df_time.rename(columns={"value": "start_indexed"})
     df_time["end_indexed"] = df_time["start_indexed"] / df_time["start_indexed"].iloc[-1]
     df_time["correction_factor"] = 1 / df_time["end_indexed"]
