@@ -907,7 +907,8 @@ It does four things, all reusing existing machinery:
       "link": { "method": "id_prefix", "id_field": "parcel_num", "prefix_len": 9, "from": "geo_parcels" },
       "group_field": "condo_group",
       "borrow_geometry": true,
-      "land_share": { "method": "field", "field": "land_area_sqft" }
+      "land_share": { "method": "field", "field": "land_area_sqft" },
+      "inherit": ["zoning", "school_district"]
     }
   }
 }
@@ -919,6 +920,7 @@ It does four things, all reusing existing machinery:
 | `link.method` | How to find each unit's building polygon. `id_prefix`: units whose `id_field` (e.g. `parcel_num`) share a prefix of length `prefix_len` belong to one building; the largest polygon with that prefix in `from` is the representative. `parent_id`: `link.parent_field` names the building/shared-parcel key directly. `spatial`: point-in-polygon (not yet implemented). |
 | `group_field` | Output column holding the building id. Default `condo_group`. |
 | `borrow_geometry` | If true, inject the building polygon as the geometry of units that lack one. |
+| `inherit` | Optional. Fields each unit takes from the parcel it's on, after the universe merge, where its own is blank: the land's and the location's (zoning, a school district, a neighborhood column), which the shape doesn't bring. The unit's own value wins. A field no parcel has is skipped with a warning. Unset: nothing is copied. |
 | `land_share.method` | `field`: copy a legible per-unit land field. `floor_area`: pro-rate — `alloc = (unit_floor / building_total_floor) × building_polygon_area`, summing the building's units back to the parcel. |
 
 #### Fields added

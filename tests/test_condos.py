@@ -144,3 +144,32 @@ def test_floor_area_from_another_file_is_shared_after_the_merge():
     assert abs(alloc.sum() - parcel_area) < 1e-3 * parcel_area
     assert abs(alloc["U2"] - 2 * alloc["B001"]) < 1e-6
     assert (univ["land_area_sqft"].astype(float) == alloc).all()
+
+
+def test_units_inherit_the_parcels_fields_where_theirs_are_blank():
+    """condos.inherit: after the merge, each unit takes the listed fields of the parcel it's on, keeping its own
+    where it has one; a field no parcel has is skipped."""
+    import warnings
+
+    from openavmkit.condos import apply_inherited_fields
+
+    dfs, _ = _frames([None, None, None])
+    dfs["char"]["zoning"] = ["R-1", None, "C-2"]  # U3 has its own
+    cfg = _condos_cfg({"method": "equal"}) | {"inherit": ["zoning", "school_district"]}
+    s = _settings(cfg)
+    out = resolve_condos(dfs, s)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        univ = apply_inherited_fields(out["char"].copy(), s).set_index("key")
+    assert univ["zoning"].to_dict() == {"B001": "R-1", "U2": "R-1", "U3": "C-2"}
+    assert any("school_district" in str(w.message) for w in caught)
+
+
+def test_no_inherit_changes_nothing():
+    from openavmkit.condos import apply_inherited_fields
+
+    dfs, _ = _frames([None, None, None])
+    dfs["char"]["zoning"] = ["R-1", None, None]
+    s = _settings(_condos_cfg({"method": "equal"}))
+    out = resolve_condos(dfs, s)
+    assert apply_inherited_fields(out["char"].copy(), s)["zoning"].isna().sum() == 2
