@@ -4322,30 +4322,33 @@ def _calc_variable_recommendations(
         }
 
         for state in ["initial", "final"]:
-            # Correlation:
-            dfr_corr = correlation_results[state][corr_fields].copy()
-            dfr_corr["Pass/Fail"] = dfr_corr["corr_score"].apply(
-                lambda x: "✅" if x > thresh_corr else "❌"
-            )
-            for field in corr_fields:
-                if field == "variable":
-                    continue
-                if field not in dfr_corr:
-                    print("missing field", field)
-                dfr_corr[field] = (
-                    dfr_corr[field].apply(lambda x: f"{x:.2f}").astype("string")
+            # Correlation (when it ran):
+            if correlation_results is not None:
+                dfr_corr = correlation_results[state][corr_fields].copy()
+                dfr_corr["Pass/Fail"] = dfr_corr["corr_score"].apply(
+                    lambda x: "✅" if x > thresh_corr else "❌"
                 )
+                for field in corr_fields:
+                    if field == "variable":
+                        continue
+                    if field not in dfr_corr:
+                        print("missing field", field)
+                    dfr_corr[field] = (
+                        dfr_corr[field].apply(lambda x: f"{x:.2f}").astype("string")
+                    )
 
-            dfr_corr = dfr_corr.rename(columns=corr_renames)
-            dfr_corr["Rank"] = range(1, len(dfr_corr) + 1)
-            dfr_corr = dfr_corr[
-                ["Rank", "Variable", "Strength", "Clarity", "Score", "Pass/Fail"]
-            ]
-            dfr_corr.set_index("Rank", inplace=True)
-            dfr_corr = _apply_dd_to_df_rows(
-                dfr_corr, "Variable", settings, one_hot_descendents
-            )
-            report.set_var(f"table_corr_{state}", df_to_markdown(dfr_corr))
+                dfr_corr = dfr_corr.rename(columns=corr_renames)
+                dfr_corr["Rank"] = range(1, len(dfr_corr) + 1)
+                dfr_corr = dfr_corr[
+                    ["Rank", "Variable", "Strength", "Clarity", "Score", "Pass/Fail"]
+                ]
+                dfr_corr.set_index("Rank", inplace=True)
+                dfr_corr = _apply_dd_to_df_rows(
+                    dfr_corr, "Variable", settings, one_hot_descendents
+                )
+                report.set_var(f"table_corr_{state}", df_to_markdown(dfr_corr))
+            else:
+                report.set_var(f"table_corr_{state}", "N/A")
 
             # TODO: refactor this down to DRY it out a bit
 
