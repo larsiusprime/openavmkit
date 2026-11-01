@@ -863,6 +863,31 @@ def _spatial_lag_kernel(
     return lag, conf
 
 
+# The sale-price lags, by the names `data.process.enrich.spatial_lag.sales` takes (free of the price field's name,
+# so they read the same with or without time adjustment): the price, and per area of building, per area of land, and
+# for vacant land.
+SPATIAL_LAG_SALES = ("price", "price_impr", "price_land", "price_vacant")
+
+
+def spatial_lag_plan(s_sl: dict) -> tuple[bool, set[str]]:
+    """Whether `spatial_lag.only` is set, and which sale-price lags to compute.
+
+    Without ``only`` every sale-price lag is computed, as always, and ``sales`` is ignored. With ``only: true``,
+    exactly those named in ``sales`` (none when it's absent); an unknown name is an error, listing the four.
+    """
+    only = bool(s_sl.get("only", False))
+    sales = s_sl.get("sales")
+    if sales is not None:
+        unknown = [x for x in sales if x not in SPATIAL_LAG_SALES]
+        if unknown:
+            raise ValueError(
+                f"data.process.enrich.spatial_lag.sales: unknown {unknown}. Use any of {list(SPATIAL_LAG_SALES)}."
+            )
+    if not only:
+        return False, set(SPATIAL_LAG_SALES)
+    return True, set(sales or [])
+
+
 def _enrich_sup_spatial_lag_for_model_group(
     sup: SalesUniversePair, 
     settings: dict, 
@@ -928,6 +953,15 @@ def _enrich_sup_spatial_lag_for_model_group(
         )
 
     value_fields = [sale_field, sale_field_vacant, per_land_field, per_impr_field]
+    # `only: true`: just the sale-price lags `sales` names.
+    _, wanted = spatial_lag_plan(s_sl)
+    by_name = {
+        "price": sale_field,
+        "price_vacant": sale_field_vacant,
+        "price_land": per_land_field,
+        "price_impr": per_impr_field,
+    }
+    value_fields = [f for f in value_fields if any(by_name[n] == f for n in wanted)]
 
     # Fold assignments, when this model group runs under cross-validation. The sales-side
     # spatial lag is built out-of-fold from these; see the loop below.
@@ -2854,11 +2888,14 @@ def _enrich_universe_spatial_lag(
 
     s_sl = settings.get("data", {}).get("process", {}).get("enrich", {}).get("spatial_lag", {})
 
-    if "floor_area_ratio" not in df:
+    only, _ = spatial_lag_plan(s_sl)
+    extra_fields = s_sl.get("fields", {})
+    # With `only: true` the derived inputs are worked out only when asked for.
+    if "floor_area_ratio" not in df and (not only or "floor_area_ratio" in extra_fields):
         df["floor_area_ratio"] = div_series_z_safe(
             df[f"bldg_area_finished_{unit}"], df[f"land_area_{unit}"]
         )
-    if "bedroom_density" not in df and "bldg_rooms_bed" in df:
+    if "bedroom_density" not in df and "bldg_rooms_bed" in df and (not only or "bedroom_density" in extra_fields):
         df["bedroom_density"] = div_series_z_safe(
             df["bldg_rooms_bed"], df[f"land_area_{unit}"]
         )
@@ -2883,9 +2920,17 @@ def _enrich_universe_spatial_lag(
         "bldg_condition_num": 5,
     }
 
-    extra_fields = s_sl.get("fields", {})
+    if only:
+        # `only: true`: exactly the fields listed, none of the defaults above.
+        value_fields = {}
     for key in extra_fields:
         value_fields[key] = extra_fields[key]
+    missing = [key for key in extra_fields if key not in df]
+    if missing:
+        warnings.warn(
+            f"data.process.enrich.spatial_lag.fields: {missing} not in the data for model group "
+            f"'{model_group}'; no spatial lag for them."
+        )
 
 
     # Build a cKDTree from df_sales coordinates
