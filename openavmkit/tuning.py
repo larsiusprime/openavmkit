@@ -12,6 +12,8 @@ indirectly through model setup, not as a user-facing operation.
 import glob
 import hashlib
 import os
+import shutil
+import tempfile
 
 import xgboost as xgb
 import lightgbm as lgb
@@ -42,8 +44,32 @@ _TUNING_BATCH_SIZE = 8
 # hyperparameters). It is folded into _study_fingerprint, so a bump invalidates both resume
 # journals and saved params.json files — forcing a re-tune against the new space instead of
 # silently reusing params/trials scored against the old one. v2 = LightGBM/XGBoost lr-floor
-# raised to 0.01 + iteration/leaf caps tightened (2026-06-18).
-_SEARCH_SPACE_VERSION = 2
+# raised to 0.01 + iteration/leaf caps tightened (2026-06-18). v3 = CatBoost tunes an RMSE loss
+# over SymmetricTree only, with max_ctr_complexity=1 (see _CATBOOST_FIXED_PARAMS).
+_SEARCH_SPACE_VERSION = 3
+
+# CatBoost parameters that are fixed rather than searched. They are shared by the tuner
+# (_tune_catboost) AND the final fit (run_catboost), which merges them under the tuned
+# hyperparameters -- Optuna's best_params only carries *searched* keys, so without this merge
+# the shipped model silently trained with CatBoost's defaults instead of the config that was
+# tuned.
+#
+# - loss_function RMSE (eval_metric stays MAPE, so trials are still scored on MAPE): CatBoost's
+#   MAPE loss converges very slowly on price targets -- after 2000 iterations it sat far above
+#   RMSE / MAE / log-RMSE on the same data, so early stopping almost never fired and the search
+#   drifted to the deepest, slowest trees to compensate.
+# - grow_policy SymmetricTree: CatBoost's fast path. Depthwise/Lossguide at depth 10 are ~8x
+#   slower per fit, and their SHAP is far slower too.
+# - max_ctr_complexity 1: no categorical feature *combinations*. With many categoricals the
+#   combination CTRs roughly double per-fit cost (CatBoost's CPU default is 4).
+_CATBOOST_FIXED_PARAMS = {
+    "loss_function": "RMSE",
+    "eval_metric": "MAPE",
+    "bootstrap_type": "Bayesian",
+    "boosting_type": "Plain",
+    "grow_policy": "SymmetricTree",
+    "max_ctr_complexity": 1,
+}
 
 
 def _resolve_cv_inner(cv_inner, n_rows):
@@ -547,30 +573,28 @@ def _tune_catboost(
     if verbose:
         print(f"Tuning Catboost. n_trials={n_trials}, n_splits={n_splits}, use_gpu={use_gpu}")
     
+    # cv() always creates its train_dir (default ./catboost_info) -- allow_writing_files does
+    # not stop it -- and its exists-then-mkdir is not atomic, so parallel CV fold workers
+    # sharing a working directory race on it and one dies with FileExistsError. Give this
+    # tuning call a private, throwaway directory instead.
+    train_dir = tempfile.mkdtemp(prefix="catboost_tune_")
+
     def objective(trial):
         params = {
-            "loss_function": "MAPE",
-            "eval_metric": "MAPE",
+            **_CATBOOST_FIXED_PARAMS,
             "iterations": trial.suggest_int("iterations", 300, 1000),
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             "depth": trial.suggest_int("depth", 4, 10),
             "border_count": trial.suggest_int("border_count", 32, 64),
             "random_strength": trial.suggest_float("random_strength", 0, 10),
             "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 10, log=True),
-            "bootstrap_type": "Bayesian",
             "bagging_temperature": trial.suggest_float("bagging_temperature", 0, 10),
-            "boosting_type": "Plain",
             "task_type": task_type,
             "random_seed": random_state,
             "verbose": False,
-            "grow_policy": trial.suggest_categorical(
-                "grow_policy", ["SymmetricTree", "Depthwise", "Lossguide"]
-            ),
+            "allow_writing_files": False,
+            "train_dir": train_dir,
         }
-
-        # Additional param only for Lossguide
-        if params["grow_policy"] == "Lossguide":
-            params["max_leaves"] = trial.suggest_int("max_leaves", 31, 128)
 
         if _cb_thread_count is not None:
             params["thread_count"] = _cb_thread_count
@@ -615,7 +639,12 @@ def _tune_catboost(
         # rather than grinding all n_trials x n_splits folds. CatBoost uses serial optimize, so the
         # callback applies cleanly. (The MedianPruner above can't save time here — the objective
         # reports its curve only after CatBoost's built-in cv() has already run all folds.)
-        study.optimize(objective, n_trials=remaining, n_jobs=1, callbacks=[_plateau_callback])
+        try:
+            study.optimize(objective, n_trials=remaining, n_jobs=1, callbacks=[_plateau_callback])
+        finally:
+            shutil.rmtree(train_dir, ignore_errors=True)
+    else:
+        shutil.rmtree(train_dir, ignore_errors=True)
 
     if verbose:
         print(
