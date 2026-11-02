@@ -926,7 +926,8 @@ def run_models(
     run_vacant: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
-    do_plots: bool = False
+    do_plots: bool = False,
+    return_results: bool = False,
 ):
     """
     Runs predictive models on the given SalesUniversePair.
@@ -965,11 +966,15 @@ def run_models(
         Whether to compute SHAP values.
     do_plots : bool, optional
         Whether to plot scatterplots
+    return_results : bool, optional
+        Whether to return the results when they aren't saved. Each model group's results are then held until the
+        run ends, rather than freed as the next group starts. Defaults to False.
 
     Returns
     -------
-    MultiModelResults
-        The MultiModelResults containing all model results and benchmarks.
+    dict[str, MultiModelResults]
+        Each model group's results and benchmark, by model group, when they're saved or ``return_results`` is set;
+        otherwise empty.
     """
 
     t = TimingData()
@@ -1028,8 +1033,9 @@ def run_models(
                 do_shaps=do_shaps,
                 do_plots=do_plots
             )
-            if mg_results is not None:
-                # Returned whether or not they're written: a caller trying models reads them here.
+            # Kept to be written, or when the caller asked for them back: otherwise each group's results are let go
+            # as the next starts, so a try holds one group's at a time.
+            if mg_results is not None and (save_results or return_results):
                 dict_all_results[model_group] = mg_results
         t.stop(f"model group: {model_group}")
     t.stop("run model groups")

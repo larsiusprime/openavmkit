@@ -1550,8 +1550,9 @@ def try_models(
     run_vacant: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
-    do_plots: bool = False
-) -> dict:
+    do_plots: bool = False,
+    return_results: bool = False,
+) -> dict | None:
     """
     Tries out predictive models on the given SalesUniversePair. Optimized for speed
     and iteration, doesn't finalize results or write anything to disk.
@@ -1590,14 +1591,19 @@ def try_models(
         Flag to run SHAP analysis. Defaults to False.
     do_plots : bool, optional
         Flag to plot scatterplots. Defaults to False.
+    return_results : bool, optional
+        Return each model group's results, for a caller that reads them (a front end
+        showing the benchmark, say). They're then held in memory until every group has
+        run; unset, each group's are let go as the next starts. Defaults to False.
 
     Returns
     -------
-    dict[str, MultiModelResults]
-        Each model group's results and benchmark, by model group (nothing is written).
+    dict[str, MultiModelResults] or None
+        With ``return_results``, each model group's results and benchmark, by model
+        group (nothing is written); otherwise None.
     """
 
-    return openavmkit.model_runner.run_models(
+    results = openavmkit.model_runner.run_models(
         sup,
         settings,
         save_params,
@@ -1608,8 +1614,10 @@ def try_models(
         run_vacant=run_vacant,
         run_ensemble=run_ensemble,
         do_shaps=do_shaps,
-        do_plots=do_plots
+        do_plots=do_plots,
+        return_results=return_results,
     )
+    return results if return_results else None
 
 
 def _select_outlier_keys(
