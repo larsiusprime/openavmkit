@@ -297,9 +297,12 @@ def _crunch(_df, field, min_count):
             break
 
         if series.value_counts().min() < min_count:
-            # if any of the bins are too small, give up on this level
+            # If any bin at this granularity is too small, fall through to the next
+            # (coarser) crunch level rather than abandoning the search: `break` here
+            # made the 3-bin and 2-bin levels unreachable under every input, so the
+            # "dynamically adapts" promise in the docstring never held.
             too_small = True
-            break
+            continue
         else:
             # if all bins are big enough, return this series
             return series

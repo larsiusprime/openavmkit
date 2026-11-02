@@ -92,6 +92,21 @@ class RatioProxyModel(InferenceModel):
     def __init__(self):
         self.proxy_ratios = {}
         self.proxy_stats = {}
+        self.min_value = 100
+        self.max_value = 100000
+
+    @staticmethod
+    def _group_key(df: pd.DataFrame, group_list) -> pd.Series:
+        """Build the composite group key used to index grouped proxy ratios.
+
+        ``fit`` and ``predict`` MUST build this key the same way. If they disagree
+        (e.g. a raw groupby MultiIndex on one side and a joined string on the other)
+        the lookup silently matches nothing and every row falls through to the
+        global ratio, which defeats the point of configuring grouped inference.
+        Going through ``astype(str)`` on both sides also keeps non-string group
+        columns (ints, categoricals) matching.
+        """
+        return df[list(group_list)].astype(str).agg("_".join, axis=1)
 
     def fit(self, df: pd.DataFrame, target: str, model_settings: Dict[str, Any]) -> None:
         """
@@ -110,6 +125,13 @@ class RatioProxyModel(InferenceModel):
         proxies = model_settings.get("proxies", [])
         locations = model_settings.get("locations", [])
         group_by = model_settings.get("group_by", [])
+
+        # Inferred values outside this range are discarded. The defaults preserve the
+        # long-standing hardcoded window, which suits building areas in sqft but
+        # silently drops legitimate values for larger-scale fields (land area, values),
+        # so it is overridable per field.
+        self.min_value = model_settings.get("min_value", 100)
+        self.max_value = model_settings.get("max_value", 100000)
 
         # Add global grouping
         locations.append("___everything___")
@@ -156,7 +178,7 @@ class RatioProxyModel(InferenceModel):
                 group_list.append(location)
 
                 try:
-                    grouped = df_valid.groupby(group_list)
+                    grouped = df_valid.groupby(self._group_key(df_valid, group_list))
                     median_ratios = grouped[f"ratio_{proxy}"].median()
                     if not median_ratios.empty:
                         self.proxy_ratios[(proxy, tuple(group_list))] = median_ratios
@@ -187,7 +209,7 @@ class RatioProxyModel(InferenceModel):
             if len(group_list) > 0:
                 try:
                     # Get group-specific ratios
-                    group_key = df[list(group_list)].astype(str).agg("_".join, axis=1)
+                    group_key = self._group_key(df, group_list)
                     ratios = self.proxy_ratios[(proxy, group_list)]
 
                     # Only apply ratios for existing group combinations
@@ -201,24 +223,22 @@ class RatioProxyModel(InferenceModel):
                             & group_key.isin(ratios.index)
                         )
 
-                        # Additional validation
+                        # Look the ratios up via .map() so the result stays indexed by
+                        # the frame's own index. Indexing `ratios` by the key Series
+                        # instead would return a group-key-indexed Series, which then
+                        # misaligns when multiplied against the proxy values.
                         proxy_values = df.loc[mask, proxy]
-                        ratio_values = ratios[group_key[mask]]
+                        ratio_values = group_key[mask].map(ratios)
                         predicted_values = ratio_values * proxy_values
 
-                        # Create validation mask aligned with original mask
-                        valid_predictions = pd.Series(False, index=df.index)
-                        valid_predictions.loc[mask] = (predicted_values > 100) & (
-                            predicted_values < 100000
+                        # Keep only predictions inside the acceptance window; the rest
+                        # stay NaN so a coarser group or the global ratio can fill them
+                        valid = (predicted_values > self.min_value) & (
+                            predicted_values < self.max_value
                         )
-
-                        # Combine masks
-                        final_mask = mask & valid_predictions
-
-                        # Apply predictions
-                        predictions.loc[final_mask] = predicted_values[
-                            valid_predictions[mask]
-                        ]
+                        predictions.loc[predicted_values.index[valid]] = (
+                            predicted_values[valid]
+                        )
                 except Exception as e:
                     warnings.warn(
                         f"Failed to apply grouped ratios for {proxy} with groups {group_list}: {str(e)}"
@@ -234,8 +254,8 @@ class RatioProxyModel(InferenceModel):
 
                 # Create validation mask aligned with original mask
                 valid_predictions = pd.Series(False, index=df.index)
-                valid_predictions.loc[mask] = (predicted_values > 100) & (
-                    predicted_values < 100000
+                valid_predictions.loc[mask] = (predicted_values > self.min_value) & (
+                    predicted_values < self.max_value
                 )
 
                 # Combine masks

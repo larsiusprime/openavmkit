@@ -1,5 +1,9 @@
 site_name: OpenAVMKit
 site_description: Free and open source AVM (Automated Valuation Model) for real estate mass appraisal
+# site_url is required for MkDocs to emit a non-empty sitemap.xml and to stamp a
+# <link rel="canonical"> on every page. Without it the sitemap ships as an empty
+# <urlset> and nothing is canonicalized.
+site_url: https://www.openavmkit.com/
 repo_url: https://github.com/larsiusprime/openavmkit
 
 theme:

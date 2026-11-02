@@ -9,8 +9,9 @@ description = "Open-source automated valuation model (AVM) toolkit"
 # links to absolute GitHub URLs so they work on PyPI (which renders the README without repo
 # context). The README file itself stays relative for GitHub and the docs site.
 requires-python = ">=3.11"
-# Dual license (AGPLv3 OR commercial).
-license = { file = "LICENSE-AGPLv3" }
+# Dual license (AGPLv3 OR commercial). LICENSE is the dual-license summary; it
+# points at LICENSE-AGPL for the full AGPL-3.0 text and describes the commercial option.
+license = { file = "LICENSE" }
 authors = [{ name = "Lars A. Doucet", email = "lars.doucet+openavmkit@gmail.com" }]
 dynamic = ["version", "dependencies", "readme"]
 keywords = ["avm", "mass appraisal", "valuation", "gis", "real estate"]
@@ -55,9 +56,9 @@ openavmkit = [
   "resources/**/*.txt",
 ]
 
-# Ensure both license files land in sdists
+# Ensure the license files land in sdists and wheels
 [tool.setuptools]
-license-files = ["LICENSE-AGPLv3", "LICENSE-COMMERCIAL"]
+license-files = ["LICENSE", "LICENSE-AGPL"]
 include-package-data = true
 
 [tool.setuptools_scm]

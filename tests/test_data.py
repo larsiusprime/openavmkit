@@ -1,3 +1,5 @@
+import os
+import warnings
 import numpy as np
 import pandas as pd
 from IPython.display import display
@@ -5,7 +7,9 @@ from IPython.display import display
 from openavmkit.data import _perform_canonical_split, _handle_duplicated_rows, _perform_ref_tables, _merge_dict_of_dfs, \
 	_do_enrich_year_built, enrich_time, SalesUniversePair, get_hydrated_sales_from_sup, _enrich_permits, \
 	compute_lookback_test_size, _resolve_strat_fields_improved, _build_strat_label, _stratified_test_sample, \
-	_three_tier_split
+	_three_tier_split, _assign_grouped_folds, _perform_canonical_folds, _read_fold_keys, \
+	_do_write_canonical_split, _read_split_keys, _spatial_lag_kernel, \
+	_enrich_sup_spatial_lag_for_model_group, _drop_fields, load_dataframe
 from openavmkit.modeling import DataSplit
 from openavmkit.utilities.assertions import dfs_are_equal, series_are_equal
 from openavmkit.utilities.data import div_df_z_safe, merge_and_stomp_dfs, combine_dfs
@@ -672,6 +676,82 @@ def test_update_sales():
 	assert len_after == 7
 
 
+def test_street_text_columns_fill_absent_road_slots():
+	"""Parcels fronting fewer than four roads must get UNKNOWN, not "None".
+
+	The street pivot emits slots 1..4 per parcel. _finish_df_streets filled the
+	numeric stubs (frontage / depth / dist_to_road) with 0.0 but left the textual
+	ones missing, and since these fields are not in the settings' categorical list
+	the residual fill in cleaning never reached them either -- so a later string
+	cast rendered them as the literal text "None" and fed models a junk category.
+	"""
+	from openavmkit.data import _fill_street_text_columns
+
+	df = pd.DataFrame({
+		"key": ["a", "b", "c", "d"],
+		"osm_road_name_1": ["Main St", None, np.nan, "None"],
+		"osm_road_type_2": ["residential", None, "nan", "<NA>"],
+		"osm_road_face_3": [None, None, None, None],
+		"osm_frontage_ft_1": [1.0, 2.0, 3.0, 4.0],
+	})
+	out = _fill_street_text_columns(df.copy())
+
+	# real values survive; every flavour of missing becomes UNKNOWN
+	assert out["osm_road_name_1"].tolist() == ["Main St", "UNKNOWN", "UNKNOWN", "UNKNOWN"]
+	assert out["osm_road_type_2"].tolist() == ["residential", "UNKNOWN", "UNKNOWN", "UNKNOWN"]
+	assert out["osm_road_face_3"].tolist() == ["UNKNOWN"] * 4
+	# numeric siblings are left alone
+	assert out["osm_frontage_ft_1"].tolist() == [1.0, 2.0, 3.0, 4.0]
+	# nothing junk-looking survives anywhere
+	for col in out.columns:
+		assert not out[col].astype(str).isin(["None", "nan", "NaN", "<NA>"]).any()
+
+
+def test_street_text_fill_handles_pre_rename_columns():
+	"""The helper runs both before and after the osm_ prefix rename."""
+	from openavmkit.data import _fill_street_text_columns
+
+	df = pd.DataFrame({"key": ["a"], "road_name_1": [None], "road_face_4": [None]})
+	out = _fill_street_text_columns(df.copy())
+	assert out["road_name_1"].tolist() == ["UNKNOWN"]
+	assert out["road_face_4"].tolist() == ["UNKNOWN"]
+
+
+def test_sale_age_guards_invalid_year_built():
+	"""year_built of 0 with a valid sale year must not yield a ~2000-year-old building.
+
+	The non-sales branch already guarded the year-built side; the sales branch only
+	guarded sale_year, so the assessor placeholder 0 produced an age of ~2024.
+	"""
+	from datetime import datetime
+	val_date = datetime(2025, 1, 1)
+
+	df = pd.DataFrame({
+		"key": ["ok", "zero", "null", "negative"],
+		"bldg_year_built": [1990, 0, None, -1],
+		"sale_year": [2020, 2020, 2020, 2020]
+	})
+	out = _do_enrich_year_built(df, "bldg_year_built", "bldg_age_years", val_date, True)
+	assert out["bldg_age_years"].tolist() == [30, 0, 0, 0]
+	assert out["bldg_age_years"].max() < 500
+
+
+def test_get_sale_field_falls_back_when_adjusted_column_absent():
+	"""With time adjustment on, naming a column the frame doesn't have is a KeyError
+	waiting to happen; fall back to the raw sale price instead."""
+	from openavmkit.data import get_sale_field
+	settings = {"data": {"process": {"time_adjustment": {"use": True}}}}
+
+	# no frame supplied -> unchanged behaviour, report the adjusted field
+	assert get_sale_field(settings) == "sale_price_time_adj"
+	# frame HAS the adjusted column -> use it
+	df_with = pd.DataFrame({"sale_price": [1], "sale_price_time_adj": [1]})
+	assert get_sale_field(settings, df_with) == "sale_price_time_adj"
+	# frame LACKS it -> fall back rather than naming a missing column
+	df_without = pd.DataFrame({"sale_price": [1]})
+	assert get_sale_field(settings, df_without) == "sale_price"
+
+
 def test_permits_teardown_sales():
 	print("")
 
@@ -847,6 +927,288 @@ def test_permits_reno_sales():
 	)
 
 	assert dfs_are_equal(df_expected, df_results, allow_weak=True)
+
+
+def _univ_permit_settings(calc_effective_age: bool = False):
+	"""Settings for the universe permits path, with an explicit valuation date."""
+	s_permits = {"sources": ["permits"]}
+	if calc_effective_age:
+		s_permits["calc_effective_age"] = True
+	return {
+		"modeling": {
+			"metadata": {
+				"valuation_date": "2020-06-01"
+			}
+		},
+		"data": {
+			"process": {
+				"enrich": {
+					"universe": {
+						"permits": s_permits
+					}
+				}
+			}
+		}
+	}
+
+
+def test_permits_teardown_univ():
+	print("")
+
+	# The universe asks its questions relative to the VALUATION date (2020-06-01),
+	# not a sale date: a permit dated on or after that date has not happened yet.
+	univ = {
+		"key": ["0", "1", "2", "3", "4"]
+	}
+
+	permits = {
+		"key": ["0", "1", "2", "2", "3", "3"],
+		"is_teardown": [True, True, False, True, True, False],
+		"date": [
+			"2020-01-01",  # key 0: only permit, a teardown before val date -> flagged
+
+			"2020-07-01",  # key 1: teardown AFTER val date -> not yet happened, ignored
+
+			# key 2: last qualifying permit (2020-05-01) is NOT a teardown
+			"2020-05-01",  # most recent, not a teardown
+			"2019-01-01",  # older teardown, superseded
+
+			# key 3: last qualifying permit (2020-05-01) IS a teardown
+			"2020-05-01",  # most recent, a teardown
+			"2019-01-01",  # older, not a teardown
+		]
+		# key 4 has no permits at all
+	}
+
+	expected = {
+		"key": ["0", "1", "2", "3", "4"],
+		"last_permit_was_teardown": [True, False, False, True, False],
+		# demo_date is only set when the last qualifying permit actually was a teardown
+		"demo_date": ["2020-01-01", None, None, "2020-05-01", None]
+	}
+
+	df_expected = pd.DataFrame(data=expected)
+	df_expected["demo_date"] = pd.to_datetime(df_expected["demo_date"], format="%Y-%m-%d")
+
+	df_univ = pd.DataFrame(data=univ)
+	df_permits = pd.DataFrame(data=permits)
+	df_permits["date"] = pd.to_datetime(df_permits["date"], format="%Y-%m-%d")
+
+	settings = _univ_permit_settings()
+	s_enrich_univ = settings.get("data", {}).get("process", {}).get("enrich", {}).get("universe")
+
+	df_results = _enrich_permits(
+		df_univ,
+		s_enrich_univ,
+		{"permits": df_permits},
+		settings,
+		is_sales=False,
+		verbose=True
+	)
+
+	assert dfs_are_equal(df_expected, df_results, allow_weak=True)
+
+
+def test_permits_reno_univ():
+	print("")
+
+	univ = {
+		"key": ["0", "1", "2", "3"]
+	}
+
+	nan = float('nan')
+	permits = {
+		"key": ["0", "1", "2", "2", "2"],
+		"is_renovation": [True, True, True, True, True],
+		"renovation_num": [2, 3, 1, 3, 3],
+		"renovation_txt": ["medium", "major", "minor", "major", "major"],
+		"date": [
+			"2020-05-01",  # key 0: before val date -> picked
+
+			"2020-07-01",  # key 1: AFTER val date -> dismissed
+
+			# key 2: pick the most significant (num 3), then the most recent of those
+			"2020-05-20",  # minor, more recent but less significant
+			"2020-05-10",  # major, most recent major -> winner
+			"2019-05-10",  # major, older
+		]
+		# key 3 has no permits at all
+	}
+
+	expected = {
+		"key": ["0", "1", "2", "3"],
+		"is_renovated": [True, False, True, False],
+		"reno_date": ["2020-05-01", None, "2020-05-10", None],
+		"days_to_reno": [-31.0, nan, -22.0, nan],
+		"renovation_num": [2, nan, 3, nan],
+		"renovation_txt": ["medium", None, "major", None]
+	}
+
+	df_expected = pd.DataFrame(data=expected)
+	df_expected["reno_date"] = pd.to_datetime(df_expected["reno_date"], format="%Y-%m-%d")
+
+	df_univ = pd.DataFrame(data=univ)
+	df_permits = pd.DataFrame(data=permits)
+	df_permits["date"] = pd.to_datetime(df_permits["date"], format="%Y-%m-%d")
+
+	settings = _univ_permit_settings()
+	s_enrich_univ = settings.get("data", {}).get("process", {}).get("enrich", {}).get("universe")
+
+	df_results = _enrich_permits(
+		df_univ,
+		s_enrich_univ,
+		{"permits": df_permits},
+		settings,
+		is_sales=False,
+		verbose=True
+	)
+
+	assert dfs_are_equal(df_expected, df_results, allow_weak=True)
+
+
+def test_permits_univ_calc_effective_age():
+	print("")
+
+	# Only a MAJOR renovation (renovation_num == 3) resets the effective year built.
+	univ = {
+		"key": ["0", "1", "2", "3"],
+		"bldg_year_built": [1950, 1960, 1970, 1980]
+	}
+
+	permits = {
+		"key": ["0", "1", "2"],
+		"is_renovation": [True, True, True],
+		"renovation_num": [3, 2, 1],
+		"renovation_txt": ["major", "medium", "minor"],
+		"date": ["2015-05-01", "2015-05-01", "2015-05-01"]
+		# key 3 has no permits at all
+	}
+
+	df_univ = pd.DataFrame(data=univ)
+	df_permits = pd.DataFrame(data=permits)
+	df_permits["date"] = pd.to_datetime(df_permits["date"], format="%Y-%m-%d")
+
+	settings = _univ_permit_settings(calc_effective_age=True)
+	s_enrich_univ = settings.get("data", {}).get("process", {}).get("enrich", {}).get("universe")
+
+	df_results = _enrich_permits(
+		df_univ,
+		s_enrich_univ,
+		{"permits": df_permits},
+		settings,
+		is_sales=False,
+		verbose=True
+	)
+
+	eff = df_results.set_index("key")["bldg_effective_year_built"]
+	assert eff["0"] == 2015, "major renovation should reset effective year built"
+	assert eff["1"] == 1960, "medium renovation should not reset effective year built"
+	assert eff["2"] == 1970, "minor renovation should not reset effective year built"
+	assert eff["3"] == 1980, "a parcel with no permits keeps its original year built"
+
+
+def test_permits_univ_ignores_future_permits():
+	print("")
+
+	# A parcel whose ONLY permits post-date the valuation date must come back clean:
+	# it must not inherit the teardown flag from a permit that has not happened yet.
+	univ = {"key": ["0"]}
+	permits = {
+		"key": ["0", "0"],
+		"is_teardown": [True, True],
+		"date": ["2020-06-01", "2021-01-01"]  # on, and after, the valuation date
+	}
+
+	df_univ = pd.DataFrame(data=univ)
+	df_permits = pd.DataFrame(data=permits)
+	df_permits["date"] = pd.to_datetime(df_permits["date"], format="%Y-%m-%d")
+
+	settings = _univ_permit_settings()
+	s_enrich_univ = settings.get("data", {}).get("process", {}).get("enrich", {}).get("universe")
+
+	df_results = _enrich_permits(
+		df_univ, s_enrich_univ, {"permits": df_permits}, settings,
+		is_sales=False, verbose=True
+	)
+
+	assert df_results["last_permit_was_teardown"].tolist() == [False]
+	assert df_results["demo_date"].isna().all()
+
+
+def test_permits_univ_reachable_through_enrich_data():
+	print("")
+
+	# The universe permits path is only useful if the pipeline actually calls it.
+	# Drive the real _enrich_data entry point and confirm the universe frame comes
+	# back carrying the permit columns, alongside the sales frame's own.
+	import geopandas as gpd
+	from shapely.geometry import Polygon
+	from openavmkit.data import _enrich_data
+
+	df_univ = pd.DataFrame({
+		"key": ["0", "1"],
+		"bldg_year_built": [1950, 1960]
+	})
+	df_sales = pd.DataFrame({
+		"key": ["0", "1"],
+		"key_sale": ["0---2020-06-01", "1---2020-06-01"],
+		"sale_date": pd.to_datetime(["2020-06-01", "2020-06-01"]),
+		"sale_price": [1, 1],
+		"valid_sale": [True, True],
+		"vacant_sale": [False, False]
+	})
+	df_permits = pd.DataFrame({
+		"key": ["0", "1"],
+		"is_teardown": [True, False],
+		"date": pd.to_datetime(["2020-01-01", "2020-01-01"])
+	})
+	gdf_parcels = gpd.GeoDataFrame(
+		{"key": ["0", "1"]},
+		geometry=[
+			Polygon([(0, 0), (0, 1), (1, 1), (1, 0)]),
+			Polygon([(1, 0), (1, 1), (2, 1), (2, 0)])
+		],
+		crs="EPSG:4326"
+	)
+
+	settings = {"modeling": {"metadata": {"valuation_date": "2020-06-01"}}}
+	# permits config lives at the top level of `enrich`, shared by both frames
+	s_enrich = {"permits": {"sources": ["permits"]}}
+
+	sup = SalesUniversePair(universe=df_univ, sales=df_sales)
+	out = _enrich_data(
+		sup,
+		s_enrich,
+		{"permits": df_permits, "geo_parcels": gdf_parcels},
+		settings,
+		verbose=True
+	)
+
+	# universe got the universe-flavoured columns...
+	assert "last_permit_was_teardown" in out.universe.columns
+	assert "demo_date" in out.universe.columns
+	univ = out.universe.set_index("key")
+	assert bool(univ.loc["0", "last_permit_was_teardown"]) is True
+	assert bool(univ.loc["1", "last_permit_was_teardown"]) is False
+	assert pd.isna(univ.loc["1", "demo_date"])
+
+	# ...and sales still got the sales-flavoured ones
+	assert "is_teardown_sale" in out.sales.columns
+	assert "days_to_demo" in out.sales.columns
+
+
+def test_permits_empty_sources_is_a_noop():
+	print("")
+
+	df_univ = pd.DataFrame({"key": ["0", "1"]})
+	for s_permits in ({}, {"sources": []}, {"sources": None}):
+		settings = {"data": {"process": {"enrich": {"universe": {"permits": s_permits}}}}}
+		s_enrich_univ = settings["data"]["process"]["enrich"]["universe"]
+		for is_sales in (True, False):
+			df_results = _enrich_permits(
+				df_univ, s_enrich_univ, {}, settings, is_sales=is_sales
+			)
+			assert dfs_are_equal(df_univ, df_results, allow_weak=True)
 
 
 def test_boolify_series():
@@ -1277,3 +1639,534 @@ def test_canonical_split_explicit_none_disables_default_rule():
 	# sales remain for training.
 	assert test_2025 == 53
 	assert train_2025 == 22
+
+# ---------------------------------------------------------------------------
+# Parcel-grouped CV fold assignment (_assign_grouped_folds). The core guarantee
+# these pin down: all sales of one parcel land in the SAME fold, so a repeat-sale
+# parcel never appears in both a fold's train and its holdout (entity-level leak).
+# ---------------------------------------------------------------------------
+
+def test_assign_grouped_folds_keeps_parcel_in_one_fold():
+	# 50 parcels, each sold twice (same key) → repeat-sale parcels everywhere.
+	rows = []
+	for p in range(50):
+		for s in range(2):
+			rows.append({"key": f"p{p}", "key_sale": f"p{p}-s{s}",
+				"sale_year": 2024 + (p % 2)})
+	df = pd.DataFrame(rows)
+	folds = _assign_grouped_folds(df, n_folds=5, random_seed=1337,
+		strat_fields=["sale_year"])
+	df["fold"] = folds.values
+	# The anti-leakage guarantee: every parcel's sales share exactly one fold.
+	per_parcel_folds = df.groupby("key")["fold"].nunique()
+	assert (per_parcel_folds == 1).all()
+	# Full coverage: every fold used, no unassigned rows.
+	assert set(df["fold"].unique()) == set(range(5))
+	assert (df["fold"] >= 0).all()
+
+
+def test_assign_grouped_folds_singletons_full_coverage():
+	# All-singleton parcels → behaves like stratified k-fold: balanced, full coverage.
+	df = pd.DataFrame({
+		"key": [f"p{i}" for i in range(200)],
+		"key_sale": [f"p{i}-s0" for i in range(200)],
+		"sale_year": [2023] * 100 + [2024] * 100,
+	})
+	folds = _assign_grouped_folds(df, n_folds=5, random_seed=1337,
+		strat_fields=["sale_year"])
+	counts = pd.Series(folds.values).value_counts()
+	assert set(counts.index) == set(range(5))
+	assert counts.min() >= 30 and counts.max() <= 50  # ~40 each
+
+
+def test_assign_grouped_folds_degrades_on_thin_strata():
+	# Each (year, cat) combo is unique → StratifiedGroupKFold raises; must degrade
+	# to a coarser label / GroupKFold rather than crash, and still cover everything.
+	rows = [{"key": f"p{p}", "key_sale": f"p{p}-s0",
+		"sale_year": 2020 + p, "cat": f"c{p}"} for p in range(20)]
+	df = pd.DataFrame(rows)
+	folds = _assign_grouped_folds(df, n_folds=5, random_seed=1337,
+		strat_fields=["sale_year", "cat"])
+	assert (folds >= 0).all()
+	assert set(folds.unique()) == set(range(5))
+
+
+def test_assign_grouped_folds_deterministic():
+	df = pd.DataFrame({
+		"key": [f"p{i % 40}" for i in range(120)],
+		"key_sale": [f"s{i}" for i in range(120)],
+		"sale_year": [2023 + (i % 3) for i in range(120)],
+	})
+	f1 = _assign_grouped_folds(df, 5, 1337, ["sale_year"])
+	f2 = _assign_grouped_folds(df, 5, 1337, ["sale_year"])
+	assert (f1.values == f2.values).all()
+
+
+def _synth_cv_sales():
+	"""Synthetic model-group sales: repeat-sale parcels + post-val sales."""
+	rows = []
+	# 80 single-sale parcels (trainable)
+	for i in range(80):
+		rows.append({"key": f"p{i}", "key_sale": f"p{i}-a",
+			"sale_age_days": 100 + (i % 300), "sale_year": 2024 + (i % 2)})
+	# 20 repeat-sale parcels, 2 trainable sales each (same key)
+	for i in range(80, 100):
+		for s in ("a", "b"):
+			rows.append({"key": f"p{i}", "key_sale": f"p{i}-{s}",
+				"sale_age_days": 120 + (i % 200), "sale_year": 2024 + (i % 2)})
+	# 15 post-valuation sales (sale_age_days < 0) — never train
+	for i in range(100, 115):
+		rows.append({"key": f"p{i}", "key_sale": f"p{i}-a",
+			"sale_age_days": -30, "sale_year": 2026})
+	df = pd.DataFrame(rows)
+	df["model_group"] = "res_sf"
+	df["vacant_sale"] = False
+	df["bldg_age_years"] = 20
+	df["bldg_area_finished_sqft"] = 1800.0
+	return df
+
+
+def test_perform_canonical_folds_coverage_grouping_postval():
+	df = _synth_cv_sales()
+	out = _perform_canonical_folds("res_sf", df, {}, n_folds=5, random_seed=1337)
+	# Every input sale is represented exactly once.
+	assert len(out) == len(df)
+	assert set(out["key_sale"]) == set(df["key_sale"].astype(str))
+	# Post-val sales: never train, no fold.
+	post = out[out["train_eligible"] != True]
+	assert len(post) == 15
+	assert (post["fold"] == -1).all()
+	# Trainable sales: assigned to folds 0..4, full coverage.
+	train = out[out["train_eligible"] == True]
+	assert set(train["fold"].unique()) == set(range(5))
+	# Grouping guarantee: no parcel key spans more than one fold.
+	assert (train.groupby("key")["fold"].nunique() == 1).all()
+
+
+def test_read_fold_keys_roundtrip(tmp_path, monkeypatch):
+	monkeypatch.chdir(tmp_path)
+	df = _synth_cv_sales()
+	out = _perform_canonical_folds("res_sf", df, {}, n_folds=5, random_seed=1337)
+	os.makedirs("out/models/res_sf/_data", exist_ok=True)
+	out.to_csv("out/models/res_sf/_data/folds.csv", index=False)
+
+	fd = _read_fold_keys("res_sf")
+	assert fd is not None
+	assert fd["n_folds"] == 5
+	# train_all excludes post-val; post_val has the 15.
+	assert len(fd["post_val"]) == 15
+	trainable_keys = set(df[df["sale_age_days"] >= 0]["key_sale"].astype(str))
+	assert set(fd["train_all"]) == trainable_keys
+	# Per fold: holdout + train partition the trainable set, disjoint, and no parcel leaks.
+	train_df = out[out["train_eligible"] == True].copy()
+	key_of = dict(zip(train_df["key_sale"].astype(str), train_df["key"].astype(str)))
+	for holdout_keys, train_keys in fd["folds"]:
+		hset, tset = set(holdout_keys), set(train_keys)
+		assert hset.isdisjoint(tset)
+		assert hset | tset == trainable_keys
+		# parcel of any held-out sale must not appear in the training keys
+		holdout_parcels = {key_of[k] for k in hset}
+		train_parcels = {key_of[k] for k in tset}
+		assert holdout_parcels.isdisjoint(train_parcels)
+
+
+def test_do_write_canonical_split_cv_mode_writes_folds(tmp_path, monkeypatch):
+	# n_folds > 1 (CV mode) writes folds.csv and NOT the legacy single-split keys.
+	monkeypatch.chdir(tmp_path)
+	df = _synth_cv_sales()
+	_do_write_canonical_split("res_sf", df, {}, random_seed=1337, n_folds=5)
+	base = "out/models/res_sf/_data"
+	assert os.path.exists(f"{base}/folds.csv")
+	assert not os.path.exists(f"{base}/train_keys.csv")
+	fd = _read_fold_keys("res_sf")
+	assert fd is not None and fd["n_folds"] == 5
+	assert len(fd["post_val"]) == 15
+
+
+def _cb_fold_params(grow_policy, max_leaves=None, depth=6):
+	"""A fold params.json in the shape `_tune_catboost` actually saves (optuna best_params).
+
+	Mirrors out/models/<mg>/main/cv_fold<k>/catboost_params.json: only the keys the trial
+	suggested, so `max_leaves` is present exactly when the trial picked Lossguide.
+	"""
+	d = {
+		"iterations": 979,
+		"learning_rate": 0.1396,
+		"depth": depth,
+		"border_count": 61,
+		"random_strength": 5.979,
+		"reg_lambda": 4.068,
+		"bagging_temperature": 0.885,
+		"grow_policy": grow_policy,
+	}
+	if max_leaves is not None:
+		d["max_leaves"] = max_leaves
+	return d
+
+
+def _assert_catboost_accepts(params):
+	"""Ask CatBoost itself whether the config is legal, rather than trusting our own rule.
+
+	Mirrors the three steps `CatBoost._prepare_train_params` runs before training, which is
+	where the real failure surfaced: synonym normalization (reg_lambda -> l2_leaf_reg), type
+	cast, then the native validator.
+	"""
+	from catboost.core import _process_synonyms, _params_type_cast
+	from catboost._catboost import _check_train_params
+	p = dict(params)
+	_process_synonyms(p)
+	_check_train_params(_params_type_cast(p))
+
+
+def test_aggregate_fold_params_drops_orphaned_max_leaves():
+	from openavmkit.model_runner import _aggregate_fold_params
+	# The us-nc-wake mobile_manufactured case: four Depthwise folds and one Lossguide fold.
+	# Voting each key independently elected grow_policy=Depthwise but kept the lone
+	# Lossguide fold's max_leaves, and CatBoost refuses to fit that combination at all.
+	folds = [
+		_cb_fold_params("Depthwise"),
+		_cb_fold_params("Depthwise"),
+		_cb_fold_params("Depthwise"),
+		_cb_fold_params("Lossguide", max_leaves=69, depth=10),
+		_cb_fold_params("Depthwise"),
+	]
+	agg = _aggregate_fold_params(folds)
+	assert agg["grow_policy"] == "Depthwise"
+	assert "max_leaves" not in agg
+	_assert_catboost_accepts(agg)
+
+
+def test_aggregate_fold_params_keeps_max_leaves_when_lossguide_wins():
+	from openavmkit.model_runner import _aggregate_fold_params
+	# The child is only dropped when its parent forbids it -- a Lossguide majority keeps it,
+	# aggregated over just the folds that carried it.
+	folds = [
+		_cb_fold_params("Lossguide", max_leaves=64),
+		_cb_fold_params("Lossguide", max_leaves=64),
+		_cb_fold_params("Lossguide", max_leaves=80),
+		_cb_fold_params("Depthwise"),
+		_cb_fold_params("SymmetricTree"),
+	]
+	agg = _aggregate_fold_params(folds)
+	assert agg["grow_policy"] == "Lossguide"
+	# max_leaves is a discrete HP, so it takes the mode over the folds that carried it.
+	assert agg["max_leaves"] == 64
+	_assert_catboost_accepts(agg)
+
+
+def test_aggregate_fold_params_is_always_a_valid_catboost_config():
+	from openavmkit.model_runner import _aggregate_fold_params
+	# Exhaustive over every way 5 folds can split across the three grow policies, checked
+	# against CatBoost's own parameter validator. This is the guarantee that matters: the
+	# aggregate must never be a config the engine rejects, whatever the folds voted.
+	import itertools
+
+	policies = ("SymmetricTree", "Depthwise", "Lossguide")
+	for combo in itertools.product(policies, repeat=5):
+		folds = [
+			_cb_fold_params(gp, max_leaves=(31 + 10 * i) if gp == "Lossguide" else None)
+			for i, gp in enumerate(combo)
+		]
+		agg = _aggregate_fold_params(folds)
+		_assert_catboost_accepts(agg)
+		# And the invariant behind it: max_leaves survives only alongside Lossguide.
+		assert ("max_leaves" in agg) == (agg["grow_policy"] == "Lossguide"), combo
+
+
+def test_aggregate_fold_params_median_continuous_mode_discrete():
+	# Median for continuous HPs; mode for discrete/multimodal + categorical HPs.
+	from openavmkit.model_runner import _aggregate_fold_params
+	folds = [
+		{"learning_rate": 0.02, "max_depth": 15, "subsample": 0.76, "grow_policy": "lossguide"},
+		{"learning_rate": 0.03, "max_depth": 15, "subsample": 0.80, "grow_policy": "lossguide"},
+		{"learning_rate": 0.05, "max_depth": 5,  "subsample": 0.70, "grow_policy": "depthwise"},
+		{"learning_rate": 0.04, "max_depth": 15, "subsample": 0.90, "grow_policy": "lossguide"},
+		{"learning_rate": 0.02, "max_depth": 5,  "subsample": 0.60, "grow_policy": "depthwise"},
+	]
+	agg = _aggregate_fold_params(folds)
+	assert agg["max_depth"] == 15 and isinstance(agg["max_depth"], int)   # mode, int-preserved
+	assert agg["grow_policy"] == "lossguide"                              # categorical mode
+	assert abs(agg["learning_rate"] - 0.03) < 1e-9                        # continuous median
+	# keys present in only some folds are aggregated over those folds
+	agg2 = _aggregate_fold_params(folds + [{"max_leaves": 64, "max_depth": 5}])
+	assert agg2["max_leaves"] == 64
+
+
+# --------------------------------------------------------------------------------------
+# Spatial lag: kernel, CV split fallback, and the out-of-fold guarantee
+# --------------------------------------------------------------------------------------
+
+
+def test_spatial_lag_kernel_matches_hand_computed_gaussian():
+	# One target sitting exactly on source A, a second source 100m away.
+	coords = np.array([[0.0, 0.0], [100.0, 0.0]])
+	values = np.array([100_000.0, 300_000.0])
+	lag, conf = _spatial_lag_kernel(coords, values, np.array([[0.0, 0.0]]), k=2, d_scale=800.0)
+	# sigma = mean(0, 100) = 50 -> weights = [exp(0), exp(-100^2 / (2*50^2))] = [1, exp(-2)]
+	w = np.array([1.0, np.exp(-2.0)])
+	w = w / w.sum()
+	assert abs(lag[0] - float((w * values).sum())) < 1e-9
+	# Distance-zero neighbor means near-total confidence.
+	assert conf[0] > 0.99
+
+
+def test_spatial_lag_kernel_clamps_k_to_available_sources():
+	# k=5 requested but only one source exists: clamp rather than crash.
+	lag, conf = _spatial_lag_kernel(
+		np.array([[0.0, 0.0]]),
+		np.array([250_000.0]),
+		np.array([[10.0, 0.0], [20.0, 0.0]]),
+		k=5,
+		d_scale=800.0,
+	)
+	assert lag.shape == (2,)
+	assert np.allclose(lag, 250_000.0)
+
+
+def test_spatial_lag_kernel_returns_nan_for_targets_without_geometry():
+	# cKDTree rejects non-finite query points; those rows must come back NaN, not raise.
+	coords = np.array([[0.0, 0.0], [10.0, 0.0]])
+	values = np.array([100.0, 200.0])
+	targets = np.array([[5.0, 0.0], [np.nan, np.nan]])
+	lag, conf = _spatial_lag_kernel(coords, values, targets, k=2, d_scale=800.0)
+	assert np.isfinite(lag[0])
+	assert np.isnan(lag[1])
+	assert conf[1] == 0.0
+
+
+def test_read_split_keys_falls_back_to_cv_folds(tmp_path, monkeypatch):
+	# CV mode writes only folds.csv. _read_split_keys must collapse it to the same single
+	# split Phase 2 uses instead of returning empty arrays (which silently blanked out
+	# every sale-derived enrichment upstream of the model runner).
+	monkeypatch.chdir(tmp_path)
+	df = _synth_cv_sales()
+	_do_write_canonical_split("res_sf", df, {}, random_seed=1337, n_folds=5)
+	assert not os.path.exists("out/models/res_sf/_data/train_keys.csv")
+
+	with warnings.catch_warnings(record=True) as caught:
+		warnings.simplefilter("always")
+		test_keys, train_keys = _read_split_keys("res_sf")
+	assert not [w for w in caught if "No split keys found" in str(w.message)]
+
+	assert set(train_keys) == set(df[df["sale_age_days"] >= 0]["key_sale"].astype(str))
+	assert set(test_keys) == set(df[df["sale_age_days"] < 0]["key_sale"].astype(str))
+
+
+def test_read_split_keys_still_warns_when_nothing_on_disk(tmp_path, monkeypatch):
+	monkeypatch.chdir(tmp_path)
+	with warnings.catch_warnings(record=True) as caught:
+		warnings.simplefilter("always")
+		test_keys, train_keys = _read_split_keys("res_sf")
+	assert [w for w in caught if "No split keys found" in str(w.message)]
+	assert len(test_keys) == 0 and len(train_keys) == 0
+
+
+def _synth_spatial_sup():
+	"""A 10x10 grid of parcels, one valid sale each, all in one model group.
+
+	Sale prices are deliberately scattered (not spatially smooth) so that a parcel's own
+	price is far from any neighborhood average -- which is what makes self-leak visible.
+	"""
+	import geopandas as gpd
+	from shapely.geometry import Point
+
+	n = 10
+	rows = []
+	for i in range(n):
+		for j in range(n):
+			idx = i * n + j
+			rows.append({
+				"key": f"p{idx}",
+				"latitude": 35.0 + i * 0.005,
+				"longitude": -78.0 + j * 0.005,
+				"sale_price_time_adj": float(100_000 + (idx * 7919) % 900_000),
+			})
+	df = pd.DataFrame(rows)
+	df["model_group"] = "res_sf"
+	df["land_area_sqft"] = 8000.0
+	df["bldg_area_finished_sqft"] = 1800.0
+	df["bldg_age_years"] = 20.0
+
+	univ = gpd.GeoDataFrame(
+		df.drop(columns=["sale_price_time_adj"]).copy(),
+		geometry=[Point(lon, lat) for lon, lat in zip(df["longitude"], df["latitude"])],
+		crs="EPSG:4326",
+	)
+	sales = df[["key", "sale_price_time_adj"]].copy()
+	sales["key_sale"] = sales["key"] + "-a"
+	sales["sale_price"] = sales["sale_price_time_adj"]
+	sales["valid_sale"] = True
+	sales["vacant_sale"] = False
+	sales["sale_age_days"] = 100
+	sales["sale_year"] = 2024
+	return SalesUniversePair(sales, univ)
+
+
+_SPATIAL_SETTINGS = {
+	"modeling": {
+		"model_groups": {"res_sf": {}},
+		"instructions": {"cv_folds": 5, "random_seed": 1337},
+	},
+	"data": {"process": {"enrich": {"spatial_lag": {"model_groups": {
+		"res_sf": {"sample_from": ["res_sf"]}
+	}}}}},
+}
+
+
+def test_spatial_lag_is_out_of_fold_for_sales_under_cv(tmp_path, monkeypatch):
+	# Under CV the sales rows and the universe rows must see DIFFERENT surfaces: the
+	# universe keeps the full-information one (it is never a holdout), the sales rows get
+	# a per-fold one.
+	monkeypatch.chdir(tmp_path)
+	sup = _synth_spatial_sup()
+	hydrated = get_hydrated_sales_from_sup(sup)
+	_do_write_canonical_split("res_sf", hydrated, _SPATIAL_SETTINGS, random_seed=1337, n_folds=5)
+	assert os.path.exists("out/models/res_sf/_data/folds.csv")
+
+	out = _enrich_sup_spatial_lag_for_model_group(sup, _SPATIAL_SETTINGS, "res_sf")
+	col = "spatial_lag_sale_price_time_adj"
+	assert col in out.sales.columns
+	assert col in out.universe.columns
+	assert out.sales[col].notna().all()
+
+	sales_lag = out.sales.set_index("key")[col]
+	univ_lag = out.universe.set_index("key")[col]
+	# Genuinely two distinct surfaces, not an accidental copy of one.
+	assert (sales_lag != univ_lag.loc[sales_lag.index]).all()
+
+
+def test_spatial_lag_sales_side_is_immune_to_own_sale_price(tmp_path, monkeypatch):
+	# The leak this guards: the surface is queried at EVERY universe centroid, so a parcel
+	# holding a training sale finds its own sale at distance 0 and the Gaussian kernel
+	# hands back a large slice of its own price. Under CV that parcel is some fold's
+	# holdout, so its own price must not reach its own feature. Perturbing one sale price
+	# and re-running is the direct test of that.
+	monkeypatch.chdir(tmp_path)
+	sup = _synth_spatial_sup()
+	hydrated = get_hydrated_sales_from_sup(sup)
+	# Written once, so both runs below share an identical fold assignment.
+	_do_write_canonical_split("res_sf", hydrated, _SPATIAL_SETTINGS, random_seed=1337, n_folds=5)
+
+	col = "spatial_lag_sale_price_time_adj"
+	base = _enrich_sup_spatial_lag_for_model_group(sup, _SPATIAL_SETTINGS, "res_sf")
+
+	target = "p42"
+	bumped = SalesUniversePair(sup.sales.copy(), sup.universe.copy())
+	bumped.sales.loc[bumped.sales["key"].eq(target), "sale_price_time_adj"] *= 10.0
+	after = _enrich_sup_spatial_lag_for_model_group(bumped, _SPATIAL_SETTINGS, "res_sf")
+
+	b_sales = base.sales.set_index("key")[col]
+	a_sales = after.sales.set_index("key")[col]
+	b_univ = base.universe.set_index("key")[col]
+	a_univ = after.universe.set_index("key")[col]
+
+	fold_of = _read_fold_keys("res_sf")["key_to_fold"]
+	same_fold = [k for k, f in fold_of.items() if f == fold_of[target]]
+	other_fold = [k for k, f in fold_of.items() if f != fold_of[target]]
+	assert len(same_fold) > 1 and len(other_fold) > 1
+
+	# The target IS in the shipped surface -- so this perturbation would be visible if the
+	# sales side shared it.
+	assert a_univ[target] != b_univ[target]
+	# ...but it never reaches its own feature.
+	assert a_sales[target] == b_sales[target]
+	# Nor any other parcel in its fold: folds are dropped whole, parcels intact.
+	assert (a_sales.loc[same_fold] == b_sales.loc[same_fold]).all()
+	# Other folds still learn from it -- cross-fold information is not thrown away.
+	assert (a_sales.loc[other_fold] != b_sales.loc[other_fold]).any()
+
+
+def test_spatial_lag_matches_legacy_single_split_when_no_folds(tmp_path, monkeypatch):
+	# Without folds.csv the out-of-fold branch is a no-op: sales and universe share the
+	# one baseline surface, exactly as the pre-CV code did.
+	monkeypatch.chdir(tmp_path)
+	sup = _synth_spatial_sup()
+	hydrated = get_hydrated_sales_from_sup(sup)
+	settings = {**_SPATIAL_SETTINGS}
+	settings["modeling"] = {**settings["modeling"], "instructions": {"random_seed": 1337}}
+	_do_write_canonical_split("res_sf", hydrated, settings, random_seed=1337, n_folds=1)
+	assert os.path.exists("out/models/res_sf/_data/train_keys.csv")
+	assert not os.path.exists("out/models/res_sf/_data/folds.csv")
+
+	out = _enrich_sup_spatial_lag_for_model_group(sup, settings, "res_sf")
+	col = "spatial_lag_sale_price_time_adj"
+	sales_lag = out.sales.set_index("key")[col]
+	univ_lag = out.universe.set_index("key")[col]
+	assert np.allclose(sales_lag.values, univ_lag.loc[sales_lag.index].values)
+
+
+def test_drop_fields_unit():
+	# Scratch columns are removed; unknown names are ignored so the op is idempotent.
+	df = pd.DataFrame({"a": [1], "b": [2], "scratch": [3], "SRC": [4]})
+
+	assert list(_drop_fields(df, ["scratch"]).columns) == ["a", "b", "SRC"]
+	assert list(_drop_fields(df, ["not_a_column"]).columns) == ["a", "b", "scratch", "SRC"]
+	assert list(_drop_fields(df, []).columns) == ["a", "b", "scratch", "SRC"]
+
+	# dropping twice is a no-op the second time
+	once = _drop_fields(df, ["scratch"])
+	assert list(_drop_fields(once, ["scratch"]).columns) == ["a", "b", "SRC"]
+
+	# a name that only exists pre-rename is resolved through rename_map
+	assert list(_drop_fields(df, ["canon"], {"canon": "SRC"}).columns) == ["a", "b", "scratch"]
+
+	# the input frame is never mutated in place
+	assert list(df.columns) == ["a", "b", "scratch", "SRC"]
+
+
+def test_drop_fields_rejects_non_list():
+	# A malformed block warns and changes nothing, rather than raising mid-load.
+	df = pd.DataFrame({"a": [1], "scratch": [2]})
+	with warnings.catch_warnings(record=True) as caught:
+		warnings.simplefilter("always")
+		out = _drop_fields(df, "scratch")
+	assert len(caught) == 1
+	assert "must be a list" in str(caught[0].message)
+	assert list(out.columns) == ["a", "scratch"]
+
+
+def test_drop_fields_runs_after_calc_in_load(tmp_path, monkeypatch):
+	# A scratch column can be produced by calc, consumed by a later calc entry, and
+	# still be dropped before the frame reaches the rest of the pipeline.
+	monkeypatch.chdir(tmp_path)
+	os.makedirs("in", exist_ok=True)
+	with open("in/test.csv", "w") as f:
+		f.write("REID,VCS\nR1,13RA17T\nR2,GOLF002\nR3,ANCRA01\n")
+
+	entry = {
+		"filename": "test.csv",
+		"load": {"key": ["REID", "string"], "neighborhood": "VCS"},
+		"calc": {
+			"vcs_pre4": ["substr", "neighborhood", {"left": 0, "right": 4}],
+			"vcs_area": [
+				"where",
+				["isin", "vcs_pre4", ["str:GOLF"]],
+				"vcs_pre4",
+				["substr", "neighborhood", {"left": 0, "right": 2}]
+			]
+		},
+		"drop_fields": ["vcs_pre4"]
+	}
+
+	df = load_dataframe(entry, {}, verbose=False)
+
+	assert "vcs_pre4" not in df.columns
+	assert df["vcs_area"].tolist() == ["13", "GOLF", "AN"]
+	assert df["neighborhood"].tolist() == ["13RA17T", "GOLF002", "ANCRA01"]
+
+
+def test_drop_fields_absent_leaves_frame_untouched(tmp_path, monkeypatch):
+	# Entries with no drop_fields key behave exactly as before.
+	monkeypatch.chdir(tmp_path)
+	os.makedirs("in", exist_ok=True)
+	with open("in/test.csv", "w") as f:
+		f.write("REID,VCS\nR1,13RA17T\n")
+
+	entry = {
+		"filename": "test.csv",
+		"load": {"key": ["REID", "string"], "neighborhood": "VCS"},
+		"calc": {"vcs_pre4": ["substr", "neighborhood", {"left": 0, "right": 4}]}
+	}
+
+	df = load_dataframe(entry, {}, verbose=False)
+	assert "vcs_pre4" in df.columns

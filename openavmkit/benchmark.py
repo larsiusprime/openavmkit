@@ -6,7 +6,7 @@ re-exports everything from :mod:`openavmkit.model_runner` and emits a
 ``DeprecationWarning`` on import.
 
 ==============================================================================
-REMOVE THIS SHIM BEFORE THE 0.7.0 RELEASE. (See AGENTS.md §"Pending removals".)
+REMOVE THIS SHIM IN THE 0.8.0 RELEASE. (See AGENTS.md §"Pending removals".)
 ==============================================================================
 """
 import warnings
@@ -16,7 +16,7 @@ from openavmkit.model_runner import *  # noqa: F401,F403  (re-export public API)
 
 warnings.warn(
     "openavmkit.benchmark has been renamed to openavmkit.model_runner; "
-    "update your imports. This compatibility shim will be removed before 0.7.0.",
+    "update your imports. This compatibility shim will be removed in 0.8.0.",
     DeprecationWarning,
     stacklevel=2,
 )
