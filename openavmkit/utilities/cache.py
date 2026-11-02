@@ -156,18 +156,28 @@ def clear_cache(filename: str, filetype: str) -> None:
     """
     ext = _get_extension(filetype)
     path = f"cache/{filename}"
+
+    # write_cached_df stores its fragments under "<filename>.cols" / "<filename>.rows"
+    # (see filename_cols / filename_rows there), which write_cache then lands at
+    # "cache/<filename>.cols.<ext>". The templates here disagreed with that: the
+    # existence checks omitted the dot before the extension ("....colsparquet") so they
+    # never matched, and the .cols removal used a doubled dot. The large column-diff
+    # caches were therefore left on disk by every clear_cache call.
+    for fragment in ("cols", "rows"):
+        frag_path = f"{path}.{fragment}.{ext}"
+        if os.path.exists(frag_path):
+            os.remove(frag_path)
+
+    for sig_path in (
+        f"{path}.signature.json",
+        f"{path}.cols.signature.json",
+        f"{path}.rows.signature.json",
+    ):
+        if os.path.exists(sig_path):
+            os.remove(sig_path)
+
     if os.path.exists(f"{path}.{ext}"):
         os.remove(f"{path}.{ext}")
-    if os.path.exists(f"{path}.cols{ext}"):
-        os.remove(f"{path}..cols.{ext}")
-    if os.path.exists(f"{path}.rows{ext}"):
-        os.remove(f"{path}.rows{ext}")
-    if os.path.exists(f"{path}.signature.json"):
-        os.remove(f"{path}.signature.json")
-    if os.path.exists(f"{path}.cols.signature.json"):
-        os.remove(f"{path}.cols.signature.json")
-    if os.path.exists(f"{path}.rows.signature.json"):
-        os.remove(f"{path}.rows.signature.json")
 
 
 def write_cached_df(
@@ -295,17 +305,31 @@ def write_cached_df(
 
             is_different = False
             if len(col_new) == len(col_orig):
-                values_equal = col_new.values == col_orig.values
-                na_equal = (col_new.isna() & col_orig.isna()).to_numpy()
-
                 # A position matches if the values compare equal OR both sides are
                 # NA. Requiring BOTH counts to reach len(col) -- as this once did --
                 # is unsatisfiable for any non-empty column, because a NaN position
                 # can never be values-equal and a non-NaN position can never be
                 # na-equal. Every common column was therefore flagged as modified and
                 # rewritten on every save, defeating the incremental diff entirely.
-                matches = np.asarray(values_equal) | na_equal
-                all_equal = bool(matches.sum() == len(col_new))
+                n = len(col_new)
+                both_na = (col_new.isna() & col_orig.isna()).to_numpy()
+
+                # Comparing pandas nullable dtypes (Int64 / boolean / string, which
+                # the Overture enrichment produces) yields pd.NA wherever EITHER side
+                # is NA, and pd.NA cannot be coerced to bool. Fill those positions
+                # with False and let `both_na` decide them instead.
+                try:
+                    eq = col_new == col_orig
+                    if isinstance(eq, pd.Series):
+                        eq = eq.fillna(False)
+                    eq = np.asarray(eq, dtype=bool)
+                    if eq.shape != (n,):
+                        eq = np.zeros(n, dtype=bool)
+                except (TypeError, ValueError):
+                    # dtypes that cannot be compared at all -> treat as changed
+                    eq = np.zeros(n, dtype=bool)
+
+                all_equal = bool((eq | both_na).all())
                 if not all_equal:
                     is_different = True
             else:

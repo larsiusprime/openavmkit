@@ -3468,8 +3468,6 @@ def _test_mape_local_ensemble(
         if mape < best_mape:
             best_model = key
             best_mape = mape
-            if verbose:
-                print(f"----> loc = {location_value:<10}, model = {key:<12}, mape = {best_mape:>6.3f}, samples = {len(df_slice):<12}")
     return best_model, best_mape
 
 
@@ -3647,9 +3645,14 @@ def _run_local_ensemble_test_and_paint(
     )
     timing.stop("total")
     
-    print(f"Results: score = {results.utility_sales_lookback}, r2 = {results.pred_sales_lookback.r2}, mape = {results.pred_sales_lookback.mape}, rmse = {results.pred_sales_lookback.rmse}")
-    score = results.utility_sales_lookback
-    
+    # Score on the HELD-OUT set, not the sales lookback. The lookback slice is scored
+    # with a model that trained on those same rows (under cross-validation Phase 2 is
+    # refit on every trainable sale, so it is entirely in-sample), which rewards members
+    # that memorised the sales. utility_test is leakage-free: under CV it is the stitched
+    # out-of-fold frame covering 100% of sales; otherwise it is the holdout split.
+    print(f"Results: score = {results.utility_test}, r2 = {results.pred_test.r2}, mape = {results.pred_test.mape}, rmse = {results.pred_test.rmse}")
+    score = results.utility_test
+
     dfs = {
         "sales": df_sales_ensemble,
         "universe": df_univ_ensemble,
@@ -3800,6 +3803,46 @@ def _optimize_ensemble(
     return best_list
 
 
+def _worst_ensemble_member(ensemble_list: list[str], all_results) -> str | None:
+    """The member to evict next: the one with the worst HELD-OUT score.
+
+    Ranked on ``utility_test`` -- the same leakage-free metric the ensemble itself is
+    scored with. Under cross-validation that is the stitched out-of-fold frame covering
+    every sale; otherwise it is the holdout split.
+
+    It must NOT be ``utility_sales_lookback``: that is the error over the sales lookback
+    window, scored with a model that trained on those very rows (under CV, Phase 2 is
+    refit on every trainable sale, so it is wholly in-sample). Ranking members that way
+    rewards whichever model memorised the sales hardest. Measured on Petersburg, the two
+    metrics disagree about the ordering in every model group, and the assessor baseline
+    -- the one "model" that never trains on sales -- is the only one without a large
+    optimism gap.
+
+    Parameters
+    ----------
+    ensemble_list : list[str]
+        Names of the current ensemble members.
+    all_results : MultiModelResults
+        Carries ``model_results``, keyed by model name.
+
+    Returns
+    -------
+    str or None
+        The worst member, or None if none of the names have results.
+    """
+    worst_model = None
+    worst_score = float("-inf")
+    for key in ensemble_list:
+        if key in all_results.model_results:
+            model_score = all_results.model_results[key].utility_test
+            # NaN never compares greater, so an unscored member is not evicted on its
+            # account -- the first genuinely-scored member still wins the comparison.
+            if model_score > worst_score:
+                worst_score = model_score
+                worst_model = key
+    return worst_model
+
+
 def _optimize_ensemble_iteration(
     df_test: pd.DataFrame,
     df_sales: pd.DataFrame,
@@ -3873,8 +3916,11 @@ def _optimize_ensemble_iteration(
     )
     timing.stop("total")
 
-    print(f"Results: score = {results.utility_sales_lookback}, r2 = {results.pred_sales_lookback.r2}, mape = {results.pred_sales_lookback.mape}, rmse = {results.pred_sales_lookback.rmse}")
-    score = results.utility_sales_lookback
+    # Score on the HELD-OUT set -- see the note in _run_local_ensemble_test_and_paint.
+    # Selecting ensemble membership on the sales lookback rewards members that trained
+    # on those rows; utility_test is the leakage-free alternative on the same object.
+    print(f"Results: score = {results.utility_test}, r2 = {results.pred_test.r2}, mape = {results.pred_test.mape}, rmse = {results.pred_test.rmse}")
+    score = results.utility_test
 
     # Add early exit if score is nan
     if pd.isna(score):
@@ -3891,18 +3937,7 @@ def _optimize_ensemble_iteration(
         best_score = score
         best_list = ensemble_list.copy()
 
-    # identify the WORST individual model:
-    worst_model = None
-    worst_score = float("-inf")
-    for key in ensemble_list:
-        if key in all_results.model_results:
-            model_results = all_results.model_results[key]
-
-            model_score = model_results.utility_sales_lookback
-
-            if model_score > worst_score:
-                worst_score = model_score
-                worst_model = key
+    worst_model = _worst_ensemble_member(ensemble_list, all_results)
 
     if worst_model is not None and len(ensemble_list) > 1:
         ensemble_list.remove(worst_model)
@@ -4999,7 +5034,10 @@ def _model_performance_metrics(
             slope_trim, r2_trim = reg["slope"], reg["r2"]
 
             mse_trim = calc_mse(y_pred_trim, y_true_trim)
-            rmse = np.sqrt(mse_trim)
+            # Keep this in rmse_trim. Writing it to `rmse` clobbered the untrimmed value
+            # computed above, so the untrimmed table then reported the TRIMMED RMSE
+            # alongside the untrimmed MSE -- neither table's RMSE was sqrt(its own MSE).
+            rmse_trim = np.sqrt(mse_trim)
         else:
             slope_trim = np.nan
             mape_trim = np.nan
@@ -5023,14 +5061,16 @@ def _model_performance_metrics(
         trimmed_data["Model"].append(model_name)
         trimmed_data["count"].append(count_trim)
         trimmed_data["MAPE"].append(mape_trim)
-        trimmed_data["MSE"].append(mse)
-        trimmed_data["RMSE"].append(rmse)
+        trimmed_data["MSE"].append(mse_trim)
+        trimmed_data["RMSE"].append(rmse_trim)
         trimmed_data["m.ratio"].append(model_result.pred_test.ratio_study.median_ratio_trim)
         trimmed_data["avg.ratio"].append(model_result.pred_test.ratio_study.mean_ratio_trim)
-        
-        # Calculate VEI for trimmed data
-        trimmed_data["VEI"].append(model_result.ve_test["vei"])
-        trimmed_data["VEI_sig"].append(model_result.ve_test["vei_significance"])
+
+        # The trimmed vertical-equity score, computed on the same rows the other
+        # trimmed statistics in this table use.
+        ve_trim = getattr(model_result, "ve_test_trim", None) or model_result.ve_test
+        trimmed_data["VEI"].append(ve_trim["vei"])
+        trimmed_data["VEI_sig"].append(ve_trim["vei_significance"])
         trimmed_data["Slope"].append(slope_trim)
 
     # Create and display metrics DataFrame

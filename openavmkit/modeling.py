@@ -141,6 +141,7 @@ from openavmkit.tuning import (
     _tune_xgboost,
     _tune_catboost,
     _tune_ngboost,
+    _CATBOOST_FIXED_PARAMS,
     _study_fingerprint,
     _discard_stale_studies,
     _cleanup_study_files,
@@ -456,6 +457,14 @@ class PredictionResults:
             y_ratio = y_pred / y
             mask = trim_outliers_mask(y_ratio, max_trim)
 
+            # Keep the mask and the rows it selects. y / y_pred are taken from df_clean
+            # in order, so the mask indexes df_clean positionally. Statistics that need
+            # the whole row rather than just the ratio -- the trimmed vertical-equity
+            # score, for one -- can then be computed on the same trimmed set the other
+            # _trim figures use, instead of silently reporting an untrimmed value.
+            self.trim_mask = mask
+            self.df_trim = self.df.iloc[np.flatnonzero(mask)]
+
             y_pred_trim = y_pred[mask]
             y_trim = y[mask]
 
@@ -497,9 +506,12 @@ class PredictionResults:
             self.slope = float("nan")
             self.mse_trim = float("nan")
             self.rmse_trim = float("nan")
+            self.mape_trim = float("nan")
             self.r2_trim = float("nan")
             self.slope_trim = float("nan")
             self.adj_r2_trim = float("nan")
+            self.trim_mask = np.zeros(0, dtype=bool)
+            self.df_trim = self.df.iloc[:0]
 
         n = len(y_pred)
         k = len(ind_vars)
@@ -1317,6 +1329,64 @@ class DataSplit:
         self.ind_vars = [v for v in self.ind_vars if v not in dead]
         return dead
 
+    def assert_ind_vars_are_finite(self, model_name: str) -> None:
+        """Refuse to fit a linear model on a design matrix containing NaN or inf.
+
+        Linear engines (``mra`` / ``multi_mra``) go through statsmodels OLS, which
+        raises ``MissingDataError("exog contains inf or nans")`` naming neither the
+        offending column nor the remedy. Filling the gaps here would be the wrong fix:
+        a partially-populated ``ind_var`` means a fill rule is missing from
+        ``data.process.fill``, and that is the user's data-preparation decision, not
+        something the library should guess at. See
+        :meth:`drop_all_nan_ind_vars`, which handles the genuinely signal-free case
+        (a column with *no* finite values) and deliberately leaves partial gaps alone.
+
+        So: fail, but say exactly which fields, how bad, and what to do about it.
+
+        Parameters
+        ----------
+        model_name : str
+            Engine name, used in the message (e.g. "mra", "multi_mra").
+
+        Raises
+        ------
+        ValueError
+            If any independent variable carries a non-finite value in any split.
+        """
+        offenders: dict[str, list[str]] = {}
+        for attr in ("X_train", "X_test", "X_sales", "X_univ"):
+            X = getattr(self, attr, None)
+            if X is None or X.shape[0] == 0 or X.shape[1] == 0:
+                continue
+            numeric = X.select_dtypes(include=[np.number])
+            if numeric.shape[1] == 0:
+                continue
+            bad = numeric.replace([np.inf, -np.inf], np.nan).isna().sum()
+            bad = bad[bad > 0]
+            for col, count in bad.items():
+                offenders.setdefault(col, []).append(
+                    f"{attr.replace('X_', '')}: {int(count):,}/{len(X):,}"
+                )
+        if not offenders:
+            return
+
+        detail = "\n".join(
+            f"  - {col}  ({'; '.join(where)})"
+            for col, where in sorted(offenders.items())
+        )
+        raise ValueError(
+            f"{model_name}: cannot fit -- {len(offenders)} independent variable(s) "
+            f"contain missing or infinite values:\n{detail}\n"
+            f"Linear models (mra / multi_mra) go through statsmodels OLS, which cannot "
+            f"fit a design matrix with NaN or inf. Tree engines (xgboost / lightgbm / "
+            f"catboost) tolerate them, which is why this only surfaces here.\n"
+            f"Fix: add a fill rule for each field above under "
+            f"'data.process.fill' in settings.json (usually \"median\" for continuous "
+            f"fields, \"zero\" for counts), then re-run the CLEAN stage (notebook 2) -- "
+            f"fill runs there, so re-running only the modeling notebook will not pick "
+            f"it up. See advanced_settings.md, 'data.process.fill'."
+        )
+
 
 def _as_float64_array(x) -> np.ndarray:
     """Coerce a predictions/target array or Series to a plain float64 numpy array.
@@ -1513,6 +1583,12 @@ class SingleModelResults:
 
         timing.start("vertical_equity")
         self.ve_test = get_vertical_equity_scores(df_test, self.dep_var_test, field_prediction)
+        # The trimmed counterpart, computed on the same rows the other _trim statistics
+        # use. Reports that show a trimmed table need this; without it they can only
+        # repeat the untrimmed score under a "trimmed" heading.
+        self.ve_test_trim = get_vertical_equity_scores(
+            self.pred_test.df_trim, self.dep_var_test, field_prediction
+        )
         if y_pred_sales is not None:
             self.ve_sales_lookback = get_vertical_equity_scores(self.df_sales_lookback, self.dep_var_test, field_prediction)
         timing.stop("vertical_equity")
@@ -1598,6 +1674,11 @@ class SingleModelResults:
         )
         self.df_test = self.pred_test.df.copy()
         self.ve_test = get_vertical_equity_scores(self.df_test, self.dep_var_test, field)
+        # Recomputed from the rebuilt pred_test, or the trimmed score would still
+        # describe the old (small, Phase-2) holdout rather than the OOF frame.
+        self.ve_test_trim = get_vertical_equity_scores(
+            self.pred_test.df_trim, self.dep_var_test, field
+        )
         self.utility_test = self.pred_test.mape * 100
         # Match __init__ + _deal_with_log_and_area: ratio_study / mape / ve are computed on the raw
         # (pre-transform) predictions above; a log-target test var then exponentiates y_pred to
@@ -2007,6 +2088,9 @@ def run_mra(
     ds.X_train = ds.X_train.astype(float)
     ds.y_train = ds.y_train.astype(float)
 
+    # Any remaining NaN/inf is a missing fill rule, not something to paper over.
+    ds.assert_ind_vars_are_finite("mra")
+
     timing.start("train")
     if model is None:
         y_fit = ds.y_train
@@ -2121,6 +2205,11 @@ def _run_multi_mra(
     # Ensure numeric dtypes
     ds_prepped.X_train = ds_prepped.X_train.astype(float)
     ds_prepped.y_train = ds_prepped.y_train.astype(float)
+
+    # Any remaining NaN/inf is a missing fill rule, not something to paper over.
+    # multi_mra fits one regression per location, so a few stray nulls would otherwise
+    # surface as an opaque MissingDataError from whichever local fit hit them first.
+    ds_prepped.assert_ind_vars_are_finite("multi_mra")
 
     # Log model: fit every regression (global + per-location) and the variable search on the log
     # of the target. Transform once here; predict_multi_mra exponentiates the predictions back to
@@ -3826,6 +3915,22 @@ def predict_catboost(
     return results
 
 
+def _catboost_final_params(params: dict, seed: int | None = 42) -> dict:
+    """Build the final-fit CatBoost config from tuned (or saved) hyperparameters.
+
+    Optuna's ``best_params`` holds only the *searched* keys, so the tuner's fixed settings
+    (loss, bootstrap, tree policy, CTR complexity -- ``_CATBOOST_FIXED_PARAMS``) are merged in
+    underneath them. Without this the final model trained on CatBoost's defaults (RMSE loss,
+    MVS bootstrap, which silently ignores the tuned ``bagging_temperature``) rather than the
+    configuration the hyperparameters were selected under. Tuned/saved keys win on conflict.
+    """
+    out = {**_CATBOOST_FIXED_PARAMS, **params}
+    out["verbose"] = False
+    if seed is not None:
+        out.setdefault("random_seed", seed)
+    return out
+
+
 def run_catboost(
     ds: DataSplit,
     outpath: str,
@@ -3890,11 +3995,9 @@ def run_catboost(
     timing.stop("parameter_search")
 
     timing.start("setup")
-    params["verbose"] = False
+    params = _catboost_final_params(params, seed)
     params["train_dir"] = f"{outpath}/catboost/catboost_info"
     os.makedirs(params["train_dir"], exist_ok=True)
-    if seed is not None:
-        params.setdefault("random_seed", seed)
     cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
 
     regressor = catboost.CatBoostRegressor(**params)

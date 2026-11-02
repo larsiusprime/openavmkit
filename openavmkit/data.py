@@ -2856,6 +2856,22 @@ def _enrich_universe_spatial_lag(
         # Choose the number of nearest neighbors to use
         k = value_fields[value_field]
 
+        if len(df_train_univ) <= k:
+            # Not enough sample parcels to find k neighbors. cKDTree pads the result
+            # with index == len(coords_train), so `parcel_values[indices]` below would
+            # raise IndexError. Mirror the sale-price lag's handling: warn and write
+            # zeros rather than omitting the column, because a missing column becomes a
+            # KeyError deep inside the model runner and takes down every other model
+            # group with it. A small model group is a fact about the jurisdiction, not
+            # a configuration error -- see advanced_settings.md 4.8, which documents
+            # this lag as skipped rather than fatal.
+            warnings.warn(
+                f"Spatial lag for '{value_field}' in model group '{model_group}': only "
+                f"{len(df_train_univ)} sample parcels (need > {k}); writing zeros."
+            )
+            df[f"spatial_lag_{value_field}"] = 0
+            continue
+
         # Query the tree: for each parcel in df_universe, find the k nearest parcels
         # distances: shape (n_universe, k); indices: corresponding indices in df_sales
         distances, indices = tree.query(coords_all, k=k)

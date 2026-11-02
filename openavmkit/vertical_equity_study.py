@@ -11,12 +11,16 @@ Together with :mod:`openavmkit.horizontal_equity_study` and
 equity analysis suite.
 """
 from typing import Dict
-import scipy.stats as stats
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import warnings
-from openavmkit.utilities.stats import ConfidenceStat, calc_ratio_stats_bootstrap, calc_prb
+from openavmkit.utilities.stats import (
+    ConfidenceStat,
+    calc_ratio_stats_bootstrap,
+    calc_prb,
+    calc_median_confidence_interval,
+)
 
 def get_vertical_equity_scores(df, sale_field: str, valuation_field: str) -> Dict[str, float]:
     df = df.copy()
@@ -38,14 +42,19 @@ def get_vertical_equity_scores(df, sale_field: str, valuation_field: str) -> Dic
             "group_stats": None
         }
 
+    # Median confidence intervals per IAAO Standard on Ratio Studies (Exposure Draft,
+    # May 2026) Appendix D.2, which E.1 Step 4 points to. These are nonparametric
+    # order-statistic bounds on the MEDIAN -- not a t-interval around the mean, which
+    # is what this used to compute. D.2: "Unlike the mean, the median confidence
+    # interval does not depend on the assumption of a normal distribution, and it is
+    # not nearly as affected by outlier ratios."
     def ci_90_lower(x):
         if len(x) <= 1: return np.nan
-        # 90% CI uses the 95th percentile for a two-tailed test
-        return np.mean(x) - stats.sem(x) * stats.t.ppf(0.95, df=len(x) - 1)
+        return calc_median_confidence_interval(np.asarray(x, dtype=float), 0.90)[0]
 
     def ci_90_upper(x):
         if len(x) <= 1: return np.nan
-        return np.mean(x) + stats.sem(x) * stats.t.ppf(0.95, df=len(x) - 1)
+        return calc_median_confidence_interval(np.asarray(x, dtype=float), 0.90)[1]
 
     # Guard against a degenerate market proxy. If a model produced all-NaN predictions
     # (e.g. its inputs are absent for this model group), the ratio -> market_proxy chain is
@@ -75,10 +84,22 @@ def get_vertical_equity_scores(df, sale_field: str, valuation_field: str) -> Dic
         top_group = percentile_group_count - 1
         if top_group not in group_stats.index or 0 not in group_stats.index:
             raise ValueError("percentile groups collapsed below the requested count")
-        #VEI is 100 * (median of last percentile grop - median of first percentile group)/median_ratio
-        vei_score = 100 * (group_stats[group_stats.index == top_group].iloc[0]["ratio"] - group_stats[group_stats.index == 0].iloc[0]["ratio"]) / median_ratio
-        # VEI significance = 100 * (Lower CI for Highest PG - Upper CI for Lowest PG)/median
-        vei_significance = 100 * (group_stats[group_stats.index == top_group].iloc[0]["lower"] - group_stats[group_stats.index == 0].iloc[0]["upper"]) / median_ratio
+
+        # E.1 Step 5 -- the POINT ESTIMATE is last percentile group minus first:
+        #   VEI = 100 * ((MEDIAN Last PG - MEDIAN First PG) / Sample MEDIAN)
+        vei_score = 100 * (group_stats.loc[top_group, "ratio"] - group_stats.loc[0, "ratio"]) / median_ratio
+
+        # E.1 Step 7 -- SIGNIFICANCE uses the groups with the highest and lowest
+        # medians, which are not necessarily the last and first. The draft is explicit
+        # on p.79: "Vertical inequities can be presented in many shapes so it may not
+        # always be the first and last percentile groups which are the highest and
+        # lowest medians."
+        #   VEI Significance = 100 * (Lower CI Limit for PG with the Highest Median
+        #                             - Upper CI Limit for PG with the Lowest Median)
+        #                            / Sample MEDIAN
+        highest_pg = group_stats["ratio"].idxmax()
+        lowest_pg = group_stats["ratio"].idxmin()
+        vei_significance = 100 * (group_stats.loc[highest_pg, "lower"] - group_stats.loc[lowest_pg, "upper"]) / median_ratio
     except (ValueError, IndexError) as e:
         warnings.warn(
             f"get_vertical_equity_scores: could not compute VEI ({e}); returning NaN.",

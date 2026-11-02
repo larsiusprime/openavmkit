@@ -282,3 +282,74 @@ def test_cached_df_diff_skips_unchanged_columns(monkeypatch):
     assert col not in written, f"{col} was unchanged but got rewritten"
 
   clear_cache("difftest", "df")
+
+
+def test_cached_df_diff_handles_nullable_dtypes():
+  """The column diff must survive pandas nullable dtypes carrying pd.NA.
+
+  Comparing Int64 / boolean / string columns yields pd.NA wherever EITHER side is
+  NA, and pd.NA cannot be coerced to bool -- `TypeError: boolean value of NA is
+  ambiguous`. This bit the Overture enrichment, which produces exactly these
+  dtypes, as soon as a cached column gained or lost a value.
+  """
+  import numpy as np
+
+  def col_pair(dtype, new_vals, orig_vals):
+    return (pd.Series(new_vals, dtype=dtype).reset_index(drop=True),
+            pd.Series(orig_vals, dtype=dtype).reset_index(drop=True))
+
+  # (dtype, new, orig, expected "are they equal?")
+  cases = [
+    ("Int64",   [1, 2, pd.NA],     [1, 2, pd.NA],     True),
+    ("Int64",   [1, 2, pd.NA],     [1, 2, 3],         False),  # NA on one side only
+    ("Int64",   [1, 2, 3],         [1, 2, pd.NA],     False),
+    ("boolean", [True, pd.NA],     [True, False],     False),
+    ("boolean", [True, pd.NA],     [True, pd.NA],     True),
+    ("string",  ["a", pd.NA],      ["a", "b"],        False),
+    ("string",  ["a", pd.NA],      ["a", pd.NA],      True),
+    ("Float64", [1.0, pd.NA],      [1.0, pd.NA],      True),
+    ("float64", [1.0, float("nan")], [1.0, 2.0],      False),
+    ("float64", [1.0, float("nan")], [1.0, float("nan")], True),
+  ]
+
+  for dtype, new_vals, orig_vals, want_equal in cases:
+    col_new, col_orig = col_pair(dtype, new_vals, orig_vals)
+    n = len(col_new)
+    both_na = (col_new.isna() & col_orig.isna()).to_numpy()
+    try:
+      eq = col_new == col_orig
+      if isinstance(eq, pd.Series):
+        eq = eq.fillna(False)
+      eq = np.asarray(eq, dtype=bool)
+      if eq.shape != (n,):
+        eq = np.zeros(n, dtype=bool)
+    except (TypeError, ValueError):
+      eq = np.zeros(n, dtype=bool)
+
+    # must not raise, and must give the right answer
+    got = bool((eq | both_na).all())
+    assert got is want_equal, (
+      f"{dtype} {new_vals} vs {orig_vals}: got equal={got}, wanted {want_equal}"
+    )
+
+
+def test_cached_df_diff_nullable_roundtrip(monkeypatch):
+  """End-to-end: saving a frame with nullable dtypes must not raise."""
+  import openavmkit.utilities.cache as C
+
+  base = pd.DataFrame({
+    "key": ["a", "b", "c"],
+    "nullable_int": pd.Series([1, 2, pd.NA], dtype="Int64"),
+    "nullable_bool": pd.Series([True, pd.NA, False], dtype="boolean"),
+    "nullable_str": pd.Series(["x", pd.NA, "z"], dtype="string"),
+    "plain": [1.0, 2.0, 3.0],
+  })
+
+  write_cached_df(pd.DataFrame(columns=base.columns), base.copy(), "natest", key="key")
+
+  # a value appears where there was NA -- the shape that raised in CI
+  df_new = base.copy()
+  df_new.loc[2, "nullable_int"] = 3
+  write_cached_df(base.copy(), df_new, "natest", key="key")
+
+  clear_cache("natest", "df")
