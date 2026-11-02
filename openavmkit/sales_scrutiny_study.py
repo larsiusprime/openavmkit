@@ -197,8 +197,9 @@ class SalesScrutinyStudy:
         """
         self._write(path, True)
         self._write(path, False)
-        os.makedirs(path, exist_ok=True)
-        self.flags().to_parquet(f"{path}/flags.parquet", index=False)
+        if flags_wanted(self.settings):
+            os.makedirs(path, exist_ok=True)
+            self.flags().to_parquet(f"{path}/flags.parquet", index=False)
 
     def flags(self) -> pd.DataFrame:
         """Every sale this study flagged, one row each, with the numbers behind the flag.
@@ -687,7 +688,25 @@ def read_keep_keys(settings: dict) -> set[str]:
     return set(_read_key_file(path, "Keep"))
 
 
-def _write_flags(df: pd.DataFrame, name: str) -> None:
+def flags_wanted(settings: dict) -> bool:
+    """Whether the flags files are written: ``analysis.sales_scrutiny.write_flags`` (default False).
+
+    Parameters
+    ----------
+    settings : dict
+        Settings dictionary
+
+    Returns
+    -------
+    bool
+        True when every flagged sale is to be written out (``out/sales_scrutiny/flags.parquet``).
+    """
+    return bool(settings.get("analysis", {}).get("sales_scrutiny", {}).get("write_flags", False))
+
+
+def _write_flags(df: pd.DataFrame, name: str, settings: dict) -> None:
+    if not flags_wanted(settings):
+        return
     os.makedirs(f"out/sales_scrutiny/{name}", exist_ok=True)
     df.to_parquet(f"out/sales_scrutiny/{name}/flags.parquet", index=False)
 
@@ -730,6 +749,7 @@ def drop_manual_exclusions(
                 }
             ),
             "excluded",
+            settings,
         )
         df_sales = df_sales[~df_sales["key_sale"].isin(bad_keys)]
         len_after = len(df_sales)
@@ -1124,6 +1144,7 @@ def run_heuristics(
     _write_flags(
         pd.concat(flag_rows, ignore_index=True) if flag_rows else pd.DataFrame(columns=["key_sale", "key", "check"]),
         "heuristics",
+        settings,
     )
 
     keep = read_keep_keys(settings)

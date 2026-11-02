@@ -153,6 +153,7 @@ def _settings(**heuristics):
                 "location": "neighborhood",
                 "heuristics": {"dupe_date_price": False, **heuristics},
                 "drop": {"heuristics": True},
+                "write_flags": True,
             }
         },
         "locality": {"units": "imperial"},

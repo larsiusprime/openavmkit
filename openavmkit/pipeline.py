@@ -51,6 +51,7 @@ from openavmkit.sales_scrutiny_study import (
     run_heuristics,
     drop_manual_exclusions,
     read_keep_keys,
+    flags_wanted,
     FLAG_COLUMNS,
 )
 from openavmkit.time_adjustment import enrich_time_adjustment
@@ -1168,9 +1169,10 @@ def run_sales_scrutiny(
     2. Optionally drops manually excluded sales flagged by user
     3. Runs a cluster-based sales scrutiny analysis report
 
-    Every sale a check flagged is written to ``out/sales_scrutiny/flags.parquet``, one row
-    per sale and check, with the numbers behind it and whether it was ``kept`` (listed in
-    ``analysis.sales_scrutiny.keep_file``) and ``dropped``.
+    With ``analysis.sales_scrutiny.write_flags: true``, every sale a check flagged is written
+    to ``out/sales_scrutiny/flags.parquet``, one row per sale and check, with the numbers
+    behind it and whether it was ``kept`` (listed in ``analysis.sales_scrutiny.keep_file``)
+    and ``dropped``. Unset, no flags file is written (and an earlier run's is removed).
 
     Parameters
     ----------
@@ -1220,7 +1222,8 @@ def run_sales_scrutiny(
     elif verbose:
         print(f"Skipping clustered sales scrutiny analysis...")
 
-    _write_scrutiny_flags(settings, drop_clusters, drop_heuristics)
+    if flags_wanted(settings):
+        _write_scrutiny_flags(settings, drop_clusters, drop_heuristics)
     return sup
 
 

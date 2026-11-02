@@ -70,7 +70,10 @@ def test_kept_sales_are_flagged_but_not_dropped(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     os.makedirs("in")
     pd.DataFrame({"key_sale": ["s1"]}).to_csv("in/keep.csv", index=False)
-    settings = {"analysis": {"sales_scrutiny": {"keep_file": "in/keep.csv"}}, "locality": {"units": "imperial"}}
+    settings = {
+        "analysis": {"sales_scrutiny": {"keep_file": "in/keep.csv", "write_flags": True}},
+        "locality": {"units": "imperial"},
+    }
     assert read_keep_keys(settings) == {"s1"}
 
     out = run_heuristics(_sales(), settings, drop=True)
@@ -79,6 +82,15 @@ def test_kept_sales_are_flagged_but_not_dropped(tmp_path, monkeypatch):
     flags = pd.read_parquet("out/sales_scrutiny/heuristics/flags.parquet")
     assert sorted(flags["key_sale"]) == ["s0", "s1"]
     assert set(flags["check"]) == {"dupe_date_price"}
+
+
+def test_the_flags_file_is_written_only_when_asked(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    settings = {"analysis": {"sales_scrutiny": {}}, "locality": {"units": "imperial"}}
+    out = run_heuristics(_sales(), settings, drop=True)
+    # The checks run and drop as before; nothing is written.
+    assert sorted(out.sales["key_sale"]) == ["s2", "s3"]
+    assert not os.path.exists("out/sales_scrutiny/heuristics/flags.parquet")
 
 
 def test_drops_are_settings():
@@ -96,6 +108,21 @@ def test_filled_values_are_recorded(tmp_path):
     assert out.columns.tolist() == ["key", "x"]
     assert out["x"].tolist() == [False, True, False]
     assert pd.read_parquet(tmp_path / "filled.parquet").equals(out)
+
+
+def test_the_filled_file_is_written_only_when_asked(tmp_path, monkeypatch):
+    from openavmkit.cleaning import fill_unknown_values_sup
+
+    monkeypatch.chdir(tmp_path)
+    universe = pd.DataFrame({"key": ["a", "b"], "model_group": ["UNKNOWN", "UNKNOWN"], "x": [1.0, None]})
+    sales = pd.DataFrame({"key_sale": ["s"], "key": ["a"], "sale_price": [1.0]})
+    settings = {"data": {"process": {"fill": {"zero": ["x"]}}}}
+    out = fill_unknown_values_sup(SalesUniversePair(sales=sales, universe=universe), settings)
+    assert out.universe["x"].tolist() == [1.0, 0.0]
+    assert not os.path.exists("out/filled.parquet")
+    settings["data"]["process"]["write_filled"] = True
+    fill_unknown_values_sup(SalesUniversePair(sales=sales, universe=universe), settings)
+    assert pd.read_parquet("out/filled.parquet")["x"].tolist() == [False, True]
 
 
 def test_each_heuristic_can_be_turned_off(tmp_path, monkeypatch):

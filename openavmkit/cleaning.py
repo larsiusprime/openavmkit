@@ -448,6 +448,9 @@ def fill_unknown_values_sup(
 ) -> SalesUniversePair:
     """Fill unknown values with default values as specified in settings.
 
+    With ``data.process.write_filled: true``, which parcels had each field filled (rather
+    than found in the data) is written to ``out/filled.parquet`` (see ``write_filled``).
+
     Parameters
     ----------
     sup : SalesUniversePair
@@ -463,10 +466,12 @@ def fill_unknown_values_sup(
     df_sales = sup["sales"].copy()
     df_univ = sup["universe"].copy()
 
-    # Fill ALL unknown values for the universe
-    blank = {c: df_univ[c].isna() for c in df_univ.columns if c != "geometry" and df_univ[c].hasnans}
+    # Fill ALL unknown values for the universe; with data.process.write_filled, record which were filled.
+    record = bool(settings.get("data", {}).get("process", {}).get("write_filled", False))
+    blank = {c: df_univ[c].isna() for c in df_univ.columns if c != "geometry" and df_univ[c].hasnans} if record else {}
     df_univ = _fill_unknown_values_per_model_group(df_univ, settings)
-    write_filled(df_univ, blank)
+    if record:
+        write_filled(df_univ, blank)
 
     # For sales, fill ONLY the unknown values that pertain to sales metadata
     # df_sales can contain characteristics, but we want to preserve the blanks in those fields because they function
