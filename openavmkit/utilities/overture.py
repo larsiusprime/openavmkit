@@ -9,6 +9,7 @@ check on improvement coverage is desired.
 """
 import os
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 import geopandas as gpd
 import pandas as pd
 import traceback
@@ -16,11 +17,92 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.dataset as ds
 import pyarrow.fs as fs
+import pyarrow.parquet as pq
 from tqdm import tqdm
 import shapely.wkb
 
 from openavmkit.utilities.geometry import get_crs
 from openavmkit.utilities.timing import TimingData
+
+
+# Parquet leaf-column paths of the per-building bounding box struct.
+_BBOX_STAT_COLUMNS = ("bbox.xmin", "bbox.xmax", "bbox.ymin", "bbox.ymax")
+
+
+def _row_group_may_overlap(row_group, col_index: dict, bbox) -> bool:
+    """Return False only if a row group's bbox statistics prove it has no rows in ``bbox``.
+
+    Mirrors the row-level predicate used in ``get_buildings`` (a building matches when
+    ``bbox.xmin < xmax and bbox.xmax > xmin and bbox.ymin < ymax and bbox.ymax > ymin``):
+    a row group can contain a match only if its smallest ``bbox.xmin`` is below ``xmax``,
+    its largest ``bbox.xmax`` is above ``xmin``, and likewise for y. Any missing column or
+    statistic means we cannot rule the row group out, so it is kept.
+    """
+    xmin, ymin, xmax, ymax = bbox
+    stats = {}
+    for name in _BBOX_STAT_COLUMNS:
+        i = col_index.get(name)
+        if i is None:
+            return True
+        s = row_group.column(i).statistics
+        if s is None or not s.has_min_max:
+            return True
+        stats[name] = s
+    return (
+        stats["bbox.xmin"].min < xmax
+        and stats["bbox.xmax"].max > xmin
+        and stats["bbox.ymin"].min < ymax
+        and stats["bbox.ymax"].max > ymin
+    )
+
+
+def _matching_row_groups(path: str, filesystem, bbox) -> list[int]:
+    """Indices of the row groups in a Parquet file that may overlap ``bbox``.
+
+    Reads only the file footer. It is read into a local (not via ``fragment.metadata``,
+    which caches the parsed footer on the fragment): an Overture footer costs ~7.5 MB of
+    RAM once parsed, so caching all ~500 of them would cost ~4 GB, the very thing this
+    pruning exists to avoid.
+    """
+    md = pq.read_metadata(path, filesystem=filesystem)
+    if md.num_row_groups == 0:
+        return []
+    first = md.row_group(0)
+    col_index = {first.column(i).path_in_schema: i for i in range(first.num_columns)}
+    return [
+        r for r in range(md.num_row_groups)
+        if _row_group_may_overlap(md.row_group(r), col_index, bbox)
+    ]
+
+
+def _prune_dataset_to_bbox(dataset: ds.FileSystemDataset, bbox, max_workers: int = 32, verbose=False):
+    """Restrict a Parquet dataset to the row groups whose bbox statistics overlap ``bbox``.
+
+    PyArrow's dataset scanner does not use Parquet row-group statistics on nested struct
+    fields such as ``bbox.xmin``, so filtering the Overture buildings theme directly makes
+    it decode row groups from across the whole planet (~4 GB peak RSS for a 1 km box).
+    Overture writes min/max statistics for those columns, so we read each file's footer
+    (in parallel, it is small) and keep only the row groups that could contain a match.
+    The exact row-level filter is still applied afterwards by the caller.
+    """
+    paths = list(dataset.files)
+    if not paths:
+        return dataset
+    filesystem = dataset.filesystem
+
+    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(paths)))) as ex:
+        plans = list(zip(paths, ex.map(lambda p: _matching_row_groups(p, filesystem, bbox), paths)))
+
+    kept = [
+        dataset.format.make_fragment(path, filesystem=filesystem, row_groups=ids)
+        for path, ids in plans if ids
+    ]
+    if verbose:
+        n_kept = sum(len(ids) for _, ids in plans)
+        print(f"--> Row-group pruning kept {n_kept} row group(s) in {len(kept)} of {len(paths)} files")
+    return ds.FileSystemDataset(
+        kept, schema=dataset.schema, format=dataset.format, filesystem=filesystem
+    )
 
 
 class OvertureService:
@@ -215,6 +297,9 @@ class OvertureService:
                 proj_cols = [c for c in proj_cols if c in available]
                 if verbose and missing:
                     print(f"--> Skipping unavailable columns: {missing}")
+                # Skip row groups that can't overlap the bbox before scanning; see
+                # _prune_dataset_to_bbox for why the filter alone doesn't do this.
+                dataset = _prune_dataset_to_bbox(dataset, bbox, verbose=verbose)
                 batches = dataset.to_batches(filter=filter, columns=proj_cols)
 
                 # Count total batches for progress bar
