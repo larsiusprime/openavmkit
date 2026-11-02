@@ -31,13 +31,16 @@ function checkboxTicked(body) {
 function collectAuthors(commits, prAuthor) {
   const users = new Map();
   const unlinked = new Map();
-  const add = (u) => {
-    if (u && !isBot(u) && !users.has(u.id)) users.set(u.id, { login: u.login, id: u.id });
+  const add = (u, email) => {
+    if (!u || isBot(u)) return;
+    if (!users.has(u.id)) users.set(u.id, { login: u.login, id: u.id, emails: [] });
+    const entry = users.get(u.id);
+    if (email && !entry.emails.includes(email)) entry.emails.push(email);
   };
   add(prAuthor);
   for (const c of commits) {
     if (c.author) {
-      add(c.author);
+      add(c.author, c.commit && c.commit.author && c.commit.author.email);
     } else {
       const a = (c.commit && c.commit.author) || {};
       const key = (a.email || a.name || c.sha).toLowerCase();
@@ -45,6 +48,15 @@ function collectAuthors(commits, prAuthor) {
     }
   }
   return { users: [...users.values()], unlinked: [...unlinked.values()] };
+}
+
+// "@login — commit email: a@b, c@d" so a maintainer can match against DocuSeal, which records
+// the signer's email address. GitHub's private noreply addresses can never match, so flag them.
+function describeSigner(u) {
+  const emails = (u.emails || []).map((e) =>
+    /@users\.noreply\.github\.com$/i.test(e) ? `${e} (GitHub private address)` : e
+  );
+  return emails.length ? `@${u.login} — commit email: ${emails.join(', ')}` : `@${u.login}`;
 }
 
 function buildComment({ needsCheckbox, prAuthor, missing, unlinked }) {
@@ -68,8 +80,10 @@ function buildComment({ needsCheckbox, prAuthor, missing, unlinked }) {
   if (missing.length > 0) {
     lines.push(
       `- [ ] These contributors need to sign the CLA once, here: **[sign on DocuSeal](${DOCUSEAL_URL})** ` +
-        '(enter your GitHub username in the form). A maintainer will then verify it — no further action needed in this thread.',
-      ...missing.map((u) => `  - @${u.login}`)
+        'using the same email address as your commits. A maintainer will then verify it — no further action ' +
+        'needed in this thread. If you signed with a different email than the one shown below (or your commits ' +
+        'use a GitHub private address), please reply with the email you signed with.',
+      ...missing.map((u) => `  - ${describeSigner(u)}`)
     );
   }
   if (unlinked.length > 0) {
@@ -83,7 +97,7 @@ function buildComment({ needsCheckbox, prAuthor, missing, unlinked }) {
   lines.push(
     '',
     '<sub>Maintainers: after confirming the DocuSeal signature(s) for everyone listed above, ' +
-      `apply the \`${LABEL}\` label to record them.</sub>`
+      `apply the \`${LABEL}\` label to record them. Match each person by the email they signed with on DocuSeal.</sub>`
   );
   return lines.join('\n');
 }
@@ -199,4 +213,4 @@ async function run({ github, context, core }) {
 }
 
 module.exports = run;
-module.exports._internal = { checkboxTicked, collectAuthors, buildComment, isBot };
+module.exports._internal = { checkboxTicked, collectAuthors, buildComment, describeSigner, isBot };

@@ -10,7 +10,7 @@ https://docuseal.com/d/4iF7pn89f5v914
 See [License Philosophy](LICENSE-PHILOSOPHY.md) for more information on why we use a dual-license model.
 
 ### How to Sign the CLA
-- **Once, before your first contribution:** sign the CLA on [DocuSeal](https://docuseal.com/d/4iF7pn89f5v914), entering your GitHub username in the form.
+- **Once, before your first contribution:** sign the CLA on [DocuSeal](https://docuseal.com/d/4iF7pn89f5v914), using the same email address you commit with, so a maintainer can match your signature to your GitHub account.
 - **On every pull request:** tick the box *"I have read and agree to the Contributor License Agreement"* in the pull request description (it's in the template).
 - A maintainer will verify your DocuSeal signature and record it. After that, your future pull requests only need the checkbox.
 - Make sure your commits are authored with an email address linked to your GitHub account, so your commits can be matched to your signature.
