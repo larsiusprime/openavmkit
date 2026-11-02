@@ -55,6 +55,15 @@
       "created_at": "2026-05-29T17:28:39Z",
       "repoId": 899629712,
       "pullRequestNo": 334
+    },
+    {
+      "name": "drussellmrichie",
+      "id": 9650729,
+      "created_at": "2026-11-02T22:53:19Z",
+      "repoId": 899629712,
+      "pullRequestNo": 365,
+      "method": "docuseal",
+      "verified_by": "larsiusprime"
     }
   ]
 }

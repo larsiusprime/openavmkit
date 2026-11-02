@@ -141,6 +141,7 @@ from openavmkit.tuning import (
     _tune_xgboost,
     _tune_catboost,
     _tune_ngboost,
+    _CATBOOST_FIXED_PARAMS,
     _study_fingerprint,
     _discard_stale_studies,
     _cleanup_study_files,
@@ -3914,6 +3915,22 @@ def predict_catboost(
     return results
 
 
+def _catboost_final_params(params: dict, seed: int | None = 42) -> dict:
+    """Build the final-fit CatBoost config from tuned (or saved) hyperparameters.
+
+    Optuna's ``best_params`` holds only the *searched* keys, so the tuner's fixed settings
+    (loss, bootstrap, tree policy, CTR complexity -- ``_CATBOOST_FIXED_PARAMS``) are merged in
+    underneath them. Without this the final model trained on CatBoost's defaults (RMSE loss,
+    MVS bootstrap, which silently ignores the tuned ``bagging_temperature``) rather than the
+    configuration the hyperparameters were selected under. Tuned/saved keys win on conflict.
+    """
+    out = {**_CATBOOST_FIXED_PARAMS, **params}
+    out["verbose"] = False
+    if seed is not None:
+        out.setdefault("random_seed", seed)
+    return out
+
+
 def run_catboost(
     ds: DataSplit,
     outpath: str,
@@ -3978,11 +3995,9 @@ def run_catboost(
     timing.stop("parameter_search")
 
     timing.start("setup")
-    params["verbose"] = False
+    params = _catboost_final_params(params, seed)
     params["train_dir"] = f"{outpath}/catboost/catboost_info"
     os.makedirs(params["train_dir"], exist_ok=True)
-    if seed is not None:
-        params.setdefault("random_seed", seed)
     cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
 
     regressor = catboost.CatBoostRegressor(**params)

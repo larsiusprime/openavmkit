@@ -1178,7 +1178,12 @@ def _calc_shap(
     elif isinstance(model, LightGBMModel):
         explainer = _lightgbm_shap(model, X_train, background_size=background_size)
     elif isinstance(model, CatBoostModel):
+        # Use CatBoost's native (Approximate) SHAP via _shap_explain, the same path the
+        # contribution files use. Calling the shap.TreeExplainer directly runs shap's generic
+        # tree algorithm instead, which on deep trees is ~100x slower (a Depthwise depth-10
+        # model on 20k rows: ~25 min vs ~16 s).
         explainer = _catboost_shap(model, X_train, background_size=background_size)
+        return _shap_explain("catboost", explainer, X_to_explain, cat_data=model.cat_data)
     else:
         explainer = shap.Explainer(model, X_train)
     explanation = explainer(X_to_explain)
