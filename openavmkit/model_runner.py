@@ -4904,9 +4904,17 @@ def _ensemble_beeswarm(
     plot_full_beeswarm(expl, title=title)
 
 
-# Engines that don't get variable reduction: trees and multi-MRA, and the models that take no
-# variables (the assessor is a pass-through of the roll's values).
-_NO_VARIABLE_REDUCTION = ["pass_through", "assessor", "ground_truth", "xgboost", "lightgbm", "catboost", "multi_mra"]
+# ML engines (the gradient-boosted trees and layered comps) take their variables as given: they find their own way
+# with weak or overlapping ones, so they never get the reduced list.
+_ML_ENGINES = ["xgboost", "lightgbm", "catboost", "lcomp"]
+# Engines that don't get variable reduction: the ML engines and multi-MRA, and the models that take no variables
+# (the assessor is a pass-through of the roll's values).
+_NO_VARIABLE_REDUCTION = ["pass_through", "assessor", "ground_truth", "multi_mra", *_ML_ENGINES]
+
+
+def _takes_reduced_variables(model_engine: str) -> bool:
+    """Whether a model gets the auto-reduced variable list (when its entry uses the default variables)."""
+    return model_engine not in _ML_ENGINES
 
 
 def _first_reducing_engine(models_to_run: list, models_to_skip: list, model_entries: dict) -> str | None:
@@ -5300,8 +5308,8 @@ def _run_models(
         model_entry = model_entries.get(model_name, model_entries.get("default", {}))
         model_engine = model_entry.get("model", model_name)
 
-        # Tree-based models don't auto-reduce variables ever
-        if model_engine not in ["xgboost", "catboost", "lightgbm"]:
+        # ML models (trees, layered comps) don't auto-reduce variables ever
+        if _takes_reduced_variables(model_engine):
             model_variables = best_variables
         else:
             model_variables = None
