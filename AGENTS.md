@@ -166,11 +166,14 @@ Patterns, not jurisdictions. Jurisdiction-specific findings belong in agent memo
 
 ## 6. Testing
 
-Tests live under [tests/](tests/). Run them with:
+Tests live under [tests/](tests/). The test tools (`pytest`, `ruff`, `ipython`) are the `dev` extra, not runtime requirements; install them, then run the tests:
 
 ```bash
+pip install -e ".[dev]"
 pytest tests/
 ```
+
+Don't import IPython (or pytest) from library code: OpenAVMKit runs outside notebooks too. For rich output use `openavmkit.utilities.notebook` (`display`, `HTML`), which falls back to printing.
 
 Tests use real settings fixtures from `tests/data/<slug>/`. When adding a feature that depends on settings, prefer extending an existing fixture over creating a new locality.
 

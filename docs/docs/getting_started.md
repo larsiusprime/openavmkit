@@ -8,6 +8,18 @@ OpenAVMKit can be used three ways. Pick the one that fits, then follow the corre
 - **Python library user** — you want to import `openavmkit` modules into your own Python code (analysis scripts, custom pipelines, dashboards). After install, see [The Basics → Code modules](the_basics.md#code-modules), then the [API reference](../api/index.md) for what's available.
 - **Contributor / coding agent** — you want to extend OpenAVMKit. Install from Git (option 2 below), then read [AGENTS.md](https://github.com/larsiusprime/openavmkit/blob/master/AGENTS.md) at the repo root for conventions and gotchas, plus [CONTRIBUTING.md](https://github.com/larsiusprime/openavmkit/blob/master/CONTRIBUTING.md) for the PR workflow.
 
+## What each install gives you
+
+OpenAVMKit's own requirements are only what it needs to run. The tools for notebooks and for testing are installed separately, so a script or an app that uses OpenAVMKit doesn't carry them:
+
+| You want to… | Install | What it adds |
+|---|---|---|
+| Use the library in your own Python code | `pip install openavmkit` (PyPI), or `pip install -e .` (Git) | OpenAVMKit and the libraries it runs on |
+| Run the pipeline notebooks | the above, then `pip install jupyter` | Jupyter, which brings IPython: tables show as rich tables in a notebook |
+| Run the test suite, or contribute | `pip install -e ".[dev]"` (Git only: the tests aren't in the PyPI package) | `pytest`, `ruff` and `ipython` |
+
+Outside a notebook (a script, a terminal), OpenAVMKit prints its tables as plain text; it doesn't need IPython. Up to 0.7.0, `ipython`, `pytest` and `pipreqs` were OpenAVMKit's own requirements; they no longer are, so `pytest` in particular comes only with `[dev]`. (IPython is still installed for now, by one of OpenAVMKit's libraries, `layeredcompmodel`.)
+
 ## Option 1 - Install from PyPI
 
 (recommended for most users)
@@ -17,6 +29,8 @@ You can install the latest stable release directly from PyPI without cloning the
 ```bash
 pip install openavmkit
 ```
+
+This installs the library only. To run the notebooks, also [install Jupyter](#running-jupyter-notebooks).
 
 ## Option 2 - Install from Git
 
@@ -131,12 +145,14 @@ First, make sure you've followed the above steps.
 
 Then, in your command line environment, make sure you are in the top level of the `openavmkit/` directory. That is the same directory which contains the `setup.py` file.
 
-Install the library from the checked-out source (editable mode is recommended for development):
+Install the library from the checked-out source (editable mode is recommended for development), with the test and development tools:
 ```bash
-pip install -e .
+pip install -e ".[dev]"
 ```
 
 The "." in that command is a special symbol that refers to the current directory. So when you run `pip install .`, you are telling `pip` to install the library contained in the current directory. That's why it's important to make sure you're in the right directory when you run this command!
+
+`[dev]` adds the tools for running the tests and working on the code: `pytest`, `ruff` and `ipython`. If you only want to use the library, `pip install -e .` is enough, but you won't be able to [run the tests](#running-tests).
 
 ## Running Jupyter notebooks
 
@@ -147,6 +163,8 @@ To use the Jupyter notebooks, you'll first need to install Jupyter:
 ```bash
 pip install jupyter
 ```
+
+Jupyter brings IPython with it, which OpenAVMKit uses to show tables richly inside a notebook; nothing else is needed.
 
 With Jupyter installed, you can start the Jupyter notebook server* by running this command:
 
@@ -162,7 +180,13 @@ When you run `jupyter notebook`, it will open a new tab in your web browser that
 
 To ensure everything is working properly, you can run the test suite. This will execute all unit tests from the `tests/` directory.
 
-Run the tests using `pytest`:
+The tests need the development tools, which aren't installed with OpenAVMKit itself. If you installed with plain `pip install -e .`, add them first (from the top level of the `openavmkit/` directory):
+
+```bash
+pip install -e ".[dev]"
+```
+
+Then run the tests using `pytest`:
 
 ```bash
 pytest
