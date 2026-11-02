@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 ### ⚠️ Behavior changes
 
 - **CatBoost tuning is much faster, and the shipped CatBoost model now matches what was tuned.** The tuner now optimizes an RMSE loss (still scored on MAPE) over symmetric trees only, with categorical feature combinations off (`max_ctr_complexity=1`). Previously it optimized CatBoost's MAPE loss, which converges so slowly on price targets that trials rarely stopped early and the search drifted into Depthwise/Lossguide depth-10 trees. On the public localities: Guilford single-family went from 3,418s to 462s for the CatBoost group run (out-of-fold RMSE $76.9k → $57.8k); Petersburg single-family CatBoost models ran 2–3× faster. `_SEARCH_SPACE_VERSION` is bumped, so saved CatBoost params and resume journals are invalidated and re-tuned once. CatBoost predictions will change.
-
+ 
 ### Fixed
 
 - The final CatBoost fit dropped the tuner's fixed settings (Optuna's `best_params` only holds searched keys), so the shipped model trained with CatBoost's defaults — RMSE loss and MVS bootstrap, which silently discarded the tuned `bagging_temperature`. The fixed settings are now merged into the final fit.
