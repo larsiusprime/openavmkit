@@ -326,19 +326,38 @@ def match_to_census_blockgroups(
 
     # Perform the spatial join
     census_gdf = census_gdf.to_crs(centroid_gdf.crs)
-    
+
+    # Measure the BLOCK GROUP polygons before the join. After it, `joined` carries the
+    # left frame's geometry -- the centroid points -- whose area is always 0.0, so a
+    # tie-break computed there degenerates to "whichever row the join happened to
+    # emit first".
+    census_gdf = census_gdf.copy()
+    census_gdf["_census_area"] = census_gdf.geometry.area
+
     joined = centroid_gdf.sjoin(census_gdf, predicate="intersects", how=join_type)
     if "index_right" in joined:
         joined = joined.drop(columns="index_right")
-    
+
     # If we have matches, process them
     if not joined.empty:
-        # Calculate areas for each match
-        joined["area"] = joined.geometry.area
-
-        # Group by the index and find the smallest area for each
-        smallest_areas = joined.groupby(level=0)["area"].idxmin()
+        # A centroid sitting on a shared boundary intersects more than one block
+        # group; keep the smallest polygon, which is the tightest containing unit.
+        #
+        # The join emits one row per (parcel, block group) match, so a boundary
+        # parcel appears more than once under the SAME index label. idxmin returns
+        # index *labels*, and .loc on a duplicated label pulls back every row that
+        # shares it -- which would defeat the whole de-duplication. Reset to a unique
+        # positional index first, group by the original label, and select on that.
+        # Unmatched rows (left join, no block group) carry a NaN area, which would
+        # make idxmin yield NaN for their group, so push them to +inf: they are alone
+        # in their group and must still be selected.
+        orig_index = joined.index
+        joined = joined.reset_index(drop=True)
+        areas = joined["_census_area"].fillna(float("inf"))
+        smallest_areas = areas.groupby(orig_index.to_numpy()).idxmin()
         joined = joined.loc[smallest_areas]
+        joined.index = pd.Index(smallest_areas.index, name=orig_index.name)
+        joined = joined.drop(columns="_census_area")
 
         # Calculate and print percentage of records with valid census geoid
         valid_geoid_count = joined["std_geoid"].notna().sum()
@@ -350,7 +369,7 @@ def match_to_census_blockgroups(
         # restore the original geometry column
         joined = joined.merge(gdf[["key","geometry"]], on="key", how="left")
         joined = joined.set_geometry("geometry")
-        joined = joined.drop(columns=["centroid","area"])
+        joined = joined.drop(columns=["centroid"])
 
         return joined
     else:

@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use OpenAVMKit in your research, please cite it as below."
+title: "OpenAVMKit: an open source toolkit for real estate mass appraisal"
+abstract: >-
+  OpenAVMKit is a free and open source Python library for real estate mass
+  appraisal. It provides modules for data cleaning, spatial data enrichment,
+  automated valuation modeling (multiple regression, geographically weighted
+  regression, and gradient-boosted trees), and IAAO-standard ratio and equity
+  studies, together with Jupyter notebooks that implement a reproducible
+  end-to-end assessment pipeline for any jurisdiction.
+type: software
+authors:
+  - family-names: Doucet
+    given-names: Lars A.
+repository-code: "https://github.com/larsiusprime/openavmkit"
+url: "https://www.openavmkit.com/"
+license: AGPL-3.0-or-later
+keywords:
+  - mass appraisal
+  - automated valuation model
+  - AVM
+  - CAMA
+  - property tax
+  - property assessment
+  - ratio study
+  - IAAO
+  - real estate
+  - GIS
+  - Python
+version: 0.7.0
+date-released: "2026-09-22"

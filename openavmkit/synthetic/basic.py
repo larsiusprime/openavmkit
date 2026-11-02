@@ -522,7 +522,7 @@ def generate_basic(
 
             key = f"{x}-{y}"
             land_area = np.random.randint(5445, 21780)
-            if "unit" == "sqm":
+            if unit == "sqm":
                 land_area /= 10.7639
                 
             land_value = land_area * land_value_per_land_area
@@ -534,7 +534,7 @@ def generate_basic(
 
             if not is_vacant:
                 bldg_area_finished_area = np.random.randint(1000, 2500)
-                if "unit" == "sqm":
+                if unit == "sqm":
                     bldg_area_finished_area /= 10.7639
                 bldg_quality_num = np.clip(np.random.normal(3, 1), 0, 6)
                 bldg_condition_num = np.clip(np.random.normal(3, 1), 0, 6)
@@ -562,8 +562,16 @@ def generate_basic(
                 base_bldg_value + (quality_value * bldg_quality_num)
             ) * bldg_type_mult
 
-            depreciation_from_age = min(0.0, 1 - (bldg_age_years / 100))
-            depreciation_from_condition = min(0.0, 1 - (bldg_condition_num / 6))
+            # These are LOSS fractions in [0, 1], consumed below as
+            # (1 - total_depreciation). A new building (age 0) and one in top
+            # condition (6) each lose nothing; age 100 and condition 0 each lose
+            # everything. Inputs are already clipped to those ranges above.
+            #
+            # These previously read `min(0.0, 1 - x)`, and since both expressions
+            # sit in [0, 1] the min clamped them to 0.0 every time -- synthetic
+            # buildings never depreciated at all.
+            depreciation_from_age = bldg_age_years / 100
+            depreciation_from_condition = 1 - (bldg_condition_num / 6)
 
             total_depreciation = (
                 depreciation_from_age + depreciation_from_condition

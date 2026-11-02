@@ -190,12 +190,12 @@ def resolve_filter(df: pd.DataFrame, f: list, rename_map: dict = None) -> pd.Ser
             if is_column_of_type(df, field, "number"):
                 return df[field].fillna(0).ge(value)
             else:
-                return df[field].le(value)
+                return df[field].ge(value)
         if operator == "<=":
             if is_column_of_type(df, field, "number"):
                 return df[field].fillna(0).le(value)
             else:
-                return df[field].ge(value)
+                return df[field].le(value)
         if operator == "==":
             return df[field].eq(value)
         if operator == "!=":
