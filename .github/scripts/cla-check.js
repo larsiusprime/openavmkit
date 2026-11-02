@@ -50,13 +50,12 @@ function collectAuthors(commits, prAuthor) {
   return { users: [...users.values()], unlinked: [...unlinked.values()] };
 }
 
-// "@login — commit email: a@b, c@d" so a maintainer can match against DocuSeal, which records
-// the signer's email address. GitHub's private noreply addresses can never match, so flag them.
+// "@login (commit email: a@b)". DocuSeal records the signer's GitHub username, which is the
+// primary match; the commit email is a secondary cross-check. GitHub's private noreply
+// addresses can never match a DocuSeal email, so they are left out.
 function describeSigner(u) {
-  const emails = (u.emails || []).map((e) =>
-    /@users\.noreply\.github\.com$/i.test(e) ? `${e} (GitHub private address)` : e
-  );
-  return emails.length ? `@${u.login} — commit email: ${emails.join(', ')}` : `@${u.login}`;
+  const emails = (u.emails || []).filter((e) => !/@users\.noreply\.github\.com$/i.test(e));
+  return emails.length ? `@${u.login} (commit email: ${emails.join(', ')})` : `@${u.login}`;
 }
 
 function buildComment({ needsCheckbox, prAuthor, missing, unlinked }) {
@@ -80,9 +79,8 @@ function buildComment({ needsCheckbox, prAuthor, missing, unlinked }) {
   if (missing.length > 0) {
     lines.push(
       `- [ ] These contributors need to sign the CLA once, here: **[sign on DocuSeal](${DOCUSEAL_URL})** ` +
-        'using the same email address as your commits. A maintainer will then verify it — no further action ' +
-        'needed in this thread. If you signed with a different email than the one shown below (or your commits ' +
-        'use a GitHub private address), please reply with the email you signed with.',
+        '— enter your GitHub username in the form. A maintainer will then verify it; no further action ' +
+        'is needed in this thread.',
       ...missing.map((u) => `  - ${describeSigner(u)}`)
     );
   }
@@ -97,7 +95,7 @@ function buildComment({ needsCheckbox, prAuthor, missing, unlinked }) {
   lines.push(
     '',
     '<sub>Maintainers: after confirming the DocuSeal signature(s) for everyone listed above, ' +
-      `apply the \`${LABEL}\` label to record them. Match each person by the email they signed with on DocuSeal.</sub>`
+      `apply the \`${LABEL}\` label to record them. Match each person by the GitHub username on their DocuSeal signature; the commit email is a secondary check.</sub>`
   );
   return lines.join('\n');
 }
