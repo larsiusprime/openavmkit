@@ -3468,8 +3468,6 @@ def _test_mape_local_ensemble(
         if mape < best_mape:
             best_model = key
             best_mape = mape
-            if verbose:
-                print(f"----> loc = {location_value:<10}, model = {key:<12}, mape = {best_mape:>6.3f}, samples = {len(df_slice):<12}")
     return best_model, best_mape
 
 

@@ -15,6 +15,7 @@ Largely internal but several of these are imported across many modules.
 """
 import os
 import pickle
+import warnings
 
 import geopandas as gpd
 import numpy as np
@@ -837,6 +838,28 @@ def calc_spatial_lag(
 
         # Choose the number of nearest neighbors to use
         k = neighbors  # You can adjust this number as needed
+
+        # cKDTree pads a short result with index == len(coords_train), so with fewer
+        # sample points than k the `parcel_values[indices]` lookup below raises
+        # IndexError. Degrade the way this function already degrades for missing lag
+        # values -- fall back to the field's median across the sample -- rather than
+        # taking down the caller. A thin sample is a fact about the data, not a
+        # misconfiguration.
+        if len(coords_train) < k + (1 if exclude_self_in_sample else 0):
+            warnings.warn(
+                f"calc_spatial_lag: only {len(coords_train)} sample parcel(s) for "
+                f"'{value_field}' but k={k}"
+                f"{' (+1 for self-exclusion)' if exclude_self_in_sample else ''}; "
+                f"falling back to the sample median for every row."
+            )
+            fallback = df_sample[value_field].median()
+            if pd.isna(fallback):
+                # No sample at all leaves no median to fall back to. Write zeros, as
+                # the sale-price lag does, rather than a NaN column: a NaN ind_var is
+                # fatal to the linear engines downstream.
+                fallback = 0.0
+            df[f"spatial_lag_{value_field}"] = fallback
+            continue
 
         # Query the tree: for each parcel in df_universe, find the k nearest parcels
         # distances: shape (n_universe, k); indices: corresponding indices in df_sales
