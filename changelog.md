@@ -18,6 +18,7 @@ All notable changes to this project will be documented in this file.
 - The final CatBoost fit dropped the tuner's fixed settings (Optuna's `best_params` only holds searched keys), so the shipped model trained with CatBoost's defaults — RMSE loss and MVS bootstrap, which silently discarded the tuned `bagging_temperature`. The fixed settings are now merged into the final fit.
 - CatBoost tuning could crash with `FileExistsError: 'catboost_info'` when parallel CV folds started together in a fresh locality directory. Tuning now uses a private temporary `train_dir`, and no longer leaves `catboost_info/` in the locality folder.
 - The `do_shaps` summary for CatBoost used shap's generic `TreeExplainer` instead of CatBoost's native SHAP, which took ~25 minutes on Guilford single-family. It now uses the same native (Approximate) path as the contribution files.
+- The Overture building fetch used ~4.4 GB of memory even for a 1 km bounding box, enough to get killed on small workers. PyArrow doesn't use Parquet statistics on nested fields like `bbox.xmin` to skip data, so it was decoding row groups from the whole planet. The fetch now reads each file's footer first and scans only the row groups whose bbox statistics overlap the request. On a 1 km box in Greensboro, NC: 4.4 GB → 0.56 GB and 32s → 7s; on a 10 km box (46k buildings): 4.6 GB → 0.67 GB and 47s → 7s. Results are identical. Diagnosis credit to [#368](https://github.com/larsiusprime/openavmkit/pull/368).
 
 ## [0.7.0] - 2026-09-22
 
