@@ -18,6 +18,11 @@ All notable changes to this project will be documented in this file.
 
 - **Explicit `bins` for ratio-study breakdowns.** `{"by": "pct_vacant", "bins": [0, 0.1, 0.25, 0.5, 1.0], "bin_labels": ["0-10%", "10-25%", "25-50%", "50-100%"]}` slices on value edges you choose, for columns where equal-count quantiles or integer `slice_size` labels don't work (e.g. 0–1 shares). Bad edges or labels raise a clear error; sales outside the edges are left out with a warning. See [Ratio study breakdowns](docs/docs/advanced_settings.md#analysisratio_studybreakdowns). From [#366](https://github.com/larsiusprime/openavmkit/pull/366).
 
+### Changed
+
+- `ipython` now requires `~=9.17.1` (was `~=8.12.3`). openavmkit only uses `IPython.display`, which is unchanged; ipython 9 needs Python 3.11+, which openavmkit already requires.
+- `pipreqs` is no longer a dependency. It's a developer tool (it generates a requirements file from imports) that nothing in openavmkit imports, and its exact `ipython==8.12.3` pin was blocking the ipython upgrade. Install it separately if you use it.
+
 ### Fixed
 
 - **Ratio-study breakdowns no longer crash the whole ratio study** on a column with any NaN values (common for enrichment fields with partial coverage) or with negative values ("bins must increase monotonically"). NaN rows are left out of that breakdown; negative values are binned normally. A column with no numeric values at all is skipped with a warning. From [#366](https://github.com/larsiusprime/openavmkit/pull/366).
