@@ -1466,6 +1466,23 @@ Maximum fraction of records the ratio study is allowed to trim as outliers when 
 - **When to use** — your sales data is unusually noisy and the default 10% trim is masking real volatility, or unusually clean and a tighter cap is appropriate.
 - **Diagnostic** — if your **untrimmed COD is several multiples of your trimmed COD** (5×–20×), you have a small number of extreme sale-vs-prediction mismatches dragging the means. Don't just raise `max_percent` to silence them — that hides bad data and can mask sales-chasing in the assessor baseline. See [tutorial.md → "When untrimmed COD is much worse than trimmed COD"](tutorial.md#when-untrimmed-cod-is-much-worse-than-trimmed-cod) for the full diagnostic flow including the sales-chasing sub-check.
 
+### `analysis.ratio_study.breakdowns`
+
+A list of extra ways to slice the ratio study, each reported alongside the overall results. Each entry names a field with `by` (a field name, or `"<loc_neighborhood>"`-style important-field reference). Categorical fields get one slice per value. Numeric fields are sliced by **one** of:
+
+| Option | Slices | Example |
+|---|---|---|
+| `quantiles: N` | N equal-count bins, labeled by percentile and value range (e.g. `" 20th %ile<br>(127,000 - 159,000)"`). Ties collapse, so you can get fewer than N. | `{"by": "sale_price", "quantiles": 10}` |
+| `bins: [edges]` (+ optional `bin_labels`) | Bins between the edges you give, `(a, b]` with the lowest edge included. One label per bin; default labels are `"a - b"`. Edges must be strictly increasing numbers, and labels must be unique. Sales outside the edges are left out with a warning. | `{"by": "pct_vacant", "bins": [0, 0.1, 0.25, 0.5, 1.0], "bin_labels": ["0-10%", "10-25%", "25-50%", "50-100%"]}` |
+| `slice_size: S` | Fixed-width bins of width S, labeled as whole numbers. | `{"by": "bldg_age_years", "slice_size": 10}` |
+
+If a numeric entry has none of these, each distinct value gets its own slice. If `bins` is given, it takes precedence over `quantiles`.
+
+- **Default** — `[{"by": "sale_price", "quantiles": 10}]` (from template)
+- **Missing values** — sales with a missing value in the `by` field are left out of that breakdown (they still count in the overall results). A field with no numeric values is skipped with a warning.
+- **Small slices** — slices with too few sales for a reliable ratio study are pooled into one "N other groups with count < 15" row.
+- **Source** — `_run_ratio_study_breakdowns` and `_compute_breakdown_edges` in [openavmkit/ratio_study.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/ratio_study.py)
+
 ### `analysis.ratio_study.look_back_years`
 
 How many years before the valuation date to include sales from when running the ratio study.

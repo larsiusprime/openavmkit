@@ -419,48 +419,79 @@ def _clean_label(label: str) -> str:
     return label
 
 
-def _compute_breakdown_edges(values, quantiles=0, bins_cfg=None, bin_labels=None):
+def _compute_breakdown_edges(values, quantiles=0, bins_cfg=None, bin_labels=None, field=None):
     """Compute monotonic bin edges + labels for a ratio-study breakdown.
 
     Returns ``(edges, labels)`` for :func:`pandas.cut`, or ``(None, None)``
-    when the column is degenerate (fewer than two distinct edges, e.g. an
-    all-NaN or constant column) and so cannot be binned.
+    when quantiles are requested but the column has no finite values (e.g. it
+    is all NaN) and so cannot be binned.
 
     Two modes:
 
     - ``bins_cfg`` given: explicit value edges (e.g. ``[0, 0.1, 0.25, 0.5,
       0.75, 1.0]``); ``bin_labels`` optionally overrides the auto-generated
-      "lo - hi" labels.
+      "lo - hi" labels. Edges must be strictly increasing numbers and there must
+      be one label per bin; otherwise a ``ValueError`` names the problem.
     - otherwise: ``quantiles`` equal-count bins computed from ``values``.
 
-    Robust to NaN (uses ``np.nanquantile``) and to heavily-skewed columns
-    where many rows share a value: an edge is only kept when it strictly
-    increases, so the result never trips pandas' "bins must increase
-    monotonically" error.
+    Quantile bins cover the column from its minimum to its maximum, so negative
+    values are binned like any others and the first bin is a real quantile (not
+    a sliver between 0 and the minimum). NaN and infinite values are ignored.
+    An edge is only kept when it strictly increases, so heavily tied columns
+    never trip pandas' "bins must increase monotonically" error, and no bin is
+    ever empty. A constant column yields a single bin.
     """
+    where = f" for breakdown \"{field}\"" if field else ""
+
     if bins_cfg:
+        try:
+            edges = [float(e) for e in bins_cfg]
+        except (TypeError, ValueError):
+            raise ValueError(f"Ratio study `bins`{where} must be a list of numbers, got {bins_cfg!r}")
+        if len(edges) < 2 or any(b <= a for a, b in zip(edges, edges[1:])):
+            raise ValueError(
+                f"Ratio study `bins`{where} must be at least two strictly increasing numbers, got {bins_cfg!r}"
+            )
         edges = list(bins_cfg)
-        if len(edges) < 2:
-            return None, None
         if bin_labels is None:
             bin_labels = [f"{edges[i]:g} - {edges[i + 1]:g}" for i in range(len(edges) - 1)]
-        return edges, list(bin_labels)
+        bin_labels = [str(label) for label in bin_labels]
+        if len(bin_labels) != len(edges) - 1:
+            raise ValueError(
+                f"Ratio study `bin_labels`{where} needs one label per bin ({len(edges) - 1}), "
+                f"got {len(bin_labels)}"
+            )
+        if len(set(bin_labels)) != len(bin_labels):
+            raise ValueError(f"Ratio study `bin_labels`{where} must be unique, got {bin_labels!r}")
+        return edges, bin_labels
 
     if quantiles and quantiles > 0:
-        edges = [0]
-        labels = []
-        last = 0
-        for q in range(quantiles + 1):
-            try:
-                qv = np.nanquantile(values, q / quantiles)
-            except IndexError:
-                continue
-            label = f"{q / quantiles * 100:3.0f}th %ile<br>({last:,.0f} - {qv:,.0f})"
-            if np.isfinite(qv) and qv > edges[-1]:
+        finite = pd.to_numeric(pd.Series(values), errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+        finite = finite[np.isfinite(finite)]
+        if finite.size == 0:
+            return None, None
+        lo = float(finite.min())
+        # Bins are (previous edge, quantile]. The first edge sits just below the
+        # minimum, so the first bin ends at the first quantile; if many rows share
+        # the minimum, that tied mass gets a bin of its own. Quantiles are taken
+        # from actual data values ("inverted_cdf"), so every bin holds at least
+        # one row, and tied quantiles collapse into one bin labeled with the
+        # highest percentile it reaches.
+        edges = [float(np.nextafter(lo, -np.inf))]
+        pcts = []
+        for q in range(1, quantiles + 1):
+            qv = float(np.quantile(finite, q / quantiles, method="inverted_cdf"))
+            if qv > edges[-1]:
                 edges.append(qv)
-                labels.append(label)
-            last = qv
-        return (edges, labels) if len(edges) >= 2 else (None, None)
+                pcts.append(q / quantiles * 100)
+            else:
+                pcts[-1] = q / quantiles * 100
+        lows = [lo] + edges[1:-1]
+        labels = [
+            f"{p:3.0f}th %ile<br>({a:,.0f} - {b:,.0f})"
+            for p, a, b in zip(pcts, lows, edges[1:])
+        ]
+        return edges, labels
 
     return None, None
 
@@ -593,20 +624,34 @@ def _run_ratio_study_breakdowns(
                     quantiles = breakdown.get("quantiles", 0)
                     slice_size = breakdown.get("slice_size", 0)
                     df_sub = df.copy()
-                    bins, labels = _compute_breakdown_edges(
-                        df_sub[by],
-                        quantiles=quantiles,
-                        bins_cfg=breakdown.get("bins"),
-                        bin_labels=breakdown.get("bin_labels"),
-                    )
-                    if bins is not None:
+                    bins_cfg = breakdown.get("bins")
+                    binned = bool(bins_cfg) or quantiles > 0
+                    if binned:
+                        bins, labels = _compute_breakdown_edges(
+                            df_sub[by],
+                            quantiles=quantiles,
+                            bins_cfg=bins_cfg,
+                            bin_labels=breakdown.get("bin_labels"),
+                            field=by,
+                        )
+                        if bins is None and len(df_sub) > 0:
+                            warnings.warn(
+                                f"Ratio study breakdown \"{by}\" ({results_key}): the column has no "
+                                f"numeric values, so it can't be split into quantiles. Skipping it."
+                            )
+                    if binned and bins is not None:
                         df_sub["quantile"] = pd.cut(
                             df_sub[by],
                             bins=bins,
                             labels=labels,
                             include_lowest=True,
-                            duplicates="drop",
                         )
+                        n_outside = int((df_sub["quantile"].isna() & df_sub[by].notna()).sum())
+                        if n_outside:
+                            warnings.warn(
+                                f"Ratio study breakdown \"{by}\" ({results_key}): {n_outside} sale(s) "
+                                f"fall outside the `bins` edges {bins} and are left out of this breakdown."
+                            )
 
                         for q in labels:
                             q_clean = _clean_label(q)
@@ -627,6 +672,8 @@ def _run_ratio_study_breakdowns(
                                 max_trim
                             )
 
+                    elif binned:
+                        pass  # quantiles/bins were requested but the column can't be binned (warned above)
                     elif slice_size > 0:
                         # TODO: watch for nulls here in the future
                         df_sub["slice"] = (df_sub[by] // slice_size) * slice_size
