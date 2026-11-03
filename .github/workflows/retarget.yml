@@ -1,0 +1,33 @@
+name: Test a retargeted pull request
+
+# GitHub doesn't run pull_request workflows when a pull request's base branch is changed (for example,
+# when the pull request it was stacked on merges and it's retargeted to master), so its tests never run
+# until the next push. This starts them on the pull request's branch; their results show on the pull
+# request, since they run on its head commit.
+#
+# pull_request_target runs this file as it is on master, with a token that can start workflows. It checks
+# out no code from the pull request. Pull requests from forks are skipped: their branches aren't in this
+# repository to run on (push to them, or close and reopen, to test them).
+on:
+  pull_request_target:
+    types: [edited]
+    branches: [master]
+
+permissions:
+  actions: write
+
+jobs:
+  run-tests:
+    if: >-
+      github.event.changes.base != null &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start the tests on the pull request's branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          gh workflow run pytest.yml --ref "$BRANCH"
+          gh workflow run docker-ci.yml --ref "$BRANCH"
