@@ -131,6 +131,7 @@ Returns a sub-DataFrame containing the specified columns. Mostly used as input t
 | `strip` | Remove leading and trailing whitespace | `["strip", "ADDRESS"]` |
 | `striplzero` | Remove leading zeros | `["striplzero", "PARCEL_ID"]` |
 | `stripkey` | Remove all whitespace and leading zeros — for normalizing parcel keys | `["stripkey", "PARCEL_ID"]` |
+| `upper` | Upper case, so IDs written `r0123456` and `R0123456` match | `["upper", "PARCEL_ID"]` |
 
 ### 3.6 Comparison (binary)
 

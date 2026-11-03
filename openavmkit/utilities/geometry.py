@@ -639,7 +639,8 @@ def clean_geometry(gdf: gpd.GeoDataFrame, ensure_polygon: bool=True, target_crs:
 
     gdf["geometry"] = gdf["geometry"].apply(close_polygon)
 
-    # Remove geometries with fewer than 4 points (invalid for polygons)
+    # Remove polygons with fewer than 4 points (invalid). Points and lines are kept unless only
+    # polygons are wanted (ensure_polygon, below).
     def valid_polygon(geom):
         if isinstance(geom, Polygon):
             return len(geom.exterior.coords) >= 4
@@ -648,7 +649,7 @@ def clean_geometry(gdf: gpd.GeoDataFrame, ensure_polygon: bool=True, target_crs:
                 if len(poly.exterior.coords) < 4:
                     return False
             return True
-        return False
+        return not ensure_polygon
 
     gdf = gdf[gdf.geometry.apply(valid_polygon)]
     

@@ -126,7 +126,8 @@ class OpenStreetMapService:
         gdf: gpd.GeoDataFrame = None
     ) -> gpd.GeoDataFrame:
 
-        if not settings.get("enabled", False):
+        # Enabled unless said otherwise, as documented (and as _enrich_df_distances reads it).
+        if not settings.get("enabled", True):
             return gpd.GeoDataFrame()
         
         is_osm = settings.get("osm", False)
@@ -161,8 +162,8 @@ class OpenStreetMapService:
             else:
                 print(f"Getting {thing} from source file...")
                 osm_features = gdf
-                if "name" not in osm_features:
-                    raise ValueError(f"Geodataframe source for \"{thing}\" distances is missing required field \"name\"!")
+                # A "name" is only needed to tell features apart (store_top); without one they are
+                # named like unnamed OSM features, below.
 
             # Project to UTM for accurate area calculation
             utm_crs = self._get_utm_crs(bbox)
@@ -220,6 +221,9 @@ class OpenStreetMapService:
             return osm_features_filtered
 
         except Exception as e:
+            if gdf is not None:
+                # A file the user supplied: say what's wrong rather than quietly leaving the feature out.
+                raise ValueError(f'Distances to "{thing}" from its source file failed: {e}') from e
             print(f"ERROR in _get_thing: {str(e)}")
             import traceback
 

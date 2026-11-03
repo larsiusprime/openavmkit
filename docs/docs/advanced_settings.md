@@ -312,9 +312,26 @@ Sub-flags (all default `true`): `latlon`, `area`, `shape`, `polar`. Set to `fals
 
 - **Source** — `_basic_geo_enrichment` in [openavmkit/data.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/data.py)
 
-### 4.2 Spatial joins — `data.process.enrich.spatial_joins`
+### 4.2 Spatial joins — `data.process.enrich.geometry`
 
 Joins user-provided shapefiles (neighborhoods, school districts, zoning, etc.) onto the universe by spatial intersection.
+
+`geometry` is a list. Each entry is the ID of a dataframe loaded under `data.load.<id>`, or an object:
+
+| Key         | Default             | Effect                                                                                               |
+| ----------- | ------------------- | ---------------------------------------------------------------------------------------------------- |
+| `id`        | (required)          | The loaded dataframe to join.                                                                        |
+| `predicate` | `contains_centroid` | How a parcel is matched to a shape: the shape its centroid falls in (the only predicate so far). A parcel in no shape gets blanks; where shapes overlap, the first match wins. |
+| `fields`    | every column        | Which of the layer's (loaded) fields to copy onto each parcel.                                       |
+
+```json
+"enrich": {
+  "geometry": [
+    "zoning",
+    {"id": "school_zones", "predicate": "contains_centroid", "fields": ["school_zone"]}
+  ]
+}
+```
 
 - **Source** — `_enrich_df_spatial_joins` in [openavmkit/data.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/data.py)
 - **When to use** — your locality has area-based reference layers that aren't in the parcel data and you want them as parcel-level fields.
@@ -438,6 +455,7 @@ You can use either column (or both, or `log_dist_to_*`) in your modeling — the
 | Key            | Default          | Effect                                                                                                          |
 | -------------- | ---------------- | --------------------------------------------------------------------------------------------------------------- |
 | `enabled`      | `true`           | Toggle this specific feature.                                                                                   |
+| `name` column  | (optional)       | For a `source` file: names the features, for `store_top` columns. Without one they're named `unnamed_<feature>`. A source file that fails stops the run with the reason; OSM features only warn. |
 | `osm`          | `false`          | **Geometry source — option A.** Pull this feature's geometry from OpenStreetMap automatically.                  |
 | `source`       | (none)           | **Geometry source — option B.** Reference the ID of a dataframe you've loaded under `data.load.<id>` (must contain a `geometry` column). Use this for jurisdiction-supplied shapefiles or anything OSM doesn't cover well. Mutually exclusive with `osm`. |
 | `max_distance` | (none)           | Beyond this distance (in `unit`): `dist_to` is `NaN`, `proximity_to` falls to `0.0`. Strongly recommended — sets the "no longer care" threshold, and (see note below) lets the enrichment **skip the nearest-neighbor join entirely for parcels beyond range**, which is a large speed-up for sparse features. |

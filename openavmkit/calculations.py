@@ -308,6 +308,8 @@ def _do_calc(df_in: pd.DataFrame, entry: list, i: int = 0, rename_map: dict = No
         return np.abs(lhs)
     elif op == "strip":
         return lhs.astype(str).str.strip()
+    elif op == "upper":
+        return lhs.astype(str).str.upper()
     elif op == "striplzero":
         return lhs.astype(str).str.lstrip("0")
     elif op == "stripkey":

@@ -1603,6 +1603,10 @@ def _collapse_features_by_name(gdf: gpd.GeoDataFrame, name_field: str = "name") 
     return dissolved
 
 
+class _SourceDistanceError(ValueError):
+    """A distance feature from the user's own file failed: raised, not just warned about."""
+
+
 def _enrich_df_distances(
     df_in: pd.DataFrame | gpd.GeoDataFrame,
     dist_settings: dict,
@@ -1867,6 +1871,9 @@ def _enrich_df_distances(
 
                 except Exception as e:
                     err_msg = f"Failed to get {config.get('verbose_label', feature)}: {str(e)}"
+                    if config.get("source") and not config.get("osm", False):
+                        # The user's own file: stop and say why, rather than leave the feature out.
+                        raise _SourceDistanceError(err_msg) from e
                     if config.get("error_method", None) == "warn":
                         warnings.warn(err_msg)
                     else:
@@ -1877,6 +1884,8 @@ def _enrich_df_distances(
 
         return df
 
+    except _SourceDistanceError:
+        raise
     except Exception as e:
         warnings.warn(f"Failed to enrich with OpenStreetMap data: {str(e)}")
         return df
@@ -4092,6 +4101,8 @@ def _drop_fields(
     fields : list
         List of column names to drop. Canonical (renamed) names are matched first; if a
         name isn't found, it is retried through ``rename_map`` as a source-column name.
+        A name with ``*`` is a pattern (``fnmatch``), for columns named as they're made,
+        such as the distances to each of the largest features: ``dist_to_osm_parks_*``.
     rename_map : dict, optional
         Optional mapping of original to renamed columns.
 
@@ -4105,12 +4116,17 @@ def _drop_fields(
             f"`drop_fields` must be a list of column names, found {type(fields)}. Nothing will be dropped."
         )
         return df_in
+    import fnmatch
+
     to_drop = []
     for field in fields:
-        if field in df_in.columns:
+        if isinstance(field, str) and "*" in field:
+            to_drop += [c for c in df_in.columns if isinstance(c, str) and fnmatch.fnmatchcase(c, field)]
+        elif field in df_in.columns:
             to_drop.append(field)
         elif rename_map and rename_map.get(field) in df_in.columns:
             to_drop.append(rename_map[field])
+    to_drop = list(dict.fromkeys(to_drop))
     if not to_drop:
         return df_in
     return df_in.drop(columns=to_drop)
@@ -4132,9 +4148,10 @@ def load_dataframe(
     if filename == "":
         return None
     filename = f"in/{filename}"
-    ext = str(filename).split(".")[-1]
+    ext = str(filename).split(".")[-1].lower()
+    layer = entry.get("layer")  # GeoPackage only: which layer to read (default: the first)
 
-    column_names = _snoop_column_names(filename)
+    column_names = _snoop_column_names(filename, layer)
 
     e_load = entry.get("load", {})
 
@@ -4231,6 +4248,17 @@ def load_dataframe(
                 dtype_value = "string"
             csv_dtype_map[key] = dtype_value
         df = pd.read_csv(filename, usecols=cols_to_load, dtype=csv_dtype_map)
+    elif ext in GIS_EXTENSIONS:
+        attrs = [c for c in cols_to_load if c != "geometry"]
+        df = gpd.read_file(
+            filename,
+            layer=layer,
+            columns=attrs,
+            read_geometry="geometry" in cols_to_load,
+            engine="pyogrio",
+        )
+        if "geometry" in df:
+            df = ensure_geometries(df, geom_col="geometry", crs=df.crs)
     else:
         raise ValueError(f"Unsupported file extension: {ext}")
     
@@ -4363,7 +4391,10 @@ def load_dataframe(
         gdf: gpd.GeoDataFrame = gpd.GeoDataFrame(df, geometry="geometry", crs=df.crs)
         
         pre_len = len(gdf)
-        gdf = clean_geometry(gdf, ensure_polygon=True)
+        # Parcels and areas are polygons; a layer of only points or lines (schools, roads: distances)
+        # keeps them.
+        has_polygons = gdf.geometry.geom_type.isin(["Polygon", "MultiPolygon"]).any()
+        gdf = clean_geometry(gdf, ensure_polygon=bool(has_polygons))
         post_len = len(gdf)
         
         perc_len = (pre_len-post_len)/pre_len
@@ -4382,14 +4413,27 @@ def load_dataframe(
     return df
 
 
-def _snoop_column_names(filename: str) -> list[str]:
+# GeoPackage and shapefile, read through GDAL (pyogrio). A shapefile's sidecar files
+# (.shx, .dbf, .prj, ...) must sit next to the .shp in in/.
+GIS_EXTENSIONS = ("gpkg", "shp", "geojson")
+
+
+def _snoop_column_names(filename: str, layer: str | None = None) -> list[str]:
     """Retrieve column names from a file without loading full data."""
-    ext = str(filename).split(".")[-1]
+    ext = str(filename).split(".")[-1].lower()
     if ext == "parquet" or ext == "geoparquet":
         parquet_file = pq.ParquetFile(filename)
         return parquet_file.schema.names
     elif ext == "csv":
         return pd.read_csv(filename, nrows=0).columns.tolist()
+    elif ext in GIS_EXTENSIONS:
+        import pyogrio
+
+        info = pyogrio.read_info(filename, layer=layer)
+        names = list(info["fields"])
+        if info.get("geometry_type"):
+            names.append("geometry")
+        return names
     raise ValueError(f'Unsupported file extension: "{ext}"')
 
 

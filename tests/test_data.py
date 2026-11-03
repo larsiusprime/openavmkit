@@ -2142,6 +2142,13 @@ def test_drop_fields_unit():
 	assert list(df.columns) == ["a", "b", "scratch", "SRC"]
 
 
+def test_drop_fields_patterns():
+	# A name with * drops every column it matches, such as the distances to each of the largest parks.
+	df = pd.DataFrame({c: [1] for c in ["dist_to_osm_parks", "dist_to_osm_parks_central", "within_osm_parks", "dist_to_osm_parkside"]})
+	out = _drop_fields(df, ["dist_to_osm_parks", "dist_to_osm_parks_*"])
+	assert list(out.columns) == ["within_osm_parks", "dist_to_osm_parkside"]
+
+
 def test_drop_fields_rejects_non_list():
 	# A malformed block warns and changes nothing, rather than raising mid-load.
 	df = pd.DataFrame({"a": [1], "scratch": [2]})
