@@ -10,6 +10,7 @@ Rules:
 - This module imports from other modules, but no other modules import from it.
 """
 
+import glob
 import os
 import pickle
 import warnings
@@ -49,10 +50,14 @@ from openavmkit.sales_scrutiny_study import (
     mark_ss_ids_per_model_group,
     run_heuristics,
     drop_manual_exclusions,
+    read_keep_keys,
+    flags_wanted,
+    FLAG_COLUMNS,
 )
 from openavmkit.time_adjustment import enrich_time_adjustment
 from openavmkit.utilities.data import combine_dfs, div_df_z_safe
 from openavmkit.utilities.settings import (
+    get_sales_scrutiny_drops,
     get_fields_categorical,
     get_fields_numeric,
     get_fields_boolean,
@@ -1153,8 +1158,8 @@ def mark_horizontal_equity_clusters_per_model_group_sup(
 def run_sales_scrutiny(
     sup: SalesUniversePair,
     settings: dict,
-    drop_cluster_outliers: bool = False,
-    drop_heuristic_outliers: bool = True,
+    drop_cluster_outliers: bool | None = None,
+    drop_heuristic_outliers: bool | None = None,
     verbose: bool = False,
 ) -> SalesUniversePair:
     """
@@ -1164,6 +1169,11 @@ def run_sales_scrutiny(
     2. Optionally drops manually excluded sales flagged by user
     3. Runs a cluster-based sales scrutiny analysis report
 
+    With ``analysis.sales_scrutiny.write_flags: true``, every sale a check flagged is written
+    to ``out/sales_scrutiny/flags.parquet``, one row per sale and check, with the numbers
+    behind it and whether it was ``kept`` (listed in ``analysis.sales_scrutiny.keep_file``)
+    and ``dropped``. Unset, no flags file is written (and an earlier run's is removed).
+
     Parameters
     ----------
     sup : SalesUniversePair
@@ -1171,9 +1181,11 @@ def run_sales_scrutiny(
     settings : dict
         Configuration settings.
     drop_cluster_outliers : bool, optional
-        If True, drops invalid sales identified through cluster analysis. Defaults to False.
+        If True, drops invalid sales identified through cluster analysis. Defaults to
+        ``analysis.sales_scrutiny.drop.clusters``, else False.
     drop_heuristic_outliers : bool, optional
-        If True, drops invalid sales identified through heuristics. Defaults to True.
+        If True, drops invalid sales identified through heuristics. Defaults to
+        ``analysis.sales_scrutiny.drop.heuristics``, else True.
     verbose : bool, optional
         If True, enables verbose logging. Defaults to False.
 
@@ -1186,11 +1198,18 @@ def run_sales_scrutiny(
     ss = settings.get("analysis", {}).get("sales_scrutiny", {})
     clusters_enabled = ss.get("clusters_enabled", True)
     heuristics_enabled = ss.get("heuristics_enabled", True)
+    drop_clusters, drop_heuristics = get_sales_scrutiny_drops(settings)
+    if drop_cluster_outliers is not None:
+        drop_clusters = drop_cluster_outliers
+    if drop_heuristic_outliers is not None:
+        drop_heuristics = drop_heuristic_outliers
     
     os.makedirs("out/sales_scrutiny/", exist_ok=True)
+    for old in glob.glob("out/sales_scrutiny/**/flags.parquet", recursive=True):
+        os.remove(old)
     
     if heuristics_enabled:
-        sup = run_heuristics(sup, settings, drop_heuristic_outliers, verbose)
+        sup = run_heuristics(sup, settings, drop_heuristics, verbose)
     elif verbose:
         print(f"Skipping sales scrutiny heuristics...")
     
@@ -1198,11 +1217,37 @@ def run_sales_scrutiny(
     
     if clusters_enabled:
         sup = run_sales_scrutiny_per_model_group_sup(
-            sup, settings, drop_cluster_outliers, verbose
+            sup, settings, drop_clusters, verbose
         )
     elif verbose:
         print(f"Skipping clustered sales scrutiny analysis...")
+
+    if flags_wanted(settings):
+        _write_scrutiny_flags(settings, drop_clusters, drop_heuristics)
     return sup
+
+
+def _write_scrutiny_flags(settings: dict, drop_clusters: bool, drop_heuristics: bool) -> None:
+    keep = read_keep_keys(settings)
+    parts = []
+    for path in sorted(glob.glob("out/sales_scrutiny/**/flags.parquet", recursive=True)):
+        if os.path.normpath(path) == os.path.normpath("out/sales_scrutiny/flags.parquet"):
+            continue
+        df = pd.read_parquet(path)
+        if len(df) == 0:
+            continue
+        parts.append(df)
+    if parts:
+        df = pd.concat(parts, ignore_index=True)
+    else:
+        df = pd.DataFrame(columns=["key_sale", "key", "check"])
+    df = df.reindex(columns=list(dict.fromkeys(FLAG_COLUMNS + list(df.columns))))
+    df["bimodal"] = df["bimodal"].astype("boolean")
+    df["kept"] = df["key_sale"].isin(keep) & df["check"].ne("excluded")
+    dropping = df["check"].map(lambda c: True if c == "excluded" else drop_clusters if c == "cluster" else drop_heuristics)
+    flag_only = df["flag_only"].astype("boolean").fillna(False).astype(bool)
+    df["dropped"] = dropping.astype(bool) & ~df["kept"] & ~flag_only
+    df.to_parquet("out/sales_scrutiny/flags.parquet", index=False)
 
 
 def run_sales_scrutiny_per_model_group_sup(

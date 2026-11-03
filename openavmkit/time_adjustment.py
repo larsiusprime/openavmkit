@@ -9,7 +9,12 @@ throughout downstream ratio studies, modeling, and reporting.
 The built-in engine can be wholly replaced for any model group by setting
 ``data.process.time_adjustment.from_file.<model_group>`` in ``settings.json``
 to point at a precomputed CSV — useful when a jurisdiction publishes its
-own time-adjustment factors.
+own time-adjustment factors. The CSV is a price index (``period``, ``index``: a
+day, a month ``2023-04``, a quarter ``2023-Q2`` or a year per row, at any base) or
+a schedule as OpenAVMKit writes one; see :func:`read_schedule`.
+
+A model group with too few sales of its own can use another group's time
+adjustment: ``data.process.time_adjustment.borrow.<model_group> = <other group>``.
 """
 import calendar
 import os
@@ -25,7 +30,7 @@ from openavmkit.utilities.settings import area_unit, get_time_adjustment_instruc
 
 
 def calculate_time_adjustment(
-    df_sales_in: pd.DataFrame, settings: dict, period: str = "M", verbose: bool = False
+    df_sales_in: pd.DataFrame, settings: dict, period: str = "M", verbose: bool = False, per: str | None = None
 ) -> pd.DataFrame:
     """
     Calculate a time adjustment multiplier for sales data.
@@ -44,6 +49,9 @@ def calculate_time_adjustment(
         Initial period type ("M", "Q", or "Y"). Defaults to "M".
     verbose : bool, optional
         If True, print progress information. Defaults to False.
+    per : str, optional
+        What the index is of: "impr" (price per finished area) or "land" (price per land
+        area). None (the default) works it out from the sales (_determine_value_driver).
 
     Returns
     -------
@@ -89,8 +97,9 @@ def calculate_time_adjustment(
         df_sales, "sale_price", f"land_area_{unit}"
     )
 
-    # Determine whether land or improvement drives value the modeling group:
-    per = _determine_value_driver(df_sales, settings)
+    # Determine whether land or improvement drives value the modeling group, unless the settings say:
+    if per not in ("impr", "land"):
+        per = _determine_value_driver(df_sales, settings)
     sale_field = f"sale_price_per_{per}_{unit}"
 
     df_per_unfiltered = df_sales[df_sales[sale_field].gt(0)]
@@ -180,38 +189,157 @@ def apply_time_adjustment(
     pandas.DataFrame
         Sales DataFrame with an added `sale_price_time_adj` column.
     """
+    # Groups that borrow another group's time adjustment: worked out from that group's sales (or its file).
+    borrowed = {}
+    for group, source in get_time_adjustment_instructions(settings).get("borrow", {}).items():
+        if not source or source == group:
+            continue
+        if "model_group" not in df_sales_in or not df_sales_in["model_group"].eq(source).any():
+            warnings.warn(
+                f"Model group {group!r} borrows the time adjustment of {source!r}, which has no sales: "
+                f"{group!r} works out its own."
+            )
+            continue
+        df_source = df_sales_in[df_sales_in["model_group"].eq(source)]
+        borrowed[group] = _schedule(df_source, settings, source, period, verbose)
     return do_per_model_group(
         df_sales_in,
         settings,
         apply_time_adjustment_per_model_group,
-        {"settings":settings,"period":period,"write":write,"verbose":verbose},
+        {"settings": settings, "period": period, "write": write, "verbose": verbose, "borrowed": borrowed},
         key="key_sale"
     )
 
+
+def _period_date(text):
+    """A period as its first day: 2023-04-15, 2023-04 (a month), 2023-Q2 or 2023Q2 (a quarter), 2023 (a year)."""
+    t = str(text).strip().upper()
+    if not t or t in ("NAN", "NONE", "NAT"):
+        return pd.NaT
+    q = t.replace(" ", "").replace("-Q", "Q")
+    if len(q) == 6 and q[4] == "Q" and q[:4].isdigit() and q[5] in "1234":
+        return pd.Timestamp(year=int(q[:4]), month=3 * (int(q[5]) - 1) + 1, day=1)
+    if len(t) == 4 and t.isdigit():
+        return pd.Timestamp(year=int(t), month=1, day=1)
+    if len(t) == 7 and t[4] in "-/" and t[:4].isdigit() and t[5:].isdigit():
+        return pd.Timestamp(year=int(t[:4]), month=int(t[5:]), day=1)
+    return pd.to_datetime(t, errors="coerce")
+
+
+def read_schedule(path: str) -> tuple[pd.DataFrame | None, list[str]]:
+    """Read a time adjustment file and check it.
+
+    Two kinds are accepted:
+
+    * a price index: ``period`` (a day ``2023-04-15``, a month ``2023-04``, a quarter
+      ``2023-Q2``, or a year ``2023``; one row each) and ``index`` (the price level then, at
+      any base: 100, 1.0...; positive). Between periods it is interpolated day by day.
+    * a schedule as OpenAVMKit writes one: ``period``, ``start_indexed``, ``end_indexed``,
+      ``correction_factor`` (``start_indexed`` is the index).
+
+    Parameters
+    ----------
+    path : str
+        The CSV file.
+
+    Returns
+    -------
+    tuple[pd.DataFrame | None, list[str]]
+        The daily schedule (``period``, ``start_indexed``, ``end_indexed``, ``correction_factor``,
+        prices brought to the last period), or None; and every problem found, in words.
+    """
+    try:
+        # As written: problems are quoted as the file has them ("n/a", not NaN).
+        df = pd.read_csv(path, encoding="utf-8-sig", dtype=str, keep_default_na=False)
+    except Exception as e:
+        return None, [f"It couldn't be read as a CSV file: {e}"]
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    problems: list[str] = []
+    value = "index" if "index" in df.columns else "start_indexed" if "start_indexed" in df.columns else None
+    if "period" not in df.columns:
+        problems.append("There's no 'period' column (the date each price level is for).")
+    if value is None:
+        problems.append("There's no 'index' column (the price level for each period).")
+    if problems:
+        return None, problems
+    dates = df["period"].map(_period_date)
+    levels = pd.to_numeric(df[value], errors="coerce")
+    bad_dates = df.loc[dates.isna(), "period"].astype(str).tolist()
+    if bad_dates:
+        problems.append(
+            f"{len(bad_dates)} period(s) aren't a date, a month (2023-04), a quarter (2023-Q2) or a year: "
+            + ", ".join(bad_dates[:5])
+        )
+    bad_levels = [v or "(blank)" for v in df.loc[levels.isna() | levels.le(0), value].astype(str)]
+    if bad_levels:
+        problems.append(f"{len(bad_levels)} {value} value(s) aren't positive numbers: " + ", ".join(bad_levels[:5]))
+    repeated = dates[dates.duplicated() & dates.notna()]
+    if len(repeated):
+        problems.append(
+            f"{len(repeated)} period(s) appear more than once: "
+            + ", ".join(sorted({d.strftime("%Y-%m-%d") for d in repeated})[:5])
+        )
+    ok = dates.notna() & levels.notna() & levels.gt(0)
+    if int(ok.sum()) < 2:
+        problems.append("It needs at least 2 periods with a price level.")
+    if problems:
+        return None, problems
+    points = pd.Series(levels[ok].values, index=pd.DatetimeIndex(dates[ok])).sort_index()
+    days = pd.date_range(points.index[0], points.index[-1], freq="D")
+    daily = points.reindex(points.index.union(days)).interpolate(method="time").reindex(days)
+    out = pd.DataFrame({"period": days.strftime("%Y-%m-%d"), "start_indexed": daily.values / daily.iloc[0]})
+    out["end_indexed"] = out["start_indexed"] / out["start_indexed"].iloc[-1]
+    out["correction_factor"] = 1 / out["end_indexed"]
+    return out, []
+
+
+def _cover(df_time: pd.DataFrame, dates: pd.Series) -> pd.DataFrame:
+    """A schedule extended, flat, to the days of every sale: a sale before its first day gets the first day's
+    correction, one after its last day the last day's (no trend is carried past what the schedule says)."""
+    days = pd.to_datetime(df_time["period"])
+    sold = pd.to_datetime(dates, errors="coerce").dropna()
+    if len(sold) == 0:
+        return df_time
+    start, end = min(days.min(), sold.min().normalize()), max(days.max(), sold.max().normalize())
+    full = pd.date_range(start, end, freq="D")
+    out = df_time.copy()
+    out.index = days
+    out = out.reindex(full).ffill().bfill()
+    out["period"] = full.strftime("%Y-%m-%d")
+    return out.reset_index(drop=True)
+
+
+def _schedule(df_sales: pd.DataFrame, settings: dict, model_group: str, period: str, verbose: bool) -> pd.DataFrame:
+    """A group's daily schedule: from its file when it has one that can be used, else worked out from its sales."""
+    path = get_time_adjustment_instructions(settings).get("from_file", {}).get(model_group)
+    if path is not None:
+        df_time, problems = read_schedule(path)
+        if df_time is not None:
+            print(f"Found a valid time adjustment file for model group {model_group}. Loading...")
+            return df_time
+        warnings.warn(
+            f"Time adjustment file for model group {model_group} ({path}) can't be used: "
+            + " ".join(problems)
+            + " Working it out from the sales instead."
+        )
+    per = get_time_adjustment_instructions(settings).get("per", {}).get(model_group)
+    df_time = calculate_time_adjustment(df_sales, settings, period, verbose, per=per)
+    df_time = df_time.rename(columns={"value": "start_indexed"})
+    df_time["end_indexed"] = df_time["start_indexed"] / df_time["start_indexed"].iloc[-1]
+    df_time["correction_factor"] = 1 / df_time["end_indexed"]
+    return df_time
+
+
 def read_time_adjustment_from_file(ta_settings: dict, model_group: str) -> pd.DataFrame|None:
+    """A group's time adjustment file, as a daily schedule, or None (no file, or one that can't be used)."""
     override_path = ta_settings.get("from_file",{}).get(model_group)
     if override_path is None:
         return None
-    # override location is specified, load it into a dataframe and check integrity against expectations
-    try:
-        df_time_adj = pd.read_csv(override_path)
-        if "period" not in df_time_adj.columns:
-            warnings.warn(f"Time adjustment file for model group {model_group} does not contain 'period' column. Skipping load.")
-            return None
-        if "start_indexed" not in df_time_adj.columns:
-            warnings.warn(f"Time adjustment file for model group {model_group} does not contain 'start_indexed' column. Skipping load.")
-            return None
-        if "end_indexed" not in df_time_adj.columns:
-            warnings.warn(
-                f"Time adjustment file for model group {model_group} does not contain 'end_indexed' column. Skipping load.")
-            return None
-        if "correction_factor" not in df_time_adj.columns:
-            warnings.warn(f"Time adjustment file for model group {model_group} does not contain 'correction_factor' column. Skipping load.")
-            return None
-        return df_time_adj
-    except Exception as e:
-        warnings.warn(f"Error loading time adjustment file for model group {model_group}: {e}")
-        return None
+    df_time, problems = read_schedule(override_path)
+    if df_time is None:
+        warnings.warn(f"Time adjustment file for model group {model_group} can't be used: " + " ".join(problems))
+    return df_time
+
 
 def apply_time_adjustment_per_model_group(
     df_sales_in: pd.DataFrame,
@@ -219,7 +347,8 @@ def apply_time_adjustment_per_model_group(
     model_group: str,
     period: str = "M",
     write: bool = False,
-    verbose: bool = False
+    verbose: bool = False,
+    borrowed: dict | None = None,
 ) -> pd.DataFrame:
     """
     Compute time adjustment multipliers and apply them to adjust sale prices forward in time.
@@ -236,6 +365,8 @@ def apply_time_adjustment_per_model_group(
         Whether to write out the time adjustment data as a separate CSV file
     verbose : bool, optional
         If True, print verbose output during computation. Defaults to False.
+    borrowed : dict, optional
+        Schedules borrowed from other model groups, by the group that borrows them.
 
     Returns
     -------
@@ -249,15 +380,14 @@ def apply_time_adjustment_per_model_group(
 
     df_sales = df_sales_in.copy()
 
-    try_read_from_file = read_time_adjustment_from_file(get_time_adjustment_instructions(settings), model_group)
-    if try_read_from_file is not None:
-        print(f"Found a valid time adjustment file for model group {model_group}. Loading...")
-        df_time = try_read_from_file
+    if borrowed and model_group in borrowed:
+        # Another group's schedule, held flat outside its dates.
+        df_time = _cover(borrowed[model_group], df_sales["sale_date"])
+    elif get_time_adjustment_instructions(settings).get("from_file", {}).get(model_group) is not None:
+        # The group's own file, held flat outside its dates.
+        df_time = _cover(_schedule(df_sales_in, settings, model_group, period, verbose), df_sales["sale_date"])
     else:
-        df_time = calculate_time_adjustment(df_sales_in, settings, period, verbose)
-        df_time = df_time.rename(columns={"value":"start_indexed"})
-        df_time["end_indexed"] = df_time["start_indexed"]/df_time["start_indexed"].iloc[-1]
-        df_time["correction_factor"] = 1 / df_time["end_indexed"]
+        df_time = _schedule(df_sales_in, settings, model_group, period, verbose)
 
     os.makedirs(f"out/time_adjustment/{model_group}", exist_ok=True)
     df_time.to_csv(f"out/time_adjustment/{model_group}/time_adjustment_schedule.csv", index=False)

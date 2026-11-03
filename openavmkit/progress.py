@@ -75,6 +75,10 @@ _listener: contextvars.ContextVar[Optional[ProgressCallback]] = contextvars.Cont
 _cancel: contextvars.ContextVar[Optional[CancelCheck]] = contextvars.ContextVar("_cancel", default=None)
 _stage: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("_stage", default=None)
 _skip: contextvars.ContextVar[Optional[SkipCheck]] = contextvars.ContextVar("_skip", default=None)
+# The last step reported: (step, fraction, message), for detail() to add to.
+_current: contextvars.ContextVar[Optional[tuple[str, Optional[float], str]]] = contextvars.ContextVar(
+    "_current", default=None
+)
 
 
 @contextmanager
@@ -104,9 +108,11 @@ def reporting(
         _stage.set(stage),
     ]
     skip_token = _skip.set(skip)
+    current_token = _current.set(None)
     try:
         yield
     finally:
+        _current.reset(current_token)
         _skip.reset(skip_token)
         _stage.reset(tokens[2])
         _cancel.reset(tokens[1])
@@ -138,10 +144,26 @@ def report(
     """
     listener = _listener.get()
     if listener is not None:
+        _current.set((step, fraction, message or step))
         listener(ProgressEvent(_stage.get(), step, fraction, message or step, sub, part))
     check_cancelled()
     if part is not None:
         check_skipped(part)
+
+
+def detail(text: str, sub: Optional[float] = None) -> None:
+    """Say what the current step is doing now (which model group, say), without starting a new step.
+
+    Reports the last step again, its message followed by ``text``, with ``sub`` as the step's own
+    completion. Generic helpers that don't know which step they're in (``do_per_model_group``) call
+    this. A no-op with no listener, or before any step has been reported.
+    """
+    listener = _listener.get()
+    current = _current.get()
+    if listener is not None and current is not None:
+        step, fraction, message = current
+        listener(ProgressEvent(_stage.get(), step, fraction, f"{message}: {text}", sub))
+    check_cancelled()
 
 
 def check_skipped(part: str) -> None:

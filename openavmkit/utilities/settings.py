@@ -1270,6 +1270,18 @@ def get_time_adjustment_instructions(settings: dict):
     return settings.get("data", {}).get("process", {}).get("time_adjustment", {})
 
 
+def get_sales_scrutiny_drops(
+    settings: dict, clusters: bool = False, heuristics: bool = True
+) -> tuple[bool, bool]:
+    """Whether sales scrutiny drops the sales it flags: (cluster outliers, heuristics).
+
+    Read from ``analysis.sales_scrutiny.drop.clusters`` and ``.drop.heuristics``; the
+    arguments are the defaults for what the settings don't say.
+    """
+    drop = settings.get("analysis", {}).get("sales_scrutiny", {}).get("drop", {})
+    return bool(drop.get("clusters", clusters)), bool(drop.get("heuristics", heuristics))
+
+
 def get_collapse_sparse_categories_config(settings: dict) -> dict:
     """Get the ``data.process.collapse_sparse_categories`` config block.
 
