@@ -39,8 +39,9 @@ The **CLA** check on your pull request will tell you what, if anything, is still
    - Write clear, concise commit messages.
    
 5. **Run Tests**
-   - Ensure all existing and new tests pass before submitting your changes:
+   - Ensure all existing and new tests pass before submitting your changes. The test tools aren't installed with OpenAVMKit itself; install them once with the `dev` extra:
    ```bash
+   pip install -e ".[dev]"
    pytest tests/
    ```
 

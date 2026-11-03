@@ -70,6 +70,7 @@ from openavmkit.calculations import (
 )
 from openavmkit.filters import resolve_filter, select_filter
 from openavmkit.utilities.somers import get_size_in_somers_units_ft
+from openavmkit import progress
 from openavmkit.utilities.cache import get_cached_df, write_cached_df
 from openavmkit.utilities.sales_scrutiny import SALE_PARCEL_COUNT, count_parcels_per_deed
 from openavmkit.utilities.data import (
@@ -1392,6 +1393,7 @@ def _enrich_df_census(
     # transient 5xx) which crashes deep inside the `census` package. Don't let
     # that take down the whole assembly run — warn and skip, leaving downstream
     # to handle missing Census fields gracefully.
+    progress.report("census", message="Downloading census figures and block groups", sub=0.0, part="census")
     try:
         census_data, census_boundaries = census_service.get_census_data_with_boundaries(
             fips_code=fips_code, year=year, census_settings=census_settings
@@ -1418,6 +1420,7 @@ def _enrich_df_census(
             col for col in census_cols_to_keep if col in census_boundaries.columns
         ]
 
+        progress.report("census", message="Finding each parcel's block group", sub=0.7, part="census")
         census_boundaries_subset = census_boundaries[
             ["geometry"] + census_cols_to_keep
         ].copy()
@@ -1547,9 +1550,13 @@ def _enrich_df_dem(
 
     try:
         service = init_service_dem(dem_settings)
+        progress.report("elevation", message="Downloading elevation tiles", sub=0.0, part="elevation")
         dem_path = service.get_dem_for_bbox(bbox, resolution_m=resolution_m, verbose=verbose)
+        progress.report("elevation", message="Projecting the elevation", sub=0.5, part="elevation")
         utm_dem_path = service.reproject_to_utm(dem_path, bbox, verbose=verbose)
+        progress.report("elevation", message="Working out slopes", sub=0.6, part="elevation")
         slope_path = service.compute_slope_raster(utm_dem_path, verbose=verbose)
+        progress.report("elevation", message="Elevation and slope for each parcel", sub=0.75, part="elevation")
         stats = service.compute_parcel_stats(df_wgs84, utm_dem_path, slope_path, verbose=verbose)
     except Exception as e:
         warnings.warn(
@@ -1748,9 +1755,20 @@ def _enrich_df_distances(
         parcels_proj = df[["key", "geometry"]].to_crs(crs_eq)
 
         # Loop through each feature configuration:
+        n_features = sum(1 for c in features_config.values() if c.get("enabled", True))
+        done_features = 0
         for feature, config in features_config.items():
             # Check if feature is enabled in the osm_settings
             if config.get("enabled", True):
+                # A checkpoint between features: progress, and where the caller can skip distances.
+                label = config.get("verbose_label", feature).replace("_", " ")
+                progress.report(
+                    "distances",
+                    message=f"{label[:1].upper()}{label[1:]} ({done_features + 1} of {n_features})",
+                    sub=done_features / max(1, n_features),
+                    part="distances",
+                )
+                done_features += 1
 
                 default_config = default_configs.get(feature, {})
                 for key in default_config:
@@ -3135,9 +3153,11 @@ def _enrich_df_overture(
         bbox = gdf.to_crs("EPSG:4326").total_bounds
 
         # Fetch building data
+        progress.report("footprints", message="Downloading buildings", sub=0.0, part="footprints")
         buildings = overture_service.get_buildings(
             bbox, use_cache=s_overture.get("cache", True), unit=unit, verbose=verbose
         )
+        progress.report("footprints", message="Matching buildings to parcels", sub=0.8, part="footprints")
 
         if not buildings.empty:
             # Calculate building footprints
