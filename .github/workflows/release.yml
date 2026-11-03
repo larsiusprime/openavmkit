@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - 'v*'   # fire on tag pushes like v0.3.5, v0.3.5rc1
-  create:      # also fire when a tag is created
   workflow_dispatch:
     inputs:
       tag:
@@ -16,10 +15,9 @@ permissions:
 
 jobs:
   build:
-    # Run only for tags named v* across push/create/dispatch
+    # Run only for tags named v* (pushed, or given to a manual run)
     if: >
       (github.event_name == 'push'   && startsWith(github.ref, 'refs/tags/v')) ||
-      (github.event_name == 'create' && github.ref_type == 'tag' && startsWith(github.ref, 'v')) ||
       (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))
     name: Build sdist & wheel
     runs-on: ubuntu-latest
@@ -81,7 +79,6 @@ jobs:
     # Same gating as build
     if: >
       (github.event_name == 'push'   && startsWith(github.ref, 'refs/tags/v')) ||
-      (github.event_name == 'create' && github.ref_type == 'tag' && startsWith(github.ref, 'v')) ||
       (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))
     name: Publish to (Test)PyPI
     needs: build

@@ -4,6 +4,7 @@ name: Build & deploy docs with GitHub-maintained actions
 on:
   push:
     branches: [master]
+    paths-ignore: ["signatures/**"]
   workflow_dispatch:
 
 # minimal, principle-of-least-privilege permissions
