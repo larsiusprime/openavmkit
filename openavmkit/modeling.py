@@ -129,7 +129,7 @@ from openavmkit.utilities.data import (
     calc_spatial_lag,
     area_unit
 )
-from openavmkit.utilities.settings import get_valuation_date, _get_max_ratio_study_trim, get_look_back_dates
+from openavmkit.utilities.settings import get_valuation_date, _get_max_ratio_study_trim, get_look_back_dates, get_study_set_predictions
 from openavmkit.utilities.stats import (
     quick_median_chd_pl,
     calc_mse_r2_adj_r2,
@@ -1571,13 +1571,7 @@ class SingleModelResults:
             self.df_train = self.pred_train.df
             
             # Get prediction results ONLY for the lookback period
-            start_date, end_date = get_look_back_dates(ds.settings)
-            self.df_sales_lookback = filter_df_by_date_range(df_sales, start_date, end_date)
-            
-            self.pred_sales_lookback = PredictionResults(
-                self.dep_var_test, self.ind_vars, field_prediction, self.df_sales_lookback, max_trim, self.is_land_predictions
-            )
-            self.df_sales_lookback = self.pred_sales_lookback.df
+            self._set_study_set(df_sales)
         
         timing.stop("stats_sales")
 
@@ -1589,8 +1583,6 @@ class SingleModelResults:
         self.ve_test_trim = get_vertical_equity_scores(
             self.pred_test.df_trim, self.dep_var_test, field_prediction
         )
-        if y_pred_sales is not None:
-            self.ve_sales_lookback = get_vertical_equity_scores(self.df_sales_lookback, self.dep_var_test, field_prediction)
         timing.stop("vertical_equity")
 
         self.pred_univ = y_pred_univ
@@ -1651,6 +1643,29 @@ class SingleModelResults:
             if self.dep_var_test.startswith("log_"):
                 self.pred_test.y_pred = self.pred_test.y_pred * self.ds.df_test[suffix]
 
+    def _set_study_set(self, df_sales: pd.DataFrame):
+        """The study set: the sales in the look-back before the valuation date, with this model's
+        predictions on them. By default its predictions on every sale (``df_sales``); with
+        ``analysis.ratio_study.study_set_predictions: "holdout"``, its holdout predictions
+        (``self.df_test``), so it's judged there on sales it never saw.
+        """
+        holdout = get_study_set_predictions(self.ds.settings) == "holdout"
+        start_date, end_date = get_look_back_dates(self.ds.settings)
+        df = filter_df_by_date_range(self.df_test if holdout else df_sales, start_date, end_date)
+        max_trim = _get_max_ratio_study_trim(self.ds.settings, self.ds.model_group)
+        self.pred_sales_lookback = PredictionResults(
+            self.dep_var_test, self.ind_vars, self.field_prediction, df, max_trim, self.is_land_predictions
+        )
+        self.df_sales_lookback = self.pred_sales_lookback.df
+        self.ve_sales_lookback = get_vertical_equity_scores(
+            self.df_sales_lookback, self.dep_var_test, self.field_prediction
+        )
+        self.ve_sales_lookback_trim = get_vertical_equity_scores(
+            self.pred_sales_lookback.df_trim, self.dep_var_test, self.field_prediction
+        )
+        # The benchmark's utility on the study set: on the same predictions as its other figures there.
+        self.utility_study = self.pred_sales_lookback.mape * 100 if holdout else None
+
     def override_test_predictions(self, df_test_full: pd.DataFrame):
         """Replace the holdout/test set with a full-coverage frame and recompute test-side stats.
 
@@ -1680,6 +1695,9 @@ class SingleModelResults:
             self.pred_test.df_trim, self.dep_var_test, field
         )
         self.utility_test = self.pred_test.mape * 100
+        # A study set on the holdout's predictions follows them to the full-coverage frame.
+        if self.pred_sales_lookback is not None and get_study_set_predictions(self.ds.settings) == "holdout":
+            self._set_study_set(self.df_test)
         # Match __init__ + _deal_with_log_and_area: ratio_study / mape / ve are computed on the raw
         # (pre-transform) predictions above; a log-target test var then exponentiates y_pred to
         # price space. (No-op for the usual price-space dep_var_test.)

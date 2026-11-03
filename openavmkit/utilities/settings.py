@@ -161,6 +161,36 @@ def get_model_seed(s: dict) -> int:
     return 42 if seed is None else int(seed)
 
 
+def get_study_set_predictions(s: dict) -> str:
+    """Return which predictions the study set's figures are on.
+
+    The study set is the sales in the look-back before the valuation date
+    (``analysis.ratio_study.look_back_years``), the IAAO frame for auditing a finished roll.
+    ``analysis.ratio_study.study_set_predictions`` says which predictions a model is judged by
+    there:
+
+    - ``"all"`` (default): its predictions on every sale, most of which it trained on. Right
+      for auditing the values a model writes; flattering when set beside the assessor's.
+    - ``"holdout"``: its holdout predictions, each sale valued by a model that never saw it.
+      Under cross-validation every sale has one, so the study set keeps all its sales; with a
+      single split, only the study-set sales in the holdout are left.
+
+    Parameters
+    ----------
+    s : dict
+        Settings dictionary.
+
+    Returns
+    -------
+    str
+        ``"all"`` or ``"holdout"``.
+    """
+    mode = str(s.get("analysis", {}).get("ratio_study", {}).get("study_set_predictions", "all")).lower()
+    if mode not in ("all", "holdout"):
+        raise ValueError(f'analysis.ratio_study.study_set_predictions must be "all" or "holdout", not "{mode}"')
+    return mode
+
+
 def get_assessor_holdout_mode(s: dict) -> str:
     """Return how the assessor's values relate to the test holdout.
 
@@ -192,6 +222,16 @@ def get_assessor_holdout_mode(s: dict) -> str:
         .get("assessor_holdout", "unknown")
     )
     return str(mode).lower()
+
+
+def get_outside_models(s: dict) -> list[str]:
+    """Return the models whose values were made outside openavmkit (``pass_through`` models of a vendor's AVM,
+    say), listed in ``analysis.ratio_study.outside_models``.
+
+    Like the assessor's, their holdout status is unknown: they're left off the pre-valuation random holdout
+    with it (unless ``assessor_holdout`` is ``"shared"``). Default: none.
+    """
+    return list(s.get("analysis", {}).get("ratio_study", {}).get("outside_models", []) or [])
 
 
 def get_look_back_dates(s: dict):

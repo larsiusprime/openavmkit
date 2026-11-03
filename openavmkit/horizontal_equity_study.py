@@ -195,25 +195,22 @@ class HorizontalEquityStudy:
         clusters = df[field_cluster].unique()
         self.cluster_summaries = {}
 
-        chds = np.array([])
-        for cluster in clusters:
-            df_cluster = df[df[field_cluster].eq(cluster)]
-            count = len(df_cluster)
-            if count > 0:
-                chd = stats.calc_cod(df_cluster[field_value].values)
-                min_value = df_cluster[field_value].min()
-                max_value = df_cluster[field_value].max()
-                median_value = df_cluster[field_value].median()
-            else:
-                chd = float("nan")
-                min_value = float("nan")
-                max_value = float("nan")
-                median_value = float("nan")
+        # One pass with groupby instead of one full-frame filter per cluster, which was
+        # quadratic and dominated run time on large jurisdictions.
+        chd_list = []
+        for cluster, values in df.groupby(field_cluster, sort=False)[field_value]:
+            chd = stats.calc_cod(values.values)
             summary = HorizontalEquityClusterSummary(
-                cluster, count, chd, min_value, max_value, median_value
+                cluster, len(values), chd, values.min(), values.max(), values.median()
             )
             self.cluster_summaries[cluster] = summary
-            chds = np.append(chds, chd)
+            chd_list.append(chd)
+        if pd.isna(clusters).any():
+            # A null cluster id never matched any rows in the original per-cluster filter.
+            nan = float("nan")
+            self.cluster_summaries[np.nan] = HorizontalEquityClusterSummary(np.nan, 0, nan, nan, nan, nan)
+            chd_list.append(nan)
+        chds = np.array(chd_list)
 
         if len(chds) > 0:
             min_chd = np.min(chds)

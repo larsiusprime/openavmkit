@@ -133,6 +133,7 @@ from openavmkit.utilities.settings import (
     _get_max_ratio_study_trim,
     get_look_back_dates,
     get_assessor_holdout_mode,
+    get_outside_models,
     area_unit,
     length_unit
 )
@@ -288,9 +289,10 @@ class MultiModelResults:
     df_univ_orig: pd.DataFrame
     df_sales_orig: pd.DataFrame
     drop_assessor_from_test: bool
+    outside: tuple
 
     def __init__(
-        self, model_results: dict[str, SingleModelResults], benchmark: BenchmarkResults, df_univ: pd.DataFrame, df_sales: pd.DataFrame, drop_assessor_from_test: bool = False
+        self, model_results: dict[str, SingleModelResults], benchmark: BenchmarkResults, df_univ: pd.DataFrame, df_sales: pd.DataFrame, drop_assessor_from_test: bool = False, outside: tuple = ()
     ):
         """Initialize a MultiModelResults instance.
 
@@ -304,12 +306,15 @@ class MultiModelResults:
             Whether the assessor should be left off the pre-valuation "Test set". Stored so
             that ``add_model`` (which recomputes the benchmark, e.g. when the ensemble is
             added) preserves the same choice as the initial ``_calc_benchmark`` call.
+        outside: tuple
+            Models whose values were made outside openavmkit: left off the "Test set" with the assessor.
         """
         self.model_results = model_results
         self.benchmark = benchmark
         self.df_univ_orig = df_univ
         self.df_sales_orig = df_sales
         self.drop_assessor_from_test = drop_assessor_from_test
+        self.outside = tuple(outside)
 
     def add_model(self, model: str, results: SingleModelResults):
         """Add a new model's results and update the benchmark.
@@ -326,7 +331,7 @@ class MultiModelResults:
         # drop choice -- otherwise adding the ensemble model would silently re-introduce the
         # assessor into the Test-set comparison.
         self.benchmark = _calc_benchmark(
-            self.model_results, drop_assessor_from_test=self.drop_assessor_from_test
+            self.model_results, drop_assessor_from_test=self.drop_assessor_from_test, outside=self.outside
         )
 
 
@@ -517,7 +522,8 @@ def get_variable_recommendations(
     do_report: bool = False,
     do_plots: bool = False,
     verbose: bool = False,
-    t: TimingData = None
+    t: TimingData = None,
+    return_tests: bool = False,
 ) -> dict:
     """Determine which variables are most likely to be meaningful in a model.
 
@@ -551,12 +557,18 @@ def get_variable_recommendations(
         If True, prints additional debugging information.
     t : TimingData or None
         TimingData object
+    return_tests : bool, optional
+        If True, the result also has "tests": each test's results for every variable, before
+        and after its drops (``initial`` / ``final`` where the test drops recursively), with
+        the thresholds and which one-hot columns each categorical became. For a front end
+        that shows the tests one by one. Defaults to False.
     
     Returns
     -------
     dict
-        A dictionary with keys "variables" (the best variables list) and "report"
-        (the generated report).
+        A dictionary with keys "variables" (the best variables list), "report" (the
+        generated report) and "df_results" (each variable's scores); and "tests" when
+        ``return_tests`` is True.
     """    
     if t is None:
         t = TimingData()
@@ -679,10 +691,17 @@ def get_variable_recommendations(
         # Correlation
         X_corr = ds.df_sales[[ds.dep_var] + ind_vars]
         t.start("variables.corr")
-        corr_results = calc_correlations(X_corr, thresh.get("correlation", 0.1), do_plots=do_plots)
+        corr_results = calc_correlations(
+            X_corr,
+            thresh.get("correlation", 0.1),
+            do_plots=do_plots,
+            min_strength=thresh.get("correlation_strength"),
+            overlap=bool(feature_selection.get("correlation_overlap", True)),
+        )
         
         # Remove bad variables
-        ind_vars = [var for var in ds.ind_vars if var not in corr_results["bad_vars"]]
+        dropped = set(corr_results["bad_vars"]) | set(corr_results.get("weak") or [])
+        ind_vars = [var for var in ds.ind_vars if var not in dropped]
         t.stop("variables.corr")
     else:
         corr_results = None
@@ -847,7 +866,22 @@ def get_variable_recommendations(
     
     print(t.print())
 
-    return {"variables": best_variables, "report": report, "df_results": df_results}
+    out = {"variables": best_variables, "report": report, "df_results": df_results}
+    if return_tests:
+        out["tests"] = {
+            "thresholds": thresh,
+            "weights": feature_selection.get("weights", {}),
+            "one_hot": dict(ds.one_hot_descendants or {}),
+            "representation": rep_results.get("raw"),
+            "representation_bad": rep_results.get("bad_vars", []),
+            "corr": corr_results,
+            "enr": enr_coefs,
+            "r2": r2_values,
+            "p_value": p_values,
+            "t_value": t_values,
+            "vif": vif,
+        }
+    return out
 
 
 def generate_variable_report(
@@ -2268,7 +2302,7 @@ def run_ensemble(
 
 
 def _calc_benchmark(
-    model_results: dict[str, SingleModelResults], drop_assessor_from_test: bool = False
+    model_results: dict[str, SingleModelResults], drop_assessor_from_test: bool = False, outside: tuple = ()
 ):
     """
     Calculate benchmark statistics from individual model results.
@@ -2282,6 +2316,9 @@ def _calc_benchmark(
         See the note in the body for why; controlled by ``analysis.ratio_study.assessor_holdout``
         at the main call site. Defaults to False (the assessor is kept), which is correct for
         the post-valuation benchmark and for incremental recomputation.
+    outside : tuple, optional
+        Models whose values were made outside openavmkit (``analysis.ratio_study.outside_models``): left off
+        the "Test set" whenever the assessor is, for the same reason.
     """
     data_time = {
         "model": [],
@@ -2309,6 +2346,9 @@ def _calc_benchmark(
         "cod_trim": [],
         "prd_trim": [],
         "prb_trim": [],
+        "median_ratio_trim": [],
+        "vei_trim": [],
+        "vei_sig_trim": [],
         "chd": [],
     }
     for key in model_results:
@@ -2329,6 +2369,8 @@ def _calc_benchmark(
             data["subset"].append(subset)
             if kind == "test" or kind == "test_post_val":
                 data["utility_score"].append(results.utility_test)
+            elif getattr(results, "utility_study", None) is not None:
+                data["utility_score"].append(results.utility_study)
             else:
                 data["utility_score"].append(results.utility_train)
             data["count_sales"].append(pred_results.ratio_study.count)
@@ -2353,6 +2395,16 @@ def _calc_benchmark(
             data["cod_trim"].append(pred_results.ratio_study.cod_trim)
             data["prd_trim"].append(pred_results.ratio_study.prd_trim)
             data["prb_trim"].append(pred_results.ratio_study.prb_trim)
+            # The rest of the trimmed figures, on the same rows. Kept in the frames for callers
+            # that read them; print() leaves them out, so the printed benchmark is as it was.
+            data["median_ratio_trim"].append(pred_results.ratio_study.median_ratio_trim)
+            if kind == "univ":
+                ve_trim = getattr(results, "ve_sales_lookback_trim", None)
+            else:
+                ve_trim = getattr(results, "ve_test_trim", None)
+            ve_trim = ve_trim or {}
+            data["vei_trim"].append(np.nan if kind == "test_post_val" else ve_trim.get("vei", np.nan))
+            data["vei_sig_trim"].append(ve_trim.get("vei_significance", np.nan))
 
             chd_results = None
             if kind == "univ":
@@ -2387,7 +2439,7 @@ def _calc_benchmark(
     # assessor here (see get_assessor_holdout_mode).
     assessor_in_test = "assessor" in model_results
     if drop_assessor_from_test:
-        df_test = df_test[df_test["model"].ne("assessor")]
+        df_test = df_test[~df_test["model"].isin(["assessor", *outside])]
         assessor_in_test = False
 
     df_test.set_index("model", inplace=True)
@@ -2401,12 +2453,16 @@ def _calc_benchmark(
     return results
 
 
+# Columns the benchmark frames carry for callers but that its printed tables leave out.
+_NOT_PRINTED = ("median_ratio_trim", "vei_trim", "vei_sig_trim")
+
+
 def _format_benchmark_df(df: pd.DataFrame, transpose: bool = True):
     """
     Format a benchmark DataFrame for display.
     """
     # Format a copy: the frames are the benchmark's own, and callers read their numbers after printing.
-    df = df.copy()
+    df = df.drop(columns=[c for c in _NOT_PRINTED if c in df.columns])
     formats = {
         "utility_score": fancy_format,
         "count_sales": "{:,.0f}",
@@ -4974,25 +5030,24 @@ def _get_earliest_and_latest_date(df: pd.DataFrame):
     return earliest_date, latest_date
 
 
-def _model_performance_metrics(
-    model_group: str, 
-    all_results: MultiModelResults, 
-    title: str,
-    max_trim: float
-):
-    # Get first model_results from all_results:
-    first_results: SingleModelResults = list(all_results.model_results.values())[0]
-    test_count = len(first_results.df_test)
-    sales_count = len(first_results.df_sales)
-    
-    earliest_date, latest_date = _get_earliest_and_latest_date(first_results.df_test)    
+def academic_metrics(
+    all_results: MultiModelResults, max_trim: float
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    The "academic" figures for each model on its test set: untrimmed, then trimmed.
 
-    # Add performance metrics table
-    text = f"\n************************************************************\n"
-    text += f"{title} Benchmark ({model_group}) -- Academic Metrics\n"
-    text += f"************************************************************\n"
-    text += f"Testing {test_count}/{sales_count} sales from ({earliest_date} to {latest_date})\n"
-    text += ("=" * 80) + "\n"
+    Each frame has a row per model (indexed by model name) and the columns ``count``,
+    ``MAPE``, ``MSE``, ``RMSE``, ``m.ratio`` (median ratio), ``avg.ratio`` (mean ratio),
+    ``VEI``, ``VEI_sig`` and ``Slope`` (of prediction on price, through the origin), as
+    numbers. The benchmark printout formats them as text.
+
+    Parameters
+    ----------
+    all_results : MultiModelResults
+        One model group's results.
+    max_trim : float
+        The ratio study's trim, as ``_get_max_ratio_study_trim`` gives it.
+    """
     metrics_data = {
         "Model": [],
         "count": [],
@@ -5115,9 +5170,33 @@ def _model_performance_metrics(
         trimmed_data["VEI_sig"].append(ve_trim["vei_significance"])
         trimmed_data["Slope"].append(slope_trim)
 
-    # Create and display metrics DataFrame
-    metrics_df = pd.DataFrame(metrics_data)
-    metrics_df.set_index("Model", inplace=True)
+    columns = ["count", "MAPE", "MSE", "RMSE", "m.ratio", "avg.ratio", "VEI", "VEI_sig", "Slope"]
+    metrics_df = pd.DataFrame(metrics_data).set_index("Model")[columns]
+    trimmed_df = pd.DataFrame(trimmed_data).set_index("Model")[columns]
+    return metrics_df, trimmed_df
+
+
+def _model_performance_metrics(
+    model_group: str, 
+    all_results: MultiModelResults, 
+    title: str,
+    max_trim: float
+):
+    # Get first model_results from all_results:
+    first_results: SingleModelResults = list(all_results.model_results.values())[0]
+    test_count = len(first_results.df_test)
+    sales_count = len(first_results.df_sales)
+    
+    earliest_date, latest_date = _get_earliest_and_latest_date(first_results.df_test)    
+
+    # Add performance metrics table
+    text = f"\n************************************************************\n"
+    text += f"{title} Benchmark ({model_group}) -- Academic Metrics\n"
+    text += f"************************************************************\n"
+    text += f"Testing {test_count}/{sales_count} sales from ({earliest_date} to {latest_date})\n"
+    text += ("=" * 80) + "\n"
+    metrics_df, trimmed_df = academic_metrics(all_results, max_trim)
+    # Format them for display
     metrics_df["count"] = metrics_df["count"].apply(lambda x: f"{x:,}").astype(str)
     metrics_df["MSE"] = metrics_df["MSE"].apply(lambda x: fancy_format(x)).astype(str)
     metrics_df["RMSE"] = metrics_df["RMSE"].apply(lambda x: f"{x:,.0f}").astype(str)
@@ -5128,8 +5207,6 @@ def _model_performance_metrics(
     metrics_df["VEI"] = metrics_df["VEI"].apply(lambda x: f"{x:.2f}").astype(str)
     metrics_df["VEI_sig"] = metrics_df["VEI_sig"].apply(lambda x: f"{x:.2f}").astype(str)
 
-    trimmed_df = pd.DataFrame(trimmed_data)
-    trimmed_df.set_index("Model", inplace=True)
     trimmed_df["count"] = trimmed_df["count"].apply(lambda x: f"{x:,}").astype(str)
     trimmed_df["MSE"] = trimmed_df["MSE"].apply(lambda x: fancy_format(x)).astype(str)
     trimmed_df["RMSE"] = trimmed_df["RMSE"].apply(lambda x: f"{x:,.0f}").astype(str)
@@ -5364,9 +5441,11 @@ def _run_models(
     # the pre-valuation random holdout (we can't know its holdout status); declaring
     # analysis.ratio_study.assessor_holdout: "shared" keeps it in.
     drop_assessor_from_test = get_assessor_holdout_mode(settings) != "shared"
+    outside = tuple(get_outside_models(settings))
     all_results = MultiModelResults(
         model_results=model_results,
-        benchmark=_calc_benchmark(model_results, drop_assessor_from_test=drop_assessor_from_test),
+        benchmark=_calc_benchmark(model_results, drop_assessor_from_test=drop_assessor_from_test, outside=outside),
+        outside=outside,
         df_univ=df_univ,
         df_sales=df_sales,
         drop_assessor_from_test=drop_assessor_from_test,

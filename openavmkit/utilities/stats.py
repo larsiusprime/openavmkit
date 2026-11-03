@@ -294,6 +294,50 @@ def calc_cod_bootstrap(
     return median_cod, lower_bound, upper_bound
 
 
+def calc_mki(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
+    """
+    Calculate the Modified Kakwani Index (MKI) of vertical equity.
+
+    The concentration index of assessments (their Gini coefficient with the parcels ordered by sale price) over the
+    Gini coefficient of sale prices (IAAO Standard on Ratio Studies, exposure draft May 2026, Appendix F; Quintos
+    2020). 1 is vertical equity; under 1, regressive; over 1, progressive. Some consider 0.95 to 1.05 optimal for
+    low-variability strata, 0.90 to 1.10 for higher-variability or small ones.
+
+    Parameters
+    ----------
+    predictions : numpy.ndarray
+        Assessed (or predicted) values.
+    ground_truth : numpy.ndarray
+        Sale prices.
+
+    Returns
+    -------
+    float
+        The MKI; NaN with fewer than 2 observations or no spread in prices.
+    """
+    a = np.asarray(predictions, dtype=float)
+    p = np.asarray(ground_truth, dtype=float)
+    ok = np.isfinite(a) & np.isfinite(p)
+    a, p = a[ok], p[ok]
+    n = len(p)
+    if n < 2:
+        return float("nan")
+    order = np.argsort(p, kind="stable")
+    a, p = a[order], p[order]
+    rank = np.arange(1, n + 1)
+
+    def gini(x: np.ndarray) -> float:
+        total = np.sum(x)
+        if total == 0:
+            return float("nan")
+        return (2 * np.sum(x * rank) / total - (n + 1)) / n
+
+    g_price = gini(p)
+    if not np.isfinite(g_price) or g_price == 0:
+        return float("nan")
+    return float(gini(a) / g_price)
+
+
 def calc_prd(predictions: np.ndarray, ground_truth: np.ndarray) -> float:
     """
     Calculate the Price Related Differential (PRD).
@@ -754,7 +798,9 @@ def _order_by_target_corr(corr: pd.DataFrame, target_col: str | None = None) -> 
 def calc_correlations(
     X: pd.DataFrame,
     threshold: float = 0.1,
-    do_plots: bool = False
+    do_plots: bool = False,
+    min_strength: float | None = None,
+    overlap: bool = True,
 ) -> dict:
     """
     Calculate correlations and iteratively drop variables with low combined scores.
@@ -773,14 +819,28 @@ def calc_correlations(
         value will be dropped. Defaults to 0.1.
     do_plots : bool, optional
         If True, plot the initial and final correlation heatmaps. Defaults to False.
+    min_strength : float or None, optional
+        A first pass: variables whose correlation with the target (the first column) is
+        weaker than this, in absolute value, are dropped before anything else, so they
+        neither get a combined score nor lower the others' clarity. None (the default)
+        skips it.
+    overlap : bool, optional
+        Whether overlap counts: a variable's overlap with the others lowers its score (its
+        clarity, squared), and one more correlated with a stronger variable than with the
+        target is dropped. False: the score is its correlation with the target alone and
+        nothing is dropped for overlapping; overlap is left to another test (VIF). Defaults
+        to True.
 
     Returns
     -------
     dict
-        Dictionary with two keys:
+        Dictionary with keys:
 
         - "initial": pandas.Series of combined scores from the first iteration.
         - "final": pandas.Series of combined scores after dropping low-scoring variables.
+        - "bad_vars": variables dropped (null correlations, and overlaps).
+        - "weak": variables dropped by the first pass (``min_strength``), if any.
+        - "matrix": the correlation matrix of every variable, the target first.
     """
     X = X.copy()
     first_run = None
@@ -801,6 +861,16 @@ def calc_correlations(
     corr_full = X.corr()
     remaining = list(X.columns)
 
+    # First pass (opt-in): no correlation with the target at all, out before the scores are worked out.
+    weak = []
+    if min_strength is not None and len(remaining) > 1:
+        to_target = corr_full[remaining[0]].abs()
+        weak = [c for c in remaining[1:] if not (to_target[c] >= min_strength)]
+        remaining = [c for c in remaining if c not in weak]
+        if len(remaining) < 2:
+            empty = pd.DataFrame(columns=["variable", "corr_strength", "corr_clarity", "corr_score"])
+            return {"initial": empty, "final": empty, "bad_vars": bad_vars, "weak": weak, "matrix": corr_full}
+
     # Keep a copy of the *initial* ordered corr for plotting later
     naive_corr_for_plot = None  # <--- NEW
 
@@ -819,10 +889,13 @@ def calc_correlations(
 
         strength = naive_corr.iloc[:, 0].abs().iloc[1:]
 
-        clarity = 1 - (
-            (naive_corr_sans_target.abs().sum(axis=1) - 1.0)
-            / (len(naive_corr_sans_target.columns) - 1)
-        )
+        if overlap:
+            clarity = 1 - (
+                (naive_corr_sans_target.abs().sum(axis=1) - 1.0)
+                / (len(naive_corr_sans_target.columns) - 1)
+            )
+        else:  # judged on the relation to the target alone; overlap is left to another test (VIF)
+            clarity = pd.Series(1.0, index=naive_corr_sans_target.index)
 
         score = strength * clarity * clarity
 
@@ -865,8 +938,9 @@ def calc_correlations(
     )
     
     all_dropped = []
-    
-    for current_variable in ordered_by_target:
+
+    # Without overlap, a variable more related to another than to the target stays: VIF judges overlap.
+    for current_variable in ordered_by_target if overlap else []:
         if current_variable not in remaining:
             continue
 
@@ -898,10 +972,13 @@ def calc_correlations(
 
     naive_corr_sans_target = naive_corr.iloc[1:, 1:]
     strength = naive_corr.iloc[:, 0].abs().iloc[1:]
-    clarity = 1 - (
-        (naive_corr_sans_target.abs().sum(axis=1) - 1.0)
-        / (len(naive_corr_sans_target.columns) - 1)
-    )
+    if overlap:
+        clarity = 1 - (
+            (naive_corr_sans_target.abs().sum(axis=1) - 1.0)
+            / (len(naive_corr_sans_target.columns) - 1)
+        )
+    else:
+        clarity = pd.Series(1.0, index=strength.index)
     score = strength * clarity * clarity
 
     data = {"corr_strength": strength, "corr_clarity": clarity, "corr_score": score}
@@ -926,7 +1003,7 @@ def calc_correlations(
     if do_plots:
         plot_correlation(final_corr, "Correlation of Variables (final)")
 
-    return {"initial": first_run, "final": df_score, "bad_vars": bad_vars}
+    return {"initial": first_run, "final": df_score, "bad_vars": bad_vars, "weak": weak, "matrix": corr_full}
 
 
 def plot_correlation(corr: pd.DataFrame, title: str = "Correlation of Variables") -> None:
@@ -1045,6 +1122,8 @@ def calc_representation(
     )
     
     result = result.sort_values(by="univ_pct_gt0", ascending=False)
+    # The shares as numbers, before they're formatted for display.
+    raw = result[["name", "sales_pct_gt0", "univ_pct_gt0"]].copy()
     
     unrepresented_vars = result[
         result["sales_pct_gt0"].le(0) |
@@ -1070,7 +1149,8 @@ def calc_representation(
     
     return {
         "bad_vars": unrepresented_vars,
-        "df": result
+        "df": result,
+        "raw": raw,
    }
 
 

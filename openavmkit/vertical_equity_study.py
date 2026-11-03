@@ -26,7 +26,8 @@ def get_vertical_equity_scores(df, sale_field: str, valuation_field: str) -> Dic
     df = df.copy()
     df["ratio"] = df[valuation_field] / df[sale_field]
     median_ratio = df["ratio"].median()
-    df["market_proxy"] = (df[sale_field] * 0.5) + (df[valuation_field]/median_ratio)
+    # The market value proxy: the average of the sale price and the value brought to the median ratio.
+    df["market_proxy"] = 0.5 * df[sale_field] + 0.5 * (df[valuation_field] / median_ratio)
     observation_count = len(df)
     if 20 <= observation_count <= 50:
         percentile_group_count = 2
@@ -79,7 +80,8 @@ def get_vertical_equity_scores(df, sale_field: str, valuation_field: str) -> Dic
         group_stats = grouped['ratio'].agg(
             ratio='median',
             lower=ci_90_lower,
-            upper=ci_90_upper
+            upper=ci_90_upper,
+            n='size',
         )
         top_group = percentile_group_count - 1
         if top_group not in group_stats.index or 0 not in group_stats.index:

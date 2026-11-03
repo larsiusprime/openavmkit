@@ -1383,6 +1383,8 @@ Fine-tune the variable-selection scoring used during model setup. The thresholds
   ```
 
 - **Source** — `modeling.instructions.feature_selection` in [openavmkit/resources/settings/settings.template.json](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/resources/settings/settings.template.json), consumed in `model_runner.py`.
+- **`correlation_strength`** (optional, no default) — a first pass of the correlation test: a variable whose correlation with price is weaker than this, in absolute value, is dropped right away, before the combined score (strength × clarity²) is worked out, so it neither gets a score nor lowers the other variables' clarity. Unset, there's no first pass.
+- **`correlation_overlap`** (in `feature_selection`, default `true`) — whether the correlation test counts a variable's overlap with the others: its clarity in the combined score, and the second pass that drops a variable more correlated with a stronger one than with price. `false`: the score is the correlation with price alone and nothing is dropped for overlapping, so overlap is left to the VIF test.
 - **When to use** — your standard variable-selection results don't reflect domain knowledge. Loosen `correlation` to keep weak-but-meaningful features, or tighten `vif` to drop more multicollinear ones.
 
 ### `modeling.instructions.<main|vacant>.ensemble`
@@ -1555,6 +1557,17 @@ How many years before the valuation date to include sales from when running the 
 - **Source** — `get_look_back_dates` in [openavmkit/utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py)
 - **When to use** — your jurisdiction expects a multi-year ratio-study window, or you want to widen the sample for low-volume model groups.
 
+### Value-field studies: `run_value_field_studies`
+
+Ratio, vertical-equity and horizontal-equity studies on any value field (the assessor's market value, say), every model group and overall, with no modeling, written to `out/studies/<field>.json`. Arguments beyond the window and fields, all optional:
+
+- **`sale_field`** (`"sale_price"`) — the price values are compared with: as sold (the formal ratio study), or e.g. `sale_price_time_adj`.
+- **`trim_outliers`** (`False`), **`iqr_factor`** (`1.5`), **`trim_share`** (`0.10`) — also study each model group without its outlying ratios: outside the IQR fences, the quartiles located as the Standard does (Appendix C.4: positions 0.25n + 0.25 and 0.75n + 0.75), at most `trim_share` of the group, the furthest out first (Appendix C.5: no more than 10% under 30 sales, 20% in the most extreme cases; 5 to 10% for larger). `trimmed_study` sits beside the study of every sale — the Standard says trimmed and untrimmed statistics can't be compared or read the same way (C.6), so both are kept — with the trimmed sales listed per group under `trimmed`; the overall study's `count_trimmed`. Each sale studied, its ratio and whether it was trimmed, goes to `out/studies/<field>.sales.parquet`.
+- **`median_ci`** (`"bootstrap"`) — `"iaao"`: the median's order-statistic interval of the Standard's Appendix D.2 (as the VEI uses, and openratiostudy.com).
+- **`standards`**, **`classes`** — judge each model group against the Standard on Ratio Studies exposure draft (May 2026): `IAAO_STANDARDS` or your own, and each group's property category (`residential` 5–15, `residential_homogeneous` 4–10, `residential_rural` 10–20, `apartments` 7–20, `commercial` 10–25, `vacant` 10–20, `agricultural` 10–25: Table 7's COD ranges; or none: not judged). Adds `verdict` per group (`true` met, `false` missed, `null` neither): **level** met with the median in 0.90–1.10, missed only when its whole confidence interval is outside (11.1); **COD** met within the range, missed above it, `cod_low` below it (suspect, possibly sales chasing: 11.2.5); **PRB** met within ±0.05, missed outside ±0.10 (glossary); **VEI**, the primary vertical test, missed only when significantly outside ±10% (`vei_verdict`: `compliant`, `not_significant` — beyond ±10% but the end groups' intervals overlap, or the significance is within 10% — `regressive`, `progressive`, `insufficient`: Appendix E steps 5–7). The **PRD** is reported but not judged: the draft no longer uses it for compliance (Table 4). The vertical study also carries the **MKI** (Modified Kakwani Index; 1 is equitable, some consider 0.95–1.05 or 0.90–1.10 optimal: Appendix F), reported, not judged.
+- **`region`** — a location field (a neighborhood): adds `regions`, the median ratio by the price level of the region each sale is in (the region's median market value proxy), regions grouped as the VEI groups sales, with the same index, significance (the highest- and lowest-median groups) and reading — openratiostudy.com's "neighborhood price level" statistics, not an IAAO test. Where the VEI by sale finds low-priced sales over-assessed but this is flat, the cause may be invalid sales at low prices in dear areas rather than real inequity. The per-sale table then carries the region (and latitude and longitude where the sales have them).
+- The vertical study now carries `vei_strata` (each percentile group's sales, median and interval).
+
 ### `analysis.ratio_study.sales_chasing`
 
 Optional thresholds for the **sales-chasing check** in the ratio study report (see [tutorial.md](tutorial.md)). The check probes whether the assessor's values look suspiciously tight on *sold* parcels relative to how uniformly they treat *similar* parcels — the signature of pushing assessed value toward sale price. It runs three signals: a ratio spike at 1.0, a COD-CHD divergence (mirrors the model utility scorer's `sales_chase_score`), and a pre- vs. post-valuation COD gap.
@@ -1573,6 +1586,21 @@ Declares how the assessor's values relate to openavmkit's test holdout, controll
 - **Default** — `"unknown"` — we can't know the holdout status of values we didn't generate, so the assessor is left off the random holdout to avoid a comparison that isn't like-for-like. (This is not a judgment on the assessor; see [the basics → comparing against the assessor](the_basics.md#comparing-against-the-assessor).)
 - **`"shared"`** — you certify the assessor's values honor this same test holdout, so the assessor **is** shown on the random holdout. Use this when *you* are the assessor (or know the holdout status). See [the basics → when you are the assessor](the_basics.md#when-you-are-the-assessor).
 - **Source** — `get_assessor_holdout_mode` in [openavmkit/utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py)
+
+### `analysis.ratio_study.outside_models`
+
+Models whose values were made outside openavmkit: a vendor's AVM or last year's values, run as `pass_through` models. Like the assessor's, their holdout status is unknown, so they're left off the random pre-valuation holdout whenever the assessor is (that is, unless `assessor_holdout` is `"shared"`); they're still shown on the post-valuation holdout and the study set.
+
+- **Default** — none: every model is shown on the holdout, as before.
+- **Source** — `get_outside_models` in [openavmkit/utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py)
+
+### `analysis.ratio_study.study_set_predictions`
+
+Which predictions the models are judged by on the **study set** (the sales in the `look_back_years` before the valuation date, where the assessor is audited).
+
+- **Default** — `"all"` — each model's predictions on every sale, most of which it trained on: right for auditing the values a model writes, but they flatter the models when set beside the assessor's.
+- **`"holdout"`** — each model's holdout predictions, every sale valued by a model that never saw it. Under cross-validation every sale has one, so the study set keeps all its sales; with a single split, only the study-set sales drawn into the holdout are left. The assessor's figures don't change (its values are the same either way), nor does the CHD (on every parcel).
+- **Source** — `get_study_set_predictions` in [openavmkit/utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py)
 
 ### `modeling.instructions.test_keys_file`
 

@@ -108,6 +108,7 @@ def _fake_smr():
         cod_trim=8.0,
         prd_trim=1.0,
         prb_trim=0.0,
+        median_ratio_trim=1.0,
     )
     pred = SimpleNamespace(ratio_study=rs)
     return SimpleNamespace(
@@ -177,3 +178,25 @@ def test_benchmark_print_caveat_varies_with_assessor_in_test(monkeypatch):
     hidden = mr.BenchmarkResults(df, df, df, df, assessor_in_test=False).print()
     assert "Assessor shown here" in shown
     assert "Assessor not shown here" in hidden
+
+
+def test_outside_models_leave_the_test_set_with_the_assessor(monkeypatch):
+    """analysis.ratio_study.outside_models: values made outside openavmkit (a vendor's AVM as a pass_through
+    model) are left off the random holdout whenever the assessor is, and stay off as the ensemble is added."""
+    from openavmkit.utilities.settings import get_outside_models
+
+    assert get_outside_models({}) == []
+    assert get_outside_models({"analysis": {"ratio_study": {"outside_models": ["avm"]}}}) == ["avm"]
+    monkeypatch.setattr(mr, "_get_post_valuation_smr", lambda smr, verbose=False: smr)
+    results = {"main": _fake_smr(), "assessor": _fake_smr(), "avm": _fake_smr()}
+    b = mr._calc_benchmark(results, drop_assessor_from_test=True, outside=("avm",))
+    assert set(b.df_stats_test.index) == {"main"}
+    assert "avm" in b.df_stats_test_post_val.index and "avm" in b.df_stats_full.index
+    shared = mr._calc_benchmark(results, drop_assessor_from_test=False, outside=("avm",))
+    assert "avm" in shared.df_stats_test.index  # assessor_holdout "shared": both shown
+    mmr = mr.MultiModelResults(
+        results, b, df_univ=pd.DataFrame({"x": [1]}), df_sales=pd.DataFrame({"x": [1]}),
+        drop_assessor_from_test=True, outside=("avm",),
+    )
+    mmr.add_model("ensemble", _fake_smr())
+    assert "avm" not in mmr.benchmark.df_stats_test.index
