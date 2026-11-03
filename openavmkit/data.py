@@ -71,6 +71,7 @@ from openavmkit.calculations import (
 from openavmkit.filters import resolve_filter, select_filter
 from openavmkit.utilities.somers import get_size_in_somers_units_ft
 from openavmkit.utilities.cache import get_cached_df, write_cached_df
+from openavmkit.utilities.sales_scrutiny import SALE_PARCEL_COUNT, count_parcels_per_deed
 from openavmkit.utilities.data import (
     combine_dfs,
     div_series_z_safe,
@@ -636,6 +637,18 @@ def process_data(
     df_sales = _merge_dict_of_dfs(
         dataframes, merge_sales, settings, required_key="key_sale"
     )
+
+    # Count how many parcels each deed covered BEFORE invalid sales are filtered out below.
+    # A multi-parcel ("bulk") deed whose other rows are invalid would otherwise leave one
+    # "orphan" row carrying the whole bundle's price, with no sibling left for the
+    # duplicate-based sales-scrutiny heuristics to match against. run_heuristics flags any
+    # sale with a count > 1 (see openavmkit/utilities/sales_scrutiny.py).
+    s_scrutiny = settings.get("analysis", {}).get("sales_scrutiny", {})
+    parcel_counts = count_parcels_per_deed(
+        df_sales, s_scrutiny.get("deed_id"), s_scrutiny.get("jurisdiction")
+    )
+    if parcel_counts is not None:
+        df_sales[SALE_PARCEL_COUNT] = parcel_counts
 
     if "valid_sale" not in df_sales:
         raise ValueError("The 'valid_sale' column is required in the sales data. If you don't have anything to go on, you can just create that column and fill it with an assumption (i.e. all are valid), but ideally you should look for some kind of validation criteria for your sales.")

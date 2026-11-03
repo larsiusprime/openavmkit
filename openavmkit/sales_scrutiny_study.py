@@ -36,6 +36,12 @@ from openavmkit.utilities.data import (
     combine_dfs,
 )
 from openavmkit.utilities.excel import write_to_excel
+from openavmkit.utilities.sales_scrutiny import (
+    SALE_PARCEL_COUNT,
+    flag_bulk_deeds,
+    flag_dupe_date_price,
+    flag_dupe_deed_date,
+)
 from openavmkit.utilities.settings import get_fields_categorical, _apply_dd_to_df_cols, area_unit, get_locations, warn_if_location_collapsed
 
 
@@ -591,44 +597,36 @@ def run_heuristics(
     df_sales = get_hydrated_sales_from_sup(sup)
 
     #### Multi-parcel sales detection heuristics
-    
+    # A multi-parcel ("bulk") deed stamps its one bundle price onto every parcel it covers,
+    # so none of those per-parcel prices is usable. See openavmkit/utilities/sales_scrutiny.py.
+
     jurisdiction = ss.get("jurisdiction", None)
-    
+    has_deed_id = (deed_id is not None) and (deed_id in df_sales)
+
+    def _set_flag(mask: pd.Series, flag: str):
+        if mask.any():
+            df_sales.loc[mask, flag] = True
+
     # 1 -- Flag sales with identical deed IDs AND identical sale dates
-    if (deed_id is not None) and (deed_id in df_sales):
-        if jurisdiction != None:
-            df_sales["deed_date"] = df_sales[jurisdiction].astype(str) + "---" + df_sales[deed_id].astype(str)+"---"+df_sales["sale_date"].astype(str)
-        else:
-            df_sales["deed_date"] = df_sales[deed_id].astype(str)+"---"+df_sales["sale_date"].astype(str)
-        vcs_deed_date = df_sales["deed_date"].value_counts()
-        idx_dupe_deed_dates = vcs_deed_date[vcs_deed_date > 1].index.values
-        df_sales.loc[
-            df_sales["deed_date"].isin(idx_dupe_deed_dates),
-            "flag_dupe_deed_date"
-        ] = True
-        # drop extraneous column
-        df_sales = df_sales.drop(columns="deed_date")
+    if has_deed_id:
+        _set_flag(flag_dupe_deed_date(df_sales, deed_id, jurisdiction), "flag_dupe_deed_date")
     else:
         if deed_id is None:
             warnings.warn("You didn't provide a `deed_id` in `analysis.sales_scrutiny.deed_id`, so no deed-based sales validation heuristic can be run")
         else:
             warnings.warn(f"You provided a `deed_id`: \"{deed_id}\", but it wasn't found in in the sales dataframe, so no deed-based sales validation heuristic can be run")
 
-    # 2 -- Flag sales made on the same date for the same price
-    
-    if jurisdiction != None:
-        df_sales["date_price"] = df_sales[jurisdiction].astype(str) + "---" + df_sales["sale_date"].astype(str) + "---" + df_sales["sale_price"].astype(str)
-    else:
-        df_sales["date_price"] = df_sales["sale_date"].astype(str) + "---" + df_sales["sale_price"].astype(str)
-    vcs_date_price = df_sales["date_price"].value_counts()
-    idx_dupe_date_price = vcs_date_price[vcs_date_price > 1].index.values
-    df_sales.loc[
-        df_sales["date_price"].isin(idx_dupe_date_price),
+    # 2 -- Flag sales made on the same date for the same price. Without deed IDs this is the
+    # only bulk-deed detector, so every repeated (date, price) is flagged; with deed IDs,
+    # coincidences between separate, known deeds are spared.
+    _set_flag(
+        flag_dupe_date_price(df_sales, jurisdiction, deed_id if has_deed_id else None),
         "flag_dupe_date_price",
-    ] = True
-    
-    # drop extraneous column
-    df_sales = df_sales.drop(columns="date_price")
+    )
+
+    # 4 -- Flag deeds that covered several parcels at ingestion, even if only one of their
+    # rows is left (the others were invalid sales and got filtered out).
+    _set_flag(flag_bulk_deeds(df_sales), "flag_bulk_deed")
 
     #### Misclassified vacant sales detection heuristics
 
@@ -644,6 +642,7 @@ def run_heuristics(
         "flag_dupe_deed_date": "duplicated_deeds_and_dates",
         "flag_dupe_date_price": "duplicated_dates_and_prices",
         "flag_false_vacant": "classified_vacant_but_bldg_older_than_sale_year",
+        "flag_bulk_deed": "multi_parcel_bulk_deeds",
     }
 
     locations = get_locations(settings, df_sales)
@@ -670,6 +669,7 @@ def run_heuristics(
                         "deed_book",
                         "deed_page",
                         deed_id,
+                        SALE_PARCEL_COUNT,
                         "sale_year",
                         "bldg_year_built",
                         f"bldg_area_finished_{unit}",
@@ -702,6 +702,7 @@ def run_heuristics(
                         "deed_book": "Deed book",
                         "deed_page": "Deed page",
                         deed_id: "Deed ID",
+                        SALE_PARCEL_COUNT: "Parcels\non deed",
                         "sale_year": "Year sold",
                         "bldg_year_built": "Year built",
                         f"bldg_area_finished_{unit}": f"Impr {unit}",
@@ -711,6 +712,7 @@ def run_heuristics(
                         "flag_dupe_deed_date": "Repeated\ndeed & sale date",
                         "flag_dupe_date_price": "Repeated\nsale date & price",
                         "flag_false_vacant": "Bldg older\nthan sale year",
+                        "flag_bulk_deed": "Multi-parcel\nbulk deed",
                     }
                 )
 
@@ -737,6 +739,12 @@ def run_heuristics(
                         "format": {"bold": True, "font_color": "red"},
                     },
                     "Bldg older\nthan sale year": {
+                        "type": "cell",
+                        "criteria": "==",
+                        "value": "TRUE",
+                        "format": {"bold": True, "font_color": "red"},
+                    },
+                    "Multi-parcel\nbulk deed": {
                         "type": "cell",
                         "criteria": "==",
                         "value": "TRUE",

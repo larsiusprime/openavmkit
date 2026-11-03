@@ -1442,6 +1442,21 @@ Per-model-group outlier detection config; if no entry exists for a model group, 
 
 - **Source** — `identify_outliers` in [openavmkit/pipeline.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/pipeline.py)
 
+### `analysis.sales_scrutiny.deed_id` and `analysis.sales_scrutiny.jurisdiction`
+
+Settings for the multi-parcel ("bulk") deed heuristics in `run_heuristics`. A bulk deed conveys several parcels for one price, and that one price usually ends up on every parcel's sales record, so none of those sales is a usable per-parcel price. They're flagged and, by default, dropped:
+
+| Flag | Fires when | Report in `out/sales_scrutiny/` |
+|---|---|---|
+| `flag_dupe_deed_date` | Two or more sales share a deed and a sale date. Needs `deed_id`. Sales with a blank deed are never matched to each other. | `duplicated_deeds_and_dates.xlsx` |
+| `flag_dupe_date_price` | Two or more sales share a sale date and sale price. **Without `deed_id`**, every such sale is flagged: it's the only bulk-deed signal available. **With `deed_id`**, a sale is flagged only if it shares its deed with another sale in the group, a sale in the group has a blank deed, or the same parcel appears twice; sales on separate, known deeds are kept. | `duplicated_dates_and_prices.xlsx` |
+| `flag_bulk_deed` | The sale's deed covered more than one parcel when the sales were loaded (`sale_parcel_count` > 1, counted in `process_data` before invalid sales are removed). Catches a bulk deed whose other rows were invalid and so left nothing for the duplicate checks to match. | `multi_parcel_bulk_deeds.xlsx` |
+
+- **`deed_id`** — name of the sales column holding the deed or document number (e.g. `"deed_num"`). Deeds are matched on this plus `sale_date`, since some systems reuse numbers across years. Set it if your data has one: it's what lets `flag_dupe_date_price` spare coincidental same-price sales, and it makes `sale_parcel_count` work when `key_sale` is per parcel (the usual convention). Without it, deeds are identified by `key_sale`, which only finds bulk deeds if your `key_sale` is the deed number.
+- **`jurisdiction`** — optional column name (e.g. a city or township field). When set, matches only happen within the same jurisdiction, for jurisdictions that reuse deed numbers or where same-day, same-price coincidences across towns are common. It's only applied where the column exists: `sale_parcel_count` is computed before sales are joined to the universe, so a universe-only jurisdiction field isn't used for that count.
+- **If `key_sale` is your deed number,** don't dedupe sales on `key_sale` alone at load time: that collapses a bulk deed's rows into one before they can be counted. Include `key` in the dedupe `subset`.
+- **Source** — `run_heuristics` in [openavmkit/sales_scrutiny_study.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/sales_scrutiny_study.py); helpers in [openavmkit/utilities/sales_scrutiny.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/sales_scrutiny.py)
+
 ### `analysis.ratio_study.trim.<model_group>.max_percent`
 
 Maximum fraction of records the ratio study is allowed to trim as outliers when computing trimmed statistics (COD-trim, PRD-trim, etc.).
