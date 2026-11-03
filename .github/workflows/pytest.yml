@@ -7,6 +7,8 @@ on:
     paths-ignore: ["signatures/**"]
   pull_request:
     branches: [master]
+  # Run by hand from the Actions tab, or by retarget.yml when a pull request is retargeted to master.
+  workflow_dispatch:
 
 # A newer push to a pull request stops the run for the older one.
 concurrency:
