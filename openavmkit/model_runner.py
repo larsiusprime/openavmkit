@@ -1326,6 +1326,18 @@ def _validate_ind_vars_across_frames(
         )
 
 
+
+def _require_spatial_lag(model_name: str, df_universe: pd.DataFrame, needed: dict[str, str]) -> None:
+    """A spatial-lag model needs its lag columns: name the `spatial_lag.sales` entry to add when one is missing
+    (with `only: true`, only the lags it names are computed)."""
+    missing = {col: name for col, name in needed.items() if col not in df_universe}
+    if missing:
+        raise ValueError(
+            f'Model "{model_name}" needs {sorted(missing)}, which weren\'t computed. With '
+            f"data.process.enrich.spatial_lag.only set, add {sorted(set(missing.values()))} to "
+            f"data.process.enrich.spatial_lag.sales."
+        )
+
 def get_data_split_for(
     model_name: str,
     model_engine: str,
@@ -1409,9 +1421,18 @@ def get_data_split_for(
         field = f"spatial_lag_{sale_field}"
         if vacant_only:
             field = f"{field}_vacant"
+        _require_spatial_lag(model_name, df_universe, {field: "price_vacant" if vacant_only else "price"})
         _ind_vars = [field]
     elif model_engine == "spatial_lag_area":
         sale_field = get_sale_field(settings)
+        _require_spatial_lag(
+            model_name,
+            df_universe,
+            {
+                f"spatial_lag_{sale_field}_impr_{unit}": "price_impr",
+                f"spatial_lag_{sale_field}_land_{unit}": "price_land",
+            },
+        )
         _ind_vars = [
             f"spatial_lag_{sale_field}_impr_{unit}",
             f"spatial_lag_{sale_field}_land_{unit}",

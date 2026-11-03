@@ -671,7 +671,34 @@ The neighborhood average is over the parcel's **k nearest training-set sales**. 
 }
 ```
 
-Increasing `k` smooths more (broader neighborhood); decreasing it sharpens (more local). If a model group has fewer training sales than `k+1`, the sale-price lag is skipped for that group rather than failing.
+Increasing `k` smooths more (broader neighborhood); decreasing it sharpens (more local). If a model group has `k+1` or fewer training sales, its sale-price lags are written as `0` for every parcel (with a warning) rather than failing; a model would read that `0` as a real neighborhood price, so leave such lags out of that group's models or let it sample from another group (`model_groups.<group>.sample_from`).
+
+#### Computing only the lags you list (`only`)
+
+By default every spatial lag is computed: the four sale-price lags (the price, and per area of building, per area of land, and for vacant land) and the built-in characteristic lags (finished area, land area, floor area ratio, bedroom density, age, effective age, quality and condition num), plus anything in `fields`. Set `only: true` to compute exactly the ones you list, and no other:
+
+- **`data.process.enrich.spatial_lag.only`** — `true`: only the lags named in `sales` and `fields`. Default `false` (every lag, as above).
+- **`data.process.enrich.spatial_lag.sales`** — with `only: true`, which sale-price lags to compute: any of `"price"`, `"price_impr"`, `"price_land"`, `"price_vacant"`. The names don't include the price field, so they read the same with or without time adjustment; the columns are named as always (`spatial_lag_sale_price_time_adj_impr_sqft`…), each with its `_confidence` column. Absent with `only: true`: none. Ignored without `only`. An unknown name stops the run, listing the four.
+- **`fields`**, with `only: true`, is then the complete list of characteristic lags; the built-in ones aren't added. `floor_area_ratio` and `bedroom_density` are worked out only if listed. A listed field the data doesn't have is warned about and skipped.
+
+```json
+{
+  "data": {
+    "process": {
+      "enrich": {
+        "spatial_lag": {
+          "only": true,
+          "sales": ["price", "price_impr"],
+          "fields": { "bldg_age_years": 5, "land_area_sqft": 5, "bldg_quality_num": 5 },
+          "model_groups": { "single_family": { "sample_from": ["single_family"] } }
+        }
+      }
+    }
+  }
+}
+```
+
+The `spatial_lag` model needs `"price"` (`"price_vacant"` for vacant models) and `spatial_lag_area` needs `"price_impr"` and `"price_land"`: with `only: true` and those left out, the model stops with an error naming what to add to `sales`.
 
 ### 4.9 Spatial inference (gap fill) — `data.process.enrich.infer`
 
@@ -907,7 +934,8 @@ It does four things, all reusing existing machinery:
       "link": { "method": "id_prefix", "id_field": "parcel_num", "prefix_len": 9, "from": "geo_parcels" },
       "group_field": "condo_group",
       "borrow_geometry": true,
-      "land_share": { "method": "field", "field": "land_area_sqft" }
+      "land_share": { "method": "field", "field": "land_area_sqft" },
+      "inherit": ["zoning", "school_district"]
     }
   }
 }
@@ -919,6 +947,7 @@ It does four things, all reusing existing machinery:
 | `link.method` | How to find each unit's building polygon. `id_prefix`: units whose `id_field` (e.g. `parcel_num`) share a prefix of length `prefix_len` belong to one building; the largest polygon with that prefix in `from` is the representative. `parent_id`: `link.parent_field` names the building/shared-parcel key directly. `spatial`: point-in-polygon (not yet implemented). |
 | `group_field` | Output column holding the building id. Default `condo_group`. |
 | `borrow_geometry` | If true, inject the building polygon as the geometry of units that lack one. |
+| `inherit` | Optional. Fields each unit takes from the parcel it's on, after the universe merge, where its own is blank: the land's and the location's (zoning, a school district, a neighborhood column), which the shape doesn't bring. The unit's own value wins. A field no parcel has is skipped with a warning. Unset: nothing is copied. |
 | `land_share.method` | `field`: copy a legible per-unit land field. `floor_area`: pro-rate — `alloc = (unit_floor / building_total_floor) × building_polygon_area`, summing the building's units back to the parcel. |
 
 #### Fields added

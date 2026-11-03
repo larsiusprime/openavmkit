@@ -20,7 +20,8 @@ Settings schema (see resolve_condos docstring)::
       "link":   { "method": "id_prefix", "id_field": "parcel_num", "prefix_len": 9, "from": "geo_parcels" },
       "group_field": "condo_group",
       "borrow_geometry": true,
-      "land_share": { "method": "field", "field": "land_area_sqft" }
+      "land_share": { "method": "field", "field": "land_area_sqft" },
+      "inherit": ["zoning", "neighborhood"]
     }
 """
 import warnings
@@ -46,8 +47,9 @@ def _polygon_areas_sqft(gdf: gpd.GeoDataFrame) -> pd.Series:
 
 
 def _resolve_link(condos: pd.DataFrame, dataframes: dict, link: dict, verbose: bool):
-    """Return (link_ids, geom_map): a per-condo-row Series of building ids (NaN where
-    unresolved) and a dict {building_id -> representative shapely geometry}.
+    """Return (link_ids, geom_map, parent_keys): a per-condo-row Series of building ids (NaN where
+    unresolved), a dict {building_id -> representative shapely geometry} and a dict
+    {building_id -> the key of the parcel that geometry is from}.
     """
     method = link.get("method", "id_prefix")
     from_id = link.get("from", "geo_parcels")
@@ -69,9 +71,10 @@ def _resolve_link(condos: pd.DataFrame, dataframes: dict, link: dict, verbose: b
         # Representative polygon per prefix = the largest (the building footprint/pad).
         rep = gdf.sort_values("_area", ascending=False).drop_duplicates("_prefix", keep="first")
         geom_map = dict(zip(rep["_prefix"], rep.geometry))
+        parent_keys = dict(zip(rep["_prefix"], rep["key"].astype(str))) if "key" in rep else {}
         link_ids = condos[id_field].astype(str).str.slice(0, n)
         link_ids = link_ids.where(link_ids.isin(geom_map.keys()))
-        return link_ids, geom_map
+        return link_ids, geom_map, parent_keys
 
     if method == "parent_id":
         parent_field = link["parent_field"]
@@ -79,9 +82,10 @@ def _resolve_link(condos: pd.DataFrame, dataframes: dict, link: dict, verbose: b
         if parent_field not in condos.columns:
             raise ValueError(f"condos.link.parent_field='{parent_field}' not in condo rows.")
         geom_map = dict(zip(gdf[from_key].astype(str), gdf.geometry))
+        parent_keys = dict(zip(gdf[from_key].astype(str), gdf["key"].astype(str))) if "key" in gdf else {}
         link_ids = condos[parent_field].astype(str)
         link_ids = link_ids.where(link_ids.isin(geom_map.keys()))
-        return link_ids, geom_map
+        return link_ids, geom_map, parent_keys
 
     if method == "spatial":
         raise NotImplementedError(
@@ -100,7 +104,26 @@ def _apply_land_share(
     if LAND_ALLOC_FIELD not in df.columns:
         df[LAND_ALLOC_FIELD] = pd.NA
 
-    if method == "field":
+    bid = pd.Series(link_ids.values, index=condo_idx)
+    # Parcel land = area of the borrowed building polygon, in sqft.
+    parcel_land = bid.map(lambda b: _GEOM_AREA_CACHE.get(b) if b in _GEOM_AREA_CACHE else None)
+
+    if method == "floor_area" and land_share.get("floor_field", "bldg_area_finished_sqft") not in df.columns:
+        # The units' finished area comes from another file (their building cards, say): shared out once the
+        # files are merged, by apply_deferred_land_share.
+        _DEFERRED.update({str(k): b for k, b in zip(df.loc[condo_idx, "key"], bid.values) if pd.notna(b)})
+        if verbose:
+            print(f"resolve_condos: land_share 'floor_area' for {len(bid)} units deferred until after the merge")
+        return df
+
+    if method == "none":
+        # The land is the shared parcel's, not the units' (homes in a mobile-home park, buildings on leased land).
+        alloc = pd.Series(0.0, index=condo_idx)
+    elif method == "equal":
+        # The building's land in equal shares, one per unit: needs nothing from the units themselves.
+        n = bid.map(bid.value_counts())
+        alloc = pd.to_numeric(parcel_land, errors="coerce") / n
+    elif method == "field":
         field = land_share["field"]
         if field not in df.columns:
             raise ValueError(f"condos.land_share.field='{field}' not found.")
@@ -111,12 +134,7 @@ def _apply_land_share(
         if floor_field not in df.columns:
             raise ValueError(f"condos.land_share.floor_field='{floor_field}' not found.")
         floor = pd.to_numeric(df.loc[condo_idx, floor_field], errors="coerce").fillna(0.0)
-        bid = pd.Series(link_ids.values, index=condo_idx)
         total_floor = floor.groupby(bid).transform("sum")
-        # Parcel land = area of the borrowed building polygon, in sqft.
-        parcel_land = bid.map(
-            lambda b: _GEOM_AREA_CACHE.get(b) if b in _GEOM_AREA_CACHE else None
-        )
         share = (floor / total_floor).where(total_floor > 0, 0.0)
         alloc = share * pd.to_numeric(parcel_land, errors="coerce")
     else:
@@ -133,6 +151,70 @@ def _apply_land_share(
 
 
 _GEOM_AREA_CACHE: dict = {}
+# Units whose land share waits for the merge (floor area from another file): key -> building id.
+_DEFERRED: dict = {}
+# Each unit's parcel, the one whose shape it borrows: unit key -> that parcel's key.
+_PARENTS: dict = {}
+
+
+def apply_inherited_fields(df_univ: pd.DataFrame, settings: dict, verbose: bool = False) -> pd.DataFrame:
+    """After the universe merge: each unit takes the fields listed in ``condos.inherit`` from the parcel it's on
+    (zoning, a neighborhood, a school district: what's the land's, not the unit's), where its own is blank. Its
+    shape already brings the rest of where it is (map layers, distances, census). Opt-in: nothing without
+    ``inherit``. A field no parcel has is skipped, with a warning."""
+    fields = _settings_condos(settings).get("inherit") or []
+    if not fields or not _PARENTS:
+        return df_univ
+    keys = df_univ["key"].astype(str)
+    idx = df_univ.index[keys.isin(_PARENTS.keys())]
+    parent = keys.loc[idx].map(_PARENTS)
+    lookup = df_univ.assign(_key=keys).drop_duplicates("_key").set_index("_key")
+    for field in fields:
+        if field not in lookup.columns:
+            warnings.warn(f"condos.inherit: the parcels have no field '{field}'; skipped.")
+            continue
+        theirs = parent.map(lookup[field])
+        own = df_univ.loc[idx, field]
+        df_univ.loc[idx, field] = own.where(own.notna(), theirs)
+    if verbose:
+        print(f"resolve_condos: {len(idx)} units took {', '.join(fields)} from the parcel they're on")
+    return df_univ
+
+
+def apply_deferred_land_share(df_univ: pd.DataFrame, settings: dict, verbose: bool = False) -> pd.DataFrame:
+    """After the universe merge: share each building's land by finished area among units whose finished area
+    came from another file (land_share.method floor_area, the field not in the units' own file); and make every
+    unit's land size its share, which a units file without a land column couldn't hold before the merge (left
+    blank, a unit would later be given its whole building's shape area)."""
+    if LAND_ALLOC_FIELD in df_univ.columns:
+        shared = pd.to_numeric(df_univ[LAND_ALLOC_FIELD], errors="coerce")
+        if "land_area_sqft" not in df_univ.columns:
+            df_univ["land_area_sqft"] = pd.NA
+        df_univ.loc[shared.notna(), "land_area_sqft"] = shared[shared.notna()]
+    if not _DEFERRED:
+        return df_univ
+    s = _settings_condos(settings)
+    floor_field = s.get("land_share", {}).get("floor_field", "bldg_area_finished_sqft")
+    if floor_field not in df_univ.columns:
+        raise ValueError(f"condos.land_share.floor_field='{floor_field}' not found, even after the merge.")
+    keys = df_univ["key"].astype(str)
+    idx = df_univ.index[keys.isin(_DEFERRED.keys())]
+    bid = keys.loc[idx].map(_DEFERRED)
+    floor = pd.to_numeric(df_univ.loc[idx, floor_field], errors="coerce").fillna(0.0)
+    total_floor = floor.groupby(bid).transform("sum")
+    parcel_land = bid.map(lambda b: _GEOM_AREA_CACHE.get(b))
+    share = (floor / total_floor).where(total_floor > 0, 0.0)
+    alloc = share * pd.to_numeric(parcel_land, errors="coerce")
+    if LAND_ALLOC_FIELD not in df_univ.columns:
+        df_univ[LAND_ALLOC_FIELD] = pd.NA
+    df_univ.loc[idx, LAND_ALLOC_FIELD] = alloc.values
+    valid = alloc.notna()
+    if "land_area_sqft" not in df_univ.columns:
+        df_univ["land_area_sqft"] = pd.NA
+    df_univ.loc[alloc.index[valid], "land_area_sqft"] = alloc[valid].values
+    if verbose:
+        print(f"resolve_condos: land_share 'floor_area' set {int(valid.sum())} units after the merge")
+    return df_univ
 
 
 def _auto_register_fields(settings: dict, s: dict) -> None:
@@ -176,13 +258,18 @@ def resolve_condos(dataframes: dict, settings: dict, verbose: bool = False) -> d
       1. links each unit to a building polygon (``link.method``: id_prefix | parent_id | spatial);
       2. borrows that polygon as the unit's geometry (appends rows to ``geo_parcels``);
       3. writes ``group_field`` (the building id) onto the source;
-      4. writes a per-unit allocated land size (``land_share.method``: field | floor_area)
+      4. writes a per-unit allocated land size (``land_share.method``: field | floor_area | equal | none; floor_area
+         with the finished area in another file is shared out after the merge: apply_deferred_land_share)
          to ``land_area_alloc_sqft`` and into ``land_area_sqft`` for condos;
-      5. auto-registers the new fields in field_classification.
+      5. auto-registers the new fields in field_classification;
+      6. remembers the parcel each unit is on, so that after the merge each unit can take that parcel's
+         ``inherit`` fields where its own are blank (apply_inherited_fields).
 
     Returns the (mutated) dataframes dict. A no-op when disabled.
     """
     s = _settings_condos(settings)
+    _DEFERRED.clear()
+    _PARENTS.clear()
     if not s.get("enabled", False):
         return dataframes
 
@@ -217,7 +304,10 @@ def resolve_condos(dataframes: dict, settings: dict, verbose: bool = False) -> d
         condos = df[mask]
         condo_idx = condos.index
 
-        link_ids, geom_map = _resolve_link(condos, dataframes, link, verbose)
+        link_ids, geom_map, parent_keys = _resolve_link(condos, dataframes, link, verbose)
+        _PARENTS.update(
+            {str(k): parent_keys[b] for k, b in zip(condos["key"], link_ids) if pd.notna(b) and b in parent_keys}
+        )
 
         # cache building polygon areas (sqft) for floor_area land-share
         if geom_map:
