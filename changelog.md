@@ -12,8 +12,15 @@ All notable changes to this project will be documented in this file.
   - **Repeated deed + date no longer treats missing deed IDs as one shared deed.** Previously every sale with a blank deed on the same date was flagged as a duplicate of the others.
 
   Synthesizes [#349](https://github.com/larsiusprime/openavmkit/pull/349) and [#351](https://github.com/larsiusprime/openavmkit/pull/351). See [Sales scrutiny heuristics](docs/docs/advanced_settings.md#analysissales_scrutinydeed_id-and-analysissales_scrutinyjurisdiction).
+- **Ratio-study quantile breakdowns now have exactly the number of bins you ask for.** Bins used to start at 0, so the first slice ran from 0 to the column's minimum and held a single sale: `quantiles: 10` (the default `sale_price` breakdown) produced 11 slices, the first one empty in practice. Bins now start at the minimum, and their edges are actual data values, so boundaries in the labels can move by one sale's worth (e.g. `239,500` → `239,000`). If many sales share the minimum value (e.g. 1-story homes), they still get a bin of their own.
+
+### New features
+
+- **Explicit `bins` for ratio-study breakdowns.** `{"by": "pct_vacant", "bins": [0, 0.1, 0.25, 0.5, 1.0], "bin_labels": ["0-10%", "10-25%", "25-50%", "50-100%"]}` slices on value edges you choose, for columns where equal-count quantiles or integer `slice_size` labels don't work (e.g. 0–1 shares). Bad edges or labels raise a clear error; sales outside the edges are left out with a warning. See [Ratio study breakdowns](docs/docs/advanced_settings.md#analysisratio_studybreakdowns). From [#366](https://github.com/larsiusprime/openavmkit/pull/366).
 
 ### Fixed
+
+- **Ratio-study breakdowns no longer crash the whole ratio study** on a column with any NaN values (common for enrichment fields with partial coverage) or with negative values ("bins must increase monotonically"). NaN rows are left out of that breakdown; negative values are binned normally. A column with no numeric values at all is skipped with a warning. From [#366](https://github.com/larsiusprime/openavmkit/pull/366).
 
 - The final CatBoost fit dropped the tuner's fixed settings (Optuna's `best_params` only holds searched keys), so the shipped model trained with CatBoost's defaults — RMSE loss and MVS bootstrap, which silently discarded the tuned `bagging_temperature`. The fixed settings are now merged into the final fit.
 - CatBoost tuning could crash with `FileExistsError: 'catboost_info'` when parallel CV folds started together in a fresh locality directory. Tuning now uses a private temporary `train_dir`, and no longer leaves `catboost_info/` in the locality folder.
