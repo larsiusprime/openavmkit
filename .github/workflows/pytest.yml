@@ -3,8 +3,15 @@ name: Run Pytest
 on:
   push:
     branches: [master]
+    # The CLA bot's signature commits change no code.
+    paths-ignore: ["signatures/**"]
   pull_request:
     branches: [master]
+
+# A newer push to a pull request stops the run for the older one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:

@@ -1,12 +1,22 @@
 #
 name: Create and publish a Docker image to GitHub Container Repository
 
-# Configures this workflow to run every time a change is pushed to a branch, or when master receives a pull request
+# Publishes from master and version tags. A pull request into master builds and tests the image once,
+# without publishing it (pr-image below), so branch pushes don't each build and publish an image.
 on:
   push:
+    branches: [master]
+    tags: ["v*"]
+    # The CLA bot's signature commits change nothing the image is built from.
+    paths-ignore: ["signatures/**"]
   pull_request:
     branches:
       - master
+
+# A newer push to a pull request stops the run for the older one (master and tag runs always finish).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Defines two custom environment variables for the workflow. These are used for the Container registry domain, and a name for the Docker image that this workflow builds.
 env:
@@ -16,6 +26,8 @@ env:
 
 jobs:
   build-and-push-image:
+    # Publish only from this repository: forks and mirrors skip it.
+    if: github.event_name != 'pull_request' && github.repository == 'larsiusprime/openavmkit'
     runs-on: ubuntu-latest
     outputs:
       # Use the first tag produced by docker/metadata-action as the canonical image reference
@@ -82,6 +94,7 @@ jobs:
           push-to-registry: true
 
   test-image:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     needs: build-and-push-image
     env:
@@ -143,3 +156,46 @@ jobs:
             -e RUN=test \
             -e LOCALITY=us-va-petersburgcity \
             "${{ env.SAFE_RUN_TAG }}"
+
+  # A pull request: the same image, built here and tested here, never published (so pull requests from
+  # forks, which can't write to the registry, are tested too).
+  pr-image:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Free disk space on runner (before the build)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet /usr/local/share/boost \
+            /usr/local/share/powershell /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          df -h
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build the image (not pushed)
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          push: false
+          load: true
+          tags: openavmkit:pr
+          platforms: linux/amd64
+
+      - name: Test the image and notebooks
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker run --rm \
+            --tmpfs /tmp:rw,noexec,nosuid,size=2g \
+            -e RUN=test \
+            -e LOCALITY=us-va-petersburgcity \
+            openavmkit:pr
