@@ -2766,7 +2766,9 @@ def _boolify_series(series: pd.Series, na_handling: str = None):
         series = series.replace(["true", "t", "1", "y", "yes"], 1)
         series = series.replace(["false", "f", "0", "n", "no"], 0)
         # Convert common string representations of missing values to NaN
-        none_patterns = ["none", "nan", "null", "na", "n/a", "-", "unknown"]
+        # "<na>" and "" are how missing text values read after astype(str) (pandas'
+        # string dtype and CSV blanks); without them a blank became True.
+        none_patterns = ["none", "nan", "null", "na", "n/a", "-", "unknown", "<na>", ""]
         series = series.replace(none_patterns, pd.NA)
 
     # Handle NA values before boolean conversion
@@ -2792,9 +2794,12 @@ def _boolify_column_in_df(df: pd.DataFrame, field: str, na_handling: str = None)
     elif na_handling == "na_true":
         na_handling = "true"
     elif na_handling is None:
-        warnings.warn(
-            f"No NA handling specified for boolean field '{field}'. Defaulting to 'na_false'."
-        )
+        # Only worth saying when something is missing: a field made by a calc (a rule, or "every sale is valid")
+        # has no blanks for the choice to apply to.
+        if series.isna().any():
+            warnings.warn(
+                f"No NA handling specified for boolean field '{field}'. Defaulting to 'na_false'."
+            )
         na_handling = "false"
     else:
         raise ValueError(
@@ -3261,13 +3266,16 @@ def _enrich_polar_coordinates(
     gdf = gdf_in[["key", "geometry"]].copy()
 
     longitude, latitude = get_center(settings, gdf)
+    # locality.center is in degrees (EPSG:4326). Without it, get_center gives the middle of the
+    # parcels in their own coordinates. Either way, place the point in the coordinates it's in.
+    center_crs = "EPSG:4326" if settings.get("locality", {}).get("center") else gdf_in.crs
 
     crs = get_crs(gdf, "equal_area")
     gdf = gdf.to_crs(crs)
 
     # convert longitude, latitude, to same point space as gdf:
     point = Point(longitude, latitude)
-    single_point_gdf = gpd.GeoDataFrame({"geometry": [point]}, crs=gdf_in.crs)
+    single_point_gdf = gpd.GeoDataFrame({"geometry": [point]}, crs=center_crs)
     single_point_gdf = single_point_gdf.to_crs(crs)
 
     x_center = single_point_gdf.geometry.x.iloc[0]
@@ -4193,7 +4201,10 @@ def load_dataframe(
     fields_in_agg = [f for f in agg_fields if f in column_names]
     cols_to_load += fields_in_agg
     
-    cols_to_load = list(set(cols_to_load))
+    # Keep the source file's column order so anything that falls back to "the first
+    # column" (e.g. de-dupe keys) is deterministic; set() order varies between runs.
+    wanted = set(cols_to_load)
+    cols_to_load = [c for c in column_names if c in wanted] + sorted(wanted - set(column_names))
     
     is_geometry = False
     if "geometry" in column_names and "geometry" not in cols_to_load:
@@ -4214,7 +4225,9 @@ def load_dataframe(
         csv_dtype_map = {}
         for key in dtype_map:
             dtype_value = dtype_map[key]
-            if dtype_value == "datetime":
+            # Read dates and booleans as text; they are converted after loading (CSV
+            # has no boolean type, and read_csv can't parse "Y"/"N" as bool itself).
+            if dtype_value in ("datetime", "bool", "boolean"):
                 dtype_value = "string"
             csv_dtype_map[key] = dtype_value
         df = pd.read_csv(filename, usecols=cols_to_load, dtype=csv_dtype_map)
@@ -4742,7 +4755,9 @@ def _merge_dict_of_dfs(
             )
             continue
         child_fields = conflicts[base_field]
-        if len(child_fields) > 1:
+        # One clashing frame is enough: its values fill the first frame's blanks (with ">1", a field that only
+        # two frames carry kept the first frame's blanks and silently dropped the second's values).
+        if len(child_fields) >= 1:
             # TODO: remove this when this becomes default pandas behavior
             old_value = pd.get_option("future.no_silent_downcasting")
             pd.set_option("future.no_silent_downcasting", True)
@@ -5999,9 +6014,10 @@ def _process_permits_sales(
         df.loc[df["days_to_demo"].le(0), "days_to_demo"] = np.nan
 
         # we could have multiple hits, we need to de-duplicate.
-        # find the demo date closest to the sale for each key
+        # find the demo date closest to the sale for each SALE (a parcel can have several
+        # sales, and only one before the demolition is the teardown sale)
         df = df.sort_values(by=["days_to_demo"], ascending=[True])
-        df = df.drop_duplicates(subset=["key"], keep="first")
+        df = df.drop_duplicates(subset=["key_sale"], keep="first")
 
         max_days_to_demo = s_permits.get("max_days_to_demo", 365)
 
@@ -6015,8 +6031,8 @@ def _process_permits_sales(
         # Merge the results back onto df_sales
         # Now we know, for each sale, if it's a likely teardown sale and when it was torn down
         df_sales = df_sales.merge(
-            df[["key", "is_teardown_sale", "demo_date", "days_to_demo"]],
-            on="key",
+            df[["key_sale", "is_teardown_sale", "demo_date", "days_to_demo"]],
+            on="key_sale",
             how="left",
         )
 
@@ -6067,13 +6083,13 @@ def _process_permits_sales(
             by=["renovation_num", "days_to_reno"], ascending=[False, False]
         )
 
-        df = df.drop_duplicates(subset=["key"], keep="first")
+        df = df.drop_duplicates(subset=["key_sale"], keep="first")
 
-        # Merge the results back onto df_sales
+        # Merge the results back onto df_sales, sale by sale
         df_sales = df_sales.merge(
             df[
                 [
-                    "key",
+                    "key_sale",
                     "is_renovated",
                     "reno_date",
                     "days_to_reno",
@@ -6081,11 +6097,16 @@ def _process_permits_sales(
                     "renovation_txt",
                 ]
             ],
-            on="key",
+            on="key_sale",
             how="left",
         )
 
-        if calc_effective_age:
+        if calc_effective_age and "bldg_year_built" not in df_sales:
+            # The sales record usually carries no building fields: its sales take their
+            # parcel's (the universe's effective year, worked out above) when hydrated.
+            if verbose:
+                print("No bldg_year_built on the sales: their effective year comes from the universe.")
+        elif calc_effective_age:
             # Calculate effective year built based on last major renovation
             if "bldg_effective_year_built" in df_sales:
                 warnings.warn(

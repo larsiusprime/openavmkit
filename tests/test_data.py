@@ -287,6 +287,27 @@ def test_dupes_allow_keeps_all_rows():
 	assert len(_handle_duplicated_rows(df, {})) == 3
 
 
+
+def test_dupes_default_geometry_prefers_key():
+	# Regression: a geometry layer loaded without a `dupes` setting used to be de-duped on
+	# its first non-geometry column, whose position came from set() ordering. On a parcel
+	# layer that could be e.g. a building-type column, silently dropping most parcels.
+	import geopandas as gpd
+	from shapely.geometry import Point
+	from openavmkit.utilities.settings import get_dupes
+
+	df = gpd.GeoDataFrame(
+		{
+			"bldg_type": ["A", "A", "B", "B"],
+			"key": ["1", "2", "3", "4"],
+			"geometry": [Point(0, 0), Point(1, 0), Point(2, 0), Point(3, 0)],
+		},
+		geometry="geometry",
+	)
+	dupes = get_dupes({}, df, is_geometry=True)
+	assert dupes["subset"] == ["key"]
+	assert len(_handle_duplicated_rows(df, dupes)) == 4
+
 def test_ref_table():
 	print("")
 
@@ -386,11 +407,18 @@ def test_merge_conflicts():
 		df = pd.DataFrame(data=datas[data])
 		dfs[data] = df
 
-	_merge_dict_of_dfs(
+	merged = _merge_dict_of_dfs(
 		dataframes=dfs,
 		merge_list=["a", "b", "c"],
 		settings={}
 	)
+	expected = ["apple", "banana", "cherry", "date", "elderberry", "fig", "grape", "honeydew", "kiwi", "lemon"]
+	assert merged["fruit"].tolist() == expected
+	assert [c for c in merged.columns if c.startswith("fruit_")] == []
+
+	# Two frames, one clash: the second still fills the first's blanks.
+	merged = _merge_dict_of_dfs(dataframes={"a": dfs["a"], "b": dfs["b"]}, merge_list=["a", "b"], settings={})
+	assert merged["fruit"].tolist()[:5] == ["apple", "banana", "cherry", "date", "elderberry"]
 
 
 def test_enrich_year_built():
@@ -2170,3 +2198,53 @@ def test_drop_fields_absent_leaves_frame_untouched(tmp_path, monkeypatch):
 
 	df = load_dataframe(entry, {}, verbose=False)
 	assert "vcs_pre4" in df.columns
+
+
+def test_permits_teardown_sales_sale_by_sale():
+	"""A parcel sold twice, then demolished a month after the second sale: only that sale is the
+	teardown (land) sale; the earlier one stays a sale of the house. Renovations likewise go to each
+	sale by its own date. Effective age is skipped on sales that carry no year built."""
+	sales = pd.DataFrame({
+		"key": ["0", "0"],
+		"key_sale": ["0---2016-03-01", "0---2020-06-01"],
+		"valid_sale": [True, True],
+		"vacant_sale": [False, False],
+		"sale_price": [1, 1],
+		"sale_date": pd.to_datetime(["2016-03-01", "2020-06-01"]),
+	})
+	permits = pd.DataFrame({
+		"key": ["0", "0"],
+		"date": pd.to_datetime(["2018-01-01", "2020-07-01"]),
+		"is_teardown": [False, True],
+		"is_renovation": [True, False],
+		"renovation_num": [3, 0],
+		"renovation_txt": ["ADDITION", "DEMOLITION"],
+	})
+	s_enrich = {"permits": {"sources": ["permits"], "calc_effective_age": True}}
+	out = _enrich_permits(sales, s_enrich, {"permits": permits}, {}, is_sales=True, verbose=False)
+	out = out.set_index("key_sale")
+	assert len(out) == 2
+	assert not out.loc["0---2016-03-01", "is_teardown_sale"]
+	assert not out.loc["0---2016-03-01", "vacant_sale"]
+	assert out.loc["0---2020-06-01", "is_teardown_sale"]
+	assert out.loc["0---2020-06-01", "vacant_sale"]
+	# The 2018 addition came after the first sale and before the second.
+	assert not out.loc["0---2016-03-01", "is_renovated"]
+	assert out.loc["0---2020-06-01", "is_renovated"]
+	assert "bldg_effective_year_built" not in out
+
+
+def test_boolify_warns_about_na_handling_only_when_something_is_missing():
+	import warnings as w
+	from openavmkit.data import _boolify_column_in_df
+
+	with w.catch_warnings(record=True) as caught:
+		w.simplefilter("always")
+		out = _boolify_column_in_df(pd.DataFrame({"valid_sale": [True, True]}), "valid_sale")
+	assert out["valid_sale"].tolist() == [True, True]
+	assert not [c for c in caught if "NA handling" in str(c.message)]
+	with w.catch_warnings(record=True) as caught:
+		w.simplefilter("always")
+		out = _boolify_column_in_df(pd.DataFrame({"vacant_sale": [True, None]}), "vacant_sale")
+	assert out["vacant_sale"].tolist() == [True, False]
+	assert [c for c in caught if "NA handling" in str(c.message)]

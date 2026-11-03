@@ -214,13 +214,21 @@ class DEMService:
         import rasterio
         from rasterio.features import rasterize
 
-        n = len(gdf)
-        elev_mean = np.full(n, np.nan)
-        elev_std = np.full(n, np.nan)
-        slope_mean = np.full(n, np.nan)
+        n_all = len(gdf)
 
         with rasterio.open(dem_path) as dem_src, rasterio.open(slope_path) as slope_src:
             gdf_proj = gdf.to_crs(dem_src.crs) if gdf.crs != dem_src.crs else gdf
+            # Each cell keeps one label, so parcels sharing a shape (condo units, which borrow their
+            # building's) would leave all but one without cells. Each distinct shape is burned once
+            # and its stats given to every parcel that has it.
+            wkb = gdf_proj.geometry.to_wkb()
+            codes, first = pd.factorize(wkb, use_na_sentinel=True)
+            found, at = np.unique(codes, return_index=True)
+            uniq = gdf_proj.geometry.values[at[found >= 0]]
+            n = len(uniq)
+            elev_mean = np.full(n, np.nan)
+            elev_std = np.full(n, np.nan)
+            slope_mean = np.full(n, np.nan)
 
             # Burn every parcel onto the DEM grid in ONE pass, each parcel getting a
             # unique label (positional index + 1; 0 = background), then compute per-label
@@ -232,7 +240,7 @@ class DEMService:
             t = time.time()
             shapes = [
                 (geom, i + 1)
-                for i, geom in enumerate(gdf_proj.geometry.values)
+                for i, geom in enumerate(uniq)
                 if geom is not None and not geom.is_empty
             ]
             labels = rasterize(
@@ -275,15 +283,44 @@ class DEMService:
             if verbose:
                 print(f"--> computed zonal stats ({time.time() - t:.1f}s)")
 
+            # A small parcel can lose every cell it touches to its neighbours (a cell keeps the last
+            # label burned). Those take the cell under their centre: its elevation and slope, and no
+            # spread within the parcel to measure.
+            lost = [
+                int(i) for i in np.flatnonzero(~np.isfinite(elev_mean))
+                if uniq[i] is not None and not uniq[i].is_empty
+            ]
+            if lost:
+                pts = [uniq[i].representative_point() for i in lost]
+                xy = [(p.x, p.y) for p in pts]
+                for src, out in ((dem_src, elev_mean), (slope_src, slope_mean)):
+                    vals = np.array([v[0] for v in src.sample(xy)], dtype=np.float64)
+                    bad = _nodata_mask(vals, src.nodata)
+                    for j, i in enumerate(lost):
+                        if not bad[j]:
+                            out[i] = vals[j]
+                for i in lost:
+                    if np.isfinite(elev_mean[i]):
+                        elev_std[i] = 0.0
+                if verbose:
+                    print(f"--> {len(lost)} small parcels took the cell under their centre")
+
+        # Back from distinct shapes to parcels (no shape: no stats).
+        def _spread(a):
+            out = np.full(n_all, np.nan)
+            ok = codes >= 0
+            out[ok] = a[codes[ok]]
+            return out
+
         if verbose:
-            valid = int(np.isfinite(elev_mean).sum())
-            print(f"--> computed DEM stats for {valid}/{n} parcels")
+            valid = int(np.isfinite(_spread(elev_mean)).sum())
+            print(f"--> computed DEM stats for {valid}/{n_all} parcels")
 
         return pd.DataFrame(
             {
-                "elevation_mean_m": elev_mean,
-                "elevation_stdev_m": elev_std,
-                "slope_mean_deg": slope_mean,
+                "elevation_mean_m": _spread(elev_mean),
+                "elevation_stdev_m": _spread(elev_std),
+                "slope_mean_deg": _spread(slope_mean),
             },
             index=gdf.index,
         )

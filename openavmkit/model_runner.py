@@ -926,7 +926,8 @@ def run_models(
     run_vacant: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
-    do_plots: bool = False
+    do_plots: bool = False,
+    return_results: bool = False,
 ):
     """
     Runs predictive models on the given SalesUniversePair.
@@ -965,11 +966,15 @@ def run_models(
         Whether to compute SHAP values.
     do_plots : bool, optional
         Whether to plot scatterplots
+    return_results : bool, optional
+        Whether to return the results when they aren't saved. Each model group's results are then held until the
+        run ends, rather than freed as the next group starts. Defaults to False.
 
     Returns
     -------
-    MultiModelResults
-        The MultiModelResults containing all model results and benchmarks.
+    dict[str, MultiModelResults]
+        Each model group's results and benchmark, by model group, when they're saved or ``return_results`` is set;
+        otherwise empty.
     """
 
     t = TimingData()
@@ -1028,7 +1033,9 @@ def run_models(
                 do_shaps=do_shaps,
                 do_plots=do_plots
             )
-            if mg_results is not None and save_results:
+            # Kept to be written, or when the caller asked for them back: otherwise each group's results are let go
+            # as the next starts, so a try holds one group's at a time.
+            if mg_results is not None and (save_results or return_results):
                 dict_all_results[model_group] = mg_results
         t.stop(f"model group: {model_group}")
     t.stop("run model groups")
@@ -2397,6 +2404,8 @@ def _format_benchmark_df(df: pd.DataFrame, transpose: bool = True):
     """
     Format a benchmark DataFrame for display.
     """
+    # Format a copy: the frames are the benchmark's own, and callers read their numbers after printing.
+    df = df.copy()
     formats = {
         "utility_score": fancy_format,
         "count_sales": "{:,.0f}",
@@ -4186,7 +4195,7 @@ def _calc_variable_recommendations(
     
     stuff_to_merge = [
         correlation_results,
-        {"final": r2_values_results},
+        None if r2_values_results is None else {"final": r2_values_results},
         enr_results,
         p_values_results,
         t_values_results,
@@ -4213,12 +4222,13 @@ def _calc_variable_recommendations(
     adj_r2_thresh = thresh.get("adj_r2", 0.1)
     adj_r2_thresh_bonus = thresh.get("adj_r2_bonus", 0.25)
 
-    # 1 point for being over the minimum amount
-    df.loc[df["adj_r2"].gt(adj_r2_thresh), "weighted_score"] += 1
+    if "adj_r2" in df:
+        # 1 point for being over the minimum amount
+        df.loc[df["adj_r2"].gt(adj_r2_thresh), "weighted_score"] += 1
 
-    if adj_r2_thresh_bonus > adj_r2_thresh:
-        # 1 point for reaching a higher threshold
-        df.loc[df["adj_r2"].gt(adj_r2_thresh_bonus), "weighted_score"] += 1
+        if adj_r2_thresh_bonus > adj_r2_thresh:
+            # 1 point for reaching a higher threshold
+            df.loc[df["adj_r2"].gt(adj_r2_thresh_bonus), "weighted_score"] += 1
 
     weight_corr_score = weights.get("corr_score", 1)
     weight_enr_coef = weights.get("enr_coef", 1)
@@ -4318,30 +4328,33 @@ def _calc_variable_recommendations(
         }
 
         for state in ["initial", "final"]:
-            # Correlation:
-            dfr_corr = correlation_results[state][corr_fields].copy()
-            dfr_corr["Pass/Fail"] = dfr_corr["corr_score"].apply(
-                lambda x: "✅" if x > thresh_corr else "❌"
-            )
-            for field in corr_fields:
-                if field == "variable":
-                    continue
-                if field not in dfr_corr:
-                    print("missing field", field)
-                dfr_corr[field] = (
-                    dfr_corr[field].apply(lambda x: f"{x:.2f}").astype("string")
+            # Correlation (when it ran):
+            if correlation_results is not None:
+                dfr_corr = correlation_results[state][corr_fields].copy()
+                dfr_corr["Pass/Fail"] = dfr_corr["corr_score"].apply(
+                    lambda x: "✅" if x > thresh_corr else "❌"
                 )
+                for field in corr_fields:
+                    if field == "variable":
+                        continue
+                    if field not in dfr_corr:
+                        print("missing field", field)
+                    dfr_corr[field] = (
+                        dfr_corr[field].apply(lambda x: f"{x:.2f}").astype("string")
+                    )
 
-            dfr_corr = dfr_corr.rename(columns=corr_renames)
-            dfr_corr["Rank"] = range(1, len(dfr_corr) + 1)
-            dfr_corr = dfr_corr[
-                ["Rank", "Variable", "Strength", "Clarity", "Score", "Pass/Fail"]
-            ]
-            dfr_corr.set_index("Rank", inplace=True)
-            dfr_corr = _apply_dd_to_df_rows(
-                dfr_corr, "Variable", settings, one_hot_descendents
-            )
-            report.set_var(f"table_corr_{state}", df_to_markdown(dfr_corr))
+                dfr_corr = dfr_corr.rename(columns=corr_renames)
+                dfr_corr["Rank"] = range(1, len(dfr_corr) + 1)
+                dfr_corr = dfr_corr[
+                    ["Rank", "Variable", "Strength", "Clarity", "Score", "Pass/Fail"]
+                ]
+                dfr_corr.set_index("Rank", inplace=True)
+                dfr_corr = _apply_dd_to_df_rows(
+                    dfr_corr, "Variable", settings, one_hot_descendents
+                )
+                report.set_var(f"table_corr_{state}", df_to_markdown(dfr_corr))
+            else:
+                report.set_var(f"table_corr_{state}", "N/A")
 
             # TODO: refactor this down to DRY it out a bit
 
@@ -4897,6 +4910,34 @@ def _ensemble_beeswarm(
     plot_full_beeswarm(expl, title=title)
 
 
+# ML engines (the gradient-boosted trees and layered comps) take their variables as given: they find their own way
+# with weak or overlapping ones, so they never get the reduced list.
+_ML_ENGINES = ["xgboost", "lightgbm", "catboost", "lcomp"]
+# Engines that don't get variable reduction: the ML engines and multi-MRA, and the models that take no variables
+# (the assessor is a pass-through of the roll's values).
+_NO_VARIABLE_REDUCTION = ["pass_through", "assessor", "ground_truth", "multi_mra", *_ML_ENGINES]
+
+
+def _takes_reduced_variables(model_engine: str) -> bool:
+    """Whether a model gets the auto-reduced variable list (when its entry uses the default variables)."""
+    return model_engine not in _ML_ENGINES
+
+
+def _first_reducing_engine(models_to_run: list, models_to_skip: list, model_entries: dict) -> str | None:
+    """The engine of the first model that runs and needs its variables reduced, if any does."""
+    for model_name in models_to_run:
+        if model_name in models_to_skip:
+            continue
+        model_entry = model_entries.get(model_name, model_entries.get("default", {}))
+        # The settings schema names the engine with the "model" key (see
+        # docs/models_reference.md), which is also what run_one_model reads. Reading
+        # "engine" here made every aliased entry resolve to its own name instead.
+        model_engine = model_entry.get("model", model_name)
+        if model_engine not in _NO_VARIABLE_REDUCTION:
+            return model_engine
+    return None
+
+
 def _get_earliest_and_latest_date(df: pd.DataFrame):
     
     sale_date = df["sale_date"]
@@ -5220,21 +5261,12 @@ def _run_models(
     t.stop("setup")
     
     # Check if we need to auto reduce variables globally
-    auto_reduce_vars = False
     for model_name in models_to_run:
         if model_name in models_to_skip:
             print(f"Skipping model {model_name}.")
-            continue
-        model_entry = model_entries.get(model_name, model_entries.get("default", {}))
-        # The settings schema names the engine with the "model" key (see
-        # docs/models_reference.md), which is also what run_one_model reads. Reading
-        # "engine" here made every aliased entry resolve to its own name instead.
-        model_engine = model_entry.get("model", model_name)
-        # For tree-based models, and multi-mra, we don't perform variable reduction
-        if model_engine not in ["pass_through", "ground_truth", "xgboost", "lightgbm", "catboost", "multi_mra"]:
-            auto_reduce_vars = True
-            break
-        
+    model_engine = _first_reducing_engine(models_to_run, models_to_skip, model_entries)
+    auto_reduce_vars = model_engine is not None
+
     if auto_reduce_vars:
         if verbose:
             print(f"Auto-reducing variables for model type \"{model_engine}\"")
@@ -5282,8 +5314,8 @@ def _run_models(
         model_entry = model_entries.get(model_name, model_entries.get("default", {}))
         model_engine = model_entry.get("model", model_name)
 
-        # Tree-based models don't auto-reduce variables ever
-        if model_engine not in ["xgboost", "catboost", "lightgbm"]:
+        # ML models (trees, layered comps) don't auto-reduce variables ever
+        if _takes_reduced_variables(model_engine):
             model_variables = best_variables
         else:
             model_variables = None

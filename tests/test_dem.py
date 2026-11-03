@@ -143,3 +143,46 @@ def test_dem_service_integration_petersburg(tmp_path, monkeypatch):
     assert 0 < elev < 200, f"unexpected elevation: {elev}"
     assert stats.iloc[0]["elevation_stdev_m"] >= 0
     assert 0 <= stats.iloc[0]["slope_mean_deg"] < 45
+
+
+def test_compute_parcel_stats_shared_and_small_shapes(tmp_path):
+    """Parcels sharing one shape (condo units borrow their building's) all get its stats, and a
+    sliver whose only cell went to its neighbour takes the cell under its centre."""
+    rasterio = pytest.importorskip("rasterio")
+    from rasterio.transform import from_origin
+
+    width = height = 50
+    origin_x, origin_y = 500000.0, 4000000.0
+    transform = from_origin(origin_x, origin_y, 10.0, 10.0)
+    elevation = np.tile(np.arange(width) * 10.0, (height, 1)).astype("float32")
+    crs = "+proj=utm +zone=10 +north +datum=WGS84 +units=m +no_defs"
+    dem_path = tmp_path / "dem.tif"
+    with rasterio.open(
+        dem_path, "w", driver="GTiff", height=height, width=width, count=1,
+        dtype="float32", crs=crs, transform=transform, nodata=-9999.0,
+    ) as dst:
+        dst.write(elevation, 1)
+    service = DEMService({})
+    slope_path = service.compute_slope_raster(dem_path)
+
+    def box(c0, c1, r0, r1):
+        return Polygon([
+            (origin_x + c0 * 10, origin_y - r1 * 10), (origin_x + c1 * 10, origin_y - r1 * 10),
+            (origin_x + c1 * 10, origin_y - r0 * 10), (origin_x + c0 * 10, origin_y - r0 * 10),
+        ])
+
+    building = box(10, 20, 10, 20)
+    # A sliver inside one cell that its big neighbour, burned after it, also touches.
+    sliver = box(30.2, 30.4, 30.2, 30.4)
+    neighbour = box(30.3, 40, 30.3, 40)
+    gdf = gpd.GeoDataFrame(
+        {"id": ["b", "u1", "u2", "s", "n"]},
+        geometry=[building, building, building, sliver, neighbour],
+        crs=crs,
+    )
+    stats = service.compute_parcel_stats(gdf, dem_path, slope_path)
+    means = stats["elevation_mean_m"].to_numpy()
+    assert np.isfinite(means).all()
+    assert means[0] == means[1] == means[2]
+    assert means[3] == pytest.approx(300.0)
+    assert stats["elevation_stdev_m"].iloc[3] == 0.0

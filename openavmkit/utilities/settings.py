@@ -1941,12 +1941,18 @@ def get_dupes(entry: dict, df: pd.DataFrame = None, is_geometry: bool = False):
     if dupes == "auto":
         if df is not None:
             if is_geometry:
-                cols = [col for col in df.columns.values if col != "geometry"]
-                col = cols[0]
+                # Prefer a canonical key: de-duping a parcel layer on an arbitrary
+                # attribute (e.g. a building type) silently drops most parcels.
+                key_cols = [k for k in ["key", "key2", "key3"] if k in df]
+                if key_cols:
+                    col = key_cols[0]
+                else:
+                    cols = [col for col in df.columns.values if col != "geometry"]
+                    col = cols[0]
                 dupes = {"subset": [col], "sort_by": [col, "asc"], "drop": True}
-                if dupes_was_none:
+                if dupes_was_none and col not in ["key", "key2", "key3"]:
                     warnings.warn(
-                        f"'dupes' not found, defaulting to \"{col}\" as de-dedupe key. Set 'dupes:\"auto\" to remove this warning.'"
+                        f"'dupes' not found and no key column present, defaulting to \"{col}\" as de-dupe key. Set 'dupes' explicitly to remove this warning."
                     )
             else:
                 keys = ["key_sale", "key", "key2", "key3"]

@@ -1172,6 +1172,17 @@ def calc_elastic_net_regularization(
         )
         X = X.fillna(X.median(numeric_only=True))
 
+    # A column with no value at all has no median to fill it with: it can't be tested, so it's dropped (and said),
+    # rather than failing the whole fit.
+    empty = list(X.columns[X.isnull().all()])
+    if empty:
+        import warnings
+        warnings.warn(
+            f"calc_elastic_net_regularization: {empty} have no values at all; left out of the ElasticNet step.",
+            UserWarning,
+        )
+        X = X.drop(columns=empty)
+
     # Standardize the features
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
