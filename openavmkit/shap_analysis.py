@@ -20,11 +20,10 @@ import numpy as np
 import pandas as pd
 import shap
 
-import xgboost as xgb
 import lightgbm as lgb
-import catboost as cb
 import matplotlib.pyplot as plt
 
+from openavmkit.utilities.optional import catboost_module
 from openavmkit.utilities.modeling import (
     XGBoostModel,
     LightGBMModel,
@@ -1403,6 +1402,7 @@ def _shap_explain(
         except AttributeError:
             cat_idx = None
 
+        cb = catboost_module()  # the optional "catboost" extra; a CatBoost model means it's installed
         pool = cb.Pool(
             X_to_explain,
             cat_features=cat_idx if cat_idx else None,

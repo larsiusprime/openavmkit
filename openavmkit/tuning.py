@@ -15,20 +15,17 @@ import os
 import shutil
 import tempfile
 
-import xgboost as xgb
 import lightgbm as lgb
 import numpy as np
 import optuna
 import pandas as pd
-from catboost import Pool, CatBoostRegressor, cv
 
 from sklearn.model_selection import KFold, GroupKFold, GroupShuffleSplit, ShuffleSplit
 from sklearn.metrics import mean_absolute_percentage_error
 from sklearn.tree import DecisionTreeRegressor
-from optuna.integration import CatBoostPruningCallback
 
 from openavmkit.utilities.modeling import TreeBasedCategoricalData
-from openavmkit.utilities.optional import ngboost_classes
+from openavmkit.utilities.optional import catboost_module, ngboost_classes, xgboost_module
 
 #######################################
 # PRIVATE
@@ -564,6 +561,8 @@ def _tune_catboost(
 
     # Pre-build a single Pool for CV
     cat_feats = [c for c in (cat_vars or []) if c in X.columns]
+    catboost = catboost_module()  # the optional "catboost" extra
+    Pool, cv = catboost.Pool, catboost.cv
     full_pool = Pool(X, y, cat_features=cat_feats)
     
     #task_type = "GPU" if use_gpu else "CPU"
@@ -808,6 +807,7 @@ def _xgb_kfold_cv(
     Returns:
         float: Mean MAPE score across all folds.
     """
+    xgb = xgboost_module()  # the optional "xgboost" extra
     mape_scores = []
 
     for train_idx, val_idx in _cv_index_splits(X, groups, n_splits, cv_inner, random_state):

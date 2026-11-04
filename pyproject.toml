@@ -40,8 +40,10 @@ cloud = [  # cloud_sync: Azure, Hugging Face, SFTP
   "paramiko==4.0.0",
 ]
 ngboost = ["ngboost==0.5.10"]  # the "ngboost" model
+xgboost = ["xgboost==3.2.0"]  # the "xgboost" model, and the xgboost/ensemble fill-in experiments
+catboost = ["catboost==1.2.8"]  # the "catboost" model
 # The tests cover the optional parts too.
-dev = ["pytest", "ruff", "ipython", "openavmkit[cloud,ngboost]"]
+dev = ["pytest", "ruff", "ipython", "openavmkit[cloud,ngboost,xgboost,catboost]"]
 
 [project.urls]
 Homepage = "https://www.openavmkit.com/"
