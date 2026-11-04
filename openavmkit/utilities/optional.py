@@ -46,3 +46,21 @@ def xgboost_module() -> ModuleType:
 def catboost_module() -> ModuleType:
     """CatBoost (the "catboost" extra)."""
     return require("catboost", "catboost", "The CatBoost model")
+
+
+# Model engines that come from an extra (the engine's name is also its package's and its extra's).
+OPTIONAL_ENGINES = ("xgboost", "catboost", "ngboost")
+
+
+def require_engines(engines) -> None:
+    """Before a run trains anything: raise one ImportError naming every optional engine these models need that
+    isn't installed, and the one command that installs them all. Otherwise a run would train the models before it
+    and only then stop, at the first model whose engine is missing."""
+    missing = sorted(e for e in set(engines) if e in OPTIONAL_ENGINES and not installed(e))
+    if missing:
+        names = ", ".join(missing)
+        raise ImportError(
+            f"These models need {names}, which {'is' if len(missing) == 1 else 'are'} not installed. "
+            f'Install {"it" if len(missing) == 1 else "them"} with: pip install "openavmkit[{",".join(missing)}]" '
+            f"(or leave {'that model' if len(missing) == 1 else 'those models'} out of the run)."
+        )
