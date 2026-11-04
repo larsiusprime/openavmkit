@@ -65,3 +65,57 @@ def test_nothing_left_is_nan():
 def test_reads_only_its_two_columns():
     df = frame(3).assign(geometry=object(), other=pd.Categorical(["x"] * 2_000))
     assert quick_median_chd(df, "value", "he_id") == pytest.approx(reference(df, "value", "he_id"), rel=1e-12)
+
+
+def test_land_prediction_results_chds():
+    """LandPredictionResults' three CHDs (total, land, improvement), straight from the universe: no copy or
+    string conversion of the whole table, which existed only for polars. Nothing constructs it yet, so this is
+    the only test that reaches that code."""
+    from shapely.geometry import Point
+
+    from openavmkit.data import SalesUniversePair
+    from openavmkit.modeling import LandPredictionResults
+
+    rng = np.random.default_rng(11)
+    n = 600
+    land = rng.lognormal(10, 0.5, n)
+    impr = rng.lognormal(11, 0.7, n)
+    impr[rng.random(n) < 0.05] = 0.0  # vacant: left out of the improvement CHD
+    he = rng.integers(0, 25, n)
+    land_he = rng.integers(0, 15, n).astype(object)
+    land_he[rng.random(n) < 0.05] = None  # missing IDs: a cluster of their own
+    universe = pd.DataFrame(
+        {
+            "key": [f"p{i}" for i in range(n)],
+            "pred_land": land,
+            "pred_impr": impr,
+            "pred_total": land + impr,
+            "true_land_value": land * rng.uniform(0.9, 1.1, n),
+            # A categorical with unused categories, a string column, an object column and the shapes:
+            "he_id": pd.Categorical(he, categories=list(range(40))),
+            "land_he_id": land_he,
+            "impr_he_id": pd.array([f"i{x}" for x in rng.integers(0, 20, n)], dtype="string"),
+            "is_vacant": impr == 0,
+            "land_area_sqft": rng.uniform(4_000, 20_000, n),
+            "bldg_area_finished_sqft": rng.uniform(800, 3_000, n),
+            "geometry": [Point(float(i), 0.0) for i in range(n)],
+        }
+    )
+    sold = universe.sample(150, random_state=1)
+    sales = pd.DataFrame(
+        {
+            "key": sold["key"].to_numpy(),
+            "key_sale": [f"s{i}" for i in range(150)],
+            "sale_price": (sold["pred_total"] * rng.uniform(0.85, 1.15, 150)).to_numpy(),
+            "valid_sale": True,
+            "vacant_sale": False,
+            "valid_for_land_ratio_study": True,
+            "valid_for_ratio_study": True,
+        }
+    )
+    r = LandPredictionResults(
+        "pred_land", "pred_impr", "pred_total", "true_land_value", [], SalesUniversePair(sales, universe), 0.0, "sqft"
+    )
+    assert r.total_chd == pytest.approx(reference(universe, "pred_total", "he_id"), rel=1e-12)
+    assert r.land_chd == pytest.approx(reference(universe, "pred_land", "land_he_id"), rel=1e-12)
+    assert r.impr_chd == pytest.approx(reference(universe, "pred_impr", "impr_he_id"), rel=1e-12)
