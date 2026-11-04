@@ -13,7 +13,8 @@ RUN chmod +x ./simple-entrypoint.sh
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install local openavmkit package
-RUN pip install .
+# The notebooks image keeps everything: cloud_sync (the getting-started notebooks use it) and NGBoost.
+RUN pip install ".[cloud,ngboost]"
 
 # Seperately install jupyter (as specified on the openavmkit docs)
 RUN pip install jupyter

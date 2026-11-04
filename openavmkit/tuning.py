@@ -21,8 +21,6 @@ import numpy as np
 import optuna
 import pandas as pd
 from catboost import Pool, CatBoostRegressor, cv
-from ngboost import NGBRegressor
-from ngboost.distns import Normal
 
 from sklearn.model_selection import KFold, GroupKFold, GroupShuffleSplit, ShuffleSplit
 from sklearn.metrics import mean_absolute_percentage_error
@@ -30,6 +28,7 @@ from sklearn.tree import DecisionTreeRegressor
 from optuna.integration import CatBoostPruningCallback
 
 from openavmkit.utilities.modeling import TreeBasedCategoricalData
+from openavmkit.utilities.optional import ngboost_classes
 
 #######################################
 # PRIVATE
@@ -712,6 +711,7 @@ def _tune_ngboost(
             base = DecisionTreeRegressor(
                 max_depth=max_depth, criterion="friedman_mse", random_state=random_state
             )
+            NGBRegressor, Normal = ngboost_classes()  # the optional "ngboost" extra
             model = NGBRegressor(
                 Dist=Normal,
                 Base=base,

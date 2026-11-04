@@ -1,13 +1,25 @@
 import os
 import json
-from openavmkit.cloud.azure import init_service_azure, get_creds_from_env_azure
 
 from openavmkit.cloud.base import CloudService, CloudType, CloudAccess, CloudCredentials
-from openavmkit.cloud.huggingface import (
-    get_creds_from_env_huggingface,
-    init_service_huggingface,
-)
-from openavmkit.cloud.sftp import get_creds_from_env_sftp, init_service_sftp
+from openavmkit.utilities.optional import require
+
+# Each cloud's own SDK is an optional extra ("cloud"), imported only when that cloud is used: importing this module
+# (the pipeline does) doesn't load Azure, Hugging Face or SFTP support.
+_BACKENDS = {
+    "azure": ("openavmkit.cloud.azure", "azure.storage.blob", "Azure cloud storage"),
+    "huggingface": ("openavmkit.cloud.huggingface", "huggingface_hub", "Hugging Face cloud storage"),
+    "sftp": ("openavmkit.cloud.sftp", "paramiko", "SFTP cloud storage"),
+}
+
+
+def _backend(cloud_type: str):
+    """The module for a cloud type, once its SDK is known to be installed."""
+    if cloud_type not in _BACKENDS:
+        raise ValueError(f"Unsupported cloud type: {cloud_type}")
+    module, sdk, what = _BACKENDS[cloud_type]
+    require(sdk, "cloud", what)
+    return require(module, "cloud", what)
 
 
 def load_cloud_settings(
@@ -164,11 +176,11 @@ def _get_cloud_access(cloud_type):
 
 def _get_creds_from_env(cloud_type: str) -> CloudCredentials:
     if cloud_type == "azure":
-        return get_creds_from_env_azure()
+        return _backend(cloud_type).get_creds_from_env_azure()
     elif cloud_type == "huggingface":
-        return get_creds_from_env_huggingface()
+        return _backend(cloud_type).get_creds_from_env_huggingface()
     elif cloud_type == "sftp":
-        return get_creds_from_env_sftp()
+        return _backend(cloud_type).get_creds_from_env_sftp()
     # Add more cloud types here as needed:
     # elif cloud_type == <SOMETHING ELSE>:
     #   return get_creds_from_something_else():
@@ -184,11 +196,11 @@ def _init_service(
 ) -> CloudService:
     print(f"_init_service('{cloud_type}', '{cloud_access}')")
     if cloud_type == "azure":
-        return init_service_azure(credentials, cloud_access, cloud_settings)
+        return _backend(cloud_type).init_service_azure(credentials, cloud_access, cloud_settings)
     elif cloud_type == "huggingface":
-        return init_service_huggingface(credentials, cloud_access, cloud_settings)
+        return _backend(cloud_type).init_service_huggingface(credentials, cloud_access, cloud_settings)
     elif cloud_type == "sftp":
-        return init_service_sftp(credentials, cloud_access)
+        return _backend(cloud_type).init_service_sftp(credentials, cloud_access)
     # Add more cloud types here as needed:
     # elif cloud_type == <SOMETHING ELSE>:
     #   return init_service_something_else(cloud_type, credentials)

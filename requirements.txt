@@ -1,14 +1,10 @@
-azure-storage-blob==12.30.3
 catboost==1.2.8
 numpy==2.4.6
-huggingface-hub==1.17.0
 lightgbm==4.6.0
 markdown==3.10.2
 mgwr==2.2.1
-ngboost==0.5.10
 optuna==4.6.0
 osmnx==2.1.0
-paramiko==4.0.0
 pdfkit==1.0.0
 pyarrow==22.0.0
 python-dotenv==1.2.2
@@ -32,7 +28,6 @@ geopandas~=1.1.2
 matplotlib~=3.10.9
 pyproj~=3.7.2
 shapely~=2.1.2
-azure-core~=1.38.1
 requests~=2.34.2
 joblib~=1.5.3
 scipy>=1.11.4,<1.17
