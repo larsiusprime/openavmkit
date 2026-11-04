@@ -32,7 +32,16 @@ docs = [
   "mkdocs-material>=9.5",
   "mkdocstrings[python]>=0.25",
 ]
-dev = ["pytest", "ruff", "ipython"]
+# Optional: imported only when used (openavmkit/utilities/optional.py says how to install each).
+cloud = [  # cloud_sync: Azure, Hugging Face, SFTP
+  "azure-storage-blob==12.30.3",
+  "azure-core~=1.38.1",
+  "huggingface-hub==1.17.0",
+  "paramiko==4.0.0",
+]
+ngboost = ["ngboost==0.5.10"]  # the "ngboost" model
+# The tests cover the optional parts too.
+dev = ["pytest", "ruff", "ipython", "openavmkit[cloud,ngboost]"]
 
 [project.urls]
 Homepage = "https://www.openavmkit.com/"

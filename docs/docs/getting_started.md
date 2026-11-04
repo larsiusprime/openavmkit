@@ -16,9 +16,13 @@ OpenAVMKit's own requirements are only what it needs to run. The tools for noteb
 |---|---|---|
 | Use the library in your own Python code | `pip install openavmkit` (PyPI), or `pip install -e .` (Git) | OpenAVMKit and the libraries it runs on |
 | Run the pipeline notebooks | the above, then `pip install jupyter` | Jupyter, which brings IPython: tables show as rich tables in a notebook |
-| Run the test suite, or contribute | `pip install -e ".[dev]"` (Git only: the tests aren't in the PyPI package) | `pytest`, `ruff` and `ipython` |
+| Sync a locality with cloud storage (`cloud_sync`: Azure, Hugging Face, SFTP) | `pip install "openavmkit[cloud]"` | The cloud services' SDKs: `azure-storage-blob`, `huggingface-hub`, `paramiko` |
+| Use the `ngboost` model | `pip install "openavmkit[ngboost]"` | `ngboost` |
+| Run the test suite, or contribute | `pip install -e ".[dev]"` (Git only: the tests aren't in the PyPI package) | `pytest`, `ruff` and `ipython`, and both extras above |
 
-Outside a notebook (a script, a terminal), OpenAVMKit prints its tables as plain text; it doesn't need IPython. Up to 0.7.0, `ipython`, `pytest` and `pipreqs` were OpenAVMKit's own requirements; they no longer are, so `pytest` in particular comes only with `[dev]`. (IPython is still installed for now, by one of OpenAVMKit's libraries, `layeredcompmodel`.)
+The cloud SDKs and NGBoost are loaded only when used: without them, everything else works, and `cloud_sync` or an `ngboost` model says which extra to install.
+
+Outside a notebook (a script, a terminal), OpenAVMKit prints its tables as plain text; it doesn't need IPython. Up to 0.7.0, `ipython`, `pytest` and `pipreqs` were OpenAVMKit's own requirements; they no longer are, so `pytest` in particular comes only with `[dev]`. (`layeredcompmodel` 0.3.1 no longer brings IPython either.)
 
 ## Option 1 - Install from PyPI
 
@@ -211,6 +215,8 @@ Crucially, you do NOT have to create an account or login credentials to connect 
 Let's go through the steps one by one.
 
 ### 1. Create locality folder and cloud.json file
+
+The download goes through OpenAVMKit's cloud support, an optional extra: install it first with `pip install "openavmkit[cloud]"` (the Docker image and `[dev]` already include it).
 
 - Navigate to the directory you installed openavmkit to and find the `notebooks/pipeline/data` path.  
 - Create a folder with the name `us-nc-guilford`  

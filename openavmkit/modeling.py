@@ -53,8 +53,6 @@ import geopandas as gpd
 import xgboost as xgb
 import lightgbm as lgb
 import catboost
-from ngboost import NGBRegressor
-from ngboost.distns import Normal
 from sklearn.tree import DecisionTreeRegressor
 from layeredcompmodel import LayeredCompBaggingModel as LCompModel
 from catboost import CatBoostRegressor, Pool
@@ -102,6 +100,7 @@ from openavmkit.utilities.somers import (
     get_size_in_somers_units_m,
 )
 from openavmkit.utilities.format import fancy_format
+from openavmkit.utilities.optional import ngboost_classes
 from openavmkit.utilities.modeling import (
     GarbageModel,
     AverageModel,
@@ -4195,6 +4194,7 @@ def run_ngboost(
     )
     if seed is not None:
         params.setdefault("random_state", seed)
+    NGBRegressor, Normal = ngboost_classes()  # the optional "ngboost" extra
     regressor = NGBRegressor(Dist=Normal, Base=base, verbose=False, **params)
     timing.stop("setup")
 
