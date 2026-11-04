@@ -36,7 +36,6 @@ import pickle
 import shap
 from datetime import date
 from numpy.linalg import LinAlgError
-import polars as pl
 from joblib import Parallel, delayed
 from typing import Union, Any, Dict
 
@@ -131,7 +130,7 @@ from openavmkit.utilities.data import (
 )
 from openavmkit.utilities.settings import get_valuation_date, _get_max_ratio_study_trim, get_look_back_dates, get_study_set_predictions
 from openavmkit.utilities.stats import (
-    quick_median_chd_pl,
+    quick_median_chd,
     calc_mse_r2_adj_r2,
     calc_prb,
     trim_outliers_mask,
@@ -269,18 +268,10 @@ class LandPredictionResults:
         self.adj_r2 = adj_r2
         self.prb, _, _ = calc_prb(land_predictions, sale_prices)
 
-        df_univ_valid = df_univ.drop(columns="geometry", errors="ignore").copy()
-
-        # convert all category and string[python] types to string:
-        for col in df_univ_valid.columns:
-            if df_univ_valid[col].dtype in ["category", "string"]:
-                df_univ_valid[col] = df_univ_valid[col].astype("str")
-        pl_df = pl.DataFrame(df_univ_valid)
-
         # Phase 2: Consistency
-        self.total_chd = quick_median_chd_pl(pl_df, total_prediction_field, "he_id")
-        self.land_chd = quick_median_chd_pl(pl_df, land_prediction_field, "land_he_id")
-        self.impr_chd = quick_median_chd_pl(pl_df, impr_prediction_field, "impr_he_id")
+        self.total_chd = quick_median_chd(df_univ, total_prediction_field, "he_id")
+        self.land_chd = quick_median_chd(df_univ, land_prediction_field, "land_he_id")
+        self.impr_chd = quick_median_chd(df_univ, impr_prediction_field, "impr_he_id")
 
         # Phase 3: Sanity
 
@@ -1603,12 +1594,11 @@ class SingleModelResults:
             # Heuristic for object columns
             elif dtype == "object":
                 df_univ_valid[col] = _coerce_object_to_numeric_or_string(df_univ_valid[col])
-        pl_df = pl.DataFrame(df_univ_valid)
 
         # TODO: This might need to be changed to be the $/area value rather than the total value
         if field_horizontal_equity_id in df_univ_valid:
-            self.chd = quick_median_chd_pl(
-                pl_df, field_prediction, field_horizontal_equity_id
+            self.chd = quick_median_chd(
+                df_univ_valid, field_prediction, field_horizontal_equity_id
             )
         else:
             self.chd = float("nan")

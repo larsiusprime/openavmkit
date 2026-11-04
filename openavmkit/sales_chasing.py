@@ -34,10 +34,9 @@ from dataclasses import dataclass, field as dataclass_field
 
 import numpy as np
 import pandas as pd
-import polars as pl
 
 from openavmkit.utilities.data import div_series_z_safe
-from openavmkit.utilities.stats import calc_cod, quick_median_chd_pl
+from openavmkit.utilities.stats import calc_cod, quick_median_chd
 
 # Horizontal-equity cluster columns to try, in order, when none is supplied explicitly.
 _CLUSTER_FIELD_CANDIDATES = ("he_id", "impr_he_id", "land_he_id")
@@ -150,7 +149,7 @@ def _median_chd(df: pd.DataFrame, value_field: str, cluster_field: str) -> float
     sub = df[[value_field, cluster_field]].dropna()
     if sub.empty:
         return float("nan")
-    return quick_median_chd_pl(pl.from_pandas(sub), value_field, cluster_field)
+    return quick_median_chd(sub, value_field, cluster_field)
 
 
 def _resolve_cluster_field(df: pd.DataFrame, cluster_field: str | None) -> str | None:

@@ -19,7 +19,6 @@ assumptions beyond what each function declares.
 """
 import warnings
 import math
-import polars as pl
 import statsmodels.api as sm
 import pandas as pd
 import numpy as np
@@ -82,20 +81,22 @@ def calc_chds(df_in: pd.DataFrame, field_cluster: str, field_value: str) -> pd.S
     return df["chd"]
 
 
-def quick_median_chd_pl(
-    df: pl.DataFrame, field_value: str, field_cluster: str
-) -> float:
+def quick_median_chd(df: pd.DataFrame, field_value: str, field_cluster: str) -> float:
     """
-    Calculate the median CHD for groups in a Polars DataFrame.
+    Calculate the median CHD across the clusters of a DataFrame.
 
-    This function filters out missing values for the given value field, groups the data
-    by the specified cluster field, computes COD for each group, and returns the median
-    COD value.
+    This function filters out missing and non-positive values for the given value field,
+    groups the rest by the specified cluster field, computes each cluster's COD, and
+    returns the median of those CODs. Rows with a missing cluster ID form a cluster of
+    their own.
+
+    Vectorised: every cluster's median and mean absolute deviation come from one groupby,
+    rather than a loop over the clusters.
 
     Parameters
     ----------
-    df : pl.DataFrame
-        Input Polars DataFrame.
+    df : pd.DataFrame
+        Input DataFrame (only ``field_value`` and ``field_cluster`` are read).
     field_value : str
         Name of the field containing values for COD calculation.
     field_cluster : str
@@ -104,20 +105,25 @@ def quick_median_chd_pl(
     Returns
     -------
     float
-        The median COD value across all groups.
+        The median COD value across all clusters (NaN if no value is left).
     """
-    # Filter out rows with missing values for field_value.
-    df = df.filter(~pd.isna(df[field_value]))
-    df = df.filter(df[field_value].gt(0))
+    sub = df[[field_cluster, field_value]]
+    sub = sub[sub[field_value].notna() & sub[field_value].gt(0)]
+    if sub.empty:
+        return float("nan")
 
-    chds = df.group_by(field_cluster).agg(pl.col(field_value).alias("values"))
+    def by_cluster(frame: pd.DataFrame):
+        return frame.groupby(field_cluster, sort=False, dropna=False, observed=True)
 
-    # Apply the calc_cod function to each group (the list of values)
-    chd_values = np.array([calc_cod(group.to_numpy()) for group in chds["values"]])
-
-    # Calculate the median of the CHD values
-    median_chd = float(np.median(chd_values))
-    return median_chd
+    # Each value's distance from its cluster's median; COD = mean distance / median * 100.
+    # Values are all positive here, so no cluster's median is zero (calc_cod's special cases).
+    median = by_cluster(sub)[field_value].transform("median")
+    sub = sub.assign(_abs_dev=(sub[field_value] - median).abs())
+    per_cluster = by_cluster(sub).agg(
+        _mean_abs_dev=("_abs_dev", "mean"), _median=(field_value, "median")
+    )
+    chds = per_cluster["_mean_abs_dev"] / per_cluster["_median"] * 100
+    return float(np.median(chds.to_numpy()))
 
 
 def calc_cod(values: np.ndarray) -> float:
