@@ -149,6 +149,7 @@ from openavmkit.utilities.stats import (
 )
 from openavmkit.utilities.geometry import ensure_geometries
 from openavmkit.utilities.timing import TimingData
+from openavmkit.utilities.optional import require_engines
 from openavmkit.shap_analysis import (
     _calc_shap,
     plot_full_beeswarm,
@@ -948,6 +949,32 @@ def generate_variable_report(
     return report
 
 
+def _engines_to_run(settings: dict, model_groups: list, run_main: bool, run_vacant: bool) -> set[str]:
+    """The engines run_models will train, read the way _run_models reads them: each model group's
+    ``instructions.<main|vacant>.run`` (or every model it has an entry for), less what it skips."""
+    s_model = settings.get("modeling", {})
+    s_inst = s_model.get("instructions", {})
+    engines: set[str] = set()
+    for main_vacant, wanted in (("main", run_main), ("vacant", run_vacant)):
+        if not wanted:
+            continue
+        entries_all = (s_model.get("models") or {}).get(main_vacant, {}) or {}
+        for model_group in model_groups:
+            skip = s_inst.get(main_vacant, {}).get("skip", {}).get(model_group, [])
+            if "all" in skip:
+                continue
+            entries = entries_all.get(model_group, entries_all)
+            to_run = s_inst.get(main_vacant, {}).get("run", None)
+            if to_run is None:
+                to_run = list(entries.keys())
+            for name in to_run:
+                if name in skip:
+                    continue
+                entry = entries.get(name, entries.get("default", {})) or {}
+                engines.add(entry.get("model", name) if isinstance(entry, dict) else name)
+    return engines
+
+
 def run_models(
     sup: SalesUniversePair,
     settings: dict,
@@ -1024,6 +1051,8 @@ def run_models(
         model_groups = get_model_group_ids(settings, df_univ)
 
     dict_all_results = {}
+    # A missing optional engine (XGBoost, CatBoost, NGBoost) is found now, not after the models before it trained.
+    require_engines(_engines_to_run(settings, model_groups, run_main, run_vacant))
     t.stop("setup")
 
     t.start("run model groups")

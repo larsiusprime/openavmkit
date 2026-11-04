@@ -73,3 +73,51 @@ def test_inference_without_xgboost_tries_the_other_models(monkeypatch, capsys):
     monkeypatch.setitem(sys.modules, "xgboost", None)
     with pytest.raises(ImportError, match=r'openavmkit\[xgboost\]'):
         inference._get_inference_model("xgboost")
+
+
+def test_engines_to_run_reads_settings_as_the_run_does():
+    from openavmkit.model_runner import _engines_to_run
+
+    settings = {
+        "modeling": {
+            "instructions": {
+                "main": {"run": ["lightgbm", "trees", "cat"], "skip": {"condo": ["cat"]}},
+                "vacant": {"skip": {"sf": ["all"]}},
+            },
+            "models": {
+                "main": {"default": {}, "trees": {"model": "xgboost"}, "cat": {"model": "catboost"}},
+                # vacant: no "run" list, so every model it has an entry for
+                "vacant": {"condo": {"ngboost": {}, "mra": {}}},
+            },
+        }
+    }
+    assert _engines_to_run(settings, ["condo"], True, False) == {"lightgbm", "xgboost"}
+    assert _engines_to_run(settings, ["sf"], True, False) == {"lightgbm", "xgboost", "catboost"}
+    assert _engines_to_run(settings, ["condo"], False, True) == {"ngboost", "mra"}
+    assert _engines_to_run(settings, ["sf"], False, True) == set()  # skips "all"
+
+
+def test_a_run_stops_before_training_when_an_engine_is_missing(monkeypatch):
+    """The run names every missing engine up front, and trains nothing: not the models listed before them."""
+    import pandas as pd
+
+    import openavmkit.model_runner as mr
+    from openavmkit.utilities import optional
+
+    trained = []
+    monkeypatch.setattr(mr, "_run_models", lambda *a, **k: trained.append(a[1]))
+    monkeypatch.setattr(optional, "installed", lambda m: m not in ("xgboost", "catboost"))
+    settings = {
+        "modeling": {
+            "instructions": {"model_groups": ["sf"], "main": {"run": ["lightgbm", "xgboost", "cat"]}},
+            "models": {"main": {"default": {}, "cat": {"model": "catboost"}}},
+        }
+    }
+    sup = {"universe": pd.DataFrame({"key": ["1"]})}
+    with pytest.raises(ImportError, match=r'pip install "openavmkit\[catboost,xgboost\]"'):
+        mr.run_models(sup, settings, run_vacant=False)
+    assert trained == []
+
+    monkeypatch.setattr(optional, "installed", lambda m: True)
+    mr.run_models(sup, settings, run_vacant=False)
+    assert trained == ["sf"]
