@@ -10,7 +10,6 @@ optuna==4.6.0
 osmnx==2.1.0
 paramiko==4.0.0
 pdfkit==1.0.0
-polars==1.38.1
 pyarrow==22.0.0
 python-dotenv==1.2.2
 rich==15.0.0
