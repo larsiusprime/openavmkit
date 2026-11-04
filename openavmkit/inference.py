@@ -21,10 +21,10 @@ import itertools
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import lightgbm as lgb
-import xgboost as xgb
 from scipy.optimize import minimize
 
 from openavmkit.utilities.cache import get_cached_df, write_cached_df
+from openavmkit.utilities.optional import installed, xgboost_module
 
 
 class InferenceModel(ABC):
@@ -763,6 +763,7 @@ class XGBoostModel(InferenceModel):
     """XGBoost model with improved validation and parameters."""
 
     def __init__(self):
+        xgb = xgboost_module()  # the optional "xgboost" extra
         self.model = xgb.XGBRegressor(
             n_estimators=200,
             max_depth=6,
@@ -1154,6 +1155,16 @@ class EnsembleModel(InferenceModel):
         return metrics
 
 
+def _experiment_models() -> list[str]:
+    """The models an inference experiment tries. XGBoost is an optional extra: without it, the xgboost model and
+    the ensemble (which includes it) are left out, and the others are tried."""
+    models = ["random_forest", "lightgbm", "xgboost", "ensemble"]
+    if installed("xgboost"):
+        return models
+    print('--> Skipping the xgboost and ensemble experiments: XGBoost isn\'t installed (pip install "openavmkit[xgboost]")')
+    return [m for m in models if m not in ("xgboost", "ensemble")]
+
+
 def _get_inference_model(model_type: str) -> InferenceModel:
     """Factory function to get inference model by type."""
     models = {
@@ -1362,7 +1373,7 @@ def _do_perform_spatial_inference(
     # Run experiments if enabled
     if model_settings.get("experiment", False):
         print("\n=== Running Model Experiments ===")
-        experiment_models = ["random_forest", "lightgbm", "xgboost", "ensemble"]
+        experiment_models = _experiment_models()
         best_score = float("-inf")
         best_model_type = None
         validation_results = {}

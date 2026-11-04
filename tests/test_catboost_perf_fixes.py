@@ -20,6 +20,7 @@ import time
 import numpy as np
 import optuna
 import pandas as pd
+import catboost
 import pytest
 from catboost import CatBoostRegressor, Pool
 
@@ -51,14 +52,14 @@ def test_tuner_searches_symmetric_trees_only_and_leaves_no_catboost_info(tmp_pat
     monkeypatch.chdir(tmp_path)
     X, y = _toy()
     seen = []
-    import openavmkit.tuning as T
-    real_cv = T.cv
+    # The tuner reads cv() from catboost when it runs (CatBoost is an optional extra).
+    real_cv = catboost.cv
 
     def spy(pool, params, **kw):
         seen.append(dict(params))
         return real_cv(pool, params, **kw)
 
-    monkeypatch.setattr(T, "cv", spy)
+    monkeypatch.setattr(catboost, "cv", spy)
     best = _tune_catboost(X, y, n_trials=3, n_splits=2, random_state=42,
                           cat_vars=["neighborhood"], use_gpu=False)
 

@@ -36,12 +36,10 @@ import math
 from matplotlib import pyplot as plt
 import pandas as pd
 import geopandas as gpd
-from catboost import CatBoostRegressor
 from lightgbm import Booster
 from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_percentage_error
 from statsmodels.nonparametric.kernel_regression import KernelReg
-from xgboost import XGBRegressor
 from openavmkit.utilities.notebook import display
 from openavmkit import progress
 import numpy as np

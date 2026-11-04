@@ -18,9 +18,11 @@ OpenAVMKit's own requirements are only what it needs to run. The tools for noteb
 | Run the pipeline notebooks | the above, then `pip install jupyter` | Jupyter, which brings IPython: tables show as rich tables in a notebook |
 | Sync a locality with cloud storage (`cloud_sync`: Azure, Hugging Face, SFTP) | `pip install "openavmkit[cloud]"` | The cloud services' SDKs: `azure-storage-blob`, `huggingface-hub`, `paramiko` |
 | Use the `ngboost` model | `pip install "openavmkit[ngboost]"` | `ngboost` |
-| Run the test suite, or contribute | `pip install -e ".[dev]"` (Git only: the tests aren't in the PyPI package) | `pytest`, `ruff` and `ipython`, and both extras above |
+| Use the `xgboost` model (and the xgboost and ensemble fill-in experiments) | `pip install "openavmkit[xgboost]"` | `xgboost` |
+| Use the `catboost` model | `pip install "openavmkit[catboost]"` | `catboost` (with plotly and graphviz) |
+| Run the test suite, or contribute | `pip install -e ".[dev]"` (Git only: the tests aren't in the PyPI package) | `pytest`, `ruff` and `ipython`, and every extra above |
 
-The cloud SDKs and NGBoost are loaded only when used: without them, everything else works, and `cloud_sync` or an `ngboost` model says which extra to install.
+The cloud SDKs and the NGBoost, XGBoost and CatBoost models are loaded only when used: without them, everything else works (LightGBM, the linear models, layered comps…), and `cloud_sync` or a model that needs one says which extra to install. To install everything: `pip install "openavmkit[cloud,ngboost,xgboost,catboost]"`.
 
 Outside a notebook (a script, a terminal), OpenAVMKit prints its tables as plain text; it doesn't need IPython. Up to 0.7.0, `ipython`, `pytest` and `pipreqs` were OpenAVMKit's own requirements; they no longer are, so `pytest` in particular comes only with `[dev]`. (`layeredcompmodel` 0.3.1 no longer brings IPython either.)
 

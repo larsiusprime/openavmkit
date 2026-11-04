@@ -50,12 +50,9 @@ import numpy as np
 import statsmodels.api as sm
 import pandas as pd
 import geopandas as gpd
-import xgboost as xgb
 import lightgbm as lgb
-import catboost
 from sklearn.tree import DecisionTreeRegressor
 from layeredcompmodel import LayeredCompBaggingModel as LCompModel
-from catboost import CatBoostRegressor, Pool
 from lightgbm import Booster
 from matplotlib import pyplot as plt
 from matplotlib.colors import TwoSlopeNorm, Normalize, LogNorm
@@ -68,7 +65,6 @@ from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 from statsmodels.nonparametric._kernel_base import EstimatorSettings
 from statsmodels.nonparametric.kernel_regression import KernelReg
 from statsmodels.regression.linear_model import RegressionResults
-from xgboost import XGBRegressor
 
 from openavmkit.shap_analysis import (
     make_shap_table,
@@ -100,7 +96,7 @@ from openavmkit.utilities.somers import (
     get_size_in_somers_units_m,
 )
 from openavmkit.utilities.format import fancy_format
-from openavmkit.utilities.optional import ngboost_classes
+from openavmkit.utilities.optional import catboost_module, ngboost_classes, xgboost_module
 from openavmkit.utilities.modeling import (
     GarbageModel,
     AverageModel,
@@ -3652,6 +3648,7 @@ def run_xgboost(
         parameters["n_estimators"] = int(parameters.pop("num_boost_round"))
 
     # parameters["eval_metric"] = "rmse"
+    xgb = xgboost_module()  # the optional "xgboost" extra
     regressor = xgb.XGBRegressor(**parameters)
 
     timing.start("train")
@@ -3873,7 +3870,8 @@ def predict_catboost(
     """
 
     cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
-    
+    Pool = catboost_module().Pool  # the optional "catboost" extra; a CatBoost model means it's installed
+
     regressor = catboost_model.regressor
 
     timing.start("predict_test")
@@ -4007,8 +4005,9 @@ def run_catboost(
     os.makedirs(params["train_dir"], exist_ok=True)
     cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
 
+    catboost = catboost_module()  # the optional "catboost" extra
     regressor = catboost.CatBoostRegressor(**params)
-    train_pool = Pool(data=ds.X_train, label=ds.y_train, cat_features=cat_vars)
+    train_pool = catboost.Pool(data=ds.X_train, label=ds.y_train, cat_features=cat_vars)
     timing.stop("setup")
 
     timing.start("train")
