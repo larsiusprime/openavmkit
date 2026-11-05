@@ -57,6 +57,25 @@ class CensusService:
         self.credentials = credentials
         self.census_client = Census(credentials.api_key)
     
+    def get_census_tract_data(
+        self, fips_code: str, year: int = 2022, census_settings: dict = None
+    ) -> pd.DataFrame:
+        """The same figures as get_census_data, for the county's tracts (a tract is a few block groups), keyed by the
+        11-digit tract GEOID (``tract_geoid``). The ACS publishes a tract's figure where a block group's is withheld
+        (too few households of the kind to estimate it), so it stands in for the block group's."""
+        map = self.get_census_map(census_settings)
+        fields = ["NAME"] + [key for key in map]
+        data = self.census_client.acs5.state_county_tract(
+            fields,
+            state_fips=fips_code[:2],
+            county_fips=fips_code[2:],
+            tract="*",
+            year=year,
+        )
+        df = pd.DataFrame(data).rename(columns=map)
+        df["tract_geoid"] = df["state"] + df["county"] + df["tract"]
+        return null_jam_values(df, list(map.values()))
+
     def get_census_map(self, census_settings: dict) -> dict:
         
         if census_settings is None:
@@ -246,6 +265,13 @@ class CensusService:
         """
         # Get demographic data first
         census_data = self.get_census_data(fips_code, year, census_settings)
+        census_data = null_jam_values(census_data, list(self.get_census_map(census_settings).values()))
+        if (census_settings or {}).get("tract_fallback", False):
+            # A block group's figure the ACS withholds: its tract's, where the tract has one.
+            tracts = self.get_census_tract_data(fips_code, year, census_settings)
+            census_data = fill_from_tracts(
+                census_data, tracts, list(self.get_census_map(census_settings).values())
+            )
         # Get the list of block groups we have data for
         valid_block_groups = census_data["std_geoid"].unique()
 
@@ -273,8 +299,41 @@ class CensusService:
         return census_data, census_boundaries
 
 
+# The ACS writes a figure it can't give as a large negative code: -666666666 (not computable: too few to estimate),
+# -999999999, -888888888, -555555555, -333333333, -222222222 (each an annotation). Every one is far below any real
+# figure (incomes, rents and counts are never negative).
+ACS_JAM_BELOW = -100_000_000
+
+
+def null_jam_values(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    """The ACS's codes for a figure it doesn't give (every large negative value) as missing, in these columns."""
+    df = df.copy()
+    for col in columns:
+        if col in df.columns:
+            values = pd.to_numeric(df[col], errors="coerce")
+            df[col] = values.mask(values <= ACS_JAM_BELOW)
+    return df
+
+
+def fill_from_tracts(
+    bg: pd.DataFrame, tracts: pd.DataFrame, columns: list[str]
+) -> pd.DataFrame:
+    """Each block group's missing figure from its tract (the first 11 digits of its GEOID), where the tract has
+    one. ``bg`` needs ``std_geoid``; ``tracts`` needs ``tract_geoid``."""
+    bg = bg.copy()
+    by_tract = tracts.set_index("tract_geoid")
+    tract_of = bg["std_geoid"].astype(str).str[:11]
+    for col in columns:
+        if col in bg.columns and col in by_tract.columns:
+            bg[col] = bg[col].fillna(tract_of.map(by_tract[col]))
+    return bg
+
+
 def match_to_census_blockgroups(
-    gdf: gpd.GeoDataFrame, census_gdf: gpd.GeoDataFrame, join_type: str = "left"
+    gdf: gpd.GeoDataFrame,
+    census_gdf: gpd.GeoDataFrame,
+    join_type: str = "left",
+    nearest_m: float = 0.0,
 ) -> gpd.GeoDataFrame:
     """Match each row in a GeoDataFrame to its corresponding Census Block Group using
     spatial join.
@@ -287,6 +346,9 @@ def match_to_census_blockgroups(
         Census Block Group boundaries GeoDataFrame
     join_type : str
         Type of join to perform ('left', 'right', 'inner', 'outer')
+    nearest_m : float
+        A parcel whose centroid is in no block group (a gap or sliver between their shapes, or just past the
+        county's edge) takes the nearest block group within this many meters. 0 (the default): it stays unmatched.
 
     Returns
     -------
@@ -358,6 +420,22 @@ def match_to_census_blockgroups(
         joined = joined.loc[smallest_areas]
         joined.index = pd.Index(smallest_areas.index, name=orig_index.name)
         joined = joined.drop(columns="_census_area")
+
+        if nearest_m > 0 and joined["std_geoid"].isna().any():
+            # Centroids in no block group: the nearest one, if it's close (a gap between shapes, not another
+            # county). The polygons are in a projected crs here, so the distance is in its units (meters).
+            lost = joined["std_geoid"].isna()
+            near = gpd.sjoin_nearest(
+                joined.loc[lost, ["centroid"]].set_geometry("centroid"),
+                census_gdf.drop(columns="_census_area"),
+                how="left",
+                max_distance=nearest_m,
+            )
+            near = near[~near.index.duplicated(keep="first")]
+            for col in census_gdf.columns:
+                if col in ("geometry", "_census_area") or col not in near.columns:
+                    continue
+                joined.loc[lost, col] = near[col].reindex(joined.index[lost]).values
 
         # Calculate and print percentage of records with valid census geoid
         valid_geoid_count = joined["std_geoid"].notna().sum()

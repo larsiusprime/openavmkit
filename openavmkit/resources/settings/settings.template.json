@@ -15,11 +15,15 @@
 				"__census": {
 					"__doc": "Optional ACS Census enrichment. Spatially joins American Community Survey block-group data (median_income, median_g_rent, median_c_rent, total_population) onto every parcel. Requires a US Census API key (see README) and a 5-digit state+county FIPS code.",
 					"__doc_stamp_regions": "By default (stamp_regions: true) also stamps census_tract (11-digit GEOID) and census_block_group (12-digit GEOID) location columns derived from the block-group GEOID. These auto-classify as categorical locations (already in field_classification + data_dictionary) and can be used by spatial_lag, area_stats, ratio-study breakdowns, and equity studies. Set stamp_regions: false to skip. Existing census_tract/census_block_group columns are never overwritten.",
+					"__doc_tract_fallback": "The ACS withholds a block group's figure where too few households of the kind live there to estimate it (median rent in an owner-occupied suburb, most often), and writes a large negative code instead; every such code is read as missing. With tract_fallback: true, a block group with no figure takes its census tract's (one more Census API call). Default false.",
+					"__doc_nearest_m": "A parcel whose centroid falls in no block group (a gap or sliver between their shapes, or just past the county's edge) is left without census figures. With nearest_m (meters), it takes the nearest block group within that distance. Default 0: left without.",
 					"__example": {
 						"enabled": true,
 						"fips": "51730",
 						"year": 2022,
-						"stamp_regions": true
+						"stamp_regions": true,
+						"tract_fallback": true,
+						"nearest_m": 250
 					}
 				},
 				"__area_stats": {

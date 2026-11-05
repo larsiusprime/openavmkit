@@ -326,6 +326,23 @@ class DEMService:
         )
 
 
+def pad_bbox(bbox: Tuple[float, float, float, float], meters: float) -> Tuple[float, float, float, float]:
+    """A WGS84 bbox grown by about this many meters on every side (a degree of latitude is ~111 km; of longitude,
+    that times the cosine of the latitude), clamped to valid coordinates."""
+    import math
+
+    west, south, east, north = bbox
+    dlat = meters / 111_320.0
+    mid = math.radians((south + north) / 2)
+    dlon = meters / (111_320.0 * max(math.cos(mid), 0.01))
+    return (
+        max(west - dlon, -180.0),
+        max(south - dlat, -90.0),
+        min(east + dlon, 180.0),
+        min(north + dlat, 90.0),
+    )
+
+
 def _nodata_mask(arr: np.ndarray, nodata) -> np.ndarray:
     """Return a boolean mask of cells that should be treated as nodata.
 

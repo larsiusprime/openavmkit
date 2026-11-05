@@ -109,10 +109,11 @@ from openavmkit.utilities.census import (
     get_creds_from_env_census,
     init_service_census,
     match_to_census_blockgroups,
+    null_jam_values,
 )
 from openavmkit.utilities.openstreetmap import init_service_openstreetmap
 from openavmkit.utilities.overture import init_service_overture
-from openavmkit.utilities.dem import init_service_dem, bbox_in_usgs_coverage
+from openavmkit.utilities.dem import init_service_dem, bbox_in_usgs_coverage, pad_bbox
 from openavmkit.inference import perform_spatial_inference
 from openavmkit.utilities.timing import TimingData
 from pyproj import CRS
@@ -1462,18 +1463,20 @@ def _enrich_df_census(
             ["geometry"] + census_cols_to_keep
         ].copy()
 
-        # Replace all -666666666.0 sentinel values with None
-        for col in census_cols_to_keep:
-            if pd.api.types.is_numeric_dtype(census_boundaries_subset[col]):
-                census_boundaries_subset.loc[
-                    abs(census_boundaries_subset[col] + 666666666.0).le(1e6), col
-                ] = None
+        # Every ACS code for a figure it doesn't give (-666666666, -999999999, ...) as missing: only the first
+        # was caught, so the others went in as a real, hugely negative income or rent.
+        census_boundaries_subset = null_jam_values(
+            census_boundaries_subset, [c for c in census_cols_to_keep if c != "std_geoid"]
+        )
 
         if verbose:
             print("Performing spatial join with Census Data...")
 
         df = match_to_census_blockgroups(
-            gdf=df, census_gdf=census_boundaries_subset, join_type="left"
+            gdf=df,
+            census_gdf=census_boundaries_subset,
+            join_type="left",
+            nearest_m=float(census_settings.get("nearest_m", 0) or 0),
         )
         if census_settings.get("stamp_regions", True):
             df = _stamp_census_regions(df)
@@ -1584,6 +1587,9 @@ def _enrich_df_dem(
         return df_in
 
     resolution_m = int(dem_settings.get("resolution_m", 10))
+    # A margin round the parcels: reprojecting to UTM leaves empty cells along the edges, and a cell's slope needs
+    # its neighbours, so parcels on the outer edge got no slope (and, right on it, no elevation).
+    bbox = pad_bbox(bbox, max(8 * resolution_m, 100))
 
     try:
         service = init_service_dem(dem_settings)
