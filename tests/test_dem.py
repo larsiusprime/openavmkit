@@ -186,3 +186,57 @@ def test_compute_parcel_stats_shared_and_small_shapes(tmp_path):
     assert means[0] == means[1] == means[2]
     assert means[3] == pytest.approx(300.0)
     assert stats["elevation_stdev_m"].iloc[3] == 0.0
+
+
+def test_pad_bbox_grows_every_side():
+    """A bbox grown by 100 m: about 0.0009 degrees of latitude, a little more of longitude away from the equator."""
+    from openavmkit.utilities.dem import pad_bbox
+
+    w, s, e, n = pad_bbox((-77.5, 38.7, -77.4, 38.8), 100)
+    assert s == pytest.approx(38.7 - 100 / 111_320, abs=1e-9) and n == pytest.approx(38.8 + 100 / 111_320, abs=1e-9)
+    assert (-77.5 - w) > (38.7 - s) and e > -77.4
+
+
+
+def test_dem_is_fetched_with_a_margin_round_the_parcels(monkeypatch):
+    """The DEM asked for is bigger than the parcels' bbox: reprojecting leaves empty cells along its edges, and a
+    cell's slope needs its neighbours, so edge parcels lost their slope (and, right on the edge, their elevation)."""
+    pytest.importorskip("rasterio")
+    pytest.importorskip("seamless_3dep")
+    import openavmkit.data as data
+
+    asked = {}
+
+    class Fake:
+        def get_dem_for_bbox(self, bbox, resolution_m=10, verbose=False):
+            asked["bbox"] = bbox
+            raise RuntimeError("stop here")
+
+    monkeypatch.setattr(data, "init_service_dem", lambda s: Fake())
+    parcel = Polygon([(-77.5, 38.7), (-77.4, 38.7), (-77.4, 38.8), (-77.5, 38.8)])
+    gdf = gpd.GeoDataFrame({"key": ["a"]}, geometry=[parcel], crs="EPSG:4326")
+    with pytest.warns(UserWarning):
+        data._enrich_df_dem(gdf, {"enabled": True, "resolution_m": 10}, {}, use_cache=False)
+    w, s, e, n = asked["bbox"]
+    assert w < -77.5 and s < 38.7 and e > -77.4 and n > 38.8
+    assert 38.7 - s == pytest.approx(100 / 111_320, rel=1e-6)  # 8 cells of 10 m, at least 100 m
+
+
+def test_slope_is_missing_next_to_empty_cells(tmp_path):
+    """Why the margin: a slope cell beside an empty one (the DEM's edge after reprojecting) has no slope."""
+    rasterio = pytest.importorskip("rasterio")
+    from rasterio.transform import from_origin
+
+    meta = dict(driver="GTiff", height=10, width=10, count=1, dtype="float32",
+                crs="+proj=utm +zone=10 +north +datum=WGS84 +units=m +no_defs",
+                transform=from_origin(500000.0, 4000000.0, 10.0, 10.0), nodata=-9999.0)
+    dem = np.full((10, 10), 50.0, dtype="float32")
+    dem[:, 0] = -9999.0  # an empty column at the west edge
+    dem_path = tmp_path / "dem.tif"
+    with rasterio.open(dem_path, "w", **meta) as dst:
+        dst.write(dem, 1)
+    slope_path = DEMService({}).compute_slope_raster(dem_path)
+    with rasterio.open(slope_path) as src:
+        slope = src.read(1)
+    assert np.isnan(slope[:, 1]).all() or (slope[:, 1] == -9999.0).all()  # beside the empty column: none
+    assert np.isfinite(slope[:, 5]).all() and (slope[:, 5] != -9999.0).all()
