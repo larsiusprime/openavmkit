@@ -32,21 +32,14 @@ def test_a_center_in_degrees_is_read_as_degrees(crs):
 
 
 @pytest.mark.parametrize("crs", ["EPSG:2264", "EPSG:4326"])
-def test_the_area_weighted_middle_is_the_dissolved_middle_where_parcels_dont_overlap(crs):
-    from openavmkit.utilities.geometry import area_weighted_center
+def test_the_middle_is_the_dissolved_middle_where_parcels_dont_overlap(crs):
+    """Without locality.center, the middle is the area-weighted mean of the parcels' centroids: where they don't
+    overlap, the same point as the centroid of all of them dissolved into one, without the dissolve's seconds."""
     from openavmkit.utilities.settings import get_center
 
     gdf = _parcels(crs)
     union = gdf.geometry.union_all().centroid
-    weighted = area_weighted_center(gdf.geometry)
-    assert (weighted.x, weighted.y) == pytest.approx((union.x, union.y), rel=1e-12, abs=1e-9)
-    assert get_center({"locality": {"center_method": "area_weighted"}}, gdf) == pytest.approx(
-        get_center({"locality": {}}, gdf), rel=1e-12, abs=1e-9
-    )
-    # And so the polar coordinates measured from it.
-    a = _enrich_polar_coordinates(gdf, {"locality": {"center_method": "area_weighted"}})
-    b = _enrich_polar_coordinates(gdf, {"locality": {}})
-    assert a["polar_radius"].to_numpy() == pytest.approx(b["polar_radius"].to_numpy(), abs=1e-6)
+    assert get_center({"locality": {}}, gdf) == pytest.approx((union.x, union.y), rel=1e-12, abs=1e-9)
 
 
 def test_stacked_duplicates_count_once_as_in_the_dissolve():
@@ -74,8 +67,9 @@ def test_points_give_their_plain_mean_and_nothing_gives_none():
     assert area_weighted_center(gpd.GeoSeries([], crs="EPSG:2264")) is None
 
 
-def test_an_unknown_center_method_says_what_it_can_be():
+def test_no_shapes_and_no_center_says_so():
     from openavmkit.utilities.settings import get_center
 
-    with pytest.raises(ValueError, match="union.*area_weighted"):
-        get_center({"locality": {"center_method": "middle"}}, _parcels("EPSG:2264"))
+    empty = gpd.GeoDataFrame({"key": []}, geometry=[], crs="EPSG:2264")
+    with pytest.raises(ValueError, match="locality.center"):
+        get_center({"locality": {}}, empty)
