@@ -242,21 +242,31 @@ def _get_entry_field(entry, df):
     return field
 
 
+# The quantiles every crunch level needs: 5 bins, then 3 (high, medium, low), then 2 (high & low).
+_CRUNCH_LEVELS = (
+    (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
+    (0.0, 0.25, 0.75, 1.0),
+    (0.0, 0.5, 1.0),
+)
+_CRUNCH_QS = np.array(sorted({q for level in _CRUNCH_LEVELS for q in level}))
+
+
 def _crunch(_df, field, min_count):
     """Crunch a field into a smaller number of bins, each with at least min_count
     elements.
 
-    Dynamically adapts to find the best number of bins to use.
-    """
-    crunch_levels = [
-        (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),  # 5 clusters
-        (0.0, 0.25, 0.75, 1.0),  # 3 clusters (high, medium, low)
-        (0.0, 0.5, 1.0),  # 2 clusters (high & low)
-    ]
-    good_series = None
-    too_small = False
+    Dynamically adapts to find the best number of bins to use: 5 equal-count bins,
+    else 3, else 2, the first level whose every bin holds at least min_count rows.
+    Returns the bins as a Categorical Series labelled by each bin's upper edge, or
+    None when no level works.
 
-    # Cache the column to avoid repeated attribute lookups
+    The work is done with NumPy on the column (_crunch_numpy): one percentile call
+    for all the edges, and the binning by searchsorted, as pandas does them. It's
+    called once per cluster per numeric field, often thousands of times on small
+    clusters, where each pandas call's own overhead was most of the time. Columns
+    NumPy can't reproduce pandas on exactly (dates, float32, objects) take the
+    pandas path (_crunch_pandas); the result is the same either way.
+    """
     field_values = _df[field]
 
     # Boolean fast path
@@ -266,26 +276,101 @@ def _crunch(_df, field, min_count):
             return None
         return bool_series
 
-    # Precompute all unique quantiles required by all crunch levels
-    unique_qs = {q for level in crunch_levels for q in level}
-    quantile_values = {q: field_values.quantile(q) for q in unique_qs}
+    values = _exact_float64(field_values)
+    if values is None:
+        return _crunch_pandas(field_values, min_count)
+    return _crunch_numpy(field_values, values, min_count)
 
-    def _value_in_list(value, lst):
-        for v in lst:
-            delta = abs(value - v)
-            if delta < 1e-6:
-                return True
-        return False
 
-    # Iterate over each crunch level
-    for crunch_level in crunch_levels:
-        test_bins = []
-        for q in crunch_level:
-            bin_val = quantile_values[q]
-            # Only add non-NaN and new bin values to test_bins
-            if not pd.isna(bin_val) and not _value_in_list(bin_val, test_bins):
-                test_bins.append(bin_val)
+def _quantile_type(s: pd.Series, values: np.ndarray):
+    """The type pandas' Series.quantile gives a whole-number quantile of this column: its own integer type for a
+    nullable integer column with blanks (pandas casts each quantile back when it's whole), else float64."""
+    dtype = s.dtype
+    if dtype.kind in "iu" and isinstance(dtype, pd.api.extensions.ExtensionDtype) and np.isnan(values).any():
+        return dtype.numpy_dtype.type
+    return None
 
+
+def _exact_float64(s: pd.Series):
+    """The column as float64 with NaN for blanks, when that's exactly what pandas'
+    quantile and cut work on (integers, float64, and their nullable kinds); else
+    None."""
+    dtype = s.dtype
+    if isinstance(dtype, pd.api.extensions.ExtensionDtype):
+        if not isinstance(dtype, (pd.Int8Dtype, pd.Int16Dtype, pd.Int32Dtype, pd.Int64Dtype,
+                                  pd.UInt8Dtype, pd.UInt16Dtype, pd.UInt32Dtype, pd.UInt64Dtype,
+                                  pd.Float64Dtype)):
+            return None
+        values = s.to_numpy(dtype=np.float64, na_value=np.nan)
+    elif dtype.kind in "iu" or dtype == np.float64:
+        values = s.to_numpy(dtype=np.float64)
+    else:
+        return None
+    if dtype.kind in "iu" and np.abs(values[~np.isnan(values)]).max(initial=0) >= 2**53:
+        return None  # integers float64 can't hold exactly
+    return values
+
+
+def _distinct_edges(quantile_values, crunch_level):
+    """A level's bin edges: its quantiles, each one within 1e-6 of an earlier one
+    left out, and blanks too."""
+    test_bins = []
+    for q in crunch_level:
+        bin_val = quantile_values[q]
+        if not pd.isna(bin_val) and not any(abs(bin_val - v) < 1e-6 for v in test_bins):
+            test_bins.append(bin_val)
+    return test_bins
+
+
+def _crunch_numpy(field_values: pd.Series, values: np.ndarray, min_count):
+    present = ~np.isnan(values)
+    if not present.any():
+        return None
+    # As pandas' Series.quantile: np.percentile on the values that aren't blank, at q * 100, linear.
+    edges_all = np.percentile(values[present], _CRUNCH_QS * 100.0, method="linear")
+    as_int = _quantile_type(field_values, values)
+    quantile_values = {
+        q: as_int(v) if as_int is not None and float(v).is_integer() else np.float64(v)
+        for q, v in zip(_CRUNCH_QS.tolist(), edges_all.tolist())
+    }
+
+    for crunch_level in _CRUNCH_LEVELS:
+        test_bins = _distinct_edges(quantile_values, crunch_level)
+        if len(test_bins) <= 1:
+            # if we only have one bin, this crunch is pointless
+            return None
+        edges = np.asarray(test_bins, dtype=np.float64)
+        if not np.all(np.diff(edges) > 0):
+            # pd.cut would raise on edges that don't increase (infinite values): let it
+            return _crunch_pandas(field_values, min_count)
+        # As pd.cut(right=True, include_lowest=True): (e0, e1], (e1, e2], ..., e0 itself in the first bin; blanks
+        # and values outside the edges in none.
+        ids = np.searchsorted(edges, values, side="left")
+        ids[values == edges[0]] = 1
+        outside = ~present | (ids == len(edges)) | (ids == 0)
+        codes = ids - 1
+        codes[outside] = -1
+        # Every bin counted, empty ones too (as value_counts on a Categorical does).
+        counts = np.bincount(codes[codes >= 0], minlength=len(edges) - 1)
+        if counts.min() < min_count:
+            # If any bin at this granularity is too small, fall through to the next
+            # (coarser) crunch level rather than abandoning the search.
+            continue
+        # The labels as pd.cut makes them: a Categorical of each bin's upper edge, in order.
+        labels = test_bins[1:]
+        dtype = pd.Categorical(labels, categories=labels, ordered=True).dtype
+        cat = pd.Categorical.from_codes(codes, dtype=dtype)
+        return pd.Series(cat, index=field_values.index, name=field_values.name)
+
+    return None
+
+
+def _crunch_pandas(field_values: pd.Series, min_count):
+    """_crunch on any column pandas can take quantiles of and cut, with pandas."""
+    quantile_values = {q: field_values.quantile(q) for q in _CRUNCH_QS.tolist()}
+
+    for crunch_level in _CRUNCH_LEVELS:
+        test_bins = _distinct_edges(quantile_values, crunch_level)
         if len(test_bins) > 1:
             labels = test_bins[1:]
             series = pd.cut(
@@ -293,7 +378,6 @@ def _crunch(_df, field, min_count):
             )
         else:
             # if we only have one bin, this crunch is pointless
-            too_small = True
             break
 
         if series.value_counts().min() < min_count:
@@ -301,7 +385,6 @@ def _crunch(_df, field, min_count):
             # (coarser) crunch level rather than abandoning the search: `break` here
             # made the 3-bin and 2-bin levels unreachable under every input, so the
             # "dynamically adapts" promise in the docstring never held.
-            too_small = True
             continue
         else:
             # if all bins are big enough, return this series

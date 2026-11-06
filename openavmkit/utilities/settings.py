@@ -350,6 +350,12 @@ def get_center(s: dict, gdf: gpd.GeoDataFrame = None) -> tuple[float, float]:
     """
     Get the centroid of all the provided parcel geometry
 
+    ``settings.locality.center`` (degrees) when it's set. Otherwise the middle of the parcels, worked out as
+    ``settings.locality.center_method`` says: ``"union"`` (the default), the centroid of all the parcels dissolved
+    into one shape; or ``"area_weighted"``, the area-weighted mean of the distinct parcels' centroids, which is the
+    same point where parcels don't overlap and takes milliseconds instead of seconds (see
+    ``geometry.area_weighted_center``).
+
     Parameters
     ----------
     s : dict
@@ -372,8 +378,22 @@ def get_center(s: dict, gdf: gpd.GeoDataFrame = None) -> tuple[float, float]:
         longitude = center["longitude"]
         return longitude, latitude
     elif gdf is not None:
-        # calculate the center of the gdf
-        centroid = gdf.geometry.unary_union.centroid
+        # The middle of the parcels, in their own coordinates: by locality.center_method, the centroid of all of them
+        # dissolved into one ("union", the default), or the area-weighted mean of their centroids ("area_weighted":
+        # the same point where parcels don't overlap, without the dissolve's seconds on a county).
+        method = s.get("locality", {}).get("center_method", "union")
+        if method == "area_weighted":
+            from openavmkit.utilities.geometry import area_weighted_center
+
+            centroid = area_weighted_center(gdf.geometry)
+            if centroid is None:
+                raise ValueError("No parcel shapes to find the middle of, and no settings.locality.center")
+        elif method == "union":
+            centroid = gdf.geometry.unary_union.centroid
+        else:
+            raise ValueError(
+                f"settings.locality.center_method is {method!r}; it can be \"union\" or \"area_weighted\""
+            )
         return centroid.x, centroid.y
     else:
         raise ValueError("Could not find locality.center in settings!")

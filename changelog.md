@@ -25,6 +25,8 @@ All notable changes to this project will be documented in this file.
 
 ### New features
 
+- **The middle of the parcels without the dissolve:** `locality.center_method: "area_weighted"` finds the center that polar coordinates are measured from (when `locality.center` isn't set) as the area-weighted mean of the distinct parcels' centroids, instead of the centroid of all of them dissolved into one (`"union"`, still the default). It's the same point where parcels don't overlap (exact duplicates, such as stacked condo units, count once in both), in milliseconds instead of seconds: the dissolve took about 5 s at 50,000 parcels. Where shapes only partly overlap, the two can differ slightly. See [Basic geometric enrichment](docs/docs/advanced_settings.md#41-basic-geometric-enrichment--dataprocessenrichbasic).
+
 - **Census: a block group's withheld figure from its tract, and a parcel between block groups matched to the nearest.** `data.process.enrich.census.tract_fallback: true` fills a block group's missing figure (the ACS withholds median rent where there are too few renters, often) with its census tract's, at the cost of one more Census API call. `nearest_m` (meters) gives a parcel whose centroid is in no block group the nearest one within that distance. Both off by default. See the settings template's `__census`.
 
 - **Explicit `bins` for ratio-study breakdowns.** `{"by": "pct_vacant", "bins": [0, 0.1, 0.25, 0.5, 1.0], "bin_labels": ["0-10%", "10-25%", "25-50%", "50-100%"]}` slices on value edges you choose, for columns where equal-count quantiles or integer `slice_size` labels don't work (e.g. 0–1 shares). Bad edges or labels raise a clear error; sales outside the edges are left out with a warning. See [Ratio study breakdowns](docs/docs/advanced_settings.md#analysisratio_studybreakdowns). From [#366](https://github.com/larsiusprime/openavmkit/pull/366).
@@ -52,6 +54,10 @@ All notable changes to this project will be documented in this file.
 - **Each standard its own targets:** `run_value_field_studies(standards={..., "by_class": {cls: {...}}})` gives a class its own `level`, `prb`, `prb_unacceptable`, `vei` and `min_sales` in place of the ones for every class (a state's standards, an office's), and a class can have any name `standards["cod"]` has. Unset: as before.
 - **The correlation test without overlap:** `feature_selection.correlation_overlap: false` (`calc_correlations(..., overlap=False)`) judges each variable by its correlation with price alone, and drops none for overlapping another, leaving overlap to the VIF test. Default `true`, as before.
 - **Progress per model group:** `do_per_model_group` reports which model group it's on (`progress.detail`), so time adjustment, equity clusters and scrutiny say where they are.
+
+### Performance
+
+- **Sales scrutiny's clustering is several times faster, with the same clusters.** Splitting each cluster on a numeric field (`_crunch`, called once per cluster per field: thousands of times on a county) took nine pandas `quantile` calls and up to three `pd.cut`s, each mostly pandas' own overhead on a small cluster. It now takes one `np.percentile` call and `np.searchsorted`, reproducing pandas' arithmetic and types exactly (columns NumPy can't reproduce pandas on, such as dates and float32, still go through pandas). On a 50,000-parcel test county, `make_clusters` went from 28.7 s to 6.8 s, and the clustering stage's outputs were identical. `tests/test_crunch_equivalence.py` holds it to the pandas version on every kind of column.
 
 ### Fixed
 
