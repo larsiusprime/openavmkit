@@ -129,7 +129,13 @@ def make_clusters(
 
     # Phase 4: iterate over numeric fields, trying to crunch down whenever possible:
     for entry in fields_numeric:
-        
+        # The field to split on. Every cluster's rows have the table's columns, so it's the same field for every
+        # cluster: looked up once, and a field the table doesn't have splits nothing.
+        field = _get_entry_field(entry, df)
+        if not field or field not in df:
+            continue
+        column = df[field]
+
         t.start("factorize")
         # integer codes in first-seen order (same as unique())
         codes, uniques = pd.factorize(df["cluster"].to_numpy(copy=False), sort=False)
@@ -162,15 +168,10 @@ def make_clusters(
                 continue
             
             t.start("df_sub loc")
-            df_sub = df.loc[block_idx]
+            # This cluster's rows of the one column it's split on (not a copy of every column)
+            df_sub = column.loc[block_idx].to_frame()
             t.stop("df_sub loc")
-            
-            # get the field to crunch
-            field = _get_entry_field(entry, df_sub)
-            if not field or field not in df_sub:
-                t.stop("cluster")
-                continue
-            
+
             t.start("crunch")
             series = _crunch(df_sub, field, min_cluster_size)
             t.stop("crunch")
