@@ -141,6 +141,7 @@ from openavmkit.tuning import (
     _cleanup_study_files,
     _resolve_cv_inner,
 )
+from openavmkit.utilities.text import read_text
 from openavmkit.utilities.timing import TimingData
 
 pd.set_option("future.no_silent_downcasting", True)
@@ -2261,7 +2262,7 @@ def _run_multi_mra(
         model_name = ds.name
 
         if os.path.exists(f"{outpath}/{model_name}_vars.json"):
-            best_var_map = json.load(open(f"{outpath}/{model_name}_vars.json", "r"))
+            best_var_map = json.loads(read_text(f"{outpath}/{model_name}_vars.json"))
             if verbose:
                 print(f"--> using saved variables")
 
@@ -2309,7 +2310,7 @@ def _run_multi_mra(
             os.makedirs(outpath, exist_ok=True)
             if verbose:
                 print(f"--> saving variables to \"{outpath}/{model_name}_vars.json\"")
-            json.dump(best_var_map, open(f"{outpath}/{model_name}_vars.json", "w"))
+            json.dump(best_var_map, open(f"{outpath}/{model_name}_vars.json", "w", encoding="utf-8"))
 
     timing.stop("parameter_search")
 
@@ -3450,7 +3451,7 @@ def run_gwr(
 
     if use_saved_params:
         if os.path.exists(f"{outpath}/{model_name}_bw.json"):
-            gwr_bw = json.load(open(f"{outpath}/{model_name}_bw.json", "r"))
+            gwr_bw = json.loads(read_text(f"{outpath}/{model_name}_bw.json"))
             if verbose:
                 print(f"--> using saved bandwidth: {gwr_bw:0.2f}")
 
@@ -3480,7 +3481,7 @@ def run_gwr(
 
         if save_params:
             os.makedirs(outpath, exist_ok=True)
-            json.dump(gwr_bw, open(f"{outpath}/{model_name}_bw.json", "w"))
+            json.dump(gwr_bw, open(f"{outpath}/{model_name}_bw.json", "w", encoding="utf-8"))
 
         if verbose:
             print(f"--> optimal bandwidth = {gwr_bw:0.2f}")
@@ -4314,7 +4315,7 @@ def run_layeredcomp(
     lcomp_model = None
     if use_saved_params and lib_ok and os.path.exists(model_cache_path):
         try:
-            cached = json.load(open(model_cache_path))
+            cached = json.loads(read_text(model_cache_path))
             cached_version = cached.get("lcompmodel_version")
             if cached.get("fingerprint") != fingerprint:
                 pass  # stale data/hyperparams — refit (the common, unremarkable case)
@@ -4349,7 +4350,7 @@ def run_layeredcomp(
                     "lcompmodel_version": lcm_version,
                     "model": lcomp_model.to_dict(),
                 },
-                open(model_cache_path, "w"),
+                open(model_cache_path, "w", encoding="utf-8"),
             )
 
     # Wrap it in our wrapper class
@@ -5518,7 +5519,7 @@ def _get_params(
 
     params = None
     if use_saved_params and os.path.exists(params_path):
-        saved = json.load(open(params_path, "r"))
+        saved = json.loads(read_text(params_path))
         saved_fp = saved.pop("__fingerprint", None) if isinstance(saved, dict) else None
         if saved_fp == fp or saved_fp == _CV_AGGREGATE_FINGERPRINT:
             params = saved  # "__fingerprint" already popped, so the model never sees it
@@ -5555,7 +5556,7 @@ def _get_params(
         )
         if save_params:
             # Persist params with the fingerprint embedded; keep the returned dict clean.
-            json.dump({**params, "__fingerprint": fp}, open(params_path, "w"))
+            json.dump({**params, "__fingerprint": fp}, open(params_path, "w", encoding="utf-8"))
             # Final params written → the resume journal is no longer needed.
             _cleanup_study_files(storage_path)
     return params

@@ -70,6 +70,7 @@ from openavmkit.calculations import (
 )
 from openavmkit.filters import resolve_filter, select_filter
 from openavmkit.utilities.somers import get_size_in_somers_units_ft
+from openavmkit.utilities.text import read_text, resolve_encoding
 from openavmkit import progress
 from openavmkit.utilities.cache import get_cached_df, write_cached_df
 from openavmkit.utilities.sales_scrutiny import SALE_PARCEL_COUNT, count_parcels_per_deed
@@ -1961,8 +1962,7 @@ def _read_streets_signature() -> dict | None:
     if not os.path.exists(_STREETS_SIG_PATH):
         return None
     try:
-        with open(_STREETS_SIG_PATH, "r") as f:
-            return json.load(f)
+        return json.loads(read_text(_STREETS_SIG_PATH))
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -1970,7 +1970,7 @@ def _read_streets_signature() -> dict | None:
 def _write_streets_signature(signature: dict) -> None:
     """Record what parcel set the cached streets file was built from."""
     try:
-        with open(_STREETS_SIG_PATH, "w") as f:
+        with open(_STREETS_SIG_PATH, "w", encoding="utf-8") as f:
             json.dump(signature, f)
     except OSError as e:
         warnings.warn(f"Could not write {_STREETS_SIG_PATH}: {e}")
@@ -3614,7 +3614,7 @@ def _perform_spatial_joins(
         gdf_no_geometry.to_parquet("out/errors/parcels_no_geometry.parquet")
         gdf_no_geometry.to_csv("out/errors/parcels_no_geometry.csv", index=False)
         gdf_no_geom_keys = gdf_no_geometry["key"].values
-        with open("out/errors/parcels_no_geometry_keys.txt", "w") as f:
+        with open("out/errors/parcels_no_geometry_keys.txt", "w", encoding="utf-8") as f:
             for key in gdf_no_geom_keys:
                 f.write(f"{key}\n")
         gdf_merged = gdf_merged.dropna(subset=["geometry"])
@@ -4224,8 +4224,10 @@ def load_dataframe(
     filename = f"in/{filename}"
     ext = str(filename).split(".")[-1].lower()
     layer = entry.get("layer")  # GeoPackage only: which layer to read (default: the first)
+    # CSV only: the file's text encoding ("auto": worked out from the file; none: pandas' default, UTF-8).
+    encoding = resolve_encoding(filename, entry.get("encoding")) if ext == "csv" else None
 
-    column_names = _snoop_column_names(filename, layer)
+    column_names = _snoop_column_names(filename, layer, encoding)
 
     e_load = entry.get("load", {})
 
@@ -4321,7 +4323,7 @@ def load_dataframe(
             if dtype_value in ("datetime", "bool", "boolean"):
                 dtype_value = "string"
             csv_dtype_map[key] = dtype_value
-        df = pd.read_csv(filename, usecols=cols_to_load, dtype=csv_dtype_map)
+        df = pd.read_csv(filename, usecols=cols_to_load, dtype=csv_dtype_map, encoding=encoding)
     elif ext in GIS_EXTENSIONS:
         attrs = [c for c in cols_to_load if c != "geometry"]
         df = gpd.read_file(
@@ -4492,14 +4494,14 @@ def load_dataframe(
 GIS_EXTENSIONS = ("gpkg", "shp", "geojson")
 
 
-def _snoop_column_names(filename: str, layer: str | None = None) -> list[str]:
+def _snoop_column_names(filename: str, layer: str | None = None, encoding: str | None = None) -> list[str]:
     """Retrieve column names from a file without loading full data."""
     ext = str(filename).split(".")[-1].lower()
     if ext == "parquet" or ext == "geoparquet":
         parquet_file = pq.ParquetFile(filename)
         return parquet_file.schema.names
     elif ext == "csv":
-        return pd.read_csv(filename, nrows=0).columns.tolist()
+        return pd.read_csv(filename, nrows=0, encoding=encoding).columns.tolist()
     elif ext in GIS_EXTENSIONS:
         import pyogrio
 

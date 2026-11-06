@@ -30,6 +30,7 @@ import geopandas as gpd
 
 import pandas as pd
 from datetime import datetime
+from openavmkit.utilities.text import read_text
 
 
 def load_settings(
@@ -58,8 +59,7 @@ def load_settings(
 
     if settings_object is None:
         try:
-            with open(settings_file, "r") as f:
-                settings = json.load(f)
+            settings = json.loads(read_text(settings_file))
         except FileNotFoundError:
             cwd = os.getcwd()
             full_path = os.path.join(cwd, settings_file)

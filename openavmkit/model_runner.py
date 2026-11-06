@@ -148,6 +148,7 @@ from openavmkit.utilities.stats import (
     trim_outliers_mask,
 )
 from openavmkit.utilities.geometry import ensure_geometries
+from openavmkit.utilities.text import read_text
 from openavmkit.utilities.timing import TimingData
 from openavmkit.utilities.optional import require_engines
 from openavmkit.shap_analysis import (
@@ -2079,7 +2080,7 @@ def run_one_model_cv(
     if fold_param_files and cv_prod_mode in ("aggregate", "best_fold"):
         dicts = []
         for _util, fpath in fold_param_files:
-            d = json.load(open(fpath))
+            d = json.loads(read_text(fpath))
             d.pop("__fingerprint", None)
             dicts.append(d)
         if cv_prod_mode == "best_fold":
@@ -2091,7 +2092,7 @@ def run_one_model_cv(
         else:
             chosen = _aggregate_fold_params(dicts)
         os.makedirs(prod_outpath, exist_ok=True)
-        with open(f"{prod_outpath}/{model_name}_params.json", "w") as fh:
+        with open(f"{prod_outpath}/{model_name}_params.json", "w", encoding="utf-8") as fh:
             json.dump({**chosen, "__fingerprint": _CV_AGGREGATE_FINGERPRINT}, fh)
         prod_use_saved = True
         if verbose:
@@ -3059,7 +3060,7 @@ def _write_ensemble_meta(path: str, ensemble_type: str, members: list[str]):
     """
     os.makedirs(path, exist_ok=True)
     meta = {"type": ensemble_type, "members": list(members)}
-    with open(f"{path}/ensemble_meta.json", "w") as f:
+    with open(f"{path}/ensemble_meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
 
