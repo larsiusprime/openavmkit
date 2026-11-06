@@ -50,7 +50,7 @@ from sklearn.linear_model import LinearRegression
 
 from openavmkit.data import (
     get_important_field,
-    _read_split_keys,
+    read_split_keys,
     _read_fold_keys,
     SalesUniversePair,
     get_hydrated_sales_from_sup,
@@ -128,7 +128,7 @@ from openavmkit.utilities.settings import (
     get_fields_boolean,
     _get_sales,
     _simulate_removed_buildings,
-    _get_max_ratio_study_trim,
+    get_max_ratio_study_trim,
     get_look_back_dates,
     get_assessor_holdout_mode,
     get_outside_models,
@@ -1622,7 +1622,7 @@ def run_one_model(
     location_fields = entry.get("locations", get_locations(settings, df_sales))
 
     if test_keys is None or train_keys is None:
-        test_keys, train_keys = _read_split_keys(model_group)
+        test_keys, train_keys = read_split_keys(model_group)
     t.stop("setup")
 
     t.start("data split")
@@ -1780,7 +1780,7 @@ def run_one_model(
     
     if ds.vacant_only:
         # If this is a vacant model, we attempt to load a corresponding "full value" model
-        max_trim = _get_max_ratio_study_trim(settings, results.ds.model_group)
+        max_trim = get_max_ratio_study_trim(settings, results.ds.model_group)
 
     if save_results:
         t.start("write")
@@ -4255,7 +4255,7 @@ def _prepare_ds(
     dep_var = instructions.get("dep_var", "sale_price_time_adj")
     dep_var_test = instructions.get("dep_var_test", "sale_price_time_adj")
 
-    test_keys, train_keys = _read_split_keys(model_group)
+    test_keys, train_keys = read_split_keys(model_group)
 
     ds = DataSplit(
         name=name,
@@ -5095,7 +5095,7 @@ def academic_metrics(
     all_results : MultiModelResults
         One model group's results.
     max_trim : float
-        The ratio study's trim, as ``_get_max_ratio_study_trim`` gives it.
+        The ratio study's trim, as ``get_max_ratio_study_trim`` gives it.
     """
     metrics_data = {
         "Model": [],
@@ -5553,7 +5553,7 @@ def _run_models(
 
     title = titleword
 
-    max_trim = _get_max_ratio_study_trim(settings, model_group)
+    max_trim = get_max_ratio_study_trim(settings, model_group)
     
     # Add performance metrics table
     perf_metrics = _model_performance_metrics(model_group, all_results, title, max_trim)

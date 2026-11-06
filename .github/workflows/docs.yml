@@ -28,7 +28,9 @@ jobs:
           python-version: "3.12"
 
       - run: pip install -r requirements-docs.txt
-      - run: pip install --editable .
+      # The API reference imports every module, the cloud backends too (azure, huggingface_hub, paramiko):
+      # those are the cloud extra since #419, imported only when used.
+      - run: pip install --editable ".[cloud]"
 
       - run: mkdocs build --strict
 

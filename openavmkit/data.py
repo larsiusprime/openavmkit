@@ -1164,7 +1164,7 @@ def get_train_test_keys(df_in: pd.DataFrame, settings: dict):
 
     for model_group in model_group_ids:
         # Read the split keys for the model group
-        test_keys, train_keys = _read_split_keys(model_group)
+        test_keys, train_keys = read_split_keys(model_group)
 
         # Filter the DataFrame based on the keys
         mask_test |= df_in["key_sale"].isin(test_keys)
@@ -1204,7 +1204,7 @@ def get_train_test_masks(df_in: pd.DataFrame, settings: dict):
 
     for model_group in model_group_ids:
         # Read the split keys for the model group
-        test_keys, train_keys = _read_split_keys(model_group)
+        test_keys, train_keys = read_split_keys(model_group)
 
         # Filter the DataFrame based on the keys
         mask_test |= df_in["key_sale"].isin(test_keys)
@@ -4227,7 +4227,7 @@ def load_dataframe(
     # CSV only: the file's text encoding ("auto": worked out from the file; none: pandas' default, UTF-8).
     encoding = resolve_encoding(filename, entry.get("encoding")) if ext == "csv" else None
 
-    column_names = _snoop_column_names(filename, layer, encoding)
+    column_names = snoop_column_names(filename, layer, encoding)
 
     e_load = entry.get("load", {})
 
@@ -4494,8 +4494,28 @@ def load_dataframe(
 GIS_EXTENSIONS = ("gpkg", "shp", "geojson")
 
 
-def _snoop_column_names(filename: str, layer: str | None = None, encoding: str | None = None) -> list[str]:
-    """Retrieve column names from a file without loading full data."""
+def snoop_column_names(filename: str, layer: str | None = None, encoding: str | None = None) -> list[str]:
+    """Read a file's column names without loading its data.
+
+    Parameters
+    ----------
+    filename : str
+        A parquet, GeoParquet, CSV or GIS file (any of ``GIS_EXTENSIONS``).
+    layer : str or None
+        A GIS file's layer; None for its first.
+    encoding : str or None
+        A CSV's text encoding; None for pandas' default (UTF-8).
+
+    Returns
+    -------
+    list[str]
+        The column names, in the file's order. A GIS file's geometry, when it has one, is ``"geometry"``, last.
+
+    Raises
+    ------
+    ValueError
+        For a file of any other kind.
+    """
     ext = str(filename).split(".")[-1].lower()
     if ext == "parquet" or ext == "geoparquet":
         parquet_file = pq.ParquetFile(filename)
@@ -5588,8 +5608,18 @@ def _do_write_canonical_split(
 
 
 
-def _read_split_keys(model_group: str):
+def read_split_keys(model_group: str):
     """Read the train and test split keys for a model group from disk.
+
+    Parameters
+    ----------
+    model_group : str
+        The model group, as named in ``out/models/``.
+
+    Returns
+    -------
+    tuple[numpy.ndarray, numpy.ndarray]
+        ``(test_keys, train_keys)``: the ``key_sale`` of each sale in the test and the training set, as strings.
 
     In CV mode (`cv_folds > 1`) `_do_write_canonical_split` writes `folds.csv` instead of
     `train_keys.csv` / `test_keys.csv`, so we fall back to the fold file and collapse it to
