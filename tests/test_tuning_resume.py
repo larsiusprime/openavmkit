@@ -107,6 +107,61 @@ def test_run_batched_is_deterministic_and_parallel():
     assert 0 < n1 <= 24  # may stop early via plateau; never exceeds the target
 
 
+def test_run_batched_one_worker_evaluates_one_at_a_time_with_the_same_result(monkeypatch):
+    """max_workers=1 (LightGBM's tuner): never two trials evaluating at once, and the same trials and best params as
+    in parallel, since the batches are asked and told the same way."""
+    import threading
+    import time
+
+    monkeypatch.setenv("OPENAVMKIT_TUNE_WORKERS", "4")  # what would allow four at once
+    running, most = [0], [0]
+    lock = threading.Lock()
+
+    def make_study():
+        return optuna.create_study(direction="minimize", sampler=_seeded_sampler(7, constant_liar=True))
+
+    def suggest(trial):
+        return {"x": trial.suggest_float("x", -5.0, 5.0)}
+
+    def evaluate(p):
+        with lock:
+            running[0] += 1
+            most[0] = max(most[0], running[0])
+        time.sleep(0.005)  # long enough that two at once would overlap
+        with lock:
+            running[0] -= 1
+        return (p["x"] - 1.3) ** 2
+
+    one = make_study()
+    _run_batched(one, suggest, evaluate, n_trials=16, storage_path=None, verbose=False, batch_size=8, max_workers=1)
+    assert most[0] == 1
+    most[0] = 0
+    par = make_study()
+    _run_batched(par, suggest, evaluate, n_trials=16, storage_path=None, verbose=False, batch_size=8)
+    assert most[0] > 1  # the same batches can run in parallel: the cap is what kept them apart
+    assert [t.params for t in one.trials] == [t.params for t in par.trials]
+    assert one.best_params == par.best_params
+
+
+def test_lightgbm_tuning_runs_its_trials_one_at_a_time(monkeypatch):
+    """Two LightGBM trials at once in one process crash it now and then (native memory corruption): the LightGBM
+    tuner caps _run_batched at one worker."""
+    import openavmkit.tuning as tuning
+
+    seen = {}
+
+    def fake_run_batched(*args, **kwargs):
+        seen.update(kwargs)
+
+    monkeypatch.setattr(tuning, "_run_batched", fake_run_batched)
+    monkeypatch.setattr(tuning.optuna.Study, "best_params", property(lambda self: {}))
+    rng = np.random.default_rng(0)
+    X = pd.DataFrame(rng.normal(size=(60, 3)), columns=["a", "b", "c"])
+    y = pd.Series(rng.normal(size=60))
+    tuning._tune_lightgbm(X, y, n_trials=2, verbose=False)
+    assert seen.get("label") == "LightGBM" and seen.get("max_workers") == 1
+
+
 def test_resumable_study_persists_and_resumes(tmp_path):
     sp = str(tmp_path / "m_study_abc.journal")
     study = _resumable_study("minimize", study_name="m", storage_path=sp)
