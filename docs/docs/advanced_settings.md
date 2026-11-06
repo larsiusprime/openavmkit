@@ -328,6 +328,7 @@ Default-on. Computes from parcel geometry:
 - **GIS-derived land area** — `land_area_gis_<unit>`. When the assessor's `land_area_<unit>` is `0`, negative, or `NaN`, GIS area is automatically substituted; the original assessor value is preserved as `land_area_given_<unit>`, and the deviation is exposed as `land_area_gis_delta_<unit>` and `land_area_gis_delta_percent`. Assessor values are preferred by default — see the gotchas section in [AGENTS.md](https://github.com/larsiusprime/openavmkit/blob/master/AGENTS.md).
 - **Shape metrics** — `geom_rectangularity_num`, `geom_aspect_ratio`, `geom_vertices`
 - **Polar coordinates** — `polar_angle`, `polar_radius` (relative to the locality center)
+  - The center is `locality.center` (`{"latitude": …, "longitude": …}`, in degrees) when it's set. Otherwise it's the middle of the parcels: the area-weighted mean of the distinct parcels' centroids. Where parcels don't overlap, that's exactly the centroid of all of them dissolved into one; exact duplicate shapes (condo units stacked on one footprint) count once; shapes that only partly overlap count their shared ground once each.
 
 Sub-flags (all default `true`): `latlon`, `area`, `shape`, `polar`. Set to `false` to skip individual steps. Set the parent `basic.enabled = false` to skip the entire stage.
 

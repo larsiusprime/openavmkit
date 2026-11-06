@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 
 ### ⚠️ Behavior changes
 
+- **The middle of the parcels, that polar coordinates are measured from when `locality.center` isn't set, is the area-weighted mean of the distinct parcels' centroids**, instead of the centroid of all of them dissolved into one. Where parcels don't overlap it's the same point (the centroid of pieces that don't overlap is their area-weighted mean), and exact duplicates such as stacked condo units count once in both, so for most localities nothing moves. Where shapes only partly overlap, the middle, and so `polar_radius` and `polar_angle`, can move slightly. It takes milliseconds instead of the dissolve's seconds (about 5 s at 50,000 parcels). To measure from a point of your own, set `locality.center`. See [Basic geometric enrichment](docs/docs/advanced_settings.md#41-basic-geometric-enrichment--dataprocessenrichbasic).
 - **Census: every code the ACS writes for a figure it doesn't give is now missing.** Only -666666666 was caught; the others (-999999999, -888888888, -555555555, -333333333, -222222222) went in as a real, hugely negative income, rent or population. They're now missing, like the first.
 - **Elevation is fetched with a margin round the parcels** (8 cells, at least 100 m). Reprojecting the DEM to UTM leaves empty cells along its edges, and a cell's slope needs its neighbours, so parcels on the outer edge of the locality got no slope (and, right on the edge, no elevation). They now get both. The DEM's cache key includes the bbox, so it's fetched once again.
 
@@ -52,6 +53,10 @@ All notable changes to this project will be documented in this file.
 - **Each standard its own targets:** `run_value_field_studies(standards={..., "by_class": {cls: {...}}})` gives a class its own `level`, `prb`, `prb_unacceptable`, `vei` and `min_sales` in place of the ones for every class (a state's standards, an office's), and a class can have any name `standards["cod"]` has. Unset: as before.
 - **The correlation test without overlap:** `feature_selection.correlation_overlap: false` (`calc_correlations(..., overlap=False)`) judges each variable by its correlation with price alone, and drops none for overlapping another, leaving overlap to the VIF test. Default `true`, as before.
 - **Progress per model group:** `do_per_model_group` reports which model group it's on (`progress.detail`), so time adjustment, equity clusters and scrutiny say where they are.
+
+### Performance
+
+- **Sales scrutiny's clustering is several times faster, with the same clusters.** Splitting each cluster on a numeric field (`_crunch`, called once per cluster per field: thousands of times on a county) took nine pandas `quantile` calls and up to three `pd.cut`s, each mostly pandas' own overhead on a small cluster. It now takes one `np.percentile` call and `np.searchsorted`, reproducing pandas' arithmetic and types exactly (columns NumPy can't reproduce pandas on, such as dates and float32, still go through pandas). On a 50,000-parcel test county, `make_clusters` went from 13.9 s to 3.6 s and the whole sales scrutiny run from 25.6 s to 15.6 s, and every output (clusters, flags, the sales set aside, the hand-off to the next stage) was identical. `tests/test_crunch_equivalence.py` holds it to the pandas version on every kind of column.
 
 ### Fixed
 

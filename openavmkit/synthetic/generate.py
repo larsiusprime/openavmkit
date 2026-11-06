@@ -73,8 +73,10 @@ def simple_plane(params: dict) -> gpd.GeoDataFrame:
     )
     gdf["key"] = gdf["x"].astype(str) + "-" + gdf["y"].astype(str)
 
-    # get centroid:
-    centroid = gdf["geometry"].unary_union.centroid
+    # get centroid (the blocks don't overlap: the dissolved blocks' centroid, without the dissolve):
+    from openavmkit.utilities.geometry import area_weighted_center
+
+    centroid = area_weighted_center(gdf["geometry"])
 
     # calculate distance between every parcel's geometry and the centroid
     gdf["dist_to_centroid"] = gdf.geometry.distance(centroid)

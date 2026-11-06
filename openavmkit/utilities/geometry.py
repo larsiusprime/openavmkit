@@ -36,6 +36,31 @@ CRS84_ALIASES = {
     "HTTPS://WWW.OPENGIS.NET/DEF/CRS/OGC/1.3/CRS84",
 }
 
+def area_weighted_center(geoms: gpd.GeoSeries) -> shapely.Point | None:
+    """The middle of a set of shapes: the area-weighted mean of their centroids, each distinct shape counted once,
+    in the shapes' own coordinates. None when there are no shapes.
+
+    Where the shapes don't overlap, this is exactly the centroid of all of them dissolved into one (the centroid of
+    pieces that don't overlap is their area-weighted mean), without the dissolve, which takes seconds on a county.
+    Exact duplicates, such as condo units stacked on one footprint, count once, as they do in the dissolve. Shapes
+    that only partly overlap count their shared ground once each, so there it can differ slightly. Shapes with no
+    area (points, lines) give the plain mean of their centroids.
+    """
+    g = geoms[geoms.notna() & ~geoms.is_empty]
+    if len(g) == 0:
+        return None
+    keys = pd.Series(shapely.to_wkb(shapely.normalize(g.values)))
+    g = g[~keys.duplicated().to_numpy()]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # a centroid in degrees, as the dissolve's would be
+        c = g.centroid
+    a = g.area.to_numpy()
+    x, y = c.x.to_numpy(), c.y.to_numpy()
+    if a.sum() > 0:
+        return shapely.Point(float((x * a).sum() / a.sum()), float((y * a).sum() / a.sum()))
+    return shapely.Point(float(x.mean()), float(y.mean()))
+
+
 def get_crs(gdf: gpd.GeoDataFrame, projection_type: str) -> pyproj.CRS:
     """Returns the appropriate CRS for a GeoDataFrame based on the specified projection
     type.

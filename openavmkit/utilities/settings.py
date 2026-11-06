@@ -350,6 +350,9 @@ def get_center(s: dict, gdf: gpd.GeoDataFrame = None) -> tuple[float, float]:
     """
     Get the centroid of all the provided parcel geometry
 
+    ``settings.locality.center`` (degrees) when it's set. Otherwise the middle of the parcels: the area-weighted
+    mean of the distinct parcels' centroids (see ``geometry.area_weighted_center``).
+
     Parameters
     ----------
     s : dict
@@ -372,8 +375,13 @@ def get_center(s: dict, gdf: gpd.GeoDataFrame = None) -> tuple[float, float]:
         longitude = center["longitude"]
         return longitude, latitude
     elif gdf is not None:
-        # calculate the center of the gdf
-        centroid = gdf.geometry.unary_union.centroid
+        # The middle of the parcels, in their own coordinates: the area-weighted mean of the distinct parcels'
+        # centroids (geometry.area_weighted_center).
+        from openavmkit.utilities.geometry import area_weighted_center
+
+        centroid = area_weighted_center(gdf.geometry)
+        if centroid is None:
+            raise ValueError("No parcel shapes to find the middle of, and no settings.locality.center")
         return centroid.x, centroid.y
     else:
         raise ValueError("Could not find locality.center in settings!")
