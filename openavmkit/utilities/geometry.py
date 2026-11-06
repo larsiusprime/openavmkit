@@ -52,9 +52,11 @@ def area_weighted_center(geoms: gpd.GeoSeries) -> shapely.Point | None:
     keys = pd.Series(shapely.to_wkb(shapely.normalize(g.values)))
     g = g[~keys.duplicated().to_numpy()]
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore")  # a centroid in degrees, as the dissolve's would be
+        # Centroids and areas in degrees when the shapes are: planar in the shapes' own coordinates, as the
+        # dissolved shape's centroid was (geopandas warns that they're not true areas; they don't need to be).
+        warnings.simplefilter("ignore")
         c = g.centroid
-    a = g.area.to_numpy()
+        a = g.area.to_numpy()
     x, y = c.x.to_numpy(), c.y.to_numpy()
     if a.sum() > 0:
         return shapely.Point(float((x * a).sum() / a.sum()), float((y * a).sum() / a.sum()))
