@@ -213,7 +213,9 @@ def _is_plateaued(study, plateau_trials=10, improvement_threshold=0.01):
     return all(t.value >= best_value * (1 + improvement_threshold) for t in recent)
 
 
-def _run_batched(study, suggest, evaluate, n_trials, storage_path, verbose, label="", batch_size=None):
+def _run_batched(
+    study, suggest, evaluate, n_trials, storage_path, verbose, label="", batch_size=None, max_workers=None
+):
     """Deterministic *and* parallel hyperparameter search via synchronous batched ask-and-tell.
 
     The non-determinism in plain ``study.optimize(n_jobs>1)`` comes from telling trial
@@ -250,6 +252,9 @@ def _run_batched(study, suggest, evaluate, n_trials, storage_path, verbose, labe
         workers = max(1, min(batch_size, int(_env_workers)))
     else:
         workers = max(1, min(batch_size, (os.cpu_count() or 2) - 2))
+    if max_workers is not None:
+        # A tuner whose library can't be called from several threads at once caps it (LightGBM: 1).
+        workers = max(1, min(workers, max_workers))
 
     n_done = len([t for t in study.trials if t.state == TrialState.COMPLETE])
     while n_done < n_trials:
@@ -523,7 +528,12 @@ def _tune_lightgbm(
         sampler=_seeded_sampler(random_state, constant_liar=True),
         verbose=verbose,
     )
-    _run_batched(study, suggest, evaluate, n_trials, storage_path, verbose, label="LightGBM")
+    # One trial at a time: two LightGBM trials evaluated at once on this process's threads corrupt memory now and then
+    # (a segmentation fault, a floating-point exception or a bus error, inside LightGBM's native Dataset construction
+    # or predict while the other thread runs Python). Measured on OAK box's 5,000-parcel test county, one fold at a
+    # time: 7 crashes in 11 runs on two slow cores, 1 in 3 on four; none in 11 one at a time, in the same time. The
+    # batches are asked and told as before, so the trials and the result are the same.
+    _run_batched(study, suggest, evaluate, n_trials, storage_path, verbose, label="LightGBM", max_workers=1)
 
     if verbose:
         print(

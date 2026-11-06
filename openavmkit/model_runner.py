@@ -2050,7 +2050,8 @@ def run_one_model_cv(
                     os.environ[k] = v
     else:
         # cv_max_workers=1 is the explicit "no fold parallelism" escape hatch (e.g. low memory);
-        # let each fold keep full trial-level parallelism (tune_workers=None) so it isn't crippled.
+        # let each fold keep full trial-level parallelism (tune_workers=None) so it isn't crippled
+        # (LightGBM's tuner still evaluates one trial at a time: two at once crash it, tuning._tune_lightgbm).
         fold_results = [_run_cv_fold(k, hk, tk, None, *fold_args) for (k, hk, tk) in tasks]
 
     oof_map: dict[str, float] = {}

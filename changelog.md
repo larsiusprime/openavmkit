@@ -66,6 +66,8 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **LightGBM tuning no longer crashes when folds run one at a time.** With `modeling.instructions.cv_max_workers: 1` (the low-memory setting), each fold's tuning evaluated its trials on a thread pool in the one process, and two LightGBM trials at once corrupted memory now and then: the run died with a segmentation fault, a floating-point exception or a bus error, inside LightGBM's native Dataset construction or `predict`. On a 5,000-parcel test county it crashed 7 runs in 11 on two slow cores and 1 in 3 on four. LightGBM's tuner now evaluates one trial at a time (`_run_batched(..., max_workers=1)`); the trials are asked and told in the same batches, so the tuned parameters are the same, and it took the same time (none in 11 runs crashed). Other tuners keep their thread pool.
+
 - **Ratio-study breakdowns no longer crash the whole ratio study** on a column with any NaN values (common for enrichment fields with partial coverage) or with negative values ("bins must increase monotonically"). NaN rows are left out of that breakdown; negative values are binned normally. A column with no numeric values at all is skipped with a warning. From [#366](https://github.com/larsiusprime/openavmkit/pull/366).
 
 - The final CatBoost fit dropped the tuner's fixed settings (Optuna's `best_params` only holds searched keys), so the shipped model trained with CatBoost's defaults — RMSE loss and MVS bootstrap, which silently discarded the tuned `bagging_temperature`. The fixed settings are now merged into the final fit.
