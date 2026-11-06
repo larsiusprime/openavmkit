@@ -57,7 +57,7 @@ All notable changes to this project will be documented in this file.
 
 ### Performance
 
-- **Sales scrutiny's clustering is several times faster, with the same clusters.** Splitting each cluster on a numeric field (`_crunch`, called once per cluster per field: thousands of times on a county) took nine pandas `quantile` calls and up to three `pd.cut`s, each mostly pandas' own overhead on a small cluster. It now takes one `np.percentile` call and `np.searchsorted`, reproducing pandas' arithmetic and types exactly (columns NumPy can't reproduce pandas on, such as dates and float32, still go through pandas). On a 50,000-parcel test county, `make_clusters` went from 28.7 s to 6.8 s, and the clustering stage's outputs were identical. `tests/test_crunch_equivalence.py` holds it to the pandas version on every kind of column.
+- **Sales scrutiny's clustering is several times faster, with the same clusters.** Splitting each cluster on a numeric field (`_crunch`, called once per cluster per field: thousands of times on a county) took nine pandas `quantile` calls and up to three `pd.cut`s, each mostly pandas' own overhead on a small cluster. It now takes one `np.percentile` call and `np.searchsorted`, reproducing pandas' arithmetic and types exactly (columns NumPy can't reproduce pandas on, such as dates and float32, still go through pandas). On a 50,000-parcel test county, `make_clusters` went from 13.9 s to 3.6 s and the whole sales scrutiny run from 25.6 s to 15.6 s, and every output (clusters, flags, the sales set aside, the hand-off to the next stage) was identical. `tests/test_crunch_equivalence.py` holds it to the pandas version on every kind of column.
 
 ### Fixed
 
