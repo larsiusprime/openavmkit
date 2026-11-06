@@ -35,7 +35,7 @@ from openavmkit.utilities.settings import (
     get_valuation_date,
     get_model_group_ids,
     warn_if_location_collapsed,
-    _get_max_ratio_study_trim
+    get_max_ratio_study_trim
 )
 from openavmkit.utilities.stats import ConfidenceStat
 
@@ -557,7 +557,7 @@ def _run_ratio_study_breakdowns(
         predictions_v = predictions_v[~idx_na_v]
         ground_truth_v = ground_truth_v[~idx_na_v]
         
-        max_trim = _get_max_ratio_study_trim(settings, model_group)
+        max_trim = get_max_ratio_study_trim(settings, model_group)
 
         results["overall"] = RatioStudyBootstrapped(
             predictions, ground_truth, max_trim, confidence_interval, iterations
@@ -785,7 +785,7 @@ def _write_ratio_study_report(
 
     impr_fields = get_fields_impr_as_list(settings)
     
-    max_trim = _get_max_ratio_study_trim(settings, model_group)
+    max_trim = get_max_ratio_study_trim(settings, model_group)
     for iv in ["i", "v"]:
         for modeler in all_results:
             modeler_entry = all_results[modeler]

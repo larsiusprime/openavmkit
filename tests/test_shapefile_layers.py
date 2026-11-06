@@ -5,7 +5,7 @@ import geopandas as gpd
 import pytest
 from shapely.geometry import Point, box
 
-from openavmkit.data import _enrich_df_distances, _snoop_column_names, load_dataframe
+from openavmkit.data import _enrich_df_distances, snoop_column_names, load_dataframe
 
 
 def _parcels() -> gpd.GeoDataFrame:
@@ -24,7 +24,7 @@ def test_geojson_loads(tmp_path, monkeypatch):
     (tmp_path / "in").mkdir()
     zones = gpd.GeoDataFrame({"ZONE": ["R1", "C2"]}, geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)], crs="EPSG:4326")
     zones.to_file(tmp_path / "in" / "zones.geojson", driver="GeoJSON")
-    assert _snoop_column_names("in/zones.geojson") == ["ZONE", "geometry"]
+    assert snoop_column_names("in/zones.geojson") == ["ZONE", "geometry"]
     df = load_dataframe({"filename": "zones.geojson", "load": {"zone": "ZONE"}}, {"locality": {"units": "imperial"}})
     assert list(df["zone"]) == ["R1", "C2"] and df.crs.to_epsg() == 4326
 

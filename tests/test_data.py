@@ -8,7 +8,7 @@ from openavmkit.data import _perform_canonical_split, _handle_duplicated_rows, _
 	_do_enrich_year_built, enrich_time, SalesUniversePair, get_hydrated_sales_from_sup, _enrich_permits, \
 	compute_lookback_test_size, _resolve_strat_fields_improved, _build_strat_label, _stratified_test_sample, \
 	_three_tier_split, _assign_grouped_folds, _perform_canonical_folds, _read_fold_keys, \
-	_do_write_canonical_split, _read_split_keys, _spatial_lag_kernel, \
+	_do_write_canonical_split, read_split_keys, _spatial_lag_kernel, \
 	_enrich_sup_spatial_lag_for_model_group, _drop_fields, load_dataframe
 from openavmkit.modeling import DataSplit
 from openavmkit.utilities.assertions import dfs_are_equal, series_are_equal
@@ -1963,7 +1963,7 @@ def test_spatial_lag_kernel_returns_nan_for_targets_without_geometry():
 
 
 def test_read_split_keys_falls_back_to_cv_folds(tmp_path, monkeypatch):
-	# CV mode writes only folds.csv. _read_split_keys must collapse it to the same single
+	# CV mode writes only folds.csv. read_split_keys must collapse it to the same single
 	# split Phase 2 uses instead of returning empty arrays (which silently blanked out
 	# every sale-derived enrichment upstream of the model runner).
 	monkeypatch.chdir(tmp_path)
@@ -1973,7 +1973,7 @@ def test_read_split_keys_falls_back_to_cv_folds(tmp_path, monkeypatch):
 
 	with warnings.catch_warnings(record=True) as caught:
 		warnings.simplefilter("always")
-		test_keys, train_keys = _read_split_keys("res_sf")
+		test_keys, train_keys = read_split_keys("res_sf")
 	assert not [w for w in caught if "No split keys found" in str(w.message)]
 
 	assert set(train_keys) == set(df[df["sale_age_days"] >= 0]["key_sale"].astype(str))
@@ -1984,7 +1984,7 @@ def test_read_split_keys_still_warns_when_nothing_on_disk(tmp_path, monkeypatch)
 	monkeypatch.chdir(tmp_path)
 	with warnings.catch_warnings(record=True) as caught:
 		warnings.simplefilter("always")
-		test_keys, train_keys = _read_split_keys("res_sf")
+		test_keys, train_keys = read_split_keys("res_sf")
 	assert [w for w in caught if "No split keys found" in str(w.message)]
 	assert len(test_keys) == 0 and len(train_keys) == 0
 

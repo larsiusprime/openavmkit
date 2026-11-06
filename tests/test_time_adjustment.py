@@ -220,7 +220,7 @@ def _build_minimal_sales_df(n_rows: int, start_year: int = 2023, all_vacant: boo
 def test_calculate_time_adjustment_falls_back_when_all_vacant_and_per_impr():
   # Construct a dataset where every sale is vacant_sale=True but improved-area
   # column has values (some assessor data does this — the parcel currently has a
-  # building but the sale itself was for a vacant parcel). _determine_value_driver
+  # building but the sale itself was for a vacant parcel). determine_value_driver
   # picks "impr" because bldg_area > 0, then our V/I filter would empty df_per.
   # The function should fall back to the unfiltered set and still produce a schedule.
   rows = []

@@ -1930,7 +1930,22 @@ def _is_series_all_bools(series: pd.Series) -> bool:
     return True
 
 
-def _get_max_ratio_study_trim(settings: dict, model_group: str)->float:
+def get_max_ratio_study_trim(settings: dict, model_group: str)->float:
+    """The most a ratio study trims for a model group: ``analysis.ratio_study.trim`` (the group's entry, else
+    ``default``)'s ``max_percent``.
+
+    Parameters
+    ----------
+    settings : dict
+        The settings.
+    model_group : str
+        The model group.
+
+    Returns
+    -------
+    float
+        A share, 0 to 1 (0.1 when not set).
+    """
     trim = settings.get("analysis",{}).get("ratio_study",{}).get("trim",{})
     entry = trim.get(model_group, trim.get("default", {}))
     return entry.get("max_percent", 0.1)

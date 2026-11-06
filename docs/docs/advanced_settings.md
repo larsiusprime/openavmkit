@@ -1583,7 +1583,7 @@ Settings for the multi-parcel ("bulk") deed heuristics in `run_heuristics`. A bu
 Maximum fraction of records the ratio study is allowed to trim as outliers when computing trimmed statistics (COD-trim, PRD-trim, etc.).
 
 - **Default** — `0.1` (10%)
-- **Source** — `_get_max_ratio_study_trim` in [openavmkit/utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py)
+- **Source** — `get_max_ratio_study_trim` in [openavmkit/utilities/settings.py](https://github.com/larsiusprime/openavmkit/blob/master/openavmkit/utilities/settings.py)
 - **When to use** — your sales data is unusually noisy and the default 10% trim is masking real volatility, or unusually clean and a tighter cap is appropriate.
 - **Diagnostic** — if your **untrimmed COD is several multiples of your trimmed COD** (5×–20×), you have a small number of extreme sale-vs-prediction mismatches dragging the means. Don't just raise `max_percent` to silence them — that hides bad data and can mask sales-chasing in the assessor baseline. See [tutorial.md → "When untrimmed COD is much worse than trimmed COD"](tutorial.md#when-untrimmed-cod-is-much-worse-than-trimmed-cod) for the full diagnostic flow including the sales-chasing sub-check.
 

@@ -33,7 +33,7 @@ from statsmodels.tools.sm_exceptions import MissingDataError
 
 from openavmkit.utilities.data import div_series_z_safe
 from openavmkit.utilities.notebook import display
-from openavmkit.utilities.settings import get_fields_boolean, get_fields_categorical, _get_max_ratio_study_trim, get_look_back_dates
+from openavmkit.utilities.settings import get_fields_boolean, get_fields_categorical, get_max_ratio_study_trim, get_look_back_dates
 
 
 def calc_chds(df_in: pd.DataFrame, field_cluster: str, field_value: str) -> pd.Series:

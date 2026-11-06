@@ -123,7 +123,7 @@ from openavmkit.utilities.data import (
     calc_spatial_lag,
     area_unit
 )
-from openavmkit.utilities.settings import get_valuation_date, _get_max_ratio_study_trim, get_look_back_dates, get_study_set_predictions
+from openavmkit.utilities.settings import get_valuation_date, get_max_ratio_study_trim, get_look_back_dates, get_study_set_predictions
 from openavmkit.utilities.stats import (
     quick_median_chd,
     calc_mse_r2_adj_r2,
@@ -1479,7 +1479,7 @@ class SingleModelResults:
         
         self.is_land_predictions = ds.is_land_predictions()
 
-        max_trim = _get_max_ratio_study_trim(ds.settings, ds.model_group)
+        max_trim = get_max_ratio_study_trim(ds.settings, ds.model_group)
 
         df_univ = ds.df_universe.copy()
         df_sales = ds.df_sales.copy()
@@ -1638,7 +1638,7 @@ class SingleModelResults:
         holdout = get_study_set_predictions(self.ds.settings) == "holdout"
         start_date, end_date = get_look_back_dates(self.ds.settings)
         df = filter_df_by_date_range(self.df_test if holdout else df_sales, start_date, end_date)
-        max_trim = _get_max_ratio_study_trim(self.ds.settings, self.ds.model_group)
+        max_trim = get_max_ratio_study_trim(self.ds.settings, self.ds.model_group)
         self.pred_sales_lookback = PredictionResults(
             self.dep_var_test, self.ind_vars, self.field_prediction, df, max_trim, self.is_land_predictions
         )
@@ -1668,7 +1668,7 @@ class SingleModelResults:
         single-split pipeline for every ``dep_var_test`` (price-space is the no-op common case).
         """
         field = self.field_prediction
-        max_trim = _get_max_ratio_study_trim(self.ds.settings, self.ds.model_group)
+        max_trim = get_max_ratio_study_trim(self.ds.settings, self.ds.model_group)
         self.pred_test = PredictionResults(
             self.dep_var_test, self.ind_vars, field, df_test_full, max_trim,
             self.is_land_predictions,

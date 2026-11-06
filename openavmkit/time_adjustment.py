@@ -51,7 +51,7 @@ def calculate_time_adjustment(
         If True, print progress information. Defaults to False.
     per : str, optional
         What the index is of: "impr" (price per finished area) or "land" (price per land
-        area). None (the default) works it out from the sales (_determine_value_driver).
+        area). None (the default) works it out from the sales (determine_value_driver).
 
     Returns
     -------
@@ -99,7 +99,7 @@ def calculate_time_adjustment(
 
     # Determine whether land or improvement drives value the modeling group, unless the settings say:
     if per not in ("impr", "land"):
-        per = _determine_value_driver(df_sales, settings)
+        per = determine_value_driver(df_sales, settings)
     sale_field = f"sale_price_per_{per}_{unit}"
 
     df_per_unfiltered = df_sales[df_sales[sale_field].gt(0)]
@@ -118,7 +118,7 @@ def calculate_time_adjustment(
         # If the V/I filter would empty the dataset, fall back to no filter rather
         # than producing a broken time-adjustment curve. This happens when a model
         # group has only one side (e.g. an apartment group with no vacant sales but
-        # _determine_value_driver picked "land", or vice versa).
+        # determine_value_driver picked "land", or vice versa).
         if len(df_per_filtered) == 0:
             warnings.warn(
                 f"Time-adjustment V/I filter for per={per!r} would leave 0 sales "
@@ -145,7 +145,7 @@ def calculate_time_adjustment(
         return pd.DataFrame({"period": dates, "value": np.ones(len(dates))})
 
     # Determine the time resolution (Month, Quarter, Year) -- "M", "Q", or "Y":
-    period = _determine_time_resolution(df_per, sale_field, min_sale_count, period)
+    period = determine_time_resolution(df_per, sale_field, min_sale_count, period)
 
     if verbose:
         print(f"--> Using period: {period}")
@@ -700,12 +700,24 @@ def _crunch_time_adjustment(
     return df_result
 
 
-def _determine_value_driver(df_in: pd.DataFrame, settings: dict):
+def determine_value_driver(df_in: pd.DataFrame, settings: dict):
     """Determine whether land or improvement drives the value in the modeling group.
 
     Compares median sale prices per area unit for improved and land properties and returns
     "land" if the relative difference is small and a significant portion of sales are
     land; otherwise returns "impr".
+
+    Parameters
+    ----------
+    df_in : pandas.DataFrame
+        The model group's parcels with their sales.
+    settings : dict
+        The settings (for the area unit and which sales count).
+
+    Returns
+    -------
+    str
+        ``"land"`` or ``"impr"``.
     """
     unit = area_unit(settings)
     
@@ -746,9 +758,28 @@ def _determine_value_driver(df_in: pd.DataFrame, settings: dict):
     return "impr"
 
 
-def _determine_time_resolution(df_per, sale_field, min_sale_count, period: str = "M"):
+def determine_time_resolution(df_per, sale_field, min_sale_count, period: str = "M"):
     """Determine the appropriate time resolution (Month, Quarter, or Year) based on sales
     counts.
+
+    Months, while no more than 2 months a year have fewer than ``min_sale_count`` sales; else quarters, while no
+    more than 1 quarter a year has fewer; else years.
+
+    Parameters
+    ----------
+    df_per : pandas.DataFrame
+        Sales with ``sale_year_month`` and ``sale_year_quarter``.
+    sale_field : str
+        The column counted.
+    min_sale_count : int
+        The fewest sales a period should have.
+    period : str
+        The finest to try: ``"M"`` (months), ``"Q"`` (quarters) or ``"Y"`` (years).
+
+    Returns
+    -------
+    str
+        ``"M"``, ``"Q"`` or ``"Y"``.
     """
     months_total = 0
     months_missing = 0
