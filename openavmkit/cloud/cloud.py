@@ -1,8 +1,10 @@
 import os
+import warnings
 import json
 
 from openavmkit.cloud.base import CloudService, CloudType, CloudAccess, CloudCredentials
 from openavmkit.utilities.optional import require
+from openavmkit.utilities.text import read_text
 
 # Each cloud's own SDK is an optional extra ("cloud"), imported only when that cloud is used: importing this module
 # (the pipeline does) doesn't load Azure, Hugging Face or SFTP support.
@@ -37,8 +39,7 @@ def load_cloud_settings(
     cloud : dict | None = None
 
     try:
-        with open(filepath, "r") as f:
-            cloud = json.load(f)
+        cloud = json.loads(read_text(filepath))
     except FileNotFoundError:
         cwd = os.getcwd()
         full_path = os.path.join(cwd, filepath)

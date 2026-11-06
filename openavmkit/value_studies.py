@@ -198,7 +198,7 @@ def run_value_field_studies(
         }
         if outpath is not None:
             os.makedirs(outpath, exist_ok=True)
-            with open(os.path.join(outpath, f"{field}.json"), "w") as f:
+            with open(os.path.join(outpath, f"{field}.json"), "w", encoding="utf-8") as f:
                 json.dump(results[field], f, indent=2, default=_json_default)
             if trim_outliers:
                 table = _sale_table(usable, field, region)

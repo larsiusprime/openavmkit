@@ -282,6 +282,31 @@ Some `calc` expressions need an intermediate column that has no business survivi
 
 ---
 
+### 2.7 A CSV's text encoding — `encoding`
+
+A CSV is text, and text is written in an encoding. Excel's "CSV UTF-8" writes UTF-8 (with a byte-order mark); its
+plain "CSV (Comma delimited)" writes the Windows code page (cp1252 on US and Western European Windows); some exports
+are UTF-16. Without `encoding`, a CSV is read as UTF-8, and a file in another encoding with any accented letter in it
+stops the load (`UnicodeDecodeError`).
+
+```json
+"parcels": {
+  "filename": "parcels.csv",
+  "encoding": "auto",
+  "load": { "key": ["REID", "string"], "...": "..." }
+}
+```
+
+| Value | Reads the file as |
+|---|---|
+| unset | UTF-8 (pandas' default), as before this setting |
+| `"auto"` | worked out from the file: a byte-order mark says UTF-8 or UTF-16; otherwise UTF-8 if the whole file is valid UTF-8, else `cp1252` |
+| any name Python knows (`"cp1252"`, `"utf-8-sig"`, `"latin-1"`, …) | that encoding |
+
+`"auto"` reads the whole file once more to check it (fast: about a second for a few hundred MB). The same check is
+`openavmkit.utilities.text.detect_encoding(path)`. Other formats ignore `encoding`: Parquet is UTF-8 by definition,
+and GIS files are read through GDAL, which reads a shapefile's `.cpg`.
+
 ## 3. Time adjustment
 
 ### `data.process.time_adjustment.from_file.<model_group>`

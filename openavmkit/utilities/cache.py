@@ -22,6 +22,7 @@ from openavmkit.utilities.assertions import (
     dfs_are_equal,
 )
 from openavmkit.utilities.geometry import ensure_geometries
+from openavmkit.utilities.text import read_text
 from . import to_parquet_safe
 
 def write_cache(
@@ -51,10 +52,10 @@ def write_cache(
     base_path = os.path.dirname(path)
     os.makedirs(base_path, exist_ok=True)
     if filetype == "dict":
-        with open(path, "w") as file:
+        with open(path, "w", encoding="utf-8") as file:
             json.dump(payload, file)
     elif filetype == "str":
-        with open(path, "w") as file:
+        with open(path, "w", encoding="utf-8") as file:
             file.write(payload)
     elif filetype == "pickle":
         with open(path, "wb") as file:
@@ -72,7 +73,7 @@ def write_cache(
         )
 
     signature_path = f"cache/{filename}.signature.{sig_ext}"
-    with open(signature_path, "w") as file:
+    with open(signature_path, "w", encoding="utf-8") as file:
         if sig_ext == "json":
             json.dump(signature, file)
         else:
@@ -98,11 +99,9 @@ def read_cache(filename: str, filetype: str) -> dict | str | object | pd.DataFra
     path = f"cache/{filename}.{extension}"
     if os.path.exists(path):
         if filetype == "dict":
-            with open(path, "r") as file:
-                return json.load(file)
+            return json.loads(read_text(path))
         elif filetype == "str":
-            with open(path, "r") as file:
-                return file.read()
+            return read_text(path)
         elif filetype == "pickle":
             with open(path, "rb") as file:
                 return pickle.load(file)
@@ -529,12 +528,10 @@ def _match_signature(filename: str, signature: dict | str) -> bool:
     match = False
     if os.path.exists(sig_file):
         if sig_ext == "json":
-            with open(sig_file, "r") as file:
-                cache_signature = json.load(file)
+            cache_signature = json.loads(read_text(sig_file))
             match = dicts_are_equal(signature, cache_signature)
         else:
-            with open(sig_file, "r") as file:
-                cache_signature = file.read()
+            cache_signature = read_text(sig_file)
             match = signature == cache_signature
     return match
 
