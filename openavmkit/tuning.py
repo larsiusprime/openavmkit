@@ -11,9 +11,11 @@ indirectly through model setup, not as a user-facing operation.
 """
 import glob
 import hashlib
+import json
 import os
 import shutil
 import tempfile
+import time
 
 import lightgbm as lgb
 import numpy as np
@@ -213,8 +215,75 @@ def _is_plateaued(study, plateau_trials=10, improvement_threshold=0.01):
     return all(t.value >= best_value * (1 + improvement_threshold) for t in recent)
 
 
+# Each finished tuning trial, one JSON line, appended to the file this names (unset: nothing is written). For seeing
+# where tuning time goes: a trial's seconds, its params and score, the model, the data it searched on, the process
+# (folds run in parallel tune in worker processes, which inherit the variable).
+TRIAL_LOG_ENV = "OPENAVMKIT_TRIAL_LOG"
+
+
+def _trial_log(model, number, seconds, params, value, state="COMPLETE", context=None):
+    """Append one finished trial to the trial log, when ``OPENAVMKIT_TRIAL_LOG`` names one.
+
+    Parameters
+    ----------
+    model : str
+        The model tuned ("CatBoost", "LightGBM", ...).
+    number : int
+        The trial's number in its study.
+    seconds : float or None
+        How long the trial's evaluation took (its own time, not time spent waiting for others in its batch).
+    params : dict
+        The trial's hyperparameters.
+    value : float or None
+        Its objective (MAPE); None when it was pruned or failed.
+    state : str, optional
+        Optuna's trial state name.
+    context : dict, optional
+        What the search ran on (rows, features, categorical features, inner folds, threads).
+    """
+    path = os.environ.get(TRIAL_LOG_ENV)
+    if not path:
+        return
+    record = {
+        "time": round(time.time(), 3),
+        "pid": os.getpid(),
+        "model": model,
+        "trial": number,
+        "seconds": None if seconds is None else round(float(seconds), 3),
+        "state": state,
+        "value": None if value is None else float(value),
+        "params": params,
+        **(context or {}),
+    }
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+    except OSError:
+        pass  # a diagnostic: never stops the tuning
+
+
+def _trial_log_callback(model, context=None):
+    """An Optuna callback writing each trial of a serial ``study.optimize`` to the trial log (its duration is the
+    trial's own: one trial at a time)."""
+
+    def callback(study, trial):
+        seconds = trial.duration.total_seconds() if trial.duration is not None else None
+        _trial_log(model, trial.number, seconds, trial.params, trial.value, trial.state.name, context)
+
+    return callback
+
+
 def _run_batched(
-    study, suggest, evaluate, n_trials, storage_path, verbose, label="", batch_size=None, max_workers=None
+    study,
+    suggest,
+    evaluate,
+    n_trials,
+    storage_path,
+    verbose,
+    label="",
+    batch_size=None,
+    max_workers=None,
+    context=None,
 ):
     """Deterministic *and* parallel hyperparameter search via synchronous batched ask-and-tell.
 
@@ -264,8 +333,17 @@ def _run_batched(
             trial = study.ask()
             asked.append((trial, suggest(trial)))  # sequential -> deterministic sampling
 
+        def timed(item):
+            # Each evaluation timed on its own: the batch's trials are asked together, so Optuna's own start and
+            # end times would include waiting for the others.
+            t0 = time.perf_counter()
+            value = evaluate(item[1])
+            trial = item[0]
+            _trial_log(label, trial.number, time.perf_counter() - t0, trial.params, value, context=context)
+            return value
+
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            values = list(ex.map(lambda item: evaluate(item[1]), asked))
+            values = list(ex.map(timed, asked))
 
         for (trial, _), value in zip(asked, values):  # tell in ask order, not finish order
             study.tell(trial, value)
@@ -277,6 +355,17 @@ def _run_batched(
             if verbose:
                 print(f"Plateau detected: stopping {label} search early at {n_done} trials.")
             break
+
+
+def _search_context(X, cat_vars=None, n_splits=None, cv_inner=None):
+    """What a tuning search runs on, for the trial log: rows, features, categorical features, CV folds."""
+    cats = [c for c in (cat_vars or []) if c in getattr(X, "columns", [])]
+    return {
+        "rows": int(len(X)),
+        "features": int(X.shape[1]) if hasattr(X, "shape") and len(X.shape) > 1 else None,
+        "cat_features": len(cats),
+        "folds": n_splits if cv_inner is None else cv_inner,
+    }
 
 
 def _remaining_trials(study, n_trials, storage_path):
@@ -426,7 +515,10 @@ def _tune_xgboost(
         sampler=_seeded_sampler(random_state, constant_liar=True),
         verbose=verbose,
     )
-    _run_batched(study, suggest, evaluate, n_trials, storage_path, verbose, label="XGBoost")
+    _run_batched(
+        study, suggest, evaluate, n_trials, storage_path, verbose, label="XGBoost",
+        context=_search_context(X, cat_vars=cat_vars, n_splits=n_splits, cv_inner=cv_inner),
+    )
     if verbose:
         print(
             f"Best trial: {study.best_trial.number} with MAPE: {study.best_trial.value:0.4f} and params: {study.best_trial.params}"
@@ -533,7 +625,10 @@ def _tune_lightgbm(
     # or predict while the other thread runs Python). Measured on OAK box's 5,000-parcel test county, one fold at a
     # time: 7 crashes in 11 runs on two slow cores, 1 in 3 on four; none in 11 one at a time, in the same time. The
     # batches are asked and told as before, so the trials and the result are the same.
-    _run_batched(study, suggest, evaluate, n_trials, storage_path, verbose, label="LightGBM", max_workers=1)
+    _run_batched(
+        study, suggest, evaluate, n_trials, storage_path, verbose, label="LightGBM", max_workers=1,
+        context=_search_context(X, cat_vars=cat_vars, n_splits=n_splits, cv_inner=cv_inner),
+    )
 
     if verbose:
         print(
@@ -648,7 +743,10 @@ def _tune_catboost(
         # callback applies cleanly. (The MedianPruner above can't save time here — the objective
         # reports its curve only after CatBoost's built-in cv() has already run all folds.)
         try:
-            study.optimize(objective, n_trials=remaining, n_jobs=1, callbacks=[_plateau_callback])
+            context = _search_context(X, cat_vars=cat_feats, n_splits=inner_folds, cv_inner=None)
+            context["thread_count"] = _cb_thread_count
+            callbacks = [_plateau_callback, _trial_log_callback("CatBoost", context)]
+            study.optimize(objective, n_trials=remaining, n_jobs=1, callbacks=callbacks)
         finally:
             shutil.rmtree(train_dir, ignore_errors=True)
     else:
@@ -750,8 +848,10 @@ def _tune_ngboost(
     # NGBoost training is not thread-safe enough for n_jobs=-1; tune serially.
     remaining = _remaining_trials(study, n_trials, storage_path)
     if remaining > 0:
+        context = _search_context(X, cat_vars=cat_vars, n_splits=n_splits, cv_inner=cv_inner)
         study.optimize(
-            objective, n_trials=remaining, n_jobs=1, callbacks=[_plateau_callback]
+            objective, n_trials=remaining, n_jobs=1,
+            callbacks=[_plateau_callback, _trial_log_callback("NGBoost", context)],
         )
 
     if verbose:
