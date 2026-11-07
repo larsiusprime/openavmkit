@@ -5514,12 +5514,15 @@ def _get_params(
         except Exception:
             groups = None
 
-    from openavmkit.tuning import _MODEL_SPACE_VERSION
+    from openavmkit.tuning import _CATBOOST_FIXED_PARAMS, _MODEL_SPACE_VERSION
 
     extras = [f"cvi={cv_inner}"] if cv_inner is not None else []
     if name in _MODEL_SPACE_VERSION:
         # This model's own search space changed: only its saved params and journals are stale.
         extras.append(f"space_{name}=v{_MODEL_SPACE_VERSION[name]}")
+    if name == "CatBoost" and "one_hot_max_size" in _CATBOOST_FIXED_PARAMS:
+        # One-hot categories (Windows): params tuned with CTRs aren't reused, nor these elsewhere.
+        extras.append(f"catboost_one_hot={_CATBOOST_FIXED_PARAMS['one_hot_max_size']}")
     fp = _study_fingerprint(
         ds.X_train.columns,
         len(ds.X_train),

@@ -43,3 +43,21 @@ def test_only_catboosts_saved_tuning_is_stale():
 	plain = _study_fingerprint(cols, 100, 50, seed=42)
 	with_space = _study_fingerprint(cols, 100, 50, seed=42, extra="space_CatBoost=v2")
 	assert plain != with_space
+
+
+def test_catboost_one_hot_on_windows_only_and_in_the_fingerprint(monkeypatch):
+	"""On Windows CatBoost's CTRs cost ~20 ms a round whatever the data, so categories there are one-hot (up to 255
+	values); elsewhere CatBoost's default. Params tuned one way are never reused the other."""
+	import importlib
+	import sys
+
+	try:
+		monkeypatch.setattr(sys, "platform", "win32")
+		importlib.reload(tuning)
+		assert tuning._CATBOOST_FIXED_PARAMS["one_hot_max_size"] == tuning.CATBOOST_WINDOWS_ONE_HOT
+		monkeypatch.setattr(sys, "platform", "linux")
+		importlib.reload(tuning)
+		assert "one_hot_max_size" not in tuning._CATBOOST_FIXED_PARAMS
+	finally:
+		monkeypatch.undo()
+		importlib.reload(tuning)

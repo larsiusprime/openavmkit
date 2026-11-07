@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 import tempfile
 import time
 
@@ -89,6 +90,15 @@ _CATBOOST_FIXED_PARAMS = {
     "grow_policy": "SymmetricTree",
     "max_ctr_complexity": 1,
 }
+# - one_hot_max_size 255, on Windows only: there CatBoost's CTRs (how it turns a category into numbers) cost a flat
+#   ~20 ms every boosting round whatever the data (1.5 ms on Linux; the same in CatBoost 1.2.8 and 1.2.10, at any
+#   thread count, with any CTR setting), so a 600-sale trial took 30-50 s. One-hot categories (up to 255 values) skip
+#   CTRs: ~15x faster there, a little less accurate (MAPE 0.0729 -> 0.0774 on a synthetic 60-value neighbourhood).
+#   A category with more values still gets CTRs. Folded into the study fingerprint (catboost_one_hot), so params
+#   tuned one way are never reused the other.
+CATBOOST_WINDOWS_ONE_HOT = 255
+if sys.platform == "win32":
+    _CATBOOST_FIXED_PARAMS["one_hot_max_size"] = CATBOOST_WINDOWS_ONE_HOT
 
 
 def _resolve_cv_inner(cv_inner, n_rows):
