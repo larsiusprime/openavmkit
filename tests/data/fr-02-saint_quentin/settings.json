@@ -1,0 +1,379 @@
+{
+  "locality": {
+    "name": "Saint-Quentin",
+    "country": "FR",
+    "state": "02",
+    "slug": "fr-02-saint_quentin",
+    "units": "metric"
+  },
+  "data": {
+    "load": {
+      "geo_parcels": {
+        "key": "geo_parcels",
+        "filename": "parcels.parquet",
+        "dupes": {
+          "subset": [
+            "key"
+          ],
+          "sort_by": [
+            "key",
+            "asc"
+          ],
+          "drop": true
+        },
+        "load": {
+          "key": [
+            "key",
+            "string"
+          ],
+          "codeident": [
+            "codeident",
+            "string"
+          ],
+          "commune_code": [
+            "commune_code",
+            "string"
+          ],
+          "cadastral_section": [
+            "cadastral_section",
+            "string"
+          ],
+          "neighborhood": [
+            "neighborhood",
+            "string"
+          ],
+          "land_area_sqm": [
+            "land_area_sqm",
+            "float"
+          ],
+          "land_area_sqft": [
+            "land_area_sqft",
+            "float"
+          ],
+          "bldg_count": [
+            "bldg_count",
+            "float"
+          ],
+          "bldg_area_footprint_sqm": [
+            "bldg_area_footprint_sqm",
+            "float"
+          ],
+          "bldg_area_footprint_sqft": [
+            "bldg_area_footprint_sqft",
+            "float"
+          ],
+          "bldg_area_finished_sqm": [
+            "bldg_area_finished_sqm",
+            "float"
+          ],
+          "bldg_area_finished_sqft": [
+            "bldg_area_finished_sqft",
+            "float"
+          ],
+          "bldg_type": [
+            "bldg_type",
+            "string"
+          ],
+          "is_vacant": [
+            "is_vacant",
+            "boolean",
+            "na_false"
+          ]
+        }
+      },
+      "sales": {
+        "key": "sales",
+        "filename": "sales.parquet",
+        "geometry": false,
+        "dupes": {
+          "subset": [
+            "key_sale"
+          ],
+          "sort_by": [
+            "key_sale",
+            "asc"
+          ],
+          "drop": true
+        },
+        "load": {
+          "key_sale": [
+            "key_sale",
+            "string"
+          ],
+          "key": [
+            "key",
+            "string"
+          ],
+          "sale_date": [
+            "sale_date",
+            "datetime",
+            "%Y-%m-%d"
+          ],
+          "sale_price": [
+            "sale_price",
+            "float"
+          ],
+          "sale_nature": [
+            "sale_nature",
+            "string"
+          ],
+          "property_type": [
+            "property_type",
+            "string"
+          ],
+          "bldg_area_finished_sqm": [
+            "bldg_area_finished_sqm",
+            "float"
+          ],
+          "bldg_area_finished_sqft": [
+            "bldg_area_finished_sqft",
+            "float"
+          ],
+          "sale_land_area_sqm": [
+            "sale_land_area_sqm",
+            "float"
+          ],
+          "rooms": [
+            "rooms",
+            "float"
+          ],
+          "valid_sale": [
+            "valid_sale",
+            "boolean",
+            "na_false"
+          ],
+          "vacant_sale": [
+            "vacant_sale",
+            "boolean",
+            "na_false"
+          ],
+          "valid_for_ratio_study": [
+            "valid_for_ratio_study",
+            "boolean",
+            "na_false"
+          ],
+          "valid_for_land_ratio_study": [
+            "valid_for_land_ratio_study",
+            "boolean",
+            "na_false"
+          ]
+        }
+      }
+    },
+    "process": {
+      "merge": {
+        "universe": [
+          "geo_parcels"
+        ],
+        "sales": [
+          "sales"
+        ]
+      },
+      "enrich": {}
+    }
+  },
+  "modeling": {
+    "metadata": {
+      "valuation_date": "2026-01-01",
+      "use_sales_from": 2021,
+      "test_sales_from": 2025,
+      "modeler": "Saint-Quentin metric test"
+    },
+    "model_groups": {
+      "all": {
+        "name": "All parcels",
+        "filter": [
+          ">=",
+          "land_area_sqm",
+          0
+        ]
+      }
+    },
+    "instructions": {
+      "dep_var": "sale_price_time_adj",
+      "dep_var_test": "sale_price_time_adj",
+      "time_adjustment": {
+        "period": "M"
+      },
+      "main": {
+        "run": [
+          "naive_area",
+          "local_area",
+          "lightgbm"
+        ]
+      },
+      "vacant": {
+        "run": [
+          "naive_area",
+          "local_area",
+          "lightgbm"
+        ]
+      },
+      "hedonic": {
+        "skip": {
+          "all": [
+            "all"
+          ]
+        }
+      }
+    },
+    "models": {
+      "main": {
+        "default": {
+          "ind_vars": [
+            "land_area_sqm",
+            "bldg_area_finished_sqm",
+            "bldg_area_footprint_sqm",
+            "bldg_count",
+            "neighborhood",
+            "commune_code",
+            "cadastral_section"
+          ]
+        },
+        "naive_area": {
+          "model": "naive_area",
+          "ind_vars": [
+            "land_area_sqm",
+            "bldg_area_finished_sqm"
+          ]
+        },
+        "local_area": {
+          "model": "local_area",
+          "ind_vars": [
+            "land_area_sqm",
+            "bldg_area_finished_sqm",
+            "bldg_area_footprint_sqm",
+            "bldg_count",
+            "neighborhood",
+            "commune_code",
+            "cadastral_section"
+          ],
+          "locations": [
+            "neighborhood",
+            "commune_code",
+            "cadastral_section"
+          ]
+        },
+        "lightgbm": {
+          "engine": "lightgbm",
+          "model": "lightgbm",
+          "ind_vars": [
+            "land_area_sqm",
+            "bldg_area_finished_sqm",
+            "bldg_area_footprint_sqm",
+            "bldg_count",
+            "neighborhood",
+            "commune_code",
+            "cadastral_section"
+          ],
+          "n_trials": 10
+        }
+      },
+      "vacant": {
+        "default": {
+          "ind_vars": [
+            "land_area_sqm",
+            "neighborhood",
+            "commune_code",
+            "cadastral_section"
+          ]
+        },
+        "naive_area": {
+          "model": "naive_area",
+          "ind_vars": [
+            "land_area_sqm",
+            "bldg_area_finished_sqm"
+          ]
+        },
+        "local_area": {
+          "model": "local_area",
+          "ind_vars": [
+            "land_area_sqm",
+            "neighborhood",
+            "commune_code",
+            "cadastral_section"
+          ],
+          "locations": [
+            "neighborhood",
+            "commune_code",
+            "cadastral_section"
+          ]
+        },
+        "lightgbm": {
+          "engine": "lightgbm",
+          "model": "lightgbm",
+          "ind_vars": [
+            "land_area_sqm",
+            "neighborhood",
+            "commune_code",
+            "cadastral_section"
+          ],
+          "n_trials": 10
+        }
+      },
+      "default": {
+        "ind_vars": [
+          "land_area_sqm",
+          "bldg_area_finished_sqm",
+          "bldg_area_footprint_sqm",
+          "bldg_count",
+          "neighborhood",
+          "commune_code",
+          "cadastral_section"
+        ]
+      }
+    }
+  },
+  "field_classification": {
+    "important": {
+      "fields": {
+        "loc_neighborhood": "neighborhood",
+        "land_category": "cadastral_section",
+        "impr_category": "property_type"
+      },
+      "locations": [
+        "neighborhood",
+        "commune_code",
+        "cadastral_section"
+      ],
+      "report_locations": [
+        "neighborhood",
+        "commune_code"
+      ]
+    },
+    "land": {
+      "+numeric": [
+        "land_area_sqm",
+        "land_area_sqft"
+      ],
+      "+categorical": [
+        "commune_code",
+        "cadastral_section",
+        "neighborhood"
+      ]
+    },
+    "impr": {
+      "+numeric": [
+        "bldg_count",
+        "bldg_area_footprint_sqm",
+        "bldg_area_footprint_sqft",
+        "bldg_area_finished_sqm",
+        "bldg_area_finished_sqft",
+        "rooms"
+      ],
+      "+categorical": [
+        "bldg_type",
+        "property_type"
+      ]
+    },
+    "other": {
+      "+categorical": [
+        "codeident",
+        "sale_nature"
+      ],
+      "+numeric": [
+        "sale_land_area_sqm"
+      ]
+    }
+  }
+}
