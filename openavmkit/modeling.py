@@ -743,7 +743,7 @@ class DataSplit:
         self.dep_var = dep_var
         self.dep_var_test = dep_var_test
         self.ind_vars = ind_vars.copy()
-        self.categorical_vars = categorical_vars.copy()
+        self.categorical_vars = list(dict.fromkeys(categorical_vars))  # unique: a field can be listed twice
         self.interactions = interactions.copy()
         self.one_hot_descendants = {}
         self.vacant_only = vacant_only
@@ -3946,6 +3946,7 @@ def run_catboost(
     verbose: bool = False,
     use_gpu: bool = True,
     seed: int | None = 42,
+    categories: str = "auto",
 ) -> SingleModelResults:
     """
     Run a CatBoost model by tuning parameters, training, and predicting.
@@ -3966,7 +3967,11 @@ def run_catboost(
         If True, print verbose output. Defaults to False.
     use_gpu: bool, optional
         Whether to train using the GPU or not. Defaults to True.
-    
+    categories : str, optional
+        How CatBoost handles category variables: "auto" (one-hot on Windows, CatBoost's own elsewhere), "one_hot"
+        (categories of up to 255 values), or "catboost" (CatBoost's own CTRs: very slow on Windows). Defaults to
+        "auto". See ``tuning.catboost_one_hot_max_size``.
+
     Returns
     -------
     SingleModelResults
@@ -3984,6 +3989,10 @@ def run_catboost(
     ds = _fix_bool_objs(ds, verbose)
     timing.stop("setup")
 
+    from openavmkit.tuning import catboost_one_hot_max_size
+
+    one_hot = catboost_one_hot_max_size(categories)
+
     timing.start("parameter_search")
     params = _get_params(
         "CatBoost",
@@ -3997,11 +4006,20 @@ def run_catboost(
         n_trials=n_trials,
         use_gpu=use_gpu,
         random_state=seed,
+        one_hot_max_size=one_hot,
     )
     timing.stop("parameter_search")
 
     timing.start("setup")
     params = _catboost_final_params(params, seed)
+    if one_hot:
+        params["one_hot_max_size"] = one_hot
+    from openavmkit.tuning import catboost_thread_count
+
+    threads = catboost_thread_count()
+    if threads is not None:
+        # A fold's share of the cores when folds run in parallel; unset, CatBoost takes every core (in each fold).
+        params["thread_count"] = threads
     params["train_dir"] = f"{outpath}/catboost/catboost_info"
     os.makedirs(params["train_dir"], exist_ok=True)
     cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
@@ -5508,12 +5526,21 @@ def _get_params(
         except Exception:
             groups = None
 
+    from openavmkit.tuning import _MODEL_SPACE_VERSION
+
+    extras = [f"cvi={cv_inner}"] if cv_inner is not None else []
+    if name in _MODEL_SPACE_VERSION:
+        # This model's own search space changed: only its saved params and journals are stale.
+        extras.append(f"space_{name}=v{_MODEL_SPACE_VERSION[name]}")
+    if kwargs.get("one_hot_max_size"):
+        # CatBoost's categories one-hot: params tuned with its own encoding aren't reused, nor these with it.
+        extras.append(f"catboost_one_hot={kwargs['one_hot_max_size']}")
     fp = _study_fingerprint(
         ds.X_train.columns,
         len(ds.X_train),
         kwargs.get("n_trials", 50),
         seed=kwargs.get("random_state"),
-        extra=(f"cvi={cv_inner}" if cv_inner is not None else None),
+        extra=("||".join(extras) if extras else None),
     )
     params_path = f"{outpath}/{slug}_params.json"
 

@@ -11,9 +11,12 @@ indirectly through model setup, not as a user-facing operation.
 """
 import glob
 import hashlib
+import json
 import os
 import shutil
+import sys
 import tempfile
+import time
 
 import lightgbm as lgb
 import numpy as np
@@ -43,6 +46,27 @@ _TUNING_BATCH_SIZE = 8
 # raised to 0.01 + iteration/leaf caps tightened (2026-06-18). v3 = CatBoost tunes an RMSE loss
 # over SymmetricTree only, with max_ctr_complexity=1 (see _CATBOOST_FIXED_PARAMS).
 _SEARCH_SPACE_VERSION = 3
+# A model's own search-space version, when only its space changed: it's added to that model's fingerprint, so only
+# its saved params and resume journals are discarded (CatBoost 2: depth searched up to 8, not 10).
+_MODEL_SPACE_VERSION = {"CatBoost": 2}
+# CatBoost's threads per fold when folds run in parallel (run_one_model_cv sets it per fold: cores / folds at once).
+# CatBoost's results are identical at any thread count, so unlike XGBoost/LightGBM it can use the cores the parallel
+# folds leave idle.
+CATBOOST_THREADS_ENV = "OPENAVMKIT_CATBOOST_THREADS"
+
+
+def catboost_thread_count():
+    """The threads a CatBoost fit or CV here may use: the fold's share when folds run in parallel
+    (``OPENAVMKIT_CATBOOST_THREADS``), else the trial-level cap (``OPENAVMKIT_TUNE_WORKERS``), else CatBoost's own
+    default (every core)."""
+    for name in (CATBOOST_THREADS_ENV, "OPENAVMKIT_TUNE_WORKERS"):
+        value = os.environ.get(name)
+        if value:
+            try:
+                return max(1, int(value))
+            except ValueError:
+                pass
+    return None
 
 # CatBoost parameters that are fixed rather than searched. They are shared by the tuner
 # (_tune_catboost) AND the final fit (run_catboost), which merges them under the tuned
@@ -66,6 +90,28 @@ _CATBOOST_FIXED_PARAMS = {
     "grow_policy": "SymmetricTree",
     "max_ctr_complexity": 1,
 }
+# How CatBoost handles category variables: a model entry's ``categories`` setting (run_catboost).
+# - "catboost": CatBoost's own encoding (CTRs: each category's values worked out from the prices in it, every round).
+# - "one_hot": a 0/1 column per value, for categories of up to 255 values (a category with more keeps CTRs).
+# - "auto" (the default): one-hot on Windows, CatBoost's own elsewhere. On Windows CatBoost's CTRs cost a flat ~20 ms
+#   every boosting round whatever the data (1.5 ms on Linux; the same in CatBoost 1.2.8 and 1.2.10, at any thread
+#   count, with every CTR setting tried), so a 600-sale tuning trial took 30-50 s; one-hot there is ~15x faster and a
+#   little less accurate (MAPE 0.0729 -> 0.0774 on a synthetic 60-value neighbourhood).
+# The choice is in CatBoost's study fingerprint (_get_params), so params tuned one way are never reused the other.
+CATBOOST_CATEGORIES = ("auto", "one_hot", "catboost")
+CATBOOST_ONE_HOT_MAX = 255
+
+
+def catboost_one_hot_max_size(categories: str | None = "auto", platform: str | None = None) -> int | None:
+    """CatBoost's ``one_hot_max_size`` for a model entry's ``categories`` setting, or None for CatBoost's own default."""
+    categories = categories or "auto"
+    if categories not in CATBOOST_CATEGORIES:
+        raise ValueError(
+            f'CatBoost "categories" must be one of {", ".join(CATBOOST_CATEGORIES)}, not "{categories}".'
+        )
+    if categories == "auto":
+        categories = "one_hot" if (platform or sys.platform) == "win32" else "catboost"
+    return CATBOOST_ONE_HOT_MAX if categories == "one_hot" else None
 
 
 def _resolve_cv_inner(cv_inner, n_rows):
@@ -213,8 +259,78 @@ def _is_plateaued(study, plateau_trials=10, improvement_threshold=0.01):
     return all(t.value >= best_value * (1 + improvement_threshold) for t in recent)
 
 
+# Each finished tuning trial, one JSON line, appended to the file this names (unset: nothing is written). For seeing
+# where tuning time goes: a trial's seconds, its params and score, the model, the data it searched on, the process
+# (folds run in parallel tune in worker processes, which inherit the variable).
+TRIAL_LOG_ENV = "OPENAVMKIT_TRIAL_LOG"
+
+
+def _trial_log(model, number, seconds, params, value, state="COMPLETE", context=None):
+    """Append one finished trial to the trial log, when ``OPENAVMKIT_TRIAL_LOG`` names one.
+
+    Parameters
+    ----------
+    model : str
+        The model tuned ("CatBoost", "LightGBM", ...).
+    number : int
+        The trial's number in its study.
+    seconds : float or None
+        How long the trial's evaluation took (its own time, not time spent waiting for others in its batch).
+    params : dict
+        The trial's hyperparameters.
+    value : float or None
+        Its objective (MAPE); None when it was pruned or failed.
+    state : str, optional
+        Optuna's trial state name.
+    context : dict, optional
+        What the search ran on (rows, features, categorical features, inner folds, threads).
+    """
+    path = os.environ.get(TRIAL_LOG_ENV)
+    if not path:
+        return
+    record = {
+        "time": round(time.time(), 3),
+        "pid": os.getpid(),
+        "model": model,
+        "trial": number,
+        "seconds": None if seconds is None else round(float(seconds), 3),
+        "state": state,
+        "value": None if value is None else float(value),
+        "params": params,
+        **(context or {}),
+    }
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+    except OSError:
+        pass  # a diagnostic: never stops the tuning
+
+
+def _trial_log_callback(model, context=None):
+    """An Optuna callback writing each trial of a serial ``study.optimize`` to the trial log (its duration is the
+    trial's own: one trial at a time)."""
+
+    def callback(study, trial):
+        from openavmkit import progress
+
+        seconds = trial.duration.total_seconds() if trial.duration is not None else None
+        _trial_log(model, trial.number, seconds, trial.params, trial.value, trial.state.name, context)
+        progress.check_part()  # skipped (the model, by the caller): no more trials
+
+    return callback
+
+
 def _run_batched(
-    study, suggest, evaluate, n_trials, storage_path, verbose, label="", batch_size=None, max_workers=None
+    study,
+    suggest,
+    evaluate,
+    n_trials,
+    storage_path,
+    verbose,
+    label="",
+    batch_size=None,
+    max_workers=None,
+    context=None,
 ):
     """Deterministic *and* parallel hyperparameter search via synchronous batched ask-and-tell.
 
@@ -256,16 +372,32 @@ def _run_batched(
         # A tuner whose library can't be called from several threads at once caps it (LightGBM: 1).
         workers = max(1, min(workers, max_workers))
 
+    from openavmkit import progress
+
+    # The model being tuned, for skip checks on the pool's threads (a context variable doesn't reach them).
+    part = progress.current_part()
     n_done = len([t for t in study.trials if t.state == TrialState.COMPLETE])
     while n_done < n_trials:
+        progress.check_part(part)
         b = min(batch_size, n_trials - n_done)
         asked = []
         for _ in range(b):
             trial = study.ask()
             asked.append((trial, suggest(trial)))  # sequential -> deterministic sampling
 
+        def timed(item):
+            # Skipped (the model, by the caller): the rest of the batch stops before it starts.
+            progress.check_part(part)
+            # Each evaluation timed on its own: the batch's trials are asked together, so Optuna's own start and
+            # end times would include waiting for the others.
+            t0 = time.perf_counter()
+            value = evaluate(item[1])
+            trial = item[0]
+            _trial_log(label, trial.number, time.perf_counter() - t0, trial.params, value, context=context)
+            return value
+
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            values = list(ex.map(lambda item: evaluate(item[1]), asked))
+            values = list(ex.map(timed, asked))
 
         for (trial, _), value in zip(asked, values):  # tell in ask order, not finish order
             study.tell(trial, value)
@@ -277,6 +409,17 @@ def _run_batched(
             if verbose:
                 print(f"Plateau detected: stopping {label} search early at {n_done} trials.")
             break
+
+
+def _search_context(X, cat_vars=None, n_splits=None, cv_inner=None):
+    """What a tuning search runs on, for the trial log: rows, features, categorical features, CV folds."""
+    cats = [c for c in (cat_vars or []) if c in getattr(X, "columns", [])]
+    return {
+        "rows": int(len(X)),
+        "features": int(X.shape[1]) if hasattr(X, "shape") and len(X.shape) > 1 else None,
+        "cat_features": len(cats),
+        "folds": n_splits if cv_inner is None else cv_inner,
+    }
 
 
 def _remaining_trials(study, n_trials, storage_path):
@@ -426,7 +569,10 @@ def _tune_xgboost(
         sampler=_seeded_sampler(random_state, constant_liar=True),
         verbose=verbose,
     )
-    _run_batched(study, suggest, evaluate, n_trials, storage_path, verbose, label="XGBoost")
+    _run_batched(
+        study, suggest, evaluate, n_trials, storage_path, verbose, label="XGBoost",
+        context=_search_context(X, cat_vars=cat_vars, n_splits=n_splits, cv_inner=cv_inner),
+    )
     if verbose:
         print(
             f"Best trial: {study.best_trial.number} with MAPE: {study.best_trial.value:0.4f} and params: {study.best_trial.params}"
@@ -533,7 +679,10 @@ def _tune_lightgbm(
     # or predict while the other thread runs Python). Measured on OAK box's 5,000-parcel test county, one fold at a
     # time: 7 crashes in 11 runs on two slow cores, 1 in 3 on four; none in 11 one at a time, in the same time. The
     # batches are asked and told as before, so the trials and the result are the same.
-    _run_batched(study, suggest, evaluate, n_trials, storage_path, verbose, label="LightGBM", max_workers=1)
+    _run_batched(
+        study, suggest, evaluate, n_trials, storage_path, verbose, label="LightGBM", max_workers=1,
+        context=_search_context(X, cat_vars=cat_vars, n_splits=n_splits, cv_inner=cv_inner),
+    )
 
     if verbose:
         print(
@@ -555,6 +704,7 @@ def _tune_catboost(
     study_name=None,
     groups=None,
     cv_inner=None,
+    one_hot_max_size=None,
 ):
 
     # CatBoost uses its built-in cv(), which does not support grouped folds, so the inner
@@ -563,11 +713,9 @@ def _tune_catboost(
     # how many (min 2) inner folds cv() runs, to keep nested-CV compute down.
     inner_folds = max(2, cv_inner) if cv_inner is not None else n_splits
 
-    # Cap CatBoost's internal threads to a fold's fair share when folds run in parallel
-    # (run_one_model_cv sets OPENAVMKIT_TUNE_WORKERS), so parallel CatBoost folds don't
-    # each grab every core.
-    _cb_env = os.environ.get("OPENAVMKIT_TUNE_WORKERS")
-    _cb_thread_count = int(_cb_env) if _cb_env else None
+    # A fold's share of the cores when folds run in parallel (run_one_model_cv), so parallel CatBoost folds
+    # neither each grab every core nor leave most of them idle.
+    _cb_thread_count = catboost_thread_count()
 
     # Pre-build a single Pool for CV
     cat_feats = [c for c in (cat_vars or []) if c in X.columns]
@@ -590,9 +738,12 @@ def _tune_catboost(
     def objective(trial):
         params = {
             **_CATBOOST_FIXED_PARAMS,
+            **({"one_hot_max_size": one_hot_max_size} if one_hot_max_size else {}),
             "iterations": trial.suggest_int("iterations", 300, 1000),
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-            "depth": trial.suggest_int("depth", 4, 10),
+            # Up to 8: each level roughly doubles a tree's cost, and depth 9-10 trials took 25-45 s each on an
+            # assessor's 500-sale group (OAK box's trial log) without scoring better.
+            "depth": trial.suggest_int("depth", 4, 8),
             "border_count": trial.suggest_int("border_count", 32, 64),
             "random_strength": trial.suggest_float("random_strength", 0, 10),
             "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 10, log=True),
@@ -648,7 +799,11 @@ def _tune_catboost(
         # callback applies cleanly. (The MedianPruner above can't save time here — the objective
         # reports its curve only after CatBoost's built-in cv() has already run all folds.)
         try:
-            study.optimize(objective, n_trials=remaining, n_jobs=1, callbacks=[_plateau_callback])
+            context = _search_context(X, cat_vars=cat_feats, n_splits=inner_folds, cv_inner=None)
+            context["thread_count"] = _cb_thread_count
+            context["one_hot_max_size"] = one_hot_max_size
+            callbacks = [_plateau_callback, _trial_log_callback("CatBoost", context)]
+            study.optimize(objective, n_trials=remaining, n_jobs=1, callbacks=callbacks)
         finally:
             shutil.rmtree(train_dir, ignore_errors=True)
     else:
@@ -750,8 +905,10 @@ def _tune_ngboost(
     # NGBoost training is not thread-safe enough for n_jobs=-1; tune serially.
     remaining = _remaining_trials(study, n_trials, storage_path)
     if remaining > 0:
+        context = _search_context(X, cat_vars=cat_vars, n_splits=n_splits, cv_inner=cv_inner)
         study.optimize(
-            objective, n_trials=remaining, n_jobs=1, callbacks=[_plateau_callback]
+            objective, n_trials=remaining, n_jobs=1,
+            callbacks=[_plateau_callback, _trial_log_callback("NGBoost", context)],
         )
 
     if verbose:

@@ -1692,6 +1692,7 @@ def run_one_model(
     log = entry.get("log", False)
     n_trials = entry.get("n_trials", 50)
     use_gpu = entry.get("use_gpu", True)
+    categories = entry.get("categories", "auto")  # CatBoost: how it handles category variables
     seed = get_model_seed(settings)
     t.stop("setup")
 
@@ -1747,7 +1748,15 @@ def run_one_model(
         )
     elif model_engine == "catboost":
         results = run_catboost(
-            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, use_gpu=use_gpu, seed=seed
+            ds,
+            outpath,
+            save_params,
+            use_saved_params,
+            n_trials=n_trials,
+            verbose=verbose,
+            use_gpu=use_gpu,
+            seed=seed,
+            categories=categories,
         )
     elif model_engine == "ngboost":
         results = run_ngboost(
@@ -1870,11 +1879,15 @@ def _model_artifact_dir(base: str, model_name: str) -> str:
     return path.replace("*", "_star") if "*" in path else path
 
 
+# A fold's result when its model was skipped (by the caller, progress.check_part): run_one_model_cv then stops it.
+_FOLD_SKIPPED = "skipped"
+
+
 def _run_cv_fold(
     k, holdout_keys, train_keys_k, tune_workers,
     df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
     settings, dep_var, dep_var_test, best_variables, fields_cat, outpath,
-    use_saved_params, verbose, emit_oof_contribs=False,
+    use_saved_params, verbose, emit_oof_contribs=False, catboost_threads=None,
 ):
     """Run one CV fold and return only the lightweight bits the orchestrator needs.
 
@@ -1892,12 +1905,25 @@ def _run_cv_fold(
     """
     if tune_workers is not None:
         os.environ["OPENAVMKIT_TUNE_WORKERS"] = str(tune_workers)
-    fr = run_one_model(
-        df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
-        settings, dep_var, dep_var_test, best_variables, fields_cat, f"{outpath}/cv_fold{k}",
-        save_params=True, use_saved_params=use_saved_params, save_results=False,
-        verbose=verbose, test_keys=holdout_keys, train_keys=train_keys_k,
-    )
+    # CatBoost's share of the cores (set per task, as tune_workers, so it survives loky worker reuse).
+    if catboost_threads is not None:
+        os.environ["OPENAVMKIT_CATBOOST_THREADS"] = str(catboost_threads)
+    else:
+        os.environ.pop("OPENAVMKIT_CATBOOST_THREADS", None)
+    part = f"model:{model_group}:{model_name}"
+    try:
+        # Marked as its model, in a worker process too, for skip checks between its tuning trials.
+        with progress.in_part(part):
+            progress.check_part()
+            fr = run_one_model(
+                df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
+                settings, dep_var, dep_var_test, best_variables, fields_cat, f"{outpath}/cv_fold{k}",
+                save_params=True, use_saved_params=use_saved_params, save_results=False,
+                verbose=verbose, test_keys=holdout_keys, train_keys=train_keys_k,
+            )
+    except progress.Skipped:
+        # Said back as a value: an exception from a worker process is the wrong way to stop a part.
+        return _FOLD_SKIPPED
     if fr is None:
         return None
     field = fr.field_prediction
@@ -2039,8 +2065,11 @@ def run_one_model_cv(
             os.environ[k] = v
         try:
             from joblib import Parallel, delayed
+            # CatBoost's results are the same at any thread count, so it takes the cores the folds leave idle.
+            cb_threads = max(1, cpu // cv_max_workers)
             fold_results = Parallel(n_jobs=cv_max_workers, backend="loky")(
-                delayed(_run_cv_fold)(k, hk, tk, 1, *fold_args) for (k, hk, tk) in tasks
+                delayed(_run_cv_fold)(k, hk, tk, 1, *fold_args, catboost_threads=cb_threads)
+                for (k, hk, tk) in tasks
             )
         finally:
             for k, v in _saved_env.items():
@@ -2053,6 +2082,9 @@ def run_one_model_cv(
         # let each fold keep full trial-level parallelism (tune_workers=None) so it isn't crippled
         # (LightGBM's tuner still evaluates one trial at a time: two at once crash it, tuning._tune_lightgbm).
         fold_results = [_run_cv_fold(k, hk, tk, None, *fold_args) for (k, hk, tk) in tasks]
+
+    if any(isinstance(r, str) and r == _FOLD_SKIPPED for r in fold_results):
+        raise progress.Skipped(f"model:{model_group}:{model_name}")
 
     oof_map: dict[str, float] = {}
     n_fold_ok = 0
@@ -3887,6 +3919,8 @@ def _optimize_ensemble(
 
     if len(ensemble_list) == 0:
         ensemble_list = [key for key in all_results.model_results.keys()]
+    # Only models that produced results: one skipped (by the caller) or that failed isn't there to ensemble.
+    ensemble_list = [m for m in ensemble_list if m in all_results.model_results]
 
     if "assessor" in ensemble_list:
         ensemble_list.remove("assessor")
@@ -4843,8 +4877,9 @@ def _perform_default_ensemble(
             agg=agg,
         )
     else:
-        # Manual selection: use exactly the models the user listed, no pruning.
-        best_ensemble = list(ensemble_list)
+        # Manual selection: use exactly the models the user listed, no pruning (those that produced results: one
+        # skipped by the caller, or that failed, isn't there).
+        best_ensemble = [m for m in ensemble_list if m in all_results.model_results]
         if verbose:
             print(f"Using manually-selected ensemble: {best_ensemble}")
     t.stop("optimize_ensemble")
@@ -5439,7 +5474,14 @@ def _run_models(
         if model_name in models_to_skip:
             print(f"Skipping model {model_name}.")
             continue
-        progress.report(f"model:{model_group}:{model_name}", None, f"Training {model_name} for {model_group}")
+        part = f"model:{model_group}:{model_name}"
+        try:
+            # A part the caller can skip: this model, in this group (progress.check_part, the skip file).
+            progress.report(part, None, f"Training {model_name} for {model_group}", part=part)
+            progress.check_part(part)
+        except progress.Skipped:
+            warnings.warn(f"{model_name} for {model_group}: skipped, as asked.")
+            continue
         model_entry = model_entries.get(model_name, model_entries.get("default", {}))
         model_engine = model_entry.get("model", model_name)
 
@@ -5454,24 +5496,31 @@ def _run_models(
         # cv_folds <= 1 keeps the legacy single-split path.
         _cv_folds = int(settings.get("modeling", {}).get("instructions", {}).get("cv_folds", 5))
         _run_model_fn = run_one_model_cv if _cv_folds > 1 else run_one_model
-        results = _run_model_fn(
-            df_sales=df_sales,
-            df_universe=df_univ,
-            vacant_only=vacant_only,
-            model_group=model_group,
-            model_name=model_name,
-            model_entries=model_entries,
-            settings=settings,
-            dep_var=dep_var,
-            dep_var_test=dep_var_test,
-            best_variables=model_variables,
-            fields_cat=fields_cat,
-            outpath=outpath,
-            save_params=save_params,
-            use_saved_params=use_saved_params,
-            save_results=save_results,
-            verbose=verbose,
-        )
+        try:
+            with progress.in_part(part):
+                results = _run_model_fn(
+                    df_sales=df_sales,
+                    df_universe=df_univ,
+                    vacant_only=vacant_only,
+                    model_group=model_group,
+                    model_name=model_name,
+                    model_entries=model_entries,
+                    settings=settings,
+                    dep_var=dep_var,
+                    dep_var_test=dep_var_test,
+                    best_variables=model_variables,
+                    fields_cat=fields_cat,
+                    outpath=outpath,
+                    save_params=save_params,
+                    use_saved_params=use_saved_params,
+                    save_results=save_results,
+                    verbose=verbose,
+                )
+        except progress.Skipped:
+            # Skipped by the caller while it ran (between tuning trials, or folds): left out; the rest go on, and
+            # the ensemble is made of them.
+            warnings.warn(f"{model_name} for {model_group}: skipped, as asked.")
+            continue
         if results is not None:
             model_results[model_name] = results
             any_results = True
