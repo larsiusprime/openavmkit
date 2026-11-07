@@ -743,7 +743,7 @@ class DataSplit:
         self.dep_var = dep_var
         self.dep_var_test = dep_var_test
         self.ind_vars = ind_vars.copy()
-        self.categorical_vars = categorical_vars.copy()
+        self.categorical_vars = list(dict.fromkeys(categorical_vars))  # unique: a field can be listed twice
         self.interactions = interactions.copy()
         self.one_hot_descendants = {}
         self.vacant_only = vacant_only

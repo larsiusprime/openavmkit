@@ -375,8 +375,10 @@ class TreeBasedCategoricalData:
         """
         feature_names = list(X_train.columns)
 
+        # Unique, in order: a field listed twice (a location that's also a variable) was converted twice and the
+        # second .cat failed (SHAP and contributions).
         cat_cols = [
-            c for c in categorical_cols
+            c for c in dict.fromkeys(categorical_cols)
             if c in X_train.columns
             and pd.api.types.is_categorical_dtype(X_train[c])
         ]
@@ -431,7 +433,7 @@ class TreeBasedCategoricalData:
         X = self.apply(X)
         out = X.copy()
 
-        for c in self.categorical_cols:
+        for c in dict.fromkeys(self.categorical_cols):  # unique: models saved with a field listed twice
             codes = out[c].cat.codes.astype(np.float64)
             codes[codes == -1] = np.nan
             out[c] = codes

@@ -87,3 +87,15 @@ def test_catboost_shap_is_per_variable_and_adds_up_with_one_hot():
 		sv = m.get_feature_importance(pool, type="ShapValues", shap_calc_type=kind)
 		assert sv.shape == (30, 3)  # a, nbhd, the base value
 		assert np.allclose(sv.sum(axis=1), m.predict(X.iloc[:30]))
+
+
+def test_shap_numeric_matrix_with_a_category_listed_twice():
+	"""A field listed twice among the categories (a location that's also a variable) failed CatBoost's SHAP at
+	Finalize: the second pass found it already converted."""
+	from openavmkit.utilities.modeling import TreeBasedCategoricalData
+
+	X = pd.DataFrame({"a": [1.0, 2.0, 3.0], "nbhd": pd.Categorical(["x", "y", "x"])})
+	cd = TreeBasedCategoricalData.from_training_data(X, ["nbhd", "nbhd"])
+	assert cd.categorical_cols == ["nbhd"]
+	cd.categorical_cols = ["nbhd", "nbhd"]  # as a model saved before the fix carries it
+	assert cd.to_numeric_matrix(X)[:, 1].tolist() == [0.0, 1.0, 0.0]
