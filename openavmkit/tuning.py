@@ -90,15 +90,28 @@ _CATBOOST_FIXED_PARAMS = {
     "grow_policy": "SymmetricTree",
     "max_ctr_complexity": 1,
 }
-# - one_hot_max_size 255, on Windows only: there CatBoost's CTRs (how it turns a category into numbers) cost a flat
-#   ~20 ms every boosting round whatever the data (1.5 ms on Linux; the same in CatBoost 1.2.8 and 1.2.10, at any
-#   thread count, with any CTR setting), so a 600-sale trial took 30-50 s. One-hot categories (up to 255 values) skip
-#   CTRs: ~15x faster there, a little less accurate (MAPE 0.0729 -> 0.0774 on a synthetic 60-value neighbourhood).
-#   A category with more values still gets CTRs. Folded into the study fingerprint (catboost_one_hot), so params
-#   tuned one way are never reused the other.
-CATBOOST_WINDOWS_ONE_HOT = 255
-if sys.platform == "win32":
-    _CATBOOST_FIXED_PARAMS["one_hot_max_size"] = CATBOOST_WINDOWS_ONE_HOT
+# How CatBoost handles category variables: a model entry's ``categories`` setting (run_catboost).
+# - "catboost": CatBoost's own encoding (CTRs: each category's values worked out from the prices in it, every round).
+# - "one_hot": a 0/1 column per value, for categories of up to 255 values (a category with more keeps CTRs).
+# - "auto" (the default): one-hot on Windows, CatBoost's own elsewhere. On Windows CatBoost's CTRs cost a flat ~20 ms
+#   every boosting round whatever the data (1.5 ms on Linux; the same in CatBoost 1.2.8 and 1.2.10, at any thread
+#   count, with every CTR setting tried), so a 600-sale tuning trial took 30-50 s; one-hot there is ~15x faster and a
+#   little less accurate (MAPE 0.0729 -> 0.0774 on a synthetic 60-value neighbourhood).
+# The choice is in CatBoost's study fingerprint (_get_params), so params tuned one way are never reused the other.
+CATBOOST_CATEGORIES = ("auto", "one_hot", "catboost")
+CATBOOST_ONE_HOT_MAX = 255
+
+
+def catboost_one_hot_max_size(categories: str | None = "auto", platform: str | None = None) -> int | None:
+    """CatBoost's ``one_hot_max_size`` for a model entry's ``categories`` setting, or None for CatBoost's own default."""
+    categories = categories or "auto"
+    if categories not in CATBOOST_CATEGORIES:
+        raise ValueError(
+            f'CatBoost "categories" must be one of {", ".join(CATBOOST_CATEGORIES)}, not "{categories}".'
+        )
+    if categories == "auto":
+        categories = "one_hot" if (platform or sys.platform) == "win32" else "catboost"
+    return CATBOOST_ONE_HOT_MAX if categories == "one_hot" else None
 
 
 def _resolve_cv_inner(cv_inner, n_rows):
@@ -691,6 +704,7 @@ def _tune_catboost(
     study_name=None,
     groups=None,
     cv_inner=None,
+    one_hot_max_size=None,
 ):
 
     # CatBoost uses its built-in cv(), which does not support grouped folds, so the inner
@@ -724,6 +738,7 @@ def _tune_catboost(
     def objective(trial):
         params = {
             **_CATBOOST_FIXED_PARAMS,
+            **({"one_hot_max_size": one_hot_max_size} if one_hot_max_size else {}),
             "iterations": trial.suggest_int("iterations", 300, 1000),
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             # Up to 8: each level roughly doubles a tree's cost, and depth 9-10 trials took 25-45 s each on an
@@ -786,6 +801,7 @@ def _tune_catboost(
         try:
             context = _search_context(X, cat_vars=cat_feats, n_splits=inner_folds, cv_inner=None)
             context["thread_count"] = _cb_thread_count
+            context["one_hot_max_size"] = one_hot_max_size
             callbacks = [_plateau_callback, _trial_log_callback("CatBoost", context)]
             study.optimize(objective, n_trials=remaining, n_jobs=1, callbacks=callbacks)
         finally:

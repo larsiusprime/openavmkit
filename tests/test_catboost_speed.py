@@ -45,19 +45,45 @@ def test_only_catboosts_saved_tuning_is_stale():
 	assert plain != with_space
 
 
-def test_catboost_one_hot_on_windows_only_and_in_the_fingerprint(monkeypatch):
-	"""On Windows CatBoost's CTRs cost ~20 ms a round whatever the data, so categories there are one-hot (up to 255
-	values); elsewhere CatBoost's default. Params tuned one way are never reused the other."""
-	import importlib
-	import sys
+def test_catboost_categories_auto_is_one_hot_on_windows_only():
+	"""On Windows CatBoost's CTRs cost ~20 ms a round whatever the data, so "auto" one-hot encodes categories there
+	(up to 255 values); elsewhere CatBoost's own. "one_hot" and "catboost" are the same everywhere."""
+	f = tuning.catboost_one_hot_max_size
+	assert f("auto", platform="win32") == 255 and f(None, platform="win32") == 255
+	assert f("auto", platform="linux") is None and f("auto", platform="darwin") is None
+	assert f("one_hot", platform="linux") == 255
+	assert f("catboost", platform="win32") is None
+	with pytest.raises(ValueError, match="one_hot"):
+		f("onehot")
 
-	try:
-		monkeypatch.setattr(sys, "platform", "win32")
-		importlib.reload(tuning)
-		assert tuning._CATBOOST_FIXED_PARAMS["one_hot_max_size"] == tuning.CATBOOST_WINDOWS_ONE_HOT
-		monkeypatch.setattr(sys, "platform", "linux")
-		importlib.reload(tuning)
-		assert "one_hot_max_size" not in tuning._CATBOOST_FIXED_PARAMS
-	finally:
-		monkeypatch.undo()
-		importlib.reload(tuning)
+
+def test_catboost_one_hot_reaches_its_tuning_trials(tmp_path, monkeypatch):
+	pytest.importorskip("catboost")
+	log = tmp_path / "trials.jsonl"
+	monkeypatch.setenv(tuning.TRIAL_LOG_ENV, str(log))
+	rng = np.random.default_rng(2)
+	X = pd.DataFrame({"a": rng.normal(size=120), "nbhd": [f"n{i}" for i in rng.integers(0, 20, 120)]})
+	X["nbhd"] = X["nbhd"].astype("category")
+	y = 100_000 + 20_000 * X["a"] + rng.normal(scale=1000, size=120)
+	tuning._tune_catboost(X, y, cat_vars=["nbhd"], n_trials=2, n_splits=2, use_gpu=False, one_hot_max_size=255)
+	import json
+
+	lines = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+	assert lines and all(x["one_hot_max_size"] == 255 for x in lines)
+
+
+def test_catboost_shap_is_per_variable_and_adds_up_with_one_hot():
+	"""One-hot is inside CatBoost: its SHAP values (contributions) stay one column per variable, the neighbourhood one
+	column, and still add up to the prediction."""
+	catboost = pytest.importorskip("catboost")
+	rng = np.random.default_rng(3)
+	X = pd.DataFrame({"a": rng.normal(size=300), "nbhd": [f"n{i}" for i in rng.integers(0, 40, 300)]})
+	y = 100_000 + 20_000 * X["a"] + rng.normal(scale=1000, size=300)
+	m = catboost.CatBoostRegressor(
+		iterations=100, depth=4, verbose=False, allow_writing_files=False, one_hot_max_size=255
+	).fit(catboost.Pool(X, y, cat_features=["nbhd"]))
+	pool = catboost.Pool(X.iloc[:30], cat_features=["nbhd"])
+	for kind in ("Regular", "Approximate"):
+		sv = m.get_feature_importance(pool, type="ShapValues", shap_calc_type=kind)
+		assert sv.shape == (30, 3)  # a, nbhd, the base value
+		assert np.allclose(sv.sum(axis=1), m.predict(X.iloc[:30]))

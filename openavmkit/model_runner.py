@@ -1692,6 +1692,7 @@ def run_one_model(
     log = entry.get("log", False)
     n_trials = entry.get("n_trials", 50)
     use_gpu = entry.get("use_gpu", True)
+    categories = entry.get("categories", "auto")  # CatBoost: how it handles category variables
     seed = get_model_seed(settings)
     t.stop("setup")
 
@@ -1747,7 +1748,15 @@ def run_one_model(
         )
     elif model_engine == "catboost":
         results = run_catboost(
-            ds, outpath, save_params, use_saved_params, n_trials=n_trials, verbose=verbose, use_gpu=use_gpu, seed=seed
+            ds,
+            outpath,
+            save_params,
+            use_saved_params,
+            n_trials=n_trials,
+            verbose=verbose,
+            use_gpu=use_gpu,
+            seed=seed,
+            categories=categories,
         )
     elif model_engine == "ngboost":
         results = run_ngboost(

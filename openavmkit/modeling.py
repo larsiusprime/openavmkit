@@ -3946,6 +3946,7 @@ def run_catboost(
     verbose: bool = False,
     use_gpu: bool = True,
     seed: int | None = 42,
+    categories: str = "auto",
 ) -> SingleModelResults:
     """
     Run a CatBoost model by tuning parameters, training, and predicting.
@@ -3966,7 +3967,11 @@ def run_catboost(
         If True, print verbose output. Defaults to False.
     use_gpu: bool, optional
         Whether to train using the GPU or not. Defaults to True.
-    
+    categories : str, optional
+        How CatBoost handles category variables: "auto" (one-hot on Windows, CatBoost's own elsewhere), "one_hot"
+        (categories of up to 255 values), or "catboost" (CatBoost's own CTRs: very slow on Windows). Defaults to
+        "auto". See ``tuning.catboost_one_hot_max_size``.
+
     Returns
     -------
     SingleModelResults
@@ -3984,6 +3989,10 @@ def run_catboost(
     ds = _fix_bool_objs(ds, verbose)
     timing.stop("setup")
 
+    from openavmkit.tuning import catboost_one_hot_max_size
+
+    one_hot = catboost_one_hot_max_size(categories)
+
     timing.start("parameter_search")
     params = _get_params(
         "CatBoost",
@@ -3997,11 +4006,14 @@ def run_catboost(
         n_trials=n_trials,
         use_gpu=use_gpu,
         random_state=seed,
+        one_hot_max_size=one_hot,
     )
     timing.stop("parameter_search")
 
     timing.start("setup")
     params = _catboost_final_params(params, seed)
+    if one_hot:
+        params["one_hot_max_size"] = one_hot
     from openavmkit.tuning import catboost_thread_count
 
     threads = catboost_thread_count()
@@ -5514,15 +5526,15 @@ def _get_params(
         except Exception:
             groups = None
 
-    from openavmkit.tuning import _CATBOOST_FIXED_PARAMS, _MODEL_SPACE_VERSION
+    from openavmkit.tuning import _MODEL_SPACE_VERSION
 
     extras = [f"cvi={cv_inner}"] if cv_inner is not None else []
     if name in _MODEL_SPACE_VERSION:
         # This model's own search space changed: only its saved params and journals are stale.
         extras.append(f"space_{name}=v{_MODEL_SPACE_VERSION[name]}")
-    if name == "CatBoost" and "one_hot_max_size" in _CATBOOST_FIXED_PARAMS:
-        # One-hot categories (Windows): params tuned with CTRs aren't reused, nor these elsewhere.
-        extras.append(f"catboost_one_hot={_CATBOOST_FIXED_PARAMS['one_hot_max_size']}")
+    if kwargs.get("one_hot_max_size"):
+        # CatBoost's categories one-hot: params tuned with its own encoding aren't reused, nor these with it.
+        extras.append(f"catboost_one_hot={kwargs['one_hot_max_size']}")
     fp = _study_fingerprint(
         ds.X_train.columns,
         len(ds.X_train),

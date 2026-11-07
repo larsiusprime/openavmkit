@@ -191,6 +191,7 @@ These fields can appear on any model entry under `modeling.models.<stage>.<name>
 | `dep_var_test` | string | same as `dep_var` | Override the dependent variable used for test-set evaluation. |
 | `n_trials` | int | 50 | Number of Optuna trials for tree-based hyperparameter tuning. |
 | `use_gpu` | bool | true | (CatBoost) use GPU acceleration if available. |
+| `categories` | string | `"auto"` | (CatBoost) how it handles category variables: `"auto"` (one-hot on Windows, CatBoost's own elsewhere), `"one_hot"` or `"catboost"`. See [CatBoost's categories](#catboosts-categories-categories). |
 | `intercept` | bool | true | (MRA, multi-MRA) include constant term. |
 | `optimize_vars` | bool | false | (multi-MRA) run per-location variable optimization. |
 | `field` | string | — | (`pass_through` engine only) the column to use as the prediction. |
@@ -227,12 +228,35 @@ Fits separate MRA models for each unique value of one or more location fields. C
 
 Production-grade tree-based ensembles. Handle nonlinearities, interactions, and missing data well; fit categorical variables natively in OpenAVMKit's wrappers.
 
-- **Accepts**: `ind_vars`, `n_trials`. CatBoost also accepts `use_gpu`.
+- **Accepts**: `ind_vars`, `n_trials`. CatBoost also accepts `use_gpu` and `categories` (see below).
 - **Hyperparameter tuning**: yes, via Optuna. Tuned parameters cached at `<outpath>/<slug>_params.json` (see [advanced_settings.md § 8.4](advanced_settings.md#84-saved-model-parameters-different-semantics)).
 - **Native spatial awareness**: no — feed location via `latitude_norm`/`longitude_norm`, polar coords, or categorical region fields.
 - **Params / contributions**: tree-SHAP, but **not all three engines compute it the same way**. **XGBoost** and **CatBoost** use SHAP's *approximate* mode (Saabas-style path attribution for XGBoost, `shap_calc_type="Approximate"` for CatBoost); **LightGBM** uses the exact path-dependent algorithm, since approximate mode is not available for it. Exact TreeSHAP on a full parcel universe is dramatically more expensive — often the difference between minutes and hours — which is why approximate is the default and there is deliberately no setting to switch it. The additivity check is also off by default, so attributions are not verified to sum back to the prediction. In practice the the loss of precision is small.
 - **When to use**: most production AVM workloads. Often the strongest single-model performers.
 - **When not to use**: very small training sets; when interpretability is a hard requirement.
+
+##### CatBoost's categories (`categories`)
+
+CatBoost can handle a category variable (a neighbourhood, a land use) in two ways:
+
+| `categories` | What CatBoost does | Where it's the default |
+| --- | --- | --- |
+| `"catboost"` | Its own encoding (CTRs): each category's values are worked out from the sale prices in it, again every boosting round. Usually the most accurate. | Linux and macOS (`"auto"`) |
+| `"one_hot"` | A 0/1 column per value, for categories of up to 255 values; a category with more values keeps CatBoost's own encoding. A little less accurate. | Windows (`"auto"`) |
+| `"auto"` (the default) | `"one_hot"` on Windows, `"catboost"` elsewhere. | |
+
+> **Warning: don't set `"catboost"` on Windows unless you're prepared for a very long run.** On Windows, CatBoost's own encoding costs a flat ~20 ms every boosting round, whatever the data, the thread count or the CTR settings (about 1.5 ms a round on Linux; the same in CatBoost 1.2.8 and 1.2.10). A tuning trial on 600 sales took 30-50 s instead of 2-3 s, so a model group's 50 trials over 5 folds can take hours. With `"one_hot"` the same trial is about 15x faster.
+
+```json
+"catboost": { "model": "catboost", "categories": "auto" }
+```
+
+What one-hot changes, and what it doesn't:
+
+- **Values**: a little less accurate on some data (a 60-value synthetic neighbourhood: MAPE 0.0729 with CatBoost's own encoding, 0.0774 one-hot). The same project run on Windows and on Linux gives somewhat different CatBoost values under `"auto"`; set `categories` explicitly if they must match.
+- **Contributions and SHAP**: unchanged in form. The encoding happens inside CatBoost, so its SHAP values stay one column per variable (a neighbourhood is one column, not one per value) and still add up to the prediction.
+- **Saved params**: the choice is part of CatBoost's tuning fingerprint, so params tuned one way are never reused the other; changing it re-tunes CatBoost once.
+- **New categories** (a value not in the training sales) are still predicted, as with CatBoost's own encoding.
 
 #### `ngboost` — Probabilistic gradient boosting (NGBoost)
 
