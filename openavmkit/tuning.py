@@ -267,8 +267,11 @@ def _trial_log_callback(model, context=None):
     trial's own: one trial at a time)."""
 
     def callback(study, trial):
+        from openavmkit import progress
+
         seconds = trial.duration.total_seconds() if trial.duration is not None else None
         _trial_log(model, trial.number, seconds, trial.params, trial.value, trial.state.name, context)
+        progress.check_part()  # skipped (the model, by the caller): no more trials
 
     return callback
 
@@ -325,8 +328,13 @@ def _run_batched(
         # A tuner whose library can't be called from several threads at once caps it (LightGBM: 1).
         workers = max(1, min(workers, max_workers))
 
+    from openavmkit import progress
+
+    # The model being tuned, for skip checks on the pool's threads (a context variable doesn't reach them).
+    part = progress.current_part()
     n_done = len([t for t in study.trials if t.state == TrialState.COMPLETE])
     while n_done < n_trials:
+        progress.check_part(part)
         b = min(batch_size, n_trials - n_done)
         asked = []
         for _ in range(b):
@@ -334,6 +342,8 @@ def _run_batched(
             asked.append((trial, suggest(trial)))  # sequential -> deterministic sampling
 
         def timed(item):
+            # Skipped (the model, by the caller): the rest of the batch stops before it starts.
+            progress.check_part(part)
             # Each evaluation timed on its own: the batch's trials are asked together, so Optuna's own start and
             # end times would include waiting for the others.
             t0 = time.perf_counter()

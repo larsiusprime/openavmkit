@@ -29,6 +29,8 @@ All notable changes to this project will be documented in this file.
 
 ### New features
 
+- **Skip one model while it runs.** Each model's training is a part a caller can skip (`progress.in_part`, `"model:<group>:<model>"`): name it in the file `OPENAVMKIT_SKIP_FILE` points to (or in `progress.reporting(skip=...)`), and its tuning stops at the next trial, in fold worker processes too. The model is left out with a warning, the run goes on with the rest, and the ensemble is made of the models that produced results (it now leaves out any that didn't, skipped or failed, instead of failing on them).
+
 - **The trial log.** Set `OPENAVMKIT_TRIAL_LOG` to a file path and every finished tuning trial (XGBoost, LightGBM, CatBoost, NGBoost) is appended to it as one JSON line: the model, the trial's own seconds, its state, score and params, and what the search ran on (rows, features, categorical features, CV folds; CatBoost's threads). Folds tuned in parallel worker processes inherit the variable, so their trials are logged too. Unset, nothing is written. For seeing where tuning time goes.
 
 - **A CSV's text encoding, worked out for you.** A `data.load` entry can say `"encoding": "auto"` (work it out from the file: UTF-8, UTF-16 or cp1252) or name one (`"cp1252"`); without it, a CSV is read as UTF-8, as before. Excel's plain "CSV (Comma delimited)" is cp1252, and with any accented letter in it the load used to stop with a `UnicodeDecodeError`. See [A CSV's text encoding](docs/docs/advanced_settings.md#27-a-csvs-text-encoding--encoding).

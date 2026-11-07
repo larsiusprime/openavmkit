@@ -19,6 +19,7 @@ catches it, leaves the part's results out, and carries on.
 from __future__ import annotations
 
 import contextvars
+import os
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable, Iterator, Optional
@@ -75,6 +76,14 @@ _listener: contextvars.ContextVar[Optional[ProgressCallback]] = contextvars.Cont
 _cancel: contextvars.ContextVar[Optional[CancelCheck]] = contextvars.ContextVar("_cancel", default=None)
 _stage: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("_stage", default=None)
 _skip: contextvars.ContextVar[Optional[SkipCheck]] = contextvars.ContextVar("_skip", default=None)
+# The part of the work running now (in_part), for check_part() deep inside it: a model's tuning, say.
+_part_now: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("_part_now", default=None)
+
+# A file naming parts to skip, one per line: how a caller asks to skip a part that's running in worker processes
+# (folds tuned in parallel), which its skip check can't reach. Workers inherit the variable; the file is read as they
+# check, so a part named after they started is still skipped.
+SKIP_FILE_ENV = "OPENAVMKIT_SKIP_FILE"
+
 # The last step reported: (step, fraction, message), for detail() to add to.
 _current: contextvars.ContextVar[Optional[tuple[str, Optional[float], str]]] = contextvars.ContextVar(
     "_current", default=None
@@ -170,6 +179,45 @@ def check_skipped(part: str) -> None:
     """Raise :class:`Skipped` if the active skip check says to skip ``part``."""
     skip = _skip.get()
     if skip is not None and skip(part):
+        raise Skipped(part)
+
+
+@contextmanager
+def in_part(part: str) -> Iterator[None]:
+    """Mark the enclosed work as ``part`` (``"model:<group>:<model>"``), for :func:`check_part` inside it."""
+    token = _part_now.set(part)
+    try:
+        yield
+    finally:
+        _part_now.reset(token)
+
+
+def current_part() -> Optional[str]:
+    """The part marked by :func:`in_part` in this thread, if any (for passing to worker threads)."""
+    return _part_now.get()
+
+
+def skip_file_names(part: str) -> bool:
+    """Whether the skip file (``OPENAVMKIT_SKIP_FILE``) names ``part``."""
+    path = os.environ.get(SKIP_FILE_ENV)
+    if not path:
+        return False
+    try:
+        with open(path, encoding="utf-8") as f:
+            return part in {line.strip() for line in f}
+    except OSError:
+        return False
+
+
+def check_part(part: Optional[str] = None) -> None:
+    """Raise :class:`Skipped` if the part running now (``part``, or the one :func:`in_part` marked) is to be skipped:
+    by the caller's skip check, or by the skip file (which reaches worker processes). Long work calls this at safe
+    points: between tuning trials, between folds."""
+    part = part if part is not None else _part_now.get()
+    if part is None:
+        return
+    check_skipped(part)
+    if skip_file_names(part):
         raise Skipped(part)
 
 
