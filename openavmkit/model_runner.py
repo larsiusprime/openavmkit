@@ -1878,7 +1878,7 @@ def _run_cv_fold(
     k, holdout_keys, train_keys_k, tune_workers,
     df_sales, df_universe, vacant_only, model_group, model_name, model_entries,
     settings, dep_var, dep_var_test, best_variables, fields_cat, outpath,
-    use_saved_params, verbose, emit_oof_contribs=False,
+    use_saved_params, verbose, emit_oof_contribs=False, catboost_threads=None,
 ):
     """Run one CV fold and return only the lightweight bits the orchestrator needs.
 
@@ -1896,6 +1896,11 @@ def _run_cv_fold(
     """
     if tune_workers is not None:
         os.environ["OPENAVMKIT_TUNE_WORKERS"] = str(tune_workers)
+    # CatBoost's share of the cores (set per task, as tune_workers, so it survives loky worker reuse).
+    if catboost_threads is not None:
+        os.environ["OPENAVMKIT_CATBOOST_THREADS"] = str(catboost_threads)
+    else:
+        os.environ.pop("OPENAVMKIT_CATBOOST_THREADS", None)
     part = f"model:{model_group}:{model_name}"
     try:
         # Marked as its model, in a worker process too, for skip checks between its tuning trials.
@@ -2051,8 +2056,11 @@ def run_one_model_cv(
             os.environ[k] = v
         try:
             from joblib import Parallel, delayed
+            # CatBoost's results are the same at any thread count, so it takes the cores the folds leave idle.
+            cb_threads = max(1, cpu // cv_max_workers)
             fold_results = Parallel(n_jobs=cv_max_workers, backend="loky")(
-                delayed(_run_cv_fold)(k, hk, tk, 1, *fold_args) for (k, hk, tk) in tasks
+                delayed(_run_cv_fold)(k, hk, tk, 1, *fold_args, catboost_threads=cb_threads)
+                for (k, hk, tk) in tasks
             )
         finally:
             for k, v in _saved_env.items():

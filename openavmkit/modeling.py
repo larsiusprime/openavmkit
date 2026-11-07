@@ -4002,6 +4002,12 @@ def run_catboost(
 
     timing.start("setup")
     params = _catboost_final_params(params, seed)
+    from openavmkit.tuning import catboost_thread_count
+
+    threads = catboost_thread_count()
+    if threads is not None:
+        # A fold's share of the cores when folds run in parallel; unset, CatBoost takes every core (in each fold).
+        params["thread_count"] = threads
     params["train_dir"] = f"{outpath}/catboost/catboost_info"
     os.makedirs(params["train_dir"], exist_ok=True)
     cat_vars = [var for var in ds.categorical_vars if var in ds.X_train.columns.values]
@@ -5508,12 +5514,18 @@ def _get_params(
         except Exception:
             groups = None
 
+    from openavmkit.tuning import _MODEL_SPACE_VERSION
+
+    extras = [f"cvi={cv_inner}"] if cv_inner is not None else []
+    if name in _MODEL_SPACE_VERSION:
+        # This model's own search space changed: only its saved params and journals are stale.
+        extras.append(f"space_{name}=v{_MODEL_SPACE_VERSION[name]}")
     fp = _study_fingerprint(
         ds.X_train.columns,
         len(ds.X_train),
         kwargs.get("n_trials", 50),
         seed=kwargs.get("random_state"),
-        extra=(f"cvi={cv_inner}" if cv_inner is not None else None),
+        extra=("||".join(extras) if extras else None),
     )
     params_path = f"{outpath}/{slug}_params.json"
 

@@ -45,6 +45,27 @@ _TUNING_BATCH_SIZE = 8
 # raised to 0.01 + iteration/leaf caps tightened (2026-06-18). v3 = CatBoost tunes an RMSE loss
 # over SymmetricTree only, with max_ctr_complexity=1 (see _CATBOOST_FIXED_PARAMS).
 _SEARCH_SPACE_VERSION = 3
+# A model's own search-space version, when only its space changed: it's added to that model's fingerprint, so only
+# its saved params and resume journals are discarded (CatBoost 2: depth searched up to 8, not 10).
+_MODEL_SPACE_VERSION = {"CatBoost": 2}
+# CatBoost's threads per fold when folds run in parallel (run_one_model_cv sets it per fold: cores / folds at once).
+# CatBoost's results are identical at any thread count, so unlike XGBoost/LightGBM it can use the cores the parallel
+# folds leave idle.
+CATBOOST_THREADS_ENV = "OPENAVMKIT_CATBOOST_THREADS"
+
+
+def catboost_thread_count():
+    """The threads a CatBoost fit or CV here may use: the fold's share when folds run in parallel
+    (``OPENAVMKIT_CATBOOST_THREADS``), else the trial-level cap (``OPENAVMKIT_TUNE_WORKERS``), else CatBoost's own
+    default (every core)."""
+    for name in (CATBOOST_THREADS_ENV, "OPENAVMKIT_TUNE_WORKERS"):
+        value = os.environ.get(name)
+        if value:
+            try:
+                return max(1, int(value))
+            except ValueError:
+                pass
+    return None
 
 # CatBoost parameters that are fixed rather than searched. They are shared by the tuner
 # (_tune_catboost) AND the final fit (run_catboost), which merges them under the tuned
@@ -668,11 +689,9 @@ def _tune_catboost(
     # how many (min 2) inner folds cv() runs, to keep nested-CV compute down.
     inner_folds = max(2, cv_inner) if cv_inner is not None else n_splits
 
-    # Cap CatBoost's internal threads to a fold's fair share when folds run in parallel
-    # (run_one_model_cv sets OPENAVMKIT_TUNE_WORKERS), so parallel CatBoost folds don't
-    # each grab every core.
-    _cb_env = os.environ.get("OPENAVMKIT_TUNE_WORKERS")
-    _cb_thread_count = int(_cb_env) if _cb_env else None
+    # A fold's share of the cores when folds run in parallel (run_one_model_cv), so parallel CatBoost folds
+    # neither each grab every core nor leave most of them idle.
+    _cb_thread_count = catboost_thread_count()
 
     # Pre-build a single Pool for CV
     cat_feats = [c for c in (cat_vars or []) if c in X.columns]
@@ -697,7 +716,9 @@ def _tune_catboost(
             **_CATBOOST_FIXED_PARAMS,
             "iterations": trial.suggest_int("iterations", 300, 1000),
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-            "depth": trial.suggest_int("depth", 4, 10),
+            # Up to 8: each level roughly doubles a tree's cost, and depth 9-10 trials took 25-45 s each on an
+            # assessor's 500-sale group (OAK box's trial log) without scoring better.
+            "depth": trial.suggest_int("depth", 4, 8),
             "border_count": trial.suggest_int("border_count", 32, 64),
             "random_strength": trial.suggest_float("random_strength", 0, 10),
             "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 10, log=True),
