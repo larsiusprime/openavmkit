@@ -5,7 +5,7 @@ import pandas as pd
 
 from openavmkit.data import SalesUniversePair
 from openavmkit.synthetic.basic import generate_basic
-from openavmkit.value_studies import run_value_field_studies
+from openavmkit.value_studies import region_stats, run_value_field_studies
 
 
 def _sup(with_clusters: bool):
@@ -188,3 +188,22 @@ def test_each_class_can_have_its_own_targets():
 	mine = _verdict(g, own, "state")
 	assert (mine["level"], mine["prb"], mine["vei"], mine["cod"]) == (True, True, True, True)
 	assert _verdict(g, everyone | {"by_class": {"state": {"min_sales": 50}}}, "state")["judged"] is False
+
+
+def test_neighborhood_price_levels_on_the_written_sales_table(tmp_path):
+	"""The sales table is written without trimming too, and region_stats on it gives the study's own figures, for any
+	location field joined to it: no need to run the study again to look at another one."""
+	sup = _sup(False)
+	out = run_value_field_studies(sup, SETTINGS, ["assr_market_value"], outpath=str(tmp_path), region="neighborhood")
+	table = pd.read_parquet(tmp_path / "assr_market_value.sales.parquet")
+	assert not table["trimmed"].any() and len(table) == out["assr_market_value"]["overall"]["count_sales"]
+	assert region_stats(table, "value", "neighborhood") == out["assr_market_value"]["overall"]["regions"]
+	for mg, g in out["assr_market_value"]["groups"].items():
+		assert region_stats(table[table["model_group"].eq(mg)], "value", "neighborhood") == g["regions"]
+	# Another location field, joined by key: the same as a study run with it.
+	univ = sup.universe.assign(quadrant=np.where(sup.universe["latitude"] > sup.universe["latitude"].median(), "N", "S"))
+	again = run_value_field_studies(
+		SalesUniversePair(sales=sup.sales, universe=univ), SETTINGS, ["assr_market_value"], outpath=None, region="quadrant"
+	)
+	joined = table.merge(univ[["key", "quadrant"]], on="key", how="left")
+	assert region_stats(joined, "value", "quadrant") == again["assr_market_value"]["overall"]["regions"]
