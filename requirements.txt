@@ -30,6 +30,6 @@ requests~=2.34.2
 joblib~=1.5.3
 scipy>=1.11.4,<1.17
 scikit-learn~=1.8.0
-tqdm~=4.67.3
+tqdm~=4.70.1
 rasterio~=1.4.4
 seamless-3dep>=0.4.1,<0.6
