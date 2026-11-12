@@ -1689,55 +1689,14 @@ def _fit_comp_models(
     unit: str,
     is_vacant_only: bool,
 ):
-    """Fit LayeredCompModel(s) on the full sales set for outlier comp-analysis.
+    """Fit LayeredCompModel(s) on the full sales set for outlier comp-analysis (``outliers.fit_comp_models``).
 
     Returns (m_price, m_ppsf_impr, m_ppsf_land, feat_cols). Any model may be None
     if there isn't enough data on its slice."""
-    from layeredcompmodel import LayeredCompModel
-    from openavmkit.modeling import _coerce_categoricals_to_object
+    from openavmkit.outliers import fit_comp_models
 
-    feat_cols = [c for c in ind_vars if c in df_full.columns]
-    if not feat_cols:
-        return None, None, None, []
-
-    df_full = df_full[df_full["sale_price_time_adj"].fillna(0).gt(0)].copy()
-    if len(df_full) < 5:
-        return None, None, None, feat_cols
-
-    # Derive per-impr / per-land time-adj PPSF on the fly if not pre-computed.
-    ppsf_impr_col = f"sale_price_time_adj_per_impr_{unit}"
-    ppsf_land_col = f"sale_price_time_adj_per_land_{unit}"
-    impr_size_col = f"bldg_area_finished_{unit}"
-    land_size_col = f"land_area_{unit}"
-    if ppsf_impr_col not in df_full.columns and impr_size_col in df_full.columns:
-        df_full[ppsf_impr_col] = df_full["sale_price_time_adj"] / df_full[impr_size_col].replace(0, np.nan)
-    if ppsf_land_col not in df_full.columns and land_size_col in df_full.columns:
-        df_full[ppsf_land_col] = df_full["sale_price_time_adj"] / df_full[land_size_col].replace(0, np.nan)
-
-    X_full = _coerce_categoricals_to_object(df_full[feat_cols])
-    y_price = df_full["sale_price_time_adj"].astype(float)
-    m_price = LayeredCompModel(split_metric="mae", n_jobs=1)
-    m_price.fit(X_full, y_price)
-
-    m_ppsf_impr = None
-    if not is_vacant_only and ppsf_impr_col in df_full.columns:
-        df_i = df_full[df_full["vacant_sale"].eq(False) & df_full[ppsf_impr_col].fillna(0).gt(0)]
-        if len(df_i) >= 5:
-            X_i = _coerce_categoricals_to_object(df_i[feat_cols])
-            y_i = df_i[ppsf_impr_col].astype(float)
-            m_ppsf_impr = LayeredCompModel(split_metric="mae", n_jobs=1)
-            m_ppsf_impr.fit(X_i, y_i)
-
-    m_ppsf_land = None
-    if ppsf_land_col in df_full.columns:
-        df_v = df_full[df_full["vacant_sale"].eq(True) & df_full[ppsf_land_col].fillna(0).gt(0)]
-        if len(df_v) >= 5:
-            X_v = _coerce_categoricals_to_object(df_v[feat_cols])
-            y_v = df_v[ppsf_land_col].astype(float)
-            m_ppsf_land = LayeredCompModel(split_metric="mae", n_jobs=1)
-            m_ppsf_land.fit(X_v, y_v)
-
-    return m_price, m_ppsf_impr, m_ppsf_land, feat_cols
+    m = fit_comp_models(df_full, ind_vars, unit, price_field="sale_price_time_adj")
+    return m.price, (None if is_vacant_only else m.impr), m.land, m.features
 
 
 def _build_comp_quality_table(

@@ -99,8 +99,9 @@ def run_value_field_studies(
     max_trim : float, optional
         Maximum share of ratios trimmed for the trimmed statistics. Defaults to 0.05.
     outpath : str or None, optional
-        Folder to write ``<field>.json`` into (and, with ``trim_outliers``, ``<field>.sales.parquet``: each sale
-        studied, its ratio and whether it was trimmed). ``None`` writes nothing.
+        Folder to write ``<field>.json`` into, and ``<field>.sales.parquet``: each sale studied (its keys, model
+        group, date, place and ``region``), its price, value and ratio, and whether it was trimmed (never, without
+        ``trim_outliers``). ``None`` writes nothing.
     sale_field : str, optional
         The price the values are compared with: ``sale_price`` (as sold, the formal ratio study) or e.g.
         ``sale_price_time_adj``.
@@ -200,10 +201,11 @@ def run_value_field_studies(
             os.makedirs(outpath, exist_ok=True)
             with open(os.path.join(outpath, f"{field}.json"), "w", encoding="utf-8") as f:
                 json.dump(results[field], f, indent=2, default=_json_default)
-            if trim_outliers:
-                table = _sale_table(usable, field, region)
-                table["trimmed"] = trimmed.to_numpy()
-                table.to_parquet(os.path.join(outpath, f"{field}.sales.parquet"), index=False)
+            # Every sale studied, with its ratio and whether it was trimmed (never, without trimming): for charts, and
+            # for region_stats on another location field.
+            table = _sale_table(usable, field, region)
+            table["trimmed"] = trimmed.to_numpy()
+            table.to_parquet(os.path.join(outpath, f"{field}.sales.parquet"), index=False)
     return results
 
 
@@ -323,9 +325,35 @@ def _group_by_sort_key(key: np.ndarray, n_groups: int) -> list[np.ndarray]:
     return groups
 
 
-def _region_stats(df: pd.DataFrame, field: str, region: str, limit: float = 10.0) -> dict:
-    """The median ratio by the price level of each sale's region: the region's median market value proxy (half the
-    price, half the value at the median ratio), regions grouped by level as the VEI groups sales."""
+def region_stats(df: pd.DataFrame, field: str, region: str, limit: float = 10.0) -> dict:
+    """Neighborhood price level statistics: the median ratio by the price level of the region each sale is in.
+
+    Each region's price level is the median market value proxy of its sales (half the price, half the value at the
+    median ratio); the regions are grouped by level as the VEI groups sales (2 groups up to 50 sales, 4 up to 500,
+    else 10, never splitting a region), and the VEI is worked out over those groups (openratiostudy.com's
+    "neighborhood price level" statistics; not an IAAO test). ``run_value_field_studies`` reports it under
+    ``regions`` for its ``region``; called on its own, on the sales table it writes (``<field>.sales.parquet``, with
+    ``field="value"``) and any location field joined to it, it gives the same figures for another location field
+    without running the study again.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        The sales: ``sale_price``, the value field, and the region. A sale with no region is left out.
+    field : str
+        The value field.
+    region : str
+        The location field.
+    limit : float, optional
+        The VEI's limit for its verdict, in percent. Defaults to 10.
+
+    Returns
+    -------
+    dict
+        ``field``, ``regions`` (how many), ``sales``, ``strata`` (each group's ``n``, ``regions``, ``level``,
+        ``median``, and its 90% interval ``low`` and ``high``), ``vei``, ``vei_significance`` and ``vei_verdict``
+        (``insufficient`` under 20 sales or 2 regions).
+    """
     region_text = df[region].astype("string").str.strip()
     has = region_text.notna() & region_text.ne("")
     d = df[has]
@@ -398,7 +426,7 @@ def _study_one(
 ) -> dict:
     out = {"count_sales": int(len(usable)), "count_parcels": int(len(df_univ))}
     if region is not None and region in usable:
-        out["regions"] = _region_stats(usable, field, region)
+        out["regions"] = region_stats(usable, field, region)
 
     rs = RatioStudyBootstrapped(
         usable[field].to_numpy(), usable["sale_price"].to_numpy(), max_trim, confidence_interval

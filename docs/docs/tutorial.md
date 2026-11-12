@@ -553,6 +553,30 @@ What to fix:
 
 - **Bad data with a clear cause** → tighten `data.process.invalid_sales`, add to `in/invalid_sales.csv`, or fix your `valid_sale` / `vacant_sale` calc in `data.load.sales.calc`.
 - **Genuine luxury / unique** → either split into a model_group or add a high-end indicator variable to your tree-based model's `ind_vars`. **Do not use the assessor's market value (or anything derived from it) as a luxury indicator** — that invites circularity, since the assessor's value is what your ratio study is measured against. Use raw structural features instead: GRADE letter, year built + recent remodel year, premium neighborhood codes, lot size relative to neighbors.
+
+**The same analysis as functions** (`openavmkit.outliers`), for a notebook of your own or an app: they return data rather than print it.
+
+```python
+from openavmkit.outliers import fit_comp_models, find_comps, summarize_conditions, compare_fields, error_patterns, error_clustering
+
+# A model group's comp trees (layered comps: price, price per building area, price per land area), fitted once.
+models = fit_comp_models(df_group_sales, ind_vars, unit="sqft", price_field="sale_price_time_adj")
+
+# One sale's comps: traced down its tree, the sale itself left out, to the deepest split with 5 other sales or more.
+comps = find_comps(models, df_group_sales, subject_row, min_comps=5)
+comps.keys                                # the comps' key_sale
+summarize_conditions(comps.conditions)    # what they share, per field
+comps.says                                # their price per area times the sale's own
+
+# How the sale is unlike the others, field by field (against its comps; where it sits among the group's sales).
+compare_fields(subject_row, df_group_sales, comps.keys, fields)
+
+# What the model's misses have in common: each field, the share of the error that lines up with it, if it beats chance.
+error_patterns(df_group_sales, fields, ratio_field="ratio", outliers=is_outlier)
+error_clustering(df_group_sales, ratio_field="ratio")   # errors alike between neighbours? (Moran's I)
+```
+
+`models.to_dict()` / `CompModels.from_dict()` save and load the trees, so they're fitted once per run.
 - **Genuine but unfittable** → document and accept. Keep an eye on whether the trimmed metrics also show drift — that's when it stops being just-tail noise.
 
 ### B.9 Iterate
