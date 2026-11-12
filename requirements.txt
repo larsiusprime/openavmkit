@@ -1,6 +1,6 @@
 numpy==2.4.6
 lightgbm==4.6.0
-markdown==3.10.2
+markdown==3.11.3
 mgwr==2.2.1
 optuna==4.6.0
 osmnx==2.1.0
